@@ -56,6 +56,14 @@
 | Mauvaise photo prise | Autoriser un remplacement avant remise, supprimer l'ancien binaire et conserver la trace |
 | URL de preuve devinée | Exiger une session et contrôler `company_id` puis `driver_id` pour le portail terrain |
 | Preuve sur lien client | Ne jamais inclure le fichier ni son identifiant dans l'API publique |
+| Note d'incident envoyée deux fois | Retourner le premier événement sans doubler la chronologie |
+| Deux responsables attribuent simultanément le dossier | Sérialiser sur l'incident et ne pas rejouer une ancienne action idempotente |
+| Opérateur tente un gel ou un export complet | Refuser côté serveur ; réserver l'action au propriétaire ou manager |
+| Gel déjà actif | Refuser un second gel et afficher la date de révision existante |
+| Date de révision dépassée | Conserver le gel, le signaler comme à revoir et exiger une décision humaine |
+| Levée répétée après une coupure | Retourner la première levée sans créer un second événement |
+| Chaîne d'empreintes invalide | Signaler le dossier comme non vérifié et déclencher une investigation |
+| Export de dossier | Journaliser l'auteur et l'empreinte, ne jamais inclure de secret ni de code OTP |
 
 ## Cartographie et temps réel
 

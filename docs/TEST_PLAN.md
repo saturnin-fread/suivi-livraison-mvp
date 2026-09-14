@@ -65,6 +65,18 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - rapprocher l'écart avec un rôle autorisé puis permettre la remise ;
 - vérifier la conservation de tous les événements financiers.
 
+## Test F4 — dossier d'incident et conservation
+
+- vérifier que l'ouverture crée le premier événement et que sa chaîne d'empreintes est valide ;
+- ajouter puis répéter une note avec la même clé sans créer de doublon ;
+- attribuer le dossier à un membre actif de l'entreprise ;
+- refuser attribution, gel et export depuis une autre entreprise ou un rôle insuffisant ;
+- activer un gel avec motif et date de révision, puis refuser un second gel actif ;
+- exporter le dossier, vérifier son empreinte et la présence de ses sources ;
+- lever le gel avec motif et vérifier l'idempotence ;
+- résoudre l'incident sans altérer la déclaration initiale ;
+- modifier volontairement un événement dans une base de test et vérifier que la chaîne devient invalide.
+
 ## Test G — confirmation et modification client
 
 - vérifier la redirection vers la page de confirmation ;

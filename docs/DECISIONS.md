@@ -71,3 +71,7 @@ L'exploitation génère le code de remise et le destinataire le reçoit par un c
 ## 2026-09-14 — Preuves complémentaires privées et minimales
 
 Photo et signature sont désactivées par défaut. L'entreprise peut les rendre facultatives ou obligatoires, mais elles ne remplacent pas encore l'OTP. Les fichiers sont privés, limités et non exposés au client. Le pilote les conserve dans la base métier pour garantir la sauvegarde ; une migration vers un stockage objet privé est requise avant la montée en charge.
+
+## 2026-09-14 — Incident immuable et conservation révisable
+
+La déclaration d'un incident n'est jamais modifiée : tout complément devient un événement horodaté relié par empreinte au précédent. Le gel de conservation porte sur toute la commande, exige un motif et une date de révision, et ne se lève jamais automatiquement. Les durées légales restent configurées par le responsable de traitement selon sa juridiction ; le SaaS ne les invente pas.

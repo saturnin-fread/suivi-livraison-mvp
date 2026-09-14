@@ -38,8 +38,11 @@ const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
     })
   : null;
+if (pool) pool.on('error', (error) => console.error('Unexpected PostgreSQL pool error:', error.message));
 
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '256kb' }));
@@ -63,6 +66,79 @@ function detectedImageMime(buffer) {
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
   return null;
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+}
+
+function incidentEventHashPayload(event) {
+  return canonicalJson({
+    version: 1,
+    incidentId: String(event.incidentId),
+    eventType: event.eventType,
+    body: event.body || null,
+    details: event.details || {},
+    actorUserId: event.actorUserId == null ? null : String(event.actorUserId),
+    createdAt: new Date(event.createdAt).toISOString(),
+    previousHash: event.previousHash || null,
+  });
+}
+
+async function appendIncidentEvent(client, auth, incidentId, eventType, body, details, idempotencyKey) {
+  const fingerprint = digest(canonicalJson({ incidentId: String(incidentId), eventType, body: body || null, details: details || {} }));
+  const repeated = await client.query(
+    `SELECT id, incident_id, request_fingerprint, event_hash, created_at
+     FROM incident_events WHERE company_id = $1 AND idempotency_key = $2`,
+    [auth.company_id, idempotencyKey]
+  );
+  if (repeated.rows[0]) {
+    if (String(repeated.rows[0].incident_id) !== String(incidentId) || repeated.rows[0].request_fingerprint !== fingerprint) {
+      throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+    }
+    return { ...repeated.rows[0], alreadyCreated: true };
+  }
+  const previous = await client.query(
+    `SELECT event_hash FROM incident_events
+     WHERE company_id = $1 AND incident_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [auth.company_id, incidentId]
+  );
+  const timestamp = (await client.query('SELECT clock_timestamp() AS created_at')).rows[0].created_at;
+  const previousHash = previous.rows[0]?.event_hash || null;
+  const eventHash = digest(incidentEventHashPayload({
+    incidentId, eventType, body, details, actorUserId: auth.user_id, createdAt: timestamp, previousHash,
+  }));
+  const inserted = await client.query(
+    `INSERT INTO incident_events (
+       company_id, incident_id, event_type, body, details, actor_user_id,
+       idempotency_key, request_fingerprint, previous_hash, event_hash, created_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING id, event_hash, created_at`,
+    [auth.company_id, incidentId, eventType, body || null, details || {}, auth.user_id,
+      idempotencyKey, fingerprint, previousHash, eventHash, timestamp]
+  );
+  return inserted.rows[0];
+}
+
+function verifyIncidentEventChain(events) {
+  let previousHash = null;
+  for (const event of events) {
+    if ((event.previous_hash || null) !== previousHash) return false;
+    const expected = digest(incidentEventHashPayload({
+      incidentId: event.incident_id,
+      eventType: event.event_type,
+      body: event.body,
+      details: event.details,
+      actorUserId: event.actor_user_id,
+      createdAt: event.created_at,
+      previousHash,
+    }));
+    if (event.event_hash !== expected) return false;
+    previousHash = event.event_hash;
+  }
+  return true;
 }
 
 function parseCookies(req) {
@@ -437,6 +513,47 @@ async function initDatabase() {
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS request_fingerprint TEXT;
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS resolution_idempotency_key TEXT;
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS resolution_fingerprint TEXT;
+      ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS assigned_to_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+
+      CREATE TABLE IF NOT EXISTS incident_events (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        incident_id BIGINT NOT NULL REFERENCES delivery_incidents(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        body TEXT,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        previous_hash TEXT,
+        event_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS order_retention_holds (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'released')),
+        reason TEXT NOT NULL,
+        review_due_at TIMESTAMPTZ NOT NULL,
+        placed_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        placed_idempotency_key TEXT NOT NULL,
+        placed_fingerprint TEXT NOT NULL,
+        placed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        released_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        release_reason TEXT,
+        release_idempotency_key TEXT,
+        release_fingerprint TEXT,
+        released_at TIMESTAMPTZ,
+        UNIQUE(company_id, placed_idempotency_key)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS order_retention_holds_active_unique
+        ON order_retention_holds(order_id) WHERE status = 'active';
+      CREATE UNIQUE INDEX IF NOT EXISTS order_retention_holds_release_key_unique
+        ON order_retention_holds(company_id, release_idempotency_key)
+        WHERE release_idempotency_key IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS audit_logs (
         id BIGSERIAL PRIMARY KEY,
@@ -463,6 +580,8 @@ async function initDatabase() {
         ON delivery_otp_attempts(order_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS delivery_incidents_order_created_idx
         ON delivery_incidents(order_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS incident_events_incident_created_idx
+        ON incident_events(incident_id, created_at ASC, id ASC);
       CREATE UNIQUE INDEX IF NOT EXISTS delivery_incidents_resolution_key_unique
         ON delivery_incidents(company_id, resolution_idempotency_key)
         WHERE resolution_idempotency_key IS NOT NULL;
@@ -727,7 +846,7 @@ app.get('/admin', requirePlatformPage, (_req, res) => {
 
 const companyPages = [
   '/app', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/carte',
-  '/app/livreurs', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
+  '/app/livreurs', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
 ];
 app.get(companyPages, requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
@@ -736,6 +855,9 @@ app.get('/app/demandes/:id', requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
 app.get('/app/commandes/:id', requireCompanyPage, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
+app.get('/app/incidents/:id', requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
 
@@ -1103,7 +1225,7 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
   }
 }));
 
-app.post('/api/driver/orders/:id/incidents', requireDriverApi, asyncRoute(async (req, res) => {
+async function openDeliveryIncident(req, res, driverScoped = false) {
   const category = String(req.body.category || '').trim();
   const severity = String(req.body.severity || 'medium').trim();
   const description = String(req.body.description || '').trim();
@@ -1114,33 +1236,62 @@ app.post('/api/driver/orders/:id/incidents', requireDriverApi, asyncRoute(async 
   if (description.length < 5 || description.length > 2000 || !idempotencyKey) {
     return res.status(400).json({ error: 'Décrivez correctement l’incident et réessayez.' });
   }
-  const order = await pool.query(
-    `SELECT id FROM orders WHERE id = $1 AND company_id = $2 AND driver_id = $3`,
-    [req.params.id, req.auth.company_id, req.auth.driver_id]
-  );
-  if (!order.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), category, severity, description }));
-  const inserted = await pool.query(
-    `INSERT INTO delivery_incidents (
-       company_id, order_id, category, severity, description, idempotency_key,
-       request_fingerprint, opened_by_user_id
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (company_id, idempotency_key) DO NOTHING RETURNING id, created_at`,
-    [req.auth.company_id, order.rows[0].id, category, severity, description, idempotencyKey, fingerprint, req.auth.user_id]
-  );
-  if (!inserted.rows[0]) {
-    const existing = await pool.query(
-      `SELECT id, order_id, request_fingerprint, created_at FROM delivery_incidents
-       WHERE company_id = $1 AND idempotency_key = $2`,
-      [req.auth.company_id, idempotencyKey]
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id FROM orders WHERE id = $1 AND company_id = $2${driverScoped ? ' AND driver_id = $3' : ''} FOR UPDATE`,
+      driverScoped ? [req.params.id, req.auth.company_id, req.auth.driver_id] : [req.params.id, req.auth.company_id]
     );
-    if (!existing.rows[0] || String(existing.rows[0].order_id) !== String(order.rows[0].id) || existing.rows[0].request_fingerprint !== fingerprint) {
-      return res.status(409).json({ error: 'Cette clé d’action a déjà été utilisée ailleurs.' });
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const inserted = await client.query(
+      `INSERT INTO delivery_incidents (
+         company_id, order_id, category, severity, description, idempotency_key,
+         request_fingerprint, opened_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (company_id, idempotency_key) DO NOTHING RETURNING id, created_at`,
+      [req.auth.company_id, order.id, category, severity, description, idempotencyKey, fingerprint, req.auth.user_id]
+    );
+    let incident = inserted.rows[0];
+    if (!incident) {
+      const existing = await client.query(
+        `SELECT id, order_id, request_fingerprint, created_at FROM delivery_incidents
+         WHERE company_id = $1 AND idempotency_key = $2`,
+        [req.auth.company_id, idempotencyKey]
+      );
+      incident = existing.rows[0];
+      if (!incident || String(incident.order_id) !== String(order.id) || incident.request_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
     }
-    return res.json({ id: existing.rows[0].id, createdAt: existing.rows[0].created_at, alreadyCreated: true });
+    await appendIncidentEvent(client, req.auth, incident.id, 'opened', description, { category, severity }, idempotencyKey);
+    if (inserted.rows[0]) {
+      await client.query(
+        `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+         VALUES ($1, $2, 'order', $3, $4,
+           jsonb_build_object('incidentId', $5::bigint, 'category', $6::text, 'severity', $7::text))`,
+        [req.auth.company_id, req.auth.user_id, order.id,
+          driverScoped ? 'driver_incident_opened' : 'incident_opened', incident.id, category, severity]
+      );
+    }
+    await client.query('COMMIT');
+    return res.status(inserted.rows[0] ? 201 : 200).json({
+      id: incident.id, createdAt: incident.created_at, alreadyCreated: !inserted.rows[0],
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Incident creation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de déclarer cet incident.' });
+  } finally {
+    client.release();
   }
-  await writeAudit(req.auth, 'order', order.rows[0].id, 'driver_incident_opened', { incidentId: inserted.rows[0].id, category, severity });
-  return res.status(201).json({ id: inserted.rows[0].id, createdAt: inserted.rows[0].created_at });
+}
+
+app.post('/api/driver/orders/:id/incidents', requireDriverApi, asyncRoute(async (req, res) => {
+  return openDeliveryIncident(req, res, true);
 }));
 
 app.post('/api/driver/orders/:id/payment/collect', requireDriverApi, asyncRoute(async (req, res) => {
@@ -1300,7 +1451,9 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
     `SELECT COUNT(*) FILTER (WHERE archived_at IS NULL) AS active_requests,
             COUNT(*) FILTER (WHERE status = 'À vérifier' AND archived_at IS NULL) AS to_review,
             (SELECT COUNT(*) FROM orders WHERE company_id = $1) AS orders,
-            (SELECT COUNT(*) FROM drivers WHERE company_id = $1) AS drivers
+            (SELECT COUNT(*) FROM drivers WHERE company_id = $1) AS drivers,
+            (SELECT COUNT(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open') AS open_incidents,
+            (SELECT COUNT(*) FROM order_retention_holds WHERE company_id = $1 AND status = 'active' AND review_due_at < NOW()) AS overdue_holds
      FROM customer_requests WHERE company_id = $1`,
     [req.auth.company_id]
   );
@@ -1894,41 +2047,7 @@ app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (
 }));
 
 app.post('/api/app/orders/:id/incidents', requireCompanyApi, asyncRoute(async (req, res) => {
-  const category = String(req.body.category || '').trim();
-  const severity = String(req.body.severity || 'medium').trim();
-  const description = String(req.body.description || '').trim();
-  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (!incidentCategories.includes(category) || !['low', 'medium', 'high'].includes(severity)) {
-    return res.status(400).json({ error: 'Type ou gravité d’incident invalide.' });
-  }
-  if (description.length < 5 || description.length > 2000) {
-    return res.status(400).json({ error: 'Décrivez l’incident entre 5 et 2 000 caractères.' });
-  }
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
-  const order = await pool.query(`SELECT id FROM orders WHERE id = $1 AND company_id = $2`, [req.params.id, req.auth.company_id]);
-  if (!order.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
-  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), category, severity, description }));
-  const inserted = await pool.query(
-    `INSERT INTO delivery_incidents (
-       company_id, order_id, category, severity, description, idempotency_key,
-       request_fingerprint, opened_by_user_id
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (company_id, idempotency_key) DO NOTHING RETURNING id, created_at`,
-    [req.auth.company_id, order.rows[0].id, category, severity, description, idempotencyKey, fingerprint, req.auth.user_id]
-  );
-  if (!inserted.rows[0]) {
-    const existing = await pool.query(
-      `SELECT id, order_id, request_fingerprint, created_at FROM delivery_incidents
-       WHERE company_id = $1 AND idempotency_key = $2`,
-      [req.auth.company_id, idempotencyKey]
-    );
-    if (!existing.rows[0] || String(existing.rows[0].order_id) !== String(order.rows[0].id) || existing.rows[0].request_fingerprint !== fingerprint) {
-      return res.status(409).json({ error: 'Cette clé d’action a déjà été utilisée pour un autre incident.' });
-    }
-    return res.json({ id: existing.rows[0].id, createdAt: existing.rows[0].created_at, alreadyCreated: true });
-  }
-  await writeAudit(req.auth, 'order', order.rows[0].id, 'incident_opened', { incidentId: inserted.rows[0].id, category, severity });
-  return res.status(201).json({ id: inserted.rows[0].id, createdAt: inserted.rows[0].created_at });
+  return openDeliveryIncident(req, res);
 }));
 
 app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -1951,6 +2070,7 @@ app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (
       if (incident.resolution_idempotency_key !== idempotencyKey || incident.resolution_fingerprint !== fingerprint) {
         throw Object.assign(new Error('Cet incident a déjà été résolu.'), { statusCode: 409 });
       }
+      await appendIncidentEvent(client, req.auth, incident.id, 'resolved', resolution, {}, idempotencyKey);
       await client.query('COMMIT');
       return res.json({ id: incident.id, status: 'resolved', alreadyResolved: true });
     }
@@ -1960,6 +2080,7 @@ app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (
          resolved_at = NOW(), updated_at = NOW() WHERE id = $5`,
       [resolution, req.auth.user_id, idempotencyKey, fingerprint, incident.id]
     );
+    await appendIncidentEvent(client, req.auth, incident.id, 'resolved', resolution, {}, idempotencyKey);
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
        VALUES ($1, $2, 'order', $3, 'incident_resolved', jsonb_build_object('incidentId', $4::bigint))`,
@@ -1975,6 +2096,357 @@ app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (
   } finally {
     client.release();
   }
+}));
+
+app.get('/api/app/incidents', requireCompanyApi, asyncRoute(async (req, res) => {
+  const scope = ['open', 'resolved', 'all'].includes(req.query.scope) ? req.query.scope : 'open';
+  const result = await pool.query(
+    `SELECT i.id, i.order_id, i.category, i.severity, i.description, i.status,
+            i.created_at, i.resolved_at, o.customer_name, o.customer_phone,
+            o.neighborhood, o.status AS order_status, d.name AS driver_name,
+            opener.display_name AS opened_by, assignee.display_name AS assigned_to,
+            h.id AS retention_hold_id, h.review_due_at AS retention_review_due_at
+     FROM delivery_incidents i
+     JOIN orders o ON o.id = i.order_id
+     JOIN drivers d ON d.id = o.driver_id
+     LEFT JOIN users opener ON opener.id = i.opened_by_user_id
+     LEFT JOIN users assignee ON assignee.id = i.assigned_to_user_id
+     LEFT JOIN order_retention_holds h ON h.order_id = o.id AND h.status = 'active'
+     WHERE i.company_id = $1 AND ($2 = 'all' OR i.status = $2)
+     ORDER BY CASE i.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+              i.created_at DESC, i.id DESC
+     LIMIT 300`,
+    [req.auth.company_id, scope]
+  );
+  return res.json(result.rows);
+}));
+
+async function loadIncidentDossier(companyId, incidentId) {
+  const incidentResult = await pool.query(
+    `SELECT i.id, i.company_id, i.order_id, i.category, i.severity, i.description,
+            i.status, i.opened_by_user_id, i.resolved_by_user_id, i.assigned_to_user_id,
+            i.resolution, i.resolved_at, i.created_at, i.updated_at,
+            o.customer_name, o.customer_phone, o.delivery_address, o.requested_time,
+            o.destination_lat, o.destination_lng, o.destination_accuracy, o.neighborhood,
+            o.landmark, o.notes AS order_notes, o.status AS order_status, o.created_at AS order_created_at,
+            o.completed_at, o.cancelled_at, o.failure_reason,
+            d.id AS driver_id, d.name AS driver_name, d.phone AS driver_phone,
+            d.vehicle_type AS driver_vehicle_type,
+            opener.display_name AS opened_by, resolver.display_name AS resolved_by,
+            assignee.display_name AS assigned_to
+     FROM delivery_incidents i
+     JOIN orders o ON o.id = i.order_id
+     JOIN drivers d ON d.id = o.driver_id
+     LEFT JOIN users opener ON opener.id = i.opened_by_user_id
+     LEFT JOIN users resolver ON resolver.id = i.resolved_by_user_id
+     LEFT JOIN users assignee ON assignee.id = i.assigned_to_user_id
+     WHERE i.id = $1 AND i.company_id = $2`,
+    [incidentId, companyId]
+  );
+  const incident = incidentResult.rows[0];
+  if (!incident) return null;
+  const [events, holds, evidence, orderEvents, paymentEvents, proofs, relatedIncidents, members] = await Promise.all([
+    pool.query(
+      `SELECT e.id, e.incident_id, e.event_type, e.body, e.details, e.actor_user_id,
+              e.previous_hash, e.event_hash, e.created_at,
+              COALESCE(u.display_name, 'Compte supprimé') AS actor_name
+       FROM incident_events e LEFT JOIN users u ON u.id = e.actor_user_id
+       WHERE e.incident_id = $1 AND e.company_id = $2 ORDER BY e.created_at ASC, e.id ASC`,
+      [incident.id, companyId]
+    ),
+    pool.query(
+      `SELECT h.id, h.order_id, h.status, h.reason, h.review_due_at, h.placed_at,
+              h.released_at, h.release_reason,
+              placer.display_name AS placed_by, releaser.display_name AS released_by
+       FROM order_retention_holds h
+       LEFT JOIN users placer ON placer.id = h.placed_by_user_id
+       LEFT JOIN users releaser ON releaser.id = h.released_by_user_id
+       WHERE h.order_id = $1 AND h.company_id = $2 ORDER BY h.placed_at DESC, h.id DESC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT id, evidence_type, mime_type, byte_size, content_sha256, uploaded_by_user_id,
+              superseded_at, deleted_at, created_at
+       FROM delivery_evidence_files WHERE order_id = $1 AND company_id = $2 ORDER BY created_at ASC, id ASC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT e.id, e.from_status, e.to_status, e.reason, e.metadata, e.actor_user_id,
+              e.created_at, COALESCE(u.display_name, 'Système') AS actor_name
+       FROM order_status_events e LEFT JOIN users u ON u.id = e.actor_user_id
+       WHERE e.order_id = $1 AND e.company_id = $2 ORDER BY e.created_at ASC, e.id ASC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT p.id, p.event_type, p.amount_minor, p.currency, p.method, p.reference,
+              p.reason, p.actor_user_id, p.created_at, COALESCE(u.display_name, 'Système') AS actor_name
+       FROM payment_events p LEFT JOIN users u ON u.id = p.actor_user_id
+       WHERE p.order_id = $1 AND p.company_id = $2 ORDER BY p.created_at ASC, p.id ASC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT id, proof_type, verified_by_user_id, details, verified_at, created_at
+       FROM delivery_proofs WHERE order_id = $1 AND company_id = $2 ORDER BY created_at ASC, id ASC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT id, category, severity, description, status, resolution, created_at, resolved_at
+       FROM delivery_incidents WHERE order_id = $1 AND company_id = $2 ORDER BY created_at ASC, id ASC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT u.id, u.display_name, m.role
+       FROM company_memberships m JOIN users u ON u.id = m.user_id
+       WHERE m.company_id = $1 AND m.role IN ('owner', 'manager', 'operator') AND u.disabled = FALSE
+       ORDER BY u.display_name ASC`,
+      [companyId]
+    ),
+  ]);
+  return {
+    incident,
+    events: events.rows,
+    eventChainValid: events.rows.length ? verifyIncidentEventChain(events.rows) : null,
+    holds: holds.rows,
+    evidence: evidence.rows,
+    orderEvents: orderEvents.rows,
+    paymentEvents: paymentEvents.rows,
+    proofs: proofs.rows,
+    relatedIncidents: relatedIncidents.rows,
+    members: members.rows,
+  };
+}
+
+app.get('/api/app/incidents/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const dossier = await loadIncidentDossier(req.auth.company_id, req.params.id);
+  if (!dossier) return res.status(404).json({ error: 'Incident introuvable.' });
+  if (!['owner', 'manager'].includes(req.auth.role)) dossier.members = [];
+  return res.json(dossier);
+}));
+
+app.post('/api/app/incidents/:id/notes', requireCompanyApi, asyncRoute(async (req, res) => {
+  const note = String(req.body.note || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (note.length < 3 || note.length > 2000) return res.status(400).json({ error: 'La note doit contenir entre 3 et 2 000 caractères.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const incident = await client.query(
+      `SELECT id, order_id FROM delivery_incidents WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    if (!incident.rows[0]) throw Object.assign(new Error('Incident introuvable.'), { statusCode: 404 });
+    const event = await appendIncidentEvent(client, req.auth, incident.rows[0].id, 'note_added', note, {}, idempotencyKey);
+    if (!event.alreadyCreated) {
+      await client.query(
+        `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+         VALUES ($1, $2, 'order', $3, 'incident_note_added', jsonb_build_object('incidentId', $4::bigint, 'eventId', $5::bigint))`,
+        [req.auth.company_id, req.auth.user_id, incident.rows[0].order_id, incident.rows[0].id, event.id]
+      );
+    }
+    await client.query('COMMIT');
+    return res.status(event.alreadyCreated ? 200 : 201).json({ id: event.id, alreadyCreated: Boolean(event.alreadyCreated) });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Incident note error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’ajouter cette note.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/incidents/:id/assign', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const assignedToUserId = String(req.body.userId || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!/^\d+$/.test(assignedToUserId) || !idempotencyKey) return res.status(400).json({ error: 'Responsable ou clé d’action invalide.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const incident = await client.query(
+      `SELECT id, order_id FROM delivery_incidents WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    if (!incident.rows[0]) throw Object.assign(new Error('Incident introuvable.'), { statusCode: 404 });
+    const member = await client.query(
+      `SELECT u.id, u.display_name FROM company_memberships m JOIN users u ON u.id = m.user_id
+       WHERE m.company_id = $1 AND u.id = $2 AND m.role IN ('owner', 'manager', 'operator') AND u.disabled = FALSE`,
+      [req.auth.company_id, assignedToUserId]
+    );
+    if (!member.rows[0]) throw Object.assign(new Error('Ce responsable ne fait pas partie de l’équipe autorisée.'), { statusCode: 400 });
+    const details = { assignedToUserId: String(member.rows[0].id), assignedToName: member.rows[0].display_name };
+    const event = await appendIncidentEvent(client, req.auth, incident.rows[0].id, 'assigned', null, details, idempotencyKey);
+    if (!event.alreadyCreated) {
+      await client.query('UPDATE delivery_incidents SET assigned_to_user_id = $1, updated_at = NOW() WHERE id = $2', [member.rows[0].id, incident.rows[0].id]);
+      await client.query(
+        `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+         VALUES ($1, $2, 'order', $3, 'incident_assigned', jsonb_build_object('incidentId', $4::bigint, 'assignedToUserId', $5::bigint))`,
+        [req.auth.company_id, req.auth.user_id, incident.rows[0].order_id, incident.rows[0].id, member.rows[0].id]
+      );
+    }
+    await client.query('COMMIT');
+    return res.json({ assignedTo: member.rows[0].display_name, alreadyAssigned: Boolean(event.alreadyCreated) });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Incident assignment error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’attribuer ce dossier.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/incidents/:id/retention-hold', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  const reviewDueAt = new Date(req.body.reviewDueAt);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  const maximumReview = Date.now() + 366 * 24 * 60 * 60 * 1000;
+  if (reason.length < 10 || reason.length > 2000) return res.status(400).json({ error: 'Précisez le motif du gel entre 10 et 2 000 caractères.' });
+  if (!Number.isFinite(reviewDueAt.getTime()) || reviewDueAt.getTime() <= Date.now() || reviewDueAt.getTime() > maximumReview) {
+    return res.status(400).json({ error: 'Choisissez une date de révision future, dans les 12 prochains mois.' });
+  }
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(canonicalJson({ incidentId: String(req.params.id), reason, reviewDueAt: reviewDueAt.toISOString() }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const incident = await client.query(
+      `SELECT id, order_id FROM delivery_incidents WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    if (!incident.rows[0]) throw Object.assign(new Error('Incident introuvable.'), { statusCode: 404 });
+    const repeated = await client.query(
+      `SELECT id, order_id, placed_fingerprint, review_due_at FROM order_retention_holds
+       WHERE company_id = $1 AND placed_idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (String(repeated.rows[0].order_id) !== String(incident.rows[0].order_id) || repeated.rows[0].placed_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ id: repeated.rows[0].id, reviewDueAt: repeated.rows[0].review_due_at, alreadyPlaced: true });
+    }
+    const active = await client.query(
+      `SELECT id FROM order_retention_holds WHERE order_id = $1 AND company_id = $2 AND status = 'active'`,
+      [incident.rows[0].order_id, req.auth.company_id]
+    );
+    if (active.rows[0]) throw Object.assign(new Error('Cette commande est déjà placée sous gel de conservation.'), { statusCode: 409 });
+    const hold = await client.query(
+      `INSERT INTO order_retention_holds (
+         company_id, order_id, reason, review_due_at, placed_by_user_id,
+         placed_idempotency_key, placed_fingerprint
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, review_due_at, placed_at`,
+      [req.auth.company_id, incident.rows[0].order_id, reason, reviewDueAt.toISOString(), req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await appendIncidentEvent(client, req.auth, incident.rows[0].id, 'retention_hold_placed', reason,
+      { holdId: String(hold.rows[0].id), reviewDueAt: reviewDueAt.toISOString() }, idempotencyKey);
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'retention_hold_placed',
+         jsonb_build_object('incidentId', $4::bigint, 'holdId', $5::bigint, 'reviewDueAt', $6::text))`,
+      [req.auth.company_id, req.auth.user_id, incident.rows[0].order_id, incident.rows[0].id, hold.rows[0].id, reviewDueAt.toISOString()]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ id: hold.rows[0].id, reviewDueAt: hold.rows[0].review_due_at, placedAt: hold.rows[0].placed_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.code === '23505') return res.status(409).json({ error: 'Cette commande est déjà placée sous gel de conservation.' });
+    console.error('Retention hold error:', error.message);
+    return res.status(500).json({ error: 'Impossible de placer ce gel de conservation.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/incidents/:id/retention-hold/release', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (reason.length < 10 || reason.length > 2000) return res.status(400).json({ error: 'Précisez le motif de levée entre 10 et 2 000 caractères.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(canonicalJson({ incidentId: String(req.params.id), reason }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const incident = await client.query(
+      `SELECT id, order_id FROM delivery_incidents WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    if (!incident.rows[0]) throw Object.assign(new Error('Incident introuvable.'), { statusCode: 404 });
+    const repeated = await client.query(
+      `SELECT id, order_id, release_fingerprint, released_at FROM order_retention_holds
+       WHERE company_id = $1 AND release_idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (String(repeated.rows[0].order_id) !== String(incident.rows[0].order_id) || repeated.rows[0].release_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ id: repeated.rows[0].id, releasedAt: repeated.rows[0].released_at, alreadyReleased: true });
+    }
+    const hold = await client.query(
+      `SELECT id FROM order_retention_holds
+       WHERE order_id = $1 AND company_id = $2 AND status = 'active' FOR UPDATE`,
+      [incident.rows[0].order_id, req.auth.company_id]
+    );
+    if (!hold.rows[0]) throw Object.assign(new Error('Aucun gel de conservation actif sur cette commande.'), { statusCode: 409 });
+    const released = await client.query(
+      `UPDATE order_retention_holds SET status = 'released', released_by_user_id = $1,
+         release_reason = $2, release_idempotency_key = $3, release_fingerprint = $4, released_at = NOW()
+       WHERE id = $5 RETURNING id, released_at`,
+      [req.auth.user_id, reason, idempotencyKey, fingerprint, hold.rows[0].id]
+    );
+    await appendIncidentEvent(client, req.auth, incident.rows[0].id, 'retention_hold_released', reason,
+      { holdId: String(hold.rows[0].id) }, idempotencyKey);
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'retention_hold_released', jsonb_build_object('incidentId', $4::bigint, 'holdId', $5::bigint))`,
+      [req.auth.company_id, req.auth.user_id, incident.rows[0].order_id, incident.rows[0].id, hold.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ id: released.rows[0].id, releasedAt: released.rows[0].released_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Retention hold release error:', error.message);
+    return res.status(500).json({ error: 'Impossible de lever ce gel de conservation.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/app/incidents/:id/export', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const dossier = await loadIncidentDossier(req.auth.company_id, req.params.id);
+  if (!dossier) return res.status(404).json({ error: 'Incident introuvable.' });
+  const company = await pool.query('SELECT id, name, slug FROM companies WHERE id = $1', [req.auth.company_id]);
+  const generatedAt = new Date().toISOString();
+  const manifest = {
+    schemaVersion: 1,
+    generatedAt,
+    generatedBy: { userId: String(req.auth.user_id), name: req.auth.display_name, role: req.auth.role },
+    company: company.rows[0],
+    incident: dossier.incident,
+    incidentEvents: dossier.events,
+    retentionHolds: dossier.holds,
+    orderStatusEvents: dossier.orderEvents,
+    paymentEvents: dossier.paymentEvents,
+    deliveryProofs: dossier.proofs,
+    deliveryEvidenceMetadata: dossier.evidence,
+    relatedIncidents: dossier.relatedIncidents,
+  };
+  const manifestSha256 = digest(canonicalJson(manifest));
+  await writeAudit(req.auth, 'order', dossier.incident.order_id, 'incident_dossier_exported', {
+    incidentId: dossier.incident.id, manifestSha256, eventChainValid: dossier.eventChainValid,
+  });
+  res.set({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': `attachment; filename="incident-${dossier.incident.id}-dossier.json"`,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  return res.send(JSON.stringify({ ...manifest, integrity: { manifestSha256, incidentEventChainValid: dossier.eventChainValid } }, null, 2));
 }));
 
 app.post('/api/app/orders/:id/payment/configure', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {

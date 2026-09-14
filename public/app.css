@@ -70,6 +70,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .badge.danger { background: #fdebea; color: var(--danger); }
 .notice { margin: 16px 0; padding: 13px 15px; border-radius: 10px; background: #eaf2fb; color: #173f6d; }
 .notice.success { background: #eaf7ef; color: #175e3c; }
+.notice.warning { background: #fff2da; color: #7a4700; }
 .notice.error { background: #fdeceb; color: #8f2018; }
 .empty { padding: 42px 22px; text-align: center; color: var(--muted); }
 .detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
@@ -89,6 +90,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .incident { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 15px; border: 1px solid var(--line); border-radius: 11px; }
 .incident p { margin: 8px 0; }
 .incident small { color: var(--muted); }
+.immutable-fact { padding: 14px; border-left: 4px solid var(--navy); background: #f6f9fc; white-space: pre-wrap; }
 .timeline { position: relative; list-style: none; margin: 0; padding: 0 0 0 20px; }
 .timeline::before { content: ''; position: absolute; left: 5px; top: 8px; bottom: 8px; width: 2px; background: var(--line); }
 .timeline li { position: relative; padding: 0 0 22px 16px; }
@@ -111,4 +113,12 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
   .field.full { grid-column: auto; }
   .page-header { flex-direction: column; }
   .incident { flex-direction: column; }
+}
+@media print {
+  body { background: #fff; }
+  .app-shell { display: block; }
+  .sidebar, .topbar, .print-hidden { display: none !important; }
+  .page { max-width: none; padding: 0; }
+  .card { break-inside: avoid; box-shadow: none; border-color: #bbb; }
+  .evidence-card img { max-height: 190px; }
 }

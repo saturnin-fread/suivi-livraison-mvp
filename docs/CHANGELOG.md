@@ -63,3 +63,9 @@
 - Ajout du remplacement avec suppression de l'ancien contenu et conservation de la trace d'audit.
 - Blocage serveur de la remise lorsqu'une preuve configurée comme obligatoire manque.
 - Ajout de la consultation privée des preuves dans la fiche commande et des tests d'accès croisés.
+- Ajout d'une page Incidents séparée avec file ouverte, résolue et complète.
+- Ajout de l'attribution des dossiers, des notes factuelles et d'une chronologie append-only reliée par empreintes.
+- Ajout du gel de conservation par commande avec motif, date de révision et levée explicitement justifiée.
+- Ajout de l'impression PDF et de l'export JSON vérifiable, réservé aux responsables et inscrit dans l'audit.
+- Ajout de la gestion des erreurs de connexion PostgreSQL inactive sans arrêt brutal du serveur.
+- Extension du test automatique aux permissions, doubles actions, gel, export, levée et intégrité du dossier.

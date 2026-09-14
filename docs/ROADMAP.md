@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 à 5 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 6 livrés
 
 ### Objectif
 
@@ -241,12 +241,13 @@ Le portail livreur permet désormais la déclaration de l'encaissement et la val
 
 Les preuves photo et signature sont désormais configurables, privées et désactivées par défaut. Une preuve rendue obligatoire est contrôlée par le serveur avant la remise.
 
+Les incidents disposent désormais d'une file séparée, d'un responsable, d'une chronologie append-only vérifiable, d'un gel de conservation révisable et d'un export audité.
+
 Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. constituer le dossier d'incident exportable et le gel de conservation ;
-2. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
-3. tester les reprises hors connexion et les actions différées du livreur ;
-4. ajouter les ajustements financiers postérieurs à une commande terminée.
+1. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
+2. tester les reprises hors connexion et les actions différées du livreur ;
+3. ajouter les ajustements financiers postérieurs à une commande terminée.
 
 ## Règles transversales
 

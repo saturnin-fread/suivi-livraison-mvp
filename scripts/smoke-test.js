@@ -1,6 +1,12 @@
 const { Pool } = require('pg');
 const crypto = require('node:crypto');
 
+const nativeFetch = global.fetch;
+global.fetch = (url, options = {}) => nativeFetch(url, {
+  ...options,
+  signal: options.signal || AbortSignal.timeout(30000),
+});
+
 const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const email = process.env.ADMIN_USER;
 const password = process.env.ADMIN_PASSWORD;
@@ -247,12 +253,97 @@ async function run() {
     }));
     ensure(repeatedIncident.response.ok && repeatedIncident.payload.alreadyCreated, 'L’incident répété devait rester sans doublon.');
 
+    const incidentList = await json(await fetch(`${baseUrl}/api/app/incidents?scope=open`, { headers: { Cookie: cookie } }));
+    ensure(incidentList.response.ok && incidentList.payload.some((item) => String(item.id) === String(incident.payload.id)), 'L’incident est absent de la file dédiée.');
+    const initialDossier = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}`, { headers: { Cookie: cookie } }));
+    ensure(initialDossier.response.ok && initialDossier.payload.eventChainValid === true
+      && initialDossier.payload.events.length === 1, 'La chronologie initiale de l’incident n’est pas vérifiable.');
+
+    if (operatorCookie) {
+      const forbiddenHold = await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/retention-hold`, {
+        method: 'POST', headers: { Cookie: operatorCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason: 'Tentative de gel interdite à un opérateur',
+          reviewDueAt: new Date(Date.now() + 30 * 86400000).toISOString(),
+          idempotencyKey: `smoke-hold-forbidden-${requestToken}`,
+        }),
+      });
+      ensure(forbiddenHold.status === 403, 'Un opérateur ne doit pas pouvoir geler la conservation.');
+
+      const assigned = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/assign`, {
+        method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: operatorUserId, idempotencyKey: `smoke-assign-${requestToken}` }),
+      }));
+      ensure(assigned.response.ok && assigned.payload.assignedTo === 'Opérateur test', 'Attribution du dossier impossible.');
+    }
+
+    const noteKey = `smoke-incident-note-${requestToken}`;
+    const note = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/notes`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Client rappelé et repère confirmé pendant le test.', idempotencyKey: noteKey }),
+    }));
+    ensure(note.response.status === 201 && note.payload.id, 'Ajout d’une note au dossier impossible.');
+    const repeatedNote = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/notes`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Client rappelé et repère confirmé pendant le test.', idempotencyKey: noteKey }),
+    }));
+    ensure(repeatedNote.response.ok && repeatedNote.payload.alreadyCreated, 'Une note répétée ne doit pas créer de doublon.');
+    if (pool) {
+      await pool.query(`UPDATE incident_events SET body = body || ' altération-test' WHERE id = $1 AND incident_id = $2`, [note.payload.id, incident.payload.id]);
+      const alteredDossier = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}`, { headers: { Cookie: cookie } }));
+      ensure(alteredDossier.response.ok && alteredDossier.payload.eventChainValid === false, 'Une altération directe devait invalider la chaîne.');
+      await pool.query(`UPDATE incident_events SET body = $1 WHERE id = $2 AND incident_id = $3`,
+        ['Client rappelé et repère confirmé pendant le test.', note.payload.id, incident.payload.id]);
+      const restoredDossier = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}`, { headers: { Cookie: cookie } }));
+      ensure(restoredDossier.response.ok && restoredDossier.payload.eventChainValid === true, 'La chaîne restaurée devait redevenir valide.');
+    }
+
+    const reviewDueAt = new Date(Date.now() + 30 * 86400000).toISOString();
+    const holdKey = `smoke-retention-hold-${requestToken}`;
+    const hold = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/retention-hold`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Réclamation client à conserver pendant le test.', reviewDueAt, idempotencyKey: holdKey }),
+    }));
+    ensure(hold.response.status === 201 && hold.payload.id, 'Activation du gel de conservation impossible.');
+    const repeatedHold = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/retention-hold`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Réclamation client à conserver pendant le test.', reviewDueAt, idempotencyKey: holdKey }),
+    }));
+    ensure(repeatedHold.response.ok && repeatedHold.payload.alreadyPlaced, 'Le gel répété devait rester sans doublon.');
+
+    const exported = await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/export`, { headers: { Cookie: cookie } });
+    const exportPayload = await exported.json();
+    ensure(exported.ok && exported.headers.get('content-disposition')?.includes('dossier.json')
+      && exportPayload.integrity?.manifestSha256 && exportPayload.integrity.incidentEventChainValid === true,
+    'L’export vérifiable du dossier est invalide.');
+    ensure(exportPayload.incident?.description === 'Incident temporaire du test automatique'
+      && exportPayload.retentionHolds?.some((item) => item.status === 'active'), 'Le dossier exporté est incomplet.');
+    const serializedExport = JSON.stringify(exportPayload);
+    ensure(!serializedExport.includes('idempotency_key') && !serializedExport.includes('request_fingerprint')
+      && !serializedExport.includes('traccar_unique_id'), 'L’export expose des identifiants techniques internes.');
+
+    const releaseKey = `smoke-retention-release-${requestToken}`;
+    const released = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/retention-hold/release`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Fin de la vérification automatisée du dossier.', idempotencyKey: releaseKey }),
+    }));
+    ensure(released.response.ok && released.payload.releasedAt, 'Levée du gel de conservation impossible.');
+    const repeatedRelease = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/retention-hold/release`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Fin de la vérification automatisée du dossier.', idempotencyKey: releaseKey }),
+    }));
+    ensure(repeatedRelease.response.ok && repeatedRelease.payload.alreadyReleased, 'La levée répétée devait rester sans doublon.');
+
     const resolved = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/resolve`, {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ resolution: 'Résolution temporaire validée', idempotencyKey: `smoke-resolve-${requestToken}` }),
     }));
     ensure(resolved.response.ok && resolved.payload.status === 'resolved', 'Résolution de l’incident impossible.');
+    const resolvedDossier = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}`, { headers: { Cookie: cookie } }));
+    ensure(resolvedDossier.response.ok && resolvedDossier.payload.eventChainValid === true
+      && resolvedDossier.payload.events.some((event) => event.event_type === 'resolved')
+      && resolvedDossier.payload.holds[0]?.status === 'released', 'Le dossier résolu ou sa chaîne d’intégrité est incomplet.');
 
     const otpKey = `smoke-otp-${requestToken}`;
     const otp = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp`, {

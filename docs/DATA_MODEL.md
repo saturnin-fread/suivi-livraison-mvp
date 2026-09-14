@@ -48,7 +48,15 @@ Métadonnées et contenu privé actif des preuves photo/signature. Une seule pre
 
 ### `delivery_incidents`
 
-Déclarations factuelles et résolutions d'incidents rattachées à une commande.
+Déclarations factuelles et résolutions d'incidents rattachées à une commande, avec responsable facultatif.
+
+### `incident_events`
+
+Chronologie append-only des notes, attributions, résolutions et gels. Chaque événement contient l'empreinte du précédent afin de détecter une altération de la chaîne.
+
+### `order_retention_holds`
+
+Historique des gels de conservation appliqués au dossier complet d'une commande : motif, auteur, date de révision, levée et justification.
 
 ### `order_payment_accounts` et `payment_events`
 

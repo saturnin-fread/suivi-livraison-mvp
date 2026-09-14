@@ -106,8 +106,10 @@ async function renderDashboard() {
       <article class="stat"><span>À vérifier</span><strong>${escapeHtml(summary.to_review)}</strong></article>
       <article class="stat"><span>Commandes créées</span><strong>${escapeHtml(summary.orders)}</strong></article>
       <article class="stat"><span>Livreurs enregistrés</span><strong>${escapeHtml(summary.drivers)}</strong></article>
+      <article class="stat"><span>Incidents ouverts</span><strong>${escapeHtml(summary.open_incidents)}</strong></article>
+      <article class="stat"><span>Gels à réviser</span><strong>${escapeHtml(summary.overdue_holds)}</strong></article>
     </section>
-    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/demandes">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
+    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/demandes">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
 }
 
 async function renderRequests() {
@@ -293,7 +295,7 @@ async function renderOrderDetail(id) {
     ${order.proof_id ? `<section class="card" style="margin-top:18px"><h2>Preuve de remise</h2><div class="notice success">Remise confirmée par code à usage unique le ${escapeHtml(formatDate(order.proof_verified_at))}.</div></section>` : ''}
 
     <section class="card" style="margin-top:18px"><h2>Incidents</h2><form id="incidentForm"><div class="form-grid"><div class="field"><label>Type</label><select name="category">${incidentOptions}</select></div><div class="field"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div><div class="field full"><label>Description factuelle</label><textarea name="description" maxlength="2000" required placeholder="Décrivez ce qui s’est passé, sans supprimer les faits précédents."></textarea></div></div><div class="actions" style="margin-top:14px"><button class="secondary">Déclarer l’incident</button></div></form><div id="incidentResult"></div>
-      <div class="incident-list">${order.incidents.length ? order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong> ${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}<p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))} · ${escapeHtml(incident.opened_by)} · gravité ${escapeHtml(incident.severity)}</small>${incident.resolution ? `<p><strong>Résolution :</strong> ${escapeHtml(incident.resolution)}</p>` : ''}</div>${incident.status === 'open' ? `<button class="secondary resolveIncident" data-incident-id="${escapeHtml(incident.id)}">Résoudre</button>` : ''}</article>`).join('') : '<p class="subtitle">Aucun incident déclaré.</p>'}</div>
+      <div class="incident-list">${order.incidents.length ? order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong> ${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}<p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))} · ${escapeHtml(incident.opened_by)} · gravité ${escapeHtml(incident.severity)}</small>${incident.resolution ? `<p><strong>Résolution :</strong> ${escapeHtml(incident.resolution)}</p>` : ''}</div><a class="button secondary" href="/app/incidents/${escapeHtml(incident.id)}">Ouvrir le dossier</a></article>`).join('') : '<p class="subtitle">Aucun incident déclaré.</p>'}</div>
     </section>
 
     <section class="card" style="margin-top:18px"><h2>Chronologie</h2><ol class="timeline">${order.events.map((event) => `<li><div>${badge(event.to_status)}${event.from_status ? `<span class="timeline-from"> depuis ${escapeHtml(event.from_status)}</span>` : ''}</div><strong>${escapeHtml(event.actor_name)}</strong><small>${escapeHtml(formatDate(event.created_at))}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
@@ -466,22 +468,77 @@ async function renderOrderDetail(id) {
     }
   });
 
-  document.querySelectorAll('.resolveIncident').forEach((button) => button.addEventListener('click', async () => {
-    const resolution = prompt('Comment cet incident a-t-il été résolu ?');
-    if (!resolution) return;
-    button.disabled = true;
-    try {
-      const idempotencyKey = idempotencyKeyFor(button, 'incident-resolution', { resolution });
-      await api(`/api/app/incidents/${encodeURIComponent(button.dataset.incidentId)}/resolve`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resolution, idempotencyKey }),
-      });
-      await renderOrderDetail(id);
-    } catch (error) {
-      document.getElementById('incidentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      button.disabled = false;
-    }
-  }));
+}
+
+const incidentSeverityLabels = { low: 'Faible', medium: 'Moyenne', high: 'Élevée' };
+const incidentEventLabels = {
+  opened: 'Incident déclaré', note_added: 'Note ajoutée', assigned: 'Responsable attribué',
+  resolved: 'Incident résolu', retention_hold_placed: 'Gel de conservation activé',
+  retention_hold_released: 'Gel de conservation levé',
+};
+
+async function renderIncidents(initialScope = 'open') {
+  setHeader('Incidents', 'Dossiers, responsabilités et conservation');
+  page.innerHTML = `<div class="page-header"><div><h1>Dossiers d’incident</h1><p class="subtitle">Les faits d’origine restent inchangés. Les compléments sont ajoutés dans une chronologie séparée.</p></div></div><section class="card"><div class="actions" id="incidentScopes" style="margin-bottom:16px"><button class="secondary" data-scope="open">Ouverts</button><button class="secondary" data-scope="resolved">Résolus</button><button class="secondary" data-scope="all">Tous</button></div><div id="incidentTable">Chargement…</div></section>`;
+  const load = async (scope) => {
+    const incidents = await api(`/api/app/incidents?scope=${encodeURIComponent(scope)}`);
+    document.querySelectorAll('#incidentScopes button').forEach((button) => button.disabled = button.dataset.scope === scope);
+    document.getElementById('incidentTable').innerHTML = incidents.length ? `<div class="table-wrap"><table><thead><tr><th>Incident</th><th>Commande</th><th>Client</th><th>Livreur</th><th>Responsable</th><th>État</th></tr></thead><tbody>${incidents.map((incident) => `<tr data-href="/app/incidents/${escapeHtml(incident.id)}"><td><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong><br><small>${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)} · ${escapeHtml(formatDate(incident.created_at))}</small></td><td>N° ${escapeHtml(incident.order_id)}<br><small>${escapeHtml(incident.order_status)}</small></td><td>${escapeHtml(incident.customer_name || '—')}<br><small>${escapeHtml(incident.neighborhood || incident.customer_phone || '—')}</small></td><td>${escapeHtml(incident.driver_name)}</td><td>${escapeHtml(incident.assigned_to || 'Non attribué')}</td><td>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}${incident.retention_hold_id ? '<br><span class="badge warning" style="margin-top:6px">Conservation gelée</span>' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun incident dans cette vue.</div>';
+    document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', () => { location.href = row.dataset.href; }));
+  };
+  document.querySelectorAll('#incidentScopes button').forEach((button) => button.addEventListener('click', () => load(button.dataset.scope).catch(renderError)));
+  await load(initialScope);
+}
+
+async function renderIncidentDetail(id) {
+  setHeader('Dossier d’incident', 'Chronologie vérifiable et gel de conservation');
+  const dossier = await api(`/api/app/incidents/${encodeURIComponent(id)}`);
+  const incident = dossier.incident;
+  const activeHold = dossier.holds.find((hold) => hold.status === 'active');
+  const holdOverdue = activeHold && new Date(activeHold.review_due_at).getTime() < Date.now();
+  const canControl = ['owner', 'manager'].includes(context.user.role);
+  const reviewDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const chainNotice = dossier.eventChainValid === true
+    ? '<div class="notice success">Intégrité de la chronologie vérifiée.</div>'
+    : dossier.eventChainValid === false
+      ? '<div class="notice error">L’intégrité de la chronologie ne peut pas être confirmée. Contactez le support avant d’utiliser ce dossier.</div>'
+      : '<div class="notice">Dossier antérieur au journal d’intégrité : aucune chaîne d’événements disponible.</div>';
+  page.innerHTML = `<div class="page-header print-hidden"><div><a href="/app/incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">Commande n° ${escapeHtml(incident.order_id)} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>
+    <section class="card incident-report"><div class="page-header"><div><h2>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</h2><p class="subtitle">Gravité ${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)}</p></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</div>
+      <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable du dossier</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(incident.order_id)} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
+      <h3>Déclaration d’origine</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte n’est pas modifiable.</small>
+      ${incident.resolution ? `<h3>Résolution</h3><p>${escapeHtml(incident.resolution)}</p><small>Résolu par ${escapeHtml(incident.resolved_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.resolved_at))}</small>` : ''}
+    </section>
+    <section class="card" style="margin-top:18px"><h2>Conservation du dossier</h2>${activeHold ? `<div class="notice ${holdOverdue ? 'error' : 'warning'}"><strong>${holdOverdue ? 'Révision du gel en retard.' : 'Gel actif.'}</strong> Aucune purge automatisée ne devra supprimer les données liées à cette commande. ${holdOverdue ? 'Une décision humaine est requise depuis le' : 'Révision prévue le'} ${escapeHtml(formatDate(activeHold.review_due_at))}.<br><small>Motif : ${escapeHtml(activeHold.reason)}</small></div>${canControl ? '<form id="releaseHold" class="print-hidden"><div class="field"><label>Motif de levée</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Pourquoi le dossier peut-il reprendre son cycle normal de conservation ?"></textarea></div><button class="secondary" style="margin-top:12px">Lever le gel</button></form>' : ''}` : `<p class="subtitle">Aucun gel actif. Les règles normales de conservation s’appliqueront lorsqu’elles seront automatisées.</p>${canControl ? `<form id="placeHold" class="print-hidden"><div class="form-grid"><div class="field full"><label>Motif précis du gel</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Réclamation, litige, contrôle ou demande officielle…"></textarea></div><div class="field"><label>Date de prochaine révision</label><input name="reviewDueAt" type="date" value="${reviewDate}" required /></div></div><button class="danger" style="margin-top:12px">Geler la conservation</button></form>` : ''}`}<div id="holdResult"></div>${dossier.holds.length ? `<details><summary>Historique des gels (${dossier.holds.length})</summary><ul>${dossier.holds.map((hold) => `<li>${escapeHtml(hold.status === 'active' ? 'Actif' : 'Levé')} · ${escapeHtml(formatDate(hold.placed_at))} · ${escapeHtml(hold.placed_by || 'Compte supprimé')} — ${escapeHtml(hold.reason)}${hold.release_reason ? ` · Levée : ${escapeHtml(hold.release_reason)}` : ''}</li>`).join('')}</ul></details>` : ''}</section>
+    <section class="card print-hidden" style="margin-top:18px"><h2>Actions sur le dossier</h2>${canControl ? `<form id="assignIncident"><div class="field"><label>Responsable</label><select name="userId" required><option value="">Sélectionner</option>${dossier.members.map((member) => `<option value="${escapeHtml(member.id)}" ${String(member.id) === String(incident.assigned_to_user_id) ? 'selected' : ''}>${escapeHtml(member.display_name)} — ${escapeHtml(roleLabels[member.role] || member.role)}</option>`).join('')}</select></div><button class="secondary" style="margin-top:12px">Attribuer</button></form>` : ''}<form id="incidentNote" style="margin-top:18px"><div class="field"><label>Ajouter une note factuelle</label><textarea name="note" minlength="3" maxlength="2000" required placeholder="Appel effectué, constat, information reçue… La note restera dans l’historique."></textarea></div><button class="secondary" style="margin-top:12px">Ajouter à la chronologie</button></form>${incident.status === 'open' ? '<form id="resolveIncidentForm" style="margin-top:18px"><div class="field"><label>Résolution finale</label><textarea name="resolution" minlength="5" maxlength="2000" required placeholder="Décision prise, accord obtenu, correction effectuée…"></textarea></div><button class="primary" style="margin-top:12px">Marquer comme résolu</button></form>' : ''}<div id="incidentActionResult"></div></section>
+    <section class="card" style="margin-top:18px"><h2>Chronologie du dossier</h2>${chainNotice}<ol class="timeline">${dossier.events.length ? dossier.events.map((event) => `<li><strong>${escapeHtml(incidentEventLabels[event.event_type] || event.event_type)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.body ? `<p>${escapeHtml(event.body)}</p>` : ''}${event.event_type === 'assigned' && event.details?.assignedToName ? `<p>Responsable : ${escapeHtml(event.details.assignedToName)}</p>` : ''}</li>`).join('') : '<li>Aucun événement d’intégrité disponible.</li>'}</ol></section>
+    ${dossier.evidence.some((item) => !item.superseded_at && !item.deleted_at) ? `<section class="card" style="margin-top:18px"><h2>Preuves complémentaires actives</h2><div class="evidence-grid">${dossier.evidence.filter((item) => !item.superseded_at && !item.deleted_at).map((item) => `<article class="evidence-card"><strong>${item.evidence_type === 'photo' ? 'Photo de remise' : 'Signature'}</strong><a href="/api/app/evidence/${escapeHtml(item.id)}" target="_blank" rel="noopener"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="Preuve ${escapeHtml(item.evidence_type)}" /></a><small>Empreinte : ${escapeHtml(item.content_sha256)}</small></article>`).join('')}</div></section>` : ''}
+    <section class="card" style="margin-top:18px"><h2>Chronologie de la commande</h2><ol class="timeline">${dossier.orderEvents.map((event) => `<li><strong>${escapeHtml(event.to_status)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
+
+  document.getElementById('printIncident').addEventListener('click', () => window.print());
+  const bindForm = (formId, url, prefix) => {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(form));
+      const button = form.querySelector('button');
+      button.disabled = true;
+      try {
+        const idempotencyKey = idempotencyKeyFor(form, prefix, values);
+        await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }) });
+        await renderIncidentDetail(id);
+      } catch (error) {
+        document.getElementById(formId.includes('Hold') ? 'holdResult' : 'incidentActionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        button.disabled = false;
+      }
+    });
+  };
+  bindForm('assignIncident', `/api/app/incidents/${encodeURIComponent(id)}/assign`, 'incident-assign');
+  bindForm('incidentNote', `/api/app/incidents/${encodeURIComponent(id)}/notes`, 'incident-note');
+  bindForm('resolveIncidentForm', `/api/app/incidents/${encodeURIComponent(id)}/resolve`, 'incident-resolve');
+  bindForm('placeHold', `/api/app/incidents/${encodeURIComponent(id)}/retention-hold`, 'retention-hold');
+  bindForm('releaseHold', `/api/app/incidents/${encodeURIComponent(id)}/retention-hold/release`, 'retention-release');
 }
 
 async function renderDrivers() {
@@ -614,10 +671,13 @@ async function start() {
     if (detail) return await renderRequestDetail(detail[1]);
     const orderDetail = path.match(/^\/app\/commandes\/(\d+)$/);
     if (orderDetail) return await renderOrderDetail(orderDetail[1]);
+    const incidentDetail = path.match(/^\/app\/incidents\/(\d+)$/);
+    if (incidentDetail) return await renderIncidentDetail(incidentDetail[1]);
     if (path === '/app') return await renderDashboard();
     if (path === '/app/demandes') return await renderRequests();
     if (path === '/app/nouvelle-commande') return await renderNewOrder();
     if (path === '/app/commandes') return await renderOrders();
+    if (path === '/app/incidents') return await renderIncidents();
     if (path === '/app/carte') return renderPlaceholder('Carte d’exploitation', 'Flotte, destinations et tournées', ['Tous les livreurs autorisés', 'Arrêts et parcours restant', 'Filtres et incidents']);
     if (path === '/app/livreurs') return await renderDrivers();
     if (path === '/app/equipe') return await renderTeam();

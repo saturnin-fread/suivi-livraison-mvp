@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Suivi de votre livraison</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <style>
+      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #f4f7fb; color: #162033; }
+      header { padding: 18px 22px; background: #123b70; color: white; }
+      header h1 { margin: 0; font-size: 20px; }
+      header p { margin: 5px 0 0; opacity: .82; font-size: 13px; }
+      main { max-width: 1100px; margin: 0 auto; padding: 18px; }
+      .card { background: white; border-radius: 16px; box-shadow: 0 8px 28px #193b6514; overflow: hidden; }
+      #map { height: min(68vh, 620px); min-height: 420px; }
+      .status { display: flex; align-items: center; gap: 9px; padding: 14px 16px; font-size: 14px; }
+      .dot { width: 10px; height: 10px; border-radius: 999px; background: #f59e0b; }
+      .dot.online { background: #16a34a; }
+      .dot.error { background: #dc2626; }
+      .muted { color: #65738a; }
+      footer { padding: 12px 16px; font-size: 12px; color: #65738a; border-top: 1px solid #e6ebf2; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Suivi de votre livraison</h1>
+      <p>La position est actualisée automatiquement.</p>
+    </header>
+    <main>
+      <section class="card">
+        <div class="status"><span id="dot" class="dot"></span><span id="status">Connexion au suivi…</span></div>
+        <div id="map"></div>
+        <footer id="updated">Dernière mise à jour : —</footer>
+      </section>
+    </main>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script>
+      const token = window.location.pathname.split('/').pop();
+      const map = L.map('map').setView([6.37, 2.43], 12);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+      let marker;
+      let firstPosition = true;
+
+      function setStatus(text, type) {
+        document.getElementById('status').textContent = text;
+        document.getElementById('dot').className = `dot ${type || ''}`;
+      }
+
+      async function refresh() {
+        try {
+          const response = await fetch(`/api/tracking/${encodeURIComponent(token)}`);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Erreur de suivi');
+          if (data.status !== 'online' && !data.latitude) {
+            setStatus(data.message || 'Position momentanément indisponible.', '');
+            return;
+          }
+          const point = [data.latitude, data.longitude];
+          if (!marker) marker = L.marker(point).addTo(map).bindPopup('Livreur');
+          else marker.setLatLng(point);
+          if (firstPosition) { map.setView(point, 15); firstPosition = false; }
+          setStatus(data.status === 'online' ? 'Livreur en ligne' : 'Dernière position connue', data.status === 'online' ? 'online' : '');
+          document.getElementById('updated').textContent = `Dernière mise à jour : ${new Date(data.timestamp).toLocaleString('fr-FR')}`;
+        } catch (error) {
+          setStatus(error.message, 'error');
+        }
+      }
+      refresh();
+      setInterval(refresh, 10000);
+    </script>
+  </body>
+</html>

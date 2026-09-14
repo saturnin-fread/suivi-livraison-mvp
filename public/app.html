@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Espace entreprise — Livraisons</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">Pilotage livraison<small id="companyName">Chargement…</small></div>
+        <nav class="nav" aria-label="Navigation principale">
+          <a href="/app" data-route="/app">Tableau de bord</a>
+          <a href="/app/demandes" data-route="/app/demandes">Demandes</a>
+          <a href="/app/nouvelle-commande" data-route="/app/nouvelle-commande">Nouvelle commande</a>
+          <a href="/app/commandes" data-route="/app/commandes">Commandes</a>
+          <a href="/app/carte" data-route="/app/carte">Carte d’exploitation</a>
+          <a href="/app/livreurs" data-route="/app/livreurs">Livreurs</a>
+          <a href="/app/clients" data-route="/app/clients">Clients</a>
+          <a href="/app/rapports" data-route="/app/rapports">Rapports</a>
+          <a href="/app/parametres" data-route="/app/parametres">Paramètres</a>
+        </nav>
+        <div class="sidebar-footer">
+          <p id="userName"></p>
+          <form method="post" action="/app/logout"><button class="logout">Se déconnecter</button></form>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <button class="menu-button" id="menuButton" aria-label="Ouvrir le menu">☰</button>
+          <div><strong id="topTitle">Espace entreprise</strong><small id="topHint">Opérations de livraison</small></div>
+          <div class="identity"><strong id="topCompany"></strong><small id="topRole"></small></div>
+        </header>
+        <main class="page" id="page"><div class="card">Chargement…</div></main>
+      </div>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

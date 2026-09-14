@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Administration plateforme</title>
+    <link rel="stylesheet" href="/app.css" />
+    <style>.login-page{min-height:100vh;display:grid;place-items:center;padding:18px}.login-card{width:min(430px,100%)}.login-card button{width:100%;margin-top:20px}</style>
+  </head>
+  <body><main class="login-page"><section class="card login-card">
+    <h1>Administration plateforme</h1>
+    <p class="subtitle">Accès réservé à l’équipe qui exploite le SaaS.</p>
+    <div class="notice error" id="error" hidden>Accès refusé ou compte plateforme non configuré.</div>
+    <form method="post" action="/admin/login">
+      <div class="field" style="margin-top:20px"><label>Adresse e-mail</label><input type="email" name="user" required autocomplete="username" /></div>
+      <div class="field" style="margin-top:15px"><label>Mot de passe</label><input type="password" name="password" required autocomplete="current-password" /></div>
+      <button class="primary">Se connecter</button>
+    </form>
+    <p style="margin-top:18px"><a href="/app/login">Retour à l’espace entreprise</a></p>
+  </section></main><script>document.getElementById('error').hidden=!new URLSearchParams(location.search).has('error');</script></body>
+</html>

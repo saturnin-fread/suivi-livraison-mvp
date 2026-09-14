@@ -1,0 +1,21 @@
+{
+  "name": "suivi-livraison-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Prototype de page publique de suivi de livraison",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test:syntax": "node --check server.js && node --check public/app.js && node --check scripts/smoke-test.js",
+    "test:smoke": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.8.4",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "pg": "^8.13.3"
+  }
+}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Préparer ma livraison</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <style>
+      body { margin: 0; background: #f4f7fb; color: #162033; font-family: Inter, system-ui, sans-serif; }
+      main { max-width: 680px; margin: 0 auto; padding: 18px; }
+      .card { background: white; border-radius: 16px; padding: 22px; box-shadow: 0 8px 28px #193b6514; }
+      h1 { margin: 0 0 7px; font-size: 24px; } .intro { color: #65738a; font-size: 14px; line-height: 1.5; }
+      label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 700; }
+      input, textarea { width: 100%; padding: 11px; border: 1px solid #ccd5e2; border-radius: 8px; font: inherit; }
+      textarea { min-height: 76px; resize: vertical; } button { padding: 12px 16px; border: 0; border-radius: 8px; background: #123b70; color: white; font-weight: 700; cursor: pointer; }
+      button.secondary { background: #e8eef7; color: #123b70; } .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+      #map { height: 230px; margin-top: 12px; border-radius: 10px; display: none; } #message { margin-top: 16px; font-weight: 600; }
+    </style>
+  </head>
+  <body><main><section class="card">
+    <h1>Préparer ma livraison</h1>
+    <p class="intro">Indiquez vos informations et partagez votre position pour aider le livreur à vous trouver, même si votre lieu n’a pas d’adresse précise.</p>
+    <form id="form">
+      <label>Nom et prénom</label><input name="customerName" required />
+      <label>Numéro de téléphone</label><input name="customerPhone" inputmode="tel" required />
+      <label>Zone ou quartier</label><input name="neighborhood" placeholder="Ex. Akpakpa, derrière le marché…" required />
+      <label>Heure ou créneau souhaité</label><input name="requestedTime" placeholder="Ex. entre 15h et 17h" />
+      <label>Repère pour vous trouver</label><input name="landmark" placeholder="Ex. portail bleu, près de…" />
+      <label>Instructions complémentaires</label><textarea name="notes" placeholder="Étage, boutique, appel avant arrivée…"></textarea>
+      <div class="actions"><button type="button" class="secondary" id="locate">Partager ma position</button><button type="submit">Envoyer mes informations</button></div>
+      <div id="map"></div><p id="message"></p>
+    </form>
+  </section></main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const token = location.pathname.split('/').pop();
+    const form = document.getElementById('form'); const message = document.getElementById('message'); const mapEl = document.getElementById('map');
+    let locationData = null; let map; let marker; let mapReady = false;
+    document.getElementById('locate').addEventListener('click', () => {
+      if (!navigator.geolocation) { message.textContent = 'La localisation n’est pas disponible sur cet appareil.'; return; }
+      message.textContent = 'Demande d’autorisation de localisation…';
+      navigator.geolocation.getCurrentPosition((position) => {
+        locationData = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy };
+        mapEl.style.display = 'block';
+        if (!map) map = L.map('map').setView([locationData.latitude, locationData.longitude], 16);
+        if (!mapReady) { L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); mapReady = true; }
+        if (!marker) marker = L.marker([locationData.latitude, locationData.longitude], { draggable: true }).addTo(map);
+        else marker.setLatLng([locationData.latitude, locationData.longitude]);
+        marker.on('dragend', () => { const p = marker.getLatLng(); locationData.latitude = p.lat; locationData.longitude = p.lng; locationData.accuracy = null; message.textContent = 'Position ajustée sur la carte.'; });
+        message.textContent = `Position obtenue (précision approximative : ${Math.round(locationData.accuracy)} m).`;
+      }, () => { message.textContent = 'Position non obtenue. Autorisez la localisation ou utilisez le repère texte.'; }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+    });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(form));
+      if (locationData) { data.locationLat = locationData.latitude; data.locationLng = locationData.longitude; data.locationAccuracy = locationData.accuracy; }
+      else { message.textContent = 'Votre position n’a pas été partagée ; le quartier et le repère seront utilisés.'; }
+      form.querySelectorAll('button').forEach((el) => el.disabled = true);
+      const response = await fetch(`/api/public/requests/${encodeURIComponent(token)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      const payload = await response.json();
+      message.textContent = payload.message || payload.error || 'Une erreur est survenue.';
+      if (response.ok && payload.redirect) window.location.assign(payload.redirect);
+      else form.querySelectorAll('button').forEach((el) => el.disabled = false);
+    });
+  </script></body>
+</html>

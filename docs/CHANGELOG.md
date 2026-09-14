@@ -1,0 +1,27 @@
+# Historique des changements
+
+## 2026-09-14
+
+- Ajout de la documentation de reprise et d’exploitation.
+- Création de la base métier `delivery`.
+- Ajout des tables de demandes client.
+- Ajout de la génération de liens de formulaire.
+- Ajout du formulaire client avec position GPS, précision, quartier, repère et créneau.
+- Ajout de la distinction entre demande client et commande validée.
+- Ajout d’un endpoint de lecture des appareils Traccar pour préparer la sélection dynamique des livreurs.
+- Remplacement de l’authentification Basic de l’administration par une page de connexion avec cookie de session.
+- Formalisation de la séparation entre espace entreprise `/app`, administration plateforme `/admin`, pages client et moteur Traccar.
+- Ajout de la feuille de route priorisée jusqu'au pilote commercial.
+- Cadrage de la confirmation et de l'édition des demandes avant validation.
+- Cadrage des tournées multi-colis et de la sélection dynamique des livreurs.
+- Cadrage des cartes client et entreprise avec ETA, satellite et règles de confidentialité.
+- Cadrage du CRM opérationnel, des tableaux de bord mensuels, des exports Excel et des dossiers de preuve.
+- Ajout des cas limites et tests correspondants.
+- Déploiement de l'espace entreprise `/app` avec navigation séparée et pages fonctionnelles dédiées.
+- Réservation de `/admin` à l'administration de la plateforme avec authentification distincte.
+- Ajout des utilisateurs, appartenances entreprise, rôles, sessions en base et filtrage par `company_id`.
+- Ajout du tableau de bord, de la file de demandes, de la fiche demande et de la commande directe avec sélection de livreur.
+- Ajout de la page de remerciement, du token d'édition, de la modification client et du verrouillage après confirmation.
+- Ajout de l'expiration des formulaires, des archives et du journal d'audit minimal.
+- Ajout d'un test automatique couvrant isolation, soumission, édition, validation et verrouillage.
+- Déploiement Railway validé par test automatique sur le service public.

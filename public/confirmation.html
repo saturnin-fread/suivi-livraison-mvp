@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Demande reçue — Livraison</title>
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <style>
+      body{background:#f3f6fa}.public-page{max-width:720px;margin:0 auto;padding:24px 16px 60px}.success-mark{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;background:#e8f6ee;color:#157347;font-size:28px;font-weight:800}.summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}.summary div{padding:13px;border:1px solid var(--line);border-radius:9px}.summary span{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}#map{height:260px;border-radius:11px;margin-top:16px}.edit-form{margin-top:22px;border-top:1px solid var(--line);padding-top:22px}@media(max-width:600px){.summary,.form-grid{grid-template-columns:1fr}}
+    </style>
+  </head>
+  <body><main class="public-page"><section class="card">
+    <div class="success-mark">✓</div>
+    <h1 style="margin-top:16px">Merci, votre demande a été reçue</h1>
+    <p class="subtitle" id="intro">L’entreprise va vérifier vos informations avant de confirmer la livraison.</p>
+    <div id="content">Chargement…</div>
+  </section></main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const parts = location.pathname.split('/').filter(Boolean);
+    const token = parts[1];
+    const editToken = new URLSearchParams(location.search).get('edit') || '';
+    const content = document.getElementById('content');
+    let data; let map; let marker; let locationData;
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+
+    async function load() {
+      const response = await fetch(`/api/public/requests/${encodeURIComponent(token)}?edit=${encodeURIComponent(editToken)}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Impossible de charger la demande.');
+      data = payload; locationData = data.location_lat == null ? null : { latitude: data.location_lat, longitude: data.location_lng, accuracy: data.location_accuracy };
+      renderSummary();
+    }
+
+    function renderSummary(message) {
+      const locked = !data.canEdit;
+      if (data.status === 'Confirmée') document.getElementById('intro').textContent = 'Votre demande a été confirmée par l’entreprise. Les modifications sont maintenant fermées.';
+      content.innerHTML = `${message ? `<div class="notice success">${esc(message)}</div>` : ''}<div class="summary">
+        <div><span>Nom</span><strong>${esc(data.customer_name || '—')}</strong></div>
+        <div><span>Téléphone</span><strong>${esc(data.customer_phone || '—')}</strong></div>
+        <div><span>Zone ou quartier</span><strong>${esc(data.neighborhood || '—')}</strong></div>
+        <div><span>Créneau souhaité</span><strong>${esc(data.requested_time || '—')}</strong></div>
+        <div><span>Repère</span><strong>${esc(data.landmark || '—')}</strong></div>
+        <div><span>Statut</span><strong>${esc(data.status)}</strong></div>
+      </div>${data.notes ? `<div class="notice"><strong>Instructions :</strong> ${esc(data.notes)}</div>` : ''}
+      ${locked ? '<p class="subtitle">Pour corriger une information, contactez maintenant l’entreprise.</p>' : '<div class="actions" style="margin-top:20px"><button class="secondary" id="editButton">Modifier mes informations</button></div>'}`;
+      if (!locked) document.getElementById('editButton').addEventListener('click', renderEditForm);
+    }
+
+    function renderEditForm() {
+      content.innerHTML = `<form id="editForm" class="edit-form"><h2>Modifier mes informations</h2><div class="form-grid">
+        <div class="field"><label>Nom et prénom</label><input name="customerName" required value="${esc(data.customer_name || '')}" /></div>
+        <div class="field"><label>Numéro de téléphone</label><input name="customerPhone" required value="${esc(data.customer_phone || '')}" /></div>
+        <div class="field"><label>Zone ou quartier</label><input name="neighborhood" required value="${esc(data.neighborhood || '')}" /></div>
+        <div class="field"><label>Créneau souhaité</label><input name="requestedTime" value="${esc(data.requested_time || '')}" /></div>
+        <div class="field full"><label>Repère</label><input name="landmark" value="${esc(data.landmark || '')}" /></div>
+        <div class="field full"><label>Instructions complémentaires</label><textarea name="notes">${esc(data.notes || '')}</textarea></div>
+      </div><div class="actions" style="margin-top:18px"><button type="button" class="secondary" id="locate">Actualiser ma position</button><button class="primary">Enregistrer les modifications</button><button type="button" class="secondary" id="cancel">Annuler</button></div><div id="map" ${locationData ? '' : 'hidden'}></div><div id="message"></div></form>`;
+      document.getElementById('cancel').addEventListener('click', () => renderSummary());
+      document.getElementById('locate').addEventListener('click', locate);
+      document.getElementById('editForm').addEventListener('submit', save);
+      if (locationData) showMap();
+    }
+
+    function showMap() {
+      const mapElement = document.getElementById('map'); mapElement.hidden = false;
+      if (!map) { map = L.map('map').setView([locationData.latitude, locationData.longitude], 16); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); }
+      else { map.invalidateSize(); map.setView([locationData.latitude, locationData.longitude], 16); }
+      if (!marker) { marker = L.marker([locationData.latitude, locationData.longitude], { draggable: true }).addTo(map); marker.on('dragend', () => { const point = marker.getLatLng(); locationData = { latitude: point.lat, longitude: point.lng, accuracy: null }; document.getElementById('message').innerHTML = '<div class="notice">Position ajustée sur la carte.</div>'; }); }
+      else marker.setLatLng([locationData.latitude, locationData.longitude]);
+      setTimeout(() => map.invalidateSize(), 50);
+    }
+
+    function locate() {
+      const message = document.getElementById('message');
+      if (!navigator.geolocation) { message.innerHTML = '<div class="notice error">La localisation n’est pas disponible.</div>'; return; }
+      message.innerHTML = '<div class="notice">Recherche de votre position…</div>';
+      navigator.geolocation.getCurrentPosition((position) => {
+        locationData = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy };
+        showMap(); message.innerHTML = `<div class="notice success">Position obtenue, précision approximative ${Math.round(position.coords.accuracy)} m.</div>`;
+      }, () => { message.innerHTML = '<div class="notice error">Position non obtenue. Vérifiez l’autorisation de localisation.</div>'; }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+    }
+
+    async function save(event) {
+      event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+      const payload = Object.fromEntries(new FormData(event.currentTarget));
+      Object.assign(payload, { editToken, version: data.version });
+      if (locationData) Object.assign(payload, { locationLat: locationData.latitude, locationLng: locationData.longitude, locationAccuracy: locationData.accuracy });
+      const response = await fetch(`/api/public/requests/${encodeURIComponent(token)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (!response.ok) { document.getElementById('message').innerHTML = `<div class="notice error">${esc(result.error || 'Erreur')}</div>`; button.disabled = false; return; }
+      data.version = result.version; Object.assign(data, { customer_name: payload.customerName, customer_phone: payload.customerPhone, neighborhood: payload.neighborhood, requested_time: payload.requestedTime, landmark: payload.landmark, notes: payload.notes });
+      renderSummary(result.message);
+    }
+    load().catch((error) => { content.innerHTML = `<div class="notice error">${esc(error.message)}</div>`; });
+  </script></body>
+</html>

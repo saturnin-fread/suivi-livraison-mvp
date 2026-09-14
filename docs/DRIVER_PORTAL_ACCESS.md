@@ -26,6 +26,10 @@ Une adresse déjà utilisée ne reçoit pas une seconde invitation dans cette pr
 | Avancer une étape terrain autorisée | Oui | Oui | Oui | Oui, sur ses commandes |
 | Annuler ou déclarer livrée sans preuve | Selon règles métier | Selon règles métier | Selon règles métier | Non |
 | Signaler un incident | Oui | Oui | Oui | Oui, sur ses commandes |
+| Déclarer la somme réellement reçue | Oui | Oui | Oui | Oui, sur ses commandes |
+| Rapprocher ou annuler un encaissement | Oui | Oui | Non | Jamais |
+| Générer ou voir le code client | Oui | Oui | Oui | Jamais |
+| Saisir le code donné par le client | Oui | Oui | Oui | Oui, sur ses commandes |
 
 ## Défense côté serveur
 
@@ -34,15 +38,18 @@ Une adresse déjà utilisée ne reçoit pas une seconde invitation dans cette pr
 - Chaque lecture ou mutation d'une commande contient simultanément `company_id` et `driver_id` dans la requête SQL.
 - Une commande étrangère répond comme introuvable afin de ne pas confirmer son existence.
 - Les routes `/api/app/*` restent interdites aux comptes livreurs.
-- Les transitions et incidents sont idempotents et audités.
+- Les transitions, incidents, encaissements et tentatives OTP sont idempotents et audités.
+- Le code OTP n'est jamais renvoyé par une route livreur et n'est jamais écrit dans les journaux.
+- Un écart financier déclaré par le livreur bloque la remise jusqu'au rapprochement par un propriétaire ou manager.
 
 ## Périmètre de cette première version
 
-Le livreur peut voir sa file active et son historique, appeler le client, ouvrir un itinéraire externe, avancer les étapes permises et signaler un incident. La collecte d'argent, la saisie de l'OTP, le fonctionnement hors connexion et les preuves photo/signature seront ajoutés dans les lots suivants après leur propre contrôle de sécurité.
+Le livreur peut voir sa file active et son historique, appeler le client, ouvrir un itinéraire externe, avancer les étapes permises, déclarer l'encaissement réel, saisir le code reçu par le client et signaler un incident. Le fonctionnement hors connexion et les preuves photo/signature seront ajoutés dans les lots suivants après leur propre contrôle de sécurité.
 
 ## Références
 
 - OWASP Authorization Cheat Sheet : refus par défaut et permission vérifiée à chaque requête.
 - OWASP API Security API1:2023 : contrôle d'autorisation au niveau de chaque objet.
 - OWASP Forgot Password Cheat Sheet : token aléatoire, stocké de manière sûre, temporaire et à usage unique.
-
+- NIST SP 800-63B : usage unique, durée limitée et limitation des essais pour les secrets courts.
+- OWASP Transaction Authorization Cheat Sheet : ordre des étapes et autorisation contrôlés côté serveur.

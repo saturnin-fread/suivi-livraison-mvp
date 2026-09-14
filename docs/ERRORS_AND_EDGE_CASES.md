@@ -45,6 +45,11 @@
 | Livreur désactivé avec session ouverte | Refuser immédiatement toutes les API livreur |
 | Livreur modifie l'identifiant d'une commande | Filtrer aussi par `driver_id` et répondre comme si la commande était introuvable |
 | Manager tente d'inviter ou révoquer un manager | Refuser ; cette autorité reste au propriétaire |
+| Livreur déclare une somme sur un autre colis | Répondre comme introuvable et ne créer aucun événement financier |
+| Livreur reçoit moins que prévu | Enregistrer le fait et son motif, puis bloquer la remise jusqu'au rapprochement responsable |
+| Double appui sur l'encaissement terrain | Retourner le premier résultat avec la même clé d'idempotence |
+| Livreur tente de générer le code client | Ne fournir aucune route livreur de génération ou de lecture du code |
+| Mauvaise saisie OTP répétée après une coupure | Avec la même clé, ne consommer qu'un seul essai et retourner le même résultat |
 
 ## Cartographie et temps réel
 

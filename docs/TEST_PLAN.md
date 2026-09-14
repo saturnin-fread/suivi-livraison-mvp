@@ -82,6 +82,12 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - affecter deux commandes à deux livreurs et tenter de manipuler leurs identifiants ;
 - vérifier que lecture, transition et incident sur la commande étrangère répondent comme introuvables ;
 - répéter une transition et vérifier qu'un seul événement est créé.
+- déclarer un encaissement exact puis répéter la requête sans créer un second mouvement ;
+- déclarer un écart sans motif et vérifier son refus, puis avec motif et vérifier le blocage de la remise ;
+- vérifier que seul un responsable peut rapprocher l'écart ;
+- vérifier que le livreur ne peut ni générer ni lire le code de remise ;
+- répéter une mauvaise saisie OTP avec la même clé et vérifier qu'un seul essai est consommé ;
+- vérifier l'auteur livreur sur la collecte et la preuve, puis masquer toute commande étrangère.
 
 ## Test H — tournée multi-colis
 

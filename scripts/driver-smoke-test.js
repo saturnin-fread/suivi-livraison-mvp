@@ -4,6 +4,11 @@ const crypto = require('node:crypto');
 const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const email = process.env.ADMIN_USER;
 const password = process.env.ADMIN_PASSWORD;
+const nativeFetch = global.fetch;
+global.fetch = (url, options = {}) => nativeFetch(url, {
+  ...options,
+  signal: options.signal || AbortSignal.timeout(20000),
+});
 
 function ensure(condition, message) {
   if (!condition) throw new Error(message);
@@ -143,6 +148,13 @@ async function run() {
       orderIds.push(created.payload.orderId);
     }
 
+    const paymentConfiguration = await json(await fetch(`${baseUrl}/api/app/orders/${orderIds[0]}/payment/configure`, {
+      method: 'POST',
+      headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedAmountMinor: 7500, currency: 'XOF', idempotencyKey: `driver-payment-config-${marker}` }),
+    }));
+    ensure(paymentConfiguration.response.status === 201 && paymentConfiguration.payload.status === 'pending', 'Configuration de l’encaissement terrain impossible.');
+
     const ownOrders = await json(await fetch(`${baseUrl}/api/driver/orders`, { headers: { Cookie: driverCookie } }));
     ensure(ownOrders.response.ok && ownOrders.payload.some((order) => String(order.id) === String(orderIds[0])), 'La commande affectée est absente.');
     ensure(!ownOrders.payload.some((order) => String(order.id) === String(orderIds[1])), 'Une commande d’un autre livreur a été exposée.');
@@ -171,6 +183,128 @@ async function run() {
     }));
     ensure(repeatedTransition.response.ok && repeatedTransition.payload.alreadyApplied, 'La transition répétée a été dupliquée.');
 
+    for (const [index, toStatus] of ['En tournée', 'En livraison'].entries()) {
+      const next = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/transition`, {
+        method: 'POST',
+        headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toStatus, idempotencyKey: `driver-transition-${index + 2}-${marker}` }),
+      }));
+      ensure(next.response.ok && next.payload.status === toStatus, `Transition terrain vers « ${toStatus} » impossible.`);
+    }
+
+    const foreignPayment = await fetch(`${baseUrl}/api/driver/orders/${orderIds[1]}/payment/collect`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountMinor: 7500, method: 'cash', idempotencyKey: `driver-foreign-payment-${marker}` }),
+    });
+    ensure(foreignPayment.status === 404, 'Un livreur a pu déclarer un paiement sur une commande étrangère.');
+
+    const paymentKey = `driver-payment-${marker}`;
+    const payment = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/payment/collect`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountMinor: 7500, method: 'cash', reference: 'Reçu terrain', idempotencyKey: paymentKey }),
+    }));
+    ensure(payment.response.status === 201 && payment.payload.status === 'collected', 'Le livreur ne peut pas enregistrer l’encaissement exact.');
+    const repeatedPayment = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/payment/collect`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountMinor: 7500, method: 'cash', reference: 'Reçu terrain', idempotencyKey: paymentKey }),
+    }));
+    ensure(repeatedPayment.response.ok && repeatedPayment.payload.alreadyApplied, 'La répétition réseau a dupliqué l’encaissement terrain.');
+
+    const reversedPayment = await json(await fetch(`${baseUrl}/api/app/orders/${orderIds[0]}/payment/reverse`, {
+      method: 'POST',
+      headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Vérification du traitement terrain avec écart', idempotencyKey: `driver-payment-reverse-${marker}` }),
+    }));
+    ensure(reversedPayment.response.ok && reversedPayment.payload.status === 'pending', 'La correction encadrée de l’encaissement test a échoué.');
+
+    const invalidGap = await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/payment/collect`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountMinor: 7000, method: 'mobile_money', discrepancyReason: '', idempotencyKey: `driver-gap-invalid-${marker}` }),
+    });
+    ensure(invalidGap.status === 400, 'Un livreur a déclaré un écart sans explication.');
+    const gapPayment = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/payment/collect`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountMinor: 7000, method: 'mobile_money', discrepancyReason: 'Client a versé 500 FCFA de moins', idempotencyKey: `driver-gap-${marker}` }),
+    }));
+    ensure(gapPayment.response.status === 201 && gapPayment.payload.status === 'discrepancy', 'L’écart terrain n’est pas remonté au responsable.');
+
+    const arrived = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/transition`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toStatus: 'Arrivée', idempotencyKey: `driver-arrived-${marker}` }),
+    }));
+    ensure(arrived.response.ok && arrived.payload.status === 'Arrivée', 'Le livreur ne peut pas déclarer son arrivée.');
+
+    const forbiddenOtpGeneration = await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/otp`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotencyKey: `driver-forbidden-otp-${marker}` }),
+    });
+    ensure(forbiddenOtpGeneration.status === 404, 'Le portail livreur ne doit pas permettre de générer ou révéler le code client.');
+
+    const generatedOtp = await json(await fetch(`${baseUrl}/api/app/orders/${orderIds[0]}/otp`, {
+      method: 'POST',
+      headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotencyKey: `driver-otp-generate-${marker}` }),
+    }));
+    ensure(generatedOtp.response.status === 201 && /^\d{6}$/.test(generatedOtp.payload.code), 'L’exploitation ne peut pas générer le code client.');
+
+    const paymentBlockedOtp = await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/otp/verify`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: generatedOtp.payload.code, idempotencyKey: `driver-payment-blocked-otp-${marker}` }),
+    });
+    ensure(paymentBlockedOtp.status === 409, 'Un écart financier non rapproché n’a pas bloqué la remise terrain.');
+    const reconciledPayment = await json(await fetch(`${baseUrl}/api/app/orders/${orderIds[0]}/payment/reconcile`, {
+      method: 'POST',
+      headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Écart accepté pour le test du portail livreur', idempotencyKey: `driver-payment-reconcile-${marker}` }),
+    }));
+    ensure(reconciledPayment.response.ok && reconciledPayment.payload.status === 'reconciled', 'Le responsable ne peut pas débloquer la remise après vérification de l’écart.');
+
+    const foreignOtp = await fetch(`${baseUrl}/api/driver/orders/${orderIds[1]}/otp/verify`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: generatedOtp.payload.code, idempotencyKey: `driver-foreign-otp-${marker}` }),
+    });
+    ensure(foreignOtp.status === 404, 'Un livreur a pu vérifier le code d’une commande étrangère.');
+
+    const wrongCode = generatedOtp.payload.code === '000000' ? '999999' : '000000';
+    const wrongOtpKey = `driver-wrong-otp-${marker}`;
+    const wrongOtp = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/otp/verify`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: wrongCode, idempotencyKey: wrongOtpKey }),
+    }));
+    ensure(wrongOtp.response.status === 400 && wrongOtp.payload.attemptsRemaining === 4, 'Un code terrain erroné doit consommer un seul essai.');
+    const repeatedWrongOtp = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/otp/verify`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: wrongCode, idempotencyKey: wrongOtpKey }),
+    }));
+    ensure(repeatedWrongOtp.response.status === 400 && repeatedWrongOtp.payload.attemptsRemaining === 4 && repeatedWrongOtp.payload.alreadyAttempted, 'Une répétition réseau a consommé plusieurs essais OTP.');
+
+    const verifiedOtp = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/otp/verify`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: generatedOtp.payload.code, idempotencyKey: `driver-correct-otp-${marker}` }),
+    }));
+    ensure(verifiedOtp.response.ok && verifiedOtp.payload.status === 'Livrée' && verifiedOtp.payload.proofId, 'Le code client valide ne termine pas la livraison.');
+
+    const terrainEvidence = await pool.query(
+      `SELECT pa.collected_by_user_id, dp.verified_by_user_id
+       FROM order_payment_accounts pa JOIN delivery_proofs dp ON dp.order_id = pa.order_id
+       WHERE pa.order_id = $1`,
+      [orderIds[0]]
+    );
+    ensure(String(terrainEvidence.rows[0]?.collected_by_user_id) === String(invitedUserId)
+      && String(terrainEvidence.rows[0]?.verified_by_user_id) === String(invitedUserId), 'L’auteur des actions terrain n’est pas correctement tracé.');
+
     const incident = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/incidents`, {
       method: 'POST',
       headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
@@ -184,7 +318,7 @@ async function run() {
     });
     ensure(foreignIncident.status === 404, 'Un incident a pu être créé sur une commande étrangère.');
 
-    console.log('Smoke livreur réussi : invitation, session, cloisonnement, transitions et incidents.');
+    console.log('Smoke livreur réussi : accès cloisonné, transitions, encaissement, OTP et incidents.');
   } finally {
     const client = await pool.connect();
     try {

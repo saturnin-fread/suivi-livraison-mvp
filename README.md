@@ -6,6 +6,7 @@ Application multi-entreprises de préparation et de suivi des livraisons, relié
 
 - `/app` : espace de gestion de l'entreprise ;
 - `/admin` : administration de la plateforme, séparée des entreprises ;
+- `/driver` : espace mobile d'un livreur invité, limité à ses commandes affectées ;
 - `/demande/:token` : collecte des informations du destinataire ;
 - `/suivi/:token` : suivi public d'une commande, limité à ce client.
 

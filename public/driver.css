@@ -20,6 +20,9 @@
 .driver-detail-grid .detail { background: #fff; }
 .driver-section { margin-top: 14px; }
 .driver-section h2 { font-size: 18px; }
+.driver-form { display: grid; gap: 13px; margin-top: 18px; }
+.driver-form button { min-height: 50px; }
+.driver-form .notice { margin: 0; }
 .driver-back { display: inline-block; margin-bottom: 13px; color: var(--navy); font-weight: 750; text-decoration: none; }
 @media (max-width: 460px) {
   .driver-actions { grid-template-columns: 1fr; }

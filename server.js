@@ -940,9 +940,13 @@ app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
 app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.*, pa.expected_amount_minor, pa.currency AS payment_currency,
-            pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
-            pa.collection_reference, pa.discrepancy_reason,
-            p.id AS proof_id, p.verified_at AS proof_verified_at
+             pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
+             pa.collection_reference, pa.discrepancy_reason,
+             p.id AS proof_id, p.verified_at AS proof_verified_at,
+             (SELECT c.expires_at FROM delivery_otp_challenges c
+              WHERE c.order_id = o.id AND c.consumed_at IS NULL AND c.revoked_at IS NULL
+                AND c.expires_at > NOW()
+              ORDER BY c.created_at DESC LIMIT 1) AS active_otp_expires_at
      FROM orders o
      LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
      LEFT JOIN delivery_proofs p ON p.order_id = o.id AND p.proof_type = 'otp'
@@ -1070,6 +1074,14 @@ app.post('/api/driver/orders/:id/incidents', requireDriverApi, asyncRoute(async 
   }
   await writeAudit(req.auth, 'order', order.rows[0].id, 'driver_incident_opened', { incidentId: inserted.rows[0].id, category, severity });
   return res.status(201).json({ id: inserted.rows[0].id, createdAt: inserted.rows[0].created_at });
+}));
+
+app.post('/api/driver/orders/:id/payment/collect', requireDriverApi, asyncRoute(async (req, res) => {
+  return collectOrderPayment(req, res, true);
+}));
+
+app.post('/api/driver/orders/:id/otp/verify', requireDriverApi, asyncRoute(async (req, res) => {
+  return verifyOrderOtp(req, res, true);
 }));
 
 app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -1508,7 +1520,7 @@ app.post('/api/app/orders/:id/otp', requireCompanyApi, asyncRoute(async (req, re
   }
 }));
 
-app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (req, res) => {
+async function verifyOrderOtp(req, res, driverScoped = false) {
   const code = String(req.body.code || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: 'Saisissez le code à 6 chiffres.' });
@@ -1518,8 +1530,9 @@ app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (
   try {
     await client.query('BEGIN');
     const orderResult = await client.query(
-      `SELECT id, status, version FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
-      [req.params.id, req.auth.company_id]
+      `SELECT id, status, version FROM orders
+       WHERE id = $1 AND company_id = $2${driverScoped ? ' AND driver_id = $3' : ''} FOR UPDATE`,
+      driverScoped ? [req.params.id, req.auth.company_id, req.auth.driver_id] : [req.params.id, req.auth.company_id]
     );
     const order = orderResult.rows[0];
     if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
@@ -1639,6 +1652,10 @@ app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (
   } finally {
     client.release();
   }
+}
+
+app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (req, res) => {
+  return verifyOrderOtp(req, res);
 }));
 
 app.post('/api/app/orders/:id/incidents', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -1849,21 +1866,23 @@ app.post('/api/app/orders/:id/payment/remove', requireCompanyApi, requireCompany
   }
 }));
 
-app.post('/api/app/orders/:id/payment/collect', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+async function collectOrderPayment(req, res, driverScoped = false) {
   const amount = moneyInteger(req.body.amountMinor);
   const method = String(req.body.method || '').trim();
   const reference = String(req.body.reference || '').trim().slice(0, 120);
   const discrepancyReason = String(req.body.discrepancyReason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (amount === null || !paymentMethods.includes(method)) return res.status(400).json({ error: 'Montant ou mode d’encaissement invalide.' });
+  if (discrepancyReason.length > 1000) return res.status(400).json({ error: 'Le motif de l’écart est trop long.' });
   if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), amount, method, reference, discrepancyReason, action: 'collect' }));
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const orderResult = await client.query(
-      `SELECT id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
-      [req.params.id, req.auth.company_id]
+      `SELECT id, status FROM orders
+       WHERE id = $1 AND company_id = $2${driverScoped ? ' AND driver_id = $3' : ''} FOR UPDATE`,
+      driverScoped ? [req.params.id, req.auth.company_id, req.auth.driver_id] : [req.params.id, req.auth.company_id]
     );
     const order = orderResult.rows[0];
     if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
@@ -1923,6 +1942,10 @@ app.post('/api/app/orders/:id/payment/collect', requireCompanyApi, requireCompan
   } finally {
     client.release();
   }
+}
+
+app.post('/api/app/orders/:id/payment/collect', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  return collectOrderPayment(req, res);
 }));
 
 app.post('/api/app/orders/:id/payment/reconcile', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {

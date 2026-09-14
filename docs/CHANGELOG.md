@@ -52,3 +52,8 @@
 - Ajout de l'espace mobile `/driver` avec file active, historique, appel, itinéraire, transitions et incidents.
 - Interdiction des API d'exploitation aux comptes livreurs et contrôle `company_id` + `driver_id` sur chaque objet terrain.
 - Ajout d'un test croisé avec deux livreurs vérifiant l'absence d'accès horizontal.
+- Ajout de la déclaration d'encaissement dans le portail livreur, limitée à la commande affectée.
+- Ajout de la saisie du code client par le livreur sans route de génération ni exposition du code.
+- Blocage terrain des écarts financiers jusqu'au rapprochement par un responsable.
+- Ajout de protections idempotentes contre les doubles mouvements et la double consommation d'un essai OTP.
+- Extension du test livreur au parcours complet, aux écarts, à l'auteur des preuves et aux tentatives sur une commande étrangère.

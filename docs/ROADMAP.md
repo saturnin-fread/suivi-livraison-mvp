@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 à 3 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 4 livrés
 
 ### Objectif
 
@@ -237,14 +237,15 @@ Valider le produit sur de vraies tournées avant généralisation.
 
 Les phases 1 à 3 disposent désormais d'une première version exploitable : espaces séparés, isolation par entreprise, demande modifiable, affectation dynamique, conversion atomique et lien de suivi. Les invitations multi-utilisateurs, les conflits de capacité avancés et les règles d'archivage seront renforcés pendant le pilote.
 
+Le portail livreur permet désormais la déclaration de l'encaissement et la validation du code client uniquement sur la commande affectée. Le livreur ne peut ni générer le code, ni rapprocher un écart, ni annuler un mouvement financier.
+
 Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. permettre au livreur de saisir l'encaissement et l'OTP uniquement sur sa commande affectée ;
-2. compléter les preuves par photo ou signature configurable, sans les rendre obligatoires par défaut ;
-3. constituer le dossier d'incident exportable et le gel de conservation ;
-4. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
-5. tester les reprises hors connexion et les actions différées du livreur ;
-6. ajouter les ajustements financiers postérieurs à une commande terminée.
+1. compléter les preuves par photo ou signature configurable, sans les rendre obligatoires par défaut ;
+2. constituer le dossier d'incident exportable et le gel de conservation ;
+3. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
+4. tester les reprises hors connexion et les actions différées du livreur ;
+5. ajouter les ajustements financiers postérieurs à une commande terminée.
 
 ## Règles transversales
 

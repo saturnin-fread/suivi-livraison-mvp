@@ -28,12 +28,15 @@ Une commande avec encaissement `À encaisser` ou `Écart à vérifier` ne peut p
 ## Permissions
 
 - Propriétaire, gestionnaire ou opérateur : configurer et enregistrer la collecte.
+- Livreur : déclarer uniquement la somme reçue sur une commande qui lui est affectée et arrivée à l'étape de remise.
 - Propriétaire ou gestionnaire : rapprocher un écart ou annuler une collecte.
 - Les contrôles sont appliqués par l'API, indépendamment des boutons visibles.
 
 ## Traçabilité
 
 Chaque configuration, retrait, collecte, annulation et rapprochement produit un `payment_event` append-only avec acteur, date, montant, devise et clé d'idempotence. Les références Mobile Money peuvent être conservées, mais aucun code secret ou justificatif sensible ne doit être enregistré dans les journaux.
+
+Une répétition réseau portant la même clé d'idempotence retourne le premier résultat sans créer un second mouvement. Une commande étrangère au livreur répond comme introuvable.
 
 ## Références
 

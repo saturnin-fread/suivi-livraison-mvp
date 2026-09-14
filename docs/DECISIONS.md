@@ -63,3 +63,7 @@ Le livreur ou l'opérateur déclare ce qui a réellement été reçu. Un propri�
 ## 2026-09-14 — Compte livreur lié et accès minimal
 
 Un compte livreur référence exactement un profil `driver` de son entreprise. Il utilise `/driver`, ne peut pas ouvrir les API d'exploitation et chaque objet terrain est filtré simultanément par entreprise et par livreur. Les comptes sont activés par invitation temporaire à usage unique plutôt que par partage d'un mot de passe commun.
+
+## 2026-09-14 — Séparation entre émission et saisie du code de remise
+
+L'exploitation génère le code de remise et le destinataire le reçoit par un canal indépendant. Le livreur ne voit jamais ce code dans son portail : il saisit uniquement celui que le client lui communique. Le serveur impose l'ordre arrivée → encaissement décidé → code actif → preuve → livraison, avec expiration, cinq essais et usage unique.

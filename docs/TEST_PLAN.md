@@ -54,6 +54,17 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - vérifier qu'après livraison le lien public ne contient plus latitude ni longitude ;
 - créer puis résoudre un incident sans modifier sa description d'origine.
 
+## Test F3 — encaissement et rapprochement
+
+- configurer puis modifier un montant avant collecte ;
+- retirer une exigence avec motif puis la réactiver ;
+- répéter une même collecte et vérifier un seul événement ;
+- annuler une saisie avant la fin de livraison ;
+- refuser un écart sans justification ;
+- enregistrer un écart et bloquer la remise OTP ;
+- rapprocher l'écart avec un rôle autorisé puis permettre la remise ;
+- vérifier la conservation de tous les événements financiers.
+
 ## Test G — confirmation et modification client
 
 - vérifier la redirection vers la page de confirmation ;

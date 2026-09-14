@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lot 1 livré
+## Phase 4 — Exécution et preuve de livraison — lots 1 et 2 livrés
 
 ### Objectif
 
@@ -239,12 +239,12 @@ Les phases 1 à 3 disposent désormais d'une première version exploitable : esp
 
 Le prochain lot doit commencer la phase 4 dans cet ordre :
 
-1. ajouter l'encaissement à la livraison et son rapprochement ;
+1. créer une vue mobile limitée pour le livreur avec permissions dédiées ;
 2. compléter les preuves par photo ou signature configurable, sans les rendre obligatoires par défaut ;
-3. créer une vue mobile limitée pour le livreur avec permissions dédiées ;
-4. constituer le dossier d'incident exportable et le gel de conservation ;
-5. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
-6. tester les reprises hors connexion et les actions différées du livreur.
+3. constituer le dossier d'incident exportable et le gel de conservation ;
+4. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
+5. tester les reprises hors connexion et les actions différées du livreur ;
+6. ajouter les ajustements financiers postérieurs à une commande terminée.
 
 ## Règles transversales
 

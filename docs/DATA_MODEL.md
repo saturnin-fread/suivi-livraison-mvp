@@ -42,6 +42,10 @@ Défis OTP temporaires, tentatives idempotentes et preuves de remise durables. L
 
 Déclarations factuelles et résolutions d'incidents rattachées à une commande.
 
+### `order_payment_accounts` et `payment_events`
+
+État courant de l'encaissement d'une commande et ledger append-only de ses configurations, collectes, écarts, annulations et rapprochements.
+
 ## Tables à ajouter ensuite
 
 ```text
@@ -56,7 +60,6 @@ delivery_runs
 delivery_run_orders
 delivery_stops
 packages
-payments
 customer_interactions
 notifications_log
 audit_logs

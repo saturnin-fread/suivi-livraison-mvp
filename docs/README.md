@@ -7,6 +7,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Plan d'action priorisé](ROADMAP.md)
 - [Vision et parcours métier](PRODUCT_WORKFLOW.md)
 - [Cycle d'exécution des commandes](ORDER_STATE_MACHINE.md)
+- [Encaissement et rapprochement](PAYMENT_RECONCILIATION.md)
 - [Architecture technique](ARCHITECTURE.md)
 - [Modèle de données](DATA_MODEL.md)
 - [Erreurs et cas limites](ERRORS_AND_EDGE_CASES.md)
@@ -27,7 +28,8 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - `/app` est l'espace entreprise et `/admin` reste réservé à l'administration de la plateforme.
 - La fondation multi-entreprises, la navigation `/app`, la séparation `/admin` et la confirmation modifiable sont déployées en première version.
 - La sélection dynamique, la conversion demande → commande, l'exécution par étapes, les incidents et la preuve OTP disposent d'une première version.
-- Le prochain lot complète l'encaissement, les preuves configurables, les permissions livreur et les tournées.
+- L'encaissement à la livraison, les écarts et le rapprochement disposent d'une première version auditée.
+- Le prochain lot traite les permissions et l'espace mobile du livreur, puis les tournées.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

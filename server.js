@@ -27,6 +27,7 @@ const orderTransitions = {
 };
 const reasonRequiredStatuses = ['Échec', 'Retour', 'Retournée', 'Annulée'];
 const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement', 'vehicule', 'gps', 'autre'];
+const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'];
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -95,6 +96,11 @@ function optionalNumber(value) {
   if (value === '' || value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function moneyInteger(value) {
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 && amount <= 1000000000000 ? amount : null;
 }
 
 function setSessionCookie(req, res, token) {
@@ -381,6 +387,49 @@ async function initDatabase() {
         ON delivery_incidents(company_id, resolution_idempotency_key)
         WHERE resolution_idempotency_key IS NOT NULL;
 
+      CREATE TABLE IF NOT EXISTS order_payment_accounts (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+        expected_amount_minor BIGINT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'XOF',
+        status TEXT NOT NULL DEFAULT 'pending',
+        collected_amount_minor BIGINT,
+        collection_method TEXT,
+        collection_reference TEXT,
+        discrepancy_reason TEXT,
+        collected_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        collected_at TIMESTAMPTZ,
+        reconciled_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        reconciled_at TIMESTAMPTZ,
+        reconciliation_note TEXT,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS payment_events (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        payment_account_id BIGINT NOT NULL REFERENCES order_payment_accounts(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        amount_minor BIGINT,
+        currency TEXT NOT NULL,
+        method TEXT,
+        reference TEXT,
+        reason TEXT,
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS payment_events_order_created_idx
+        ON payment_events(order_id, created_at ASC);
+
       INSERT INTO order_status_events (
         company_id, order_id, from_status, to_status, actor_user_id,
         idempotency_key, request_fingerprint, metadata, created_at
@@ -489,6 +538,15 @@ function requireCompanyApi(req, res, next) {
     req.auth = session;
     return next();
   }).catch(next);
+}
+
+function requireCompanyRoles(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.auth || !allowedRoles.includes(req.auth.role)) {
+      return res.status(403).json({ error: 'Vous n’avez pas l’autorisation d’effectuer cette action.' });
+    }
+    return next();
+  };
 }
 
 async function writeAudit(auth, entityType, entityId, action, details = {}) {
@@ -845,6 +903,10 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
             d.vehicle_type AS driver_vehicle_type, t.token AS tracking_token,
             t.expires_at AS tracking_expires_at,
             p.id AS proof_id, p.proof_type, p.verified_at AS proof_verified_at,
+            pa.id AS payment_account_id, pa.expected_amount_minor, pa.currency AS payment_currency,
+            pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
+            pa.collection_reference, pa.discrepancy_reason, pa.collected_at,
+            pa.reconciled_at, pa.reconciliation_note,
             (SELECT c.expires_at FROM delivery_otp_challenges c
              WHERE c.order_id = o.id AND c.consumed_at IS NULL AND c.revoked_at IS NULL
                AND c.expires_at > NOW()
@@ -853,12 +915,13 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
      JOIN drivers d ON d.id = o.driver_id
      LEFT JOIN tracking_links t ON t.order_id = o.id
      LEFT JOIN delivery_proofs p ON p.order_id = o.id AND p.proof_type = 'otp'
+     LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
      WHERE o.id = $1 AND o.company_id = $2`,
     [req.params.id, req.auth.company_id]
   );
   const order = result.rows[0];
   if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
-  const [events, incidents] = await Promise.all([
+  const [events, incidents, paymentEvents] = await Promise.all([
     pool.query(
       `SELECT e.id, e.from_status, e.to_status, e.reason, e.metadata, e.created_at,
               COALESCE(u.display_name, 'Système') AS actor_name
@@ -875,14 +938,24 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
        WHERE i.order_id = $1 AND i.company_id = $2 ORDER BY i.created_at DESC, i.id DESC`,
       [order.id, req.auth.company_id]
     ),
+    pool.query(
+      `SELECT pe.id, pe.event_type, pe.amount_minor, pe.currency, pe.method,
+              pe.reference, pe.reason, pe.created_at,
+              COALESCE(u.display_name, 'Système') AS actor_name
+       FROM payment_events pe LEFT JOIN users u ON u.id = pe.actor_user_id
+       WHERE pe.order_id = $1 AND pe.company_id = $2 ORDER BY pe.created_at ASC, pe.id ASC`,
+      [order.id, req.auth.company_id]
+    ),
   ]);
   return res.json({
     ...order,
     allowedTransitions: allowedOrderTransitions(order.status),
     requiresOtpForDelivery: order.status === 'Arrivée' && !order.proof_id,
+    paymentBlocksDelivery: Boolean(order.payment_account_id && ['pending', 'discrepancy'].includes(order.payment_status)),
     isTerminal: terminalOrderStatuses.includes(order.status),
     events: events.rows,
     incidents: incidents.rows,
+    paymentEvents: paymentEvents.rows,
   });
 }));
 
@@ -1068,6 +1141,16 @@ app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (
     if (order.status !== 'Arrivée') {
       throw Object.assign(new Error(`La commande est maintenant « ${order.status} » et ne peut pas être remise avec ce code.`), { statusCode: 409 });
     }
+    const paymentResult = await client.query(
+      `SELECT status FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE`,
+      [order.id]
+    );
+    if (paymentResult.rows[0] && ['pending', 'discrepancy'].includes(paymentResult.rows[0].status)) {
+      const message = paymentResult.rows[0].status === 'discrepancy'
+        ? 'L’écart d’encaissement doit être rapproché avant de confirmer la remise.'
+        : 'Enregistrez l’encaissement attendu avant de confirmer la remise.';
+      throw Object.assign(new Error(message), { statusCode: 409 });
+    }
     const challengeResult = await client.query(
       `SELECT id, code_salt, code_hash, attempts_remaining FROM delivery_otp_challenges
        WHERE order_id = $1 AND company_id = $2 AND consumed_at IS NULL AND revoked_at IS NULL
@@ -1221,6 +1304,319 @@ app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
     console.error('Incident resolution error:', error.message);
     return res.status(500).json({ error: 'Impossible de résoudre cet incident.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/payment/configure', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const expectedAmount = moneyInteger(req.body.expectedAmountMinor);
+  const currency = String(req.body.currency || 'XOF').toUpperCase();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (expectedAmount === null || expectedAmount <= 0) return res.status(400).json({ error: 'Le montant attendu doit être un entier positif.' });
+  if (currency !== 'XOF') return res.status(400).json({ error: 'Cette version accepte uniquement le franc CFA XOF.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), expectedAmount, currency, action: 'configure' }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (terminalOrderStatuses.includes(order.status)) throw Object.assign(new Error('L’encaissement ne peut plus être configuré sur une commande terminée.'), { statusCode: 409 });
+    const repeated = await client.query(
+      `SELECT pe.id, pe.order_id, pe.request_fingerprint, pa.status
+       FROM payment_events pe JOIN order_payment_accounts pa ON pa.id = pe.payment_account_id
+       WHERE pe.company_id = $1 AND pe.idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: repeated.rows[0].status, alreadyApplied: true });
+    }
+    let accountResult = await client.query(`SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE`, [order.id]);
+    if (accountResult.rows[0] && !['pending', 'not_required'].includes(accountResult.rows[0].status)) {
+      throw Object.assign(new Error('Un encaissement a déjà été enregistré. Annulez-le avant de modifier le montant attendu.'), { statusCode: 409 });
+    }
+    if (accountResult.rows[0]) {
+      accountResult = await client.query(
+        `UPDATE order_payment_accounts SET expected_amount_minor = $1, currency = $2, status = 'pending',
+           version = version + 1, updated_at = NOW() WHERE id = $3 RETURNING *`,
+        [expectedAmount, currency, accountResult.rows[0].id]
+      );
+    } else {
+      accountResult = await client.query(
+        `INSERT INTO order_payment_accounts (company_id, order_id, expected_amount_minor, currency)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [req.auth.company_id, order.id, expectedAmount, currency]
+      );
+    }
+    const account = accountResult.rows[0];
+    const event = await client.query(
+      `INSERT INTO payment_events (
+         company_id, order_id, payment_account_id, event_type, amount_minor, currency,
+         actor_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, 'configured', $4, $5, $6, $7, $8) RETURNING id`,
+      [req.auth.company_id, order.id, account.id, expectedAmount, currency, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_configured', jsonb_build_object('paymentEventId', $4::bigint, 'amountMinor', $5::bigint, 'currency', $6::text))`,
+      [req.auth.company_id, req.auth.user_id, order.id, event.rows[0].id, expectedAmount, currency]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ orderId: order.id, paymentAccountId: account.id, status: account.status, expectedAmountMinor: account.expected_amount_minor, currency });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Payment configuration error:', error.message);
+    return res.status(500).json({ error: 'Impossible de configurer cet encaissement.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/payment/remove', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (reason.length < 5) return res.status(400).json({ error: 'Expliquez pourquoi l’encaissement n’est plus requis.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), reason, action: 'remove_requirement' }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(`SELECT id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`, [req.params.id, req.auth.company_id]);
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (terminalOrderStatuses.includes(order.status)) throw Object.assign(new Error('La commande est déjà terminée.'), { statusCode: 409 });
+    const accountResult = await client.query(`SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE`, [order.id]);
+    const account = accountResult.rows[0];
+    if (!account) throw Object.assign(new Error('Aucun encaissement configuré.'), { statusCode: 409 });
+    const repeated = await client.query(`SELECT order_id, request_fingerprint FROM payment_events WHERE company_id = $1 AND idempotency_key = $2`, [req.auth.company_id, idempotencyKey]);
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: 'not_required', alreadyApplied: true });
+    }
+    if (account.status !== 'pending') throw Object.assign(new Error('Cet encaissement ne peut plus être retiré directement.'), { statusCode: 409 });
+    await client.query(`UPDATE order_payment_accounts SET status = 'not_required', version = version + 1, updated_at = NOW() WHERE id = $1`, [account.id]);
+    const event = await client.query(
+      `INSERT INTO payment_events (
+         company_id, order_id, payment_account_id, event_type, amount_minor, currency,
+         reason, actor_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, 'requirement_removed', $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [req.auth.company_id, order.id, account.id, account.expected_amount_minor, account.currency,
+        reason, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_requirement_removed', jsonb_build_object('paymentEventId', $4::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, event.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, status: 'not_required' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Payment requirement removal error:', error.message);
+    return res.status(500).json({ error: 'Impossible de retirer cet encaissement.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/payment/collect', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const amount = moneyInteger(req.body.amountMinor);
+  const method = String(req.body.method || '').trim();
+  const reference = String(req.body.reference || '').trim().slice(0, 120);
+  const discrepancyReason = String(req.body.discrepancyReason || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (amount === null || !paymentMethods.includes(method)) return res.status(400).json({ error: 'Montant ou mode d’encaissement invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), amount, method, reference, discrepancyReason, action: 'collect' }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (!['En livraison', 'Arrivée'].includes(order.status)) {
+      throw Object.assign(new Error('L’encaissement peut être déclaré uniquement pendant la remise au client.'), { statusCode: 409 });
+    }
+    const accountResult = await client.query(`SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE`, [order.id]);
+    const account = accountResult.rows[0];
+    if (!account) throw Object.assign(new Error('Aucun encaissement n’est configuré pour cette commande.'), { statusCode: 409 });
+    const repeated = await client.query(
+      `SELECT id, order_id, request_fingerprint FROM payment_events
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: account.status, alreadyApplied: true });
+    }
+    if (account.status !== 'pending') throw Object.assign(new Error('Un encaissement est déjà enregistré pour cette commande.'), { statusCode: 409 });
+    const hasDiscrepancy = amount !== Number(account.expected_amount_minor);
+    if (hasDiscrepancy && discrepancyReason.length < 5) {
+      throw Object.assign(new Error('Expliquez l’écart entre le montant attendu et le montant reçu.'), { statusCode: 400 });
+    }
+    const paymentStatus = hasDiscrepancy ? 'discrepancy' : 'collected';
+    const updated = await client.query(
+      `UPDATE order_payment_accounts SET status = $1, collected_amount_minor = $2,
+         collection_method = $3, collection_reference = $4, discrepancy_reason = $5,
+         collected_by_user_id = $6, collected_at = NOW(), version = version + 1, updated_at = NOW()
+       WHERE id = $7 RETURNING collected_at`,
+      [paymentStatus, amount, method, reference || null, discrepancyReason || null, req.auth.user_id, account.id]
+    );
+    const event = await client.query(
+      `INSERT INTO payment_events (
+         company_id, order_id, payment_account_id, event_type, amount_minor, currency,
+         method, reference, reason, actor_user_id, idempotency_key, request_fingerprint,
+         metadata
+       ) VALUES ($1, $2, $3, 'collected', $4, $5, $6, $7, $8, $9, $10, $11,
+         jsonb_build_object('expectedAmountMinor', $12::bigint, 'hasDiscrepancy', $13::boolean)) RETURNING id`,
+      [req.auth.company_id, order.id, account.id, amount, account.currency, method, reference || null,
+        discrepancyReason || null, req.auth.user_id, idempotencyKey, fingerprint, account.expected_amount_minor, hasDiscrepancy]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_collected', jsonb_build_object('paymentEventId', $4::bigint, 'status', $5::text))`,
+      [req.auth.company_id, req.auth.user_id, order.id, event.rows[0].id, paymentStatus]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ orderId: order.id, status: paymentStatus, amountMinor: amount, currency: account.currency, collectedAt: updated.rows[0].collected_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Payment collection error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’enregistrer cet encaissement.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/payment/reconcile', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const note = String(req.body.note || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), note, action: 'reconcile' }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(`SELECT id FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`, [req.params.id, req.auth.company_id]);
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const accountResult = await client.query(`SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE`, [order.id]);
+    const account = accountResult.rows[0];
+    if (!account) throw Object.assign(new Error('Aucun encaissement à rapprocher.'), { statusCode: 409 });
+    const repeated = await client.query(`SELECT order_id, request_fingerprint FROM payment_events WHERE company_id = $1 AND idempotency_key = $2`, [req.auth.company_id, idempotencyKey]);
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: 'reconciled', alreadyApplied: true });
+    }
+    if (!['collected', 'discrepancy'].includes(account.status)) throw Object.assign(new Error('Cet encaissement n’est pas prêt à être rapproché.'), { statusCode: 409 });
+    if (account.status === 'discrepancy' && note.length < 5) throw Object.assign(new Error('Expliquez la décision prise pour cet écart.'), { statusCode: 400 });
+    await client.query(
+      `UPDATE order_payment_accounts SET status = 'reconciled', reconciled_by_user_id = $1,
+         reconciled_at = NOW(), reconciliation_note = $2, version = version + 1, updated_at = NOW()
+       WHERE id = $3`,
+      [req.auth.user_id, note || null, account.id]
+    );
+    const event = await client.query(
+      `INSERT INTO payment_events (
+         company_id, order_id, payment_account_id, event_type, amount_minor, currency,
+         method, reference, reason, actor_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, 'reconciled', $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+      [req.auth.company_id, order.id, account.id, account.collected_amount_minor, account.currency,
+        account.collection_method, account.collection_reference, note || null, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_reconciled', jsonb_build_object('paymentEventId', $4::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, event.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, status: 'reconciled' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Payment reconciliation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de rapprocher cet encaissement.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/payment/reverse', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (reason.length < 5) return res.status(400).json({ error: 'Expliquez pourquoi l’encaissement doit être annulé.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), reason, action: 'reverse' }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(`SELECT id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`, [req.params.id, req.auth.company_id]);
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (terminalOrderStatuses.includes(order.status)) throw Object.assign(new Error('Une commande terminée nécessite un ajustement comptable, pas une annulation simple.'), { statusCode: 409 });
+    const accountResult = await client.query(`SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE`, [order.id]);
+    const account = accountResult.rows[0];
+    if (!account) throw Object.assign(new Error('Aucun encaissement à annuler.'), { statusCode: 409 });
+    const repeated = await client.query(`SELECT order_id, request_fingerprint FROM payment_events WHERE company_id = $1 AND idempotency_key = $2`, [req.auth.company_id, idempotencyKey]);
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: 'pending', alreadyApplied: true });
+    }
+    if (!['collected', 'discrepancy'].includes(account.status)) throw Object.assign(new Error('Cet encaissement ne peut pas être annulé.'), { statusCode: 409 });
+    const event = await client.query(
+      `INSERT INTO payment_events (
+         company_id, order_id, payment_account_id, event_type, amount_minor, currency,
+         method, reference, reason, actor_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, 'reversed', $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+      [req.auth.company_id, order.id, account.id, account.collected_amount_minor, account.currency,
+        account.collection_method, account.collection_reference, reason, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `UPDATE order_payment_accounts SET status = 'pending', collected_amount_minor = NULL,
+         collection_method = NULL, collection_reference = NULL, discrepancy_reason = NULL,
+         collected_by_user_id = NULL, collected_at = NULL, reconciled_by_user_id = NULL,
+         reconciled_at = NULL, reconciliation_note = NULL, version = version + 1, updated_at = NOW()
+       WHERE id = $1`,
+      [account.id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_reversed', jsonb_build_object('paymentEventId', $4::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, event.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, status: 'pending' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Payment reversal error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’annuler cet encaissement.' });
   } finally {
     client.release();
   }

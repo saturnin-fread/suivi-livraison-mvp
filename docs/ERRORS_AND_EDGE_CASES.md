@@ -34,6 +34,11 @@
 | Code expiré ou régénéré | Refuser la remise et demander un nouveau code |
 | Livraison sans preuve | Interdire le passage manuel à `Livrée` |
 | Incident résolu | Conserver la déclaration initiale et ajouter la résolution séparément |
+| Montant attendu modifié après collecte | Refuser et demander d'abord une annulation motivée |
+| Somme reçue différente | Exiger un motif et un rapprochement responsable avant remise |
+| Double déclaration de collecte | Retourner le même résultat sans doubler le montant |
+| Encaissement saisi par erreur | Permettre l'annulation avant fin de livraison et garder les deux événements |
+| Correction après livraison terminée | Refuser l'annulation simple et exiger un futur ajustement comptable |
 
 ## Cartographie et temps réel
 

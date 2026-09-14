@@ -40,3 +40,10 @@
 - Blocage du statut `Livrée` en l'absence d'une preuve OTP valide.
 - Arrêt de l'exposition de la position précise sur le lien public après livraison, retour ou annulation.
 - Extension du test automatique aux transitions concurrentes, incidents, OTP, preuve et confidentialité terminale.
+- Ajout de l'encaissement facultatif par commande en XOF avec montant entier.
+- Ajout des états à encaisser, encaissé, écart à vérifier, rapproché et non requis.
+- Ajout des corrections motivées : retrait d'exigence et annulation d'une collecte avant livraison.
+- Ajout du rapprochement réservé aux propriétaires et gestionnaires.
+- Blocage de la preuve finale lorsqu'un encaissement requis manque ou présente un écart non décidé.
+- Ajout d'un ledger financier append-only et de clés d'idempotence sur chaque mutation.
+- Extension du test automatique aux corrections de saisie, écarts et rapprochements.

@@ -19,6 +19,10 @@ GET /admin
 GET /suivi/demo-ccg-2026
 ```
 
+## Base de données métier
+
+L'application `delivery-app` utilise la base PostgreSQL nommée `delivery`, distincte de la base par défaut éventuellement utilisée par n8n. Lors d'un accès externe pour un diagnostic ou un test, partir de `DATABASE_PUBLIC_URL` du service Postgres et conserver explicitement `/delivery` comme nom de base. Ne jamais exécuter un test de nettoyage sur l'URL dont le chemin ne désigne pas `delivery`.
+
 ## Accès aux interfaces
 
 ```text
@@ -34,7 +38,7 @@ GET /suivi/demo-ccg-2026
 Depuis le dossier `suivi-livraison-mvp` :
 
 ```powershell
-railway up --service delivery-app
+railway up --service delivery-app --environment production
 ```
 
 ## Restaurer la compréhension du système

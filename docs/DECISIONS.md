@@ -55,3 +55,7 @@ Une commande suit une machine d'états côté serveur. Chaque mutation sensible 
 ## 2026-09-14 — OTP comme première preuve de remise
 
 La première preuve exigée est un code à six chiffres, limité en durée et en essais. Le passage à `Livrée` et la création de la preuve sont atomiques. Photo et signature resteront des options configurables, notamment pour éviter une collecte excessive de données personnelles.
+
+## 2026-09-14 — Encaissement distinct du rapprochement
+
+Le livreur ou l'opérateur déclare ce qui a réellement été reçu. Un propriétaire ou gestionnaire décide ensuite du rapprochement, particulièrement lorsqu'il existe un écart. Les montants XOF sont stockés comme entiers et toutes les corrections ajoutent un événement au lieu de réécrire l'historique.

@@ -113,6 +113,101 @@ async function run() {
     const orders = await json(await fetch(`${baseUrl}/api/app/orders`, { headers: { Cookie: cookie } }));
     ensure(orders.response.ok && orders.payload.some((item) => item.id === orderId), 'Commande absente de la liste entreprise.');
 
+    const transition = async (toStatus, suffix, reason = '') => json(await fetch(`${baseUrl}/api/app/orders/${orderId}/transition`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toStatus, reason, idempotencyKey: `smoke-transition-${suffix}-${requestToken}` }),
+    }));
+
+    const invalidTransition = await transition('Arrivée', 'invalid');
+    ensure(invalidTransition.response.status === 409, 'Une transition incohérente devait être refusée.');
+
+    const concurrentBody = JSON.stringify({
+      toStatus: 'Récupérée', reason: '', idempotencyKey: `smoke-transition-concurrent-${requestToken}`,
+    });
+    const concurrentTransitions = await Promise.all([1, 2].map(async () => json(await fetch(`${baseUrl}/api/app/orders/${orderId}/transition`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: concurrentBody,
+    }))));
+    ensure(concurrentTransitions.every((item) => item.response.ok && item.payload.status === 'Récupérée'), 'Les répétitions concurrentes doivent produire le même résultat.');
+    ensure(concurrentTransitions.some((item) => item.payload.alreadyApplied), 'Une répétition concurrente devait être reconnue sans doublon.');
+
+    for (const [index, status] of ['En tournée', 'En livraison', 'Arrivée'].entries()) {
+      const progressed = await transition(status, `step-${index}`);
+      ensure(progressed.response.ok && progressed.payload.status === status, `Transition vers ${status} impossible.`);
+    }
+
+    const incidentKey = `smoke-incident-${requestToken}`;
+    const incident = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/incidents`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        category: 'adresse', severity: 'low', description: 'Incident temporaire du test automatique',
+        idempotencyKey: incidentKey,
+      }),
+    }));
+    ensure(incident.response.status === 201 && incident.payload.id, 'Création de l’incident impossible.');
+    const repeatedIncident = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/incidents`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        category: 'adresse', severity: 'low', description: 'Incident temporaire du test automatique',
+        idempotencyKey: incidentKey,
+      }),
+    }));
+    ensure(repeatedIncident.response.ok && repeatedIncident.payload.alreadyCreated, 'L’incident répété devait rester sans doublon.');
+
+    const resolved = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/resolve`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolution: 'Résolution temporaire validée', idempotencyKey: `smoke-resolve-${requestToken}` }),
+    }));
+    ensure(resolved.response.ok && resolved.payload.status === 'resolved', 'Résolution de l’incident impossible.');
+
+    const otpKey = `smoke-otp-${requestToken}`;
+    const otp = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotencyKey: otpKey }),
+    }));
+    ensure(otp.response.status === 201 && /^\d{6}$/.test(otp.payload.code), 'Génération OTP impossible.');
+    const repeatedOtp = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotencyKey: otpKey }),
+    }));
+    ensure(repeatedOtp.response.ok && repeatedOtp.payload.alreadyGenerated && repeatedOtp.payload.code === otp.payload.code, 'La répétition OTP doit rendre le même résultat.');
+
+    const wrongCode = otp.payload.code === '000000' ? '111111' : '000000';
+    const wrongOtpKey = `smoke-wrong-otp-${requestToken}`;
+    const wrongOtp = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp/verify`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: wrongCode, idempotencyKey: wrongOtpKey }),
+    }));
+    ensure(wrongOtp.response.status === 400 && wrongOtp.payload.attemptsRemaining === 4, 'Un mauvais OTP doit consommer exactement un essai.');
+    const repeatedWrongOtp = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp/verify`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: wrongCode, idempotencyKey: wrongOtpKey }),
+    }));
+    ensure(repeatedWrongOtp.response.status === 400 && repeatedWrongOtp.payload.attemptsRemaining === 4 && repeatedWrongOtp.payload.alreadyAttempted, 'Une tentative OTP répétée ne doit pas consommer un second essai.');
+
+    const verifyKey = `smoke-verify-otp-${requestToken}`;
+    const verified = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp/verify`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: otp.payload.code, idempotencyKey: verifyKey }),
+    }));
+    ensure(verified.response.ok && verified.payload.status === 'Livrée' && verified.payload.proofId, 'Validation de la remise impossible.');
+    const repeatedVerification = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/otp/verify`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: otp.payload.code, idempotencyKey: verifyKey }),
+    }));
+    ensure(repeatedVerification.response.ok && repeatedVerification.payload.alreadyVerified, 'La validation OTP répétée doit rester sans doublon.');
+
+    const orderDetail = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}`, { headers: { Cookie: cookie } }));
+    ensure(orderDetail.response.ok && orderDetail.payload.status === 'Livrée' && orderDetail.payload.proof_id, 'La preuve de remise est absente de la commande.');
+    ensure(orderDetail.payload.events.length >= 5 && orderDetail.payload.incidents[0]?.status === 'resolved', 'Chronologie ou incident incomplet.');
+
+    const privateAfterDelivery = await json(await fetch(`${baseUrl}${converted.payload.path.replace('/suivi/', '/api/tracking/')}`));
+    ensure(privateAfterDelivery.response.ok && privateAfterDelivery.payload.status === 'completed', 'Le suivi public doit signaler la fin de livraison.');
+    ensure(privateAfterDelivery.payload.latitude == null && privateAfterDelivery.payload.longitude == null, 'La position du livreur ne doit plus être exposée après livraison.');
+
     const locked = await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -126,7 +221,7 @@ async function run() {
     });
     ensure(locked.status === 409, `La modification après validation devait être bloquée, reçue ${locked.status}.`);
 
-    console.log('Smoke test réussi : isolation, demande, édition, affectation, conversion sans doublon et verrouillage.');
+    console.log('Smoke test réussi : demande, affectation, transitions, incidents, OTP, preuve et confidentialité après livraison.');
   } finally {
     if (requestToken && process.env.DATABASE_URL) {
       pool = new Pool({

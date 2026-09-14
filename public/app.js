@@ -9,9 +9,29 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 const formatDate = (value) => value ? new Date(value).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 
 function badge(status) {
-  const type = status === 'Confirmée' ? 'success' : status === 'Refusée' ? 'danger' : status === 'À vérifier' ? 'warning' : '';
+  const type = ['Livrée', 'Disponible', 'Confirmée'].includes(status) ? 'success'
+    : ['Refusée', 'Annulée', 'Retournée', 'Incident', 'Échec'].includes(status) ? 'danger'
+      : ['À vérifier', 'Arrivée', 'Retour', 'Position ancienne'].includes(status) ? 'warning' : '';
   return `<span class="badge ${type}">${escapeHtml(status || '—')}</span>`;
 }
+
+const actionKey = (prefix) => {
+  const random = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}:${random}`;
+};
+function idempotencyKeyFor(element, prefix, payload) {
+  const fingerprint = JSON.stringify(payload);
+  if (element.dataset.actionFingerprint !== fingerprint) {
+    element.dataset.actionFingerprint = fingerprint;
+    element.dataset.idempotencyKey = actionKey(prefix);
+  }
+  return element.dataset.idempotencyKey;
+}
+const reasonRequiredStatuses = ['Échec', 'Retour', 'Retournée', 'Annulée'];
+const incidentCategoryLabels = {
+  client_injoignable: 'Client injoignable', adresse: 'Adresse ou accès', colis: 'Colis endommagé ou manquant',
+  paiement: 'Paiement', vehicule: 'Véhicule', gps: 'GPS ou connexion', autre: 'Autre',
+};
 
 const driverStateLabels = {
   available: 'Disponible', busy: 'En tournée', full: 'Charge complète', pause: 'En pause',
@@ -207,7 +227,136 @@ async function renderNewOrder() {
 async function renderOrders() {
   setHeader('Commandes', 'Commandes confirmées et liens de suivi');
   const orders = await api('/api/app/orders');
-  page.innerHTML = `<div class="page-header"><div><h1>Commandes</h1><p class="subtitle">Suivez les commandes créées et leurs affectations.</p></div><a class="button primary" href="/app/nouvelle-commande">Nouvelle commande</a></div><section class="card">${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th></tr></thead><tbody>${orders.map((order) => `<tr><td>N° ${escapeHtml(order.id)}<br><small>${escapeHtml(formatDate(order.created_at))}</small></td><td><strong>${escapeHtml(order.customer_name || '—')}</strong><br><small>${escapeHtml(order.customer_phone || '')}</small></td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name)}</td><td>${badge(order.status)}</td><td>${order.tracking_token ? `<a href="/suivi/${escapeHtml(order.tracking_token)}" target="_blank" rel="noopener">Ouvrir</a>` : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune commande pour le moment.</div>'}</section>`;
+  page.innerHTML = `<div class="page-header"><div><h1>Commandes</h1><p class="subtitle">Ouvrez une commande pour exécuter la livraison, déclarer un incident ou confirmer la remise.</p></div><a class="button primary" href="/app/nouvelle-commande">Nouvelle commande</a></div><section class="card">${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th></tr></thead><tbody>${orders.map((order) => `<tr data-href="/app/commandes/${escapeHtml(order.id)}"><td>N° ${escapeHtml(order.id)}<br><small>${escapeHtml(formatDate(order.created_at))}</small></td><td><strong>${escapeHtml(order.customer_name || '—')}</strong><br><small>${escapeHtml(order.customer_phone || '')}</small></td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name)}</td><td>${badge(order.status)}</td><td>${order.tracking_token ? `<a href="/suivi/${escapeHtml(order.tracking_token)}" target="_blank" rel="noopener">Ouvrir</a>` : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune commande pour le moment.</div>'}</section>`;
+  document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', (event) => {
+    if (event.target.closest('a, button, input, select')) return;
+    location.href = row.dataset.href;
+  }));
+}
+
+async function renderOrderDetail(id) {
+  setHeader('Commande', 'Exécution, preuve de remise et incidents');
+  const order = await api(`/api/app/orders/${encodeURIComponent(id)}`);
+  const destination = [order.neighborhood, order.landmark, order.delivery_address].filter(Boolean).join(' — ') || '—';
+  const incidentOptions = Object.entries(incidentCategoryLabels)
+    .map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
+  page.innerHTML = `
+    <div class="page-header"><div><a href="/app/commandes">← Retour aux commandes</a><h1 style="margin-top:12px">Commande n° ${escapeHtml(order.id)}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
+    <section class="card"><h2>Livraison</h2><div class="detail-grid">
+      <div class="detail"><span>Client</span><strong>${escapeHtml(order.customer_name || '—')}</strong></div>
+      <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
+      <div class="detail"><span>Créneau</span><strong>${escapeHtml(order.requested_time || '—')}</strong></div>
+      <div class="detail"><span>Livreur</span><strong>${escapeHtml(order.driver_name)} · ${escapeHtml(order.driver_vehicle_type || '')}</strong></div>
+      <div class="detail" style="grid-column:span 2"><span>Destination et instructions</span><strong>${escapeHtml(destination)}</strong></div>
+    </div><div class="actions" style="margin-top:18px">${order.tracking_token ? `<a class="button secondary" href="/suivi/${escapeHtml(order.tracking_token)}" target="_blank" rel="noopener">Ouvrir le suivi client</a>` : ''}</div></section>
+
+    ${!order.isTerminal && order.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la livraison</h2><p class="subtitle">Seules les étapes compatibles avec l’état actuel sont proposées.</p><form id="transitionForm" style="margin-top:16px"><div class="form-grid"><div class="field"><label>Nouvelle étape</label><select name="toStatus" required><option value="">Choisir une étape</option>${order.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('')}</select></div><div class="field"><label>Motif ou observation</label><textarea name="reason" placeholder="Obligatoire pour un échec, retour ou une annulation"></textarea></div></div><div class="actions" style="margin-top:16px"><button class="primary">Enregistrer l’étape</button></div></form><div id="transitionResult"></div></section>` : ''}
+
+    ${order.requiresOtpForDelivery ? `<section class="card" style="margin-top:18px"><h2>Confirmer la remise avec un code</h2><p class="subtitle">Le code est valable 30 minutes et ne peut être utilisé qu’une fois. Communiquez-le au destinataire par un canal fiable.</p><div class="actions" style="margin-top:16px"><button class="secondary" id="generateOtp">Générer un code de remise</button></div><div id="otpGenerated"></div><form id="verifyOtp" style="margin-top:18px"><div class="field"><label>Code communiqué par le destinataire</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><div class="actions" style="margin-top:12px"><button class="primary">Confirmer la livraison</button></div></form><div id="otpResult"></div></section>` : ''}
+    ${order.proof_id ? `<section class="card" style="margin-top:18px"><h2>Preuve de remise</h2><div class="notice success">Remise confirmée par code à usage unique le ${escapeHtml(formatDate(order.proof_verified_at))}.</div></section>` : ''}
+
+    <section class="card" style="margin-top:18px"><h2>Incidents</h2><form id="incidentForm"><div class="form-grid"><div class="field"><label>Type</label><select name="category">${incidentOptions}</select></div><div class="field"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div><div class="field full"><label>Description factuelle</label><textarea name="description" maxlength="2000" required placeholder="Décrivez ce qui s’est passé, sans supprimer les faits précédents."></textarea></div></div><div class="actions" style="margin-top:14px"><button class="secondary">Déclarer l’incident</button></div></form><div id="incidentResult"></div>
+      <div class="incident-list">${order.incidents.length ? order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong> ${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}<p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))} · ${escapeHtml(incident.opened_by)} · gravité ${escapeHtml(incident.severity)}</small>${incident.resolution ? `<p><strong>Résolution :</strong> ${escapeHtml(incident.resolution)}</p>` : ''}</div>${incident.status === 'open' ? `<button class="secondary resolveIncident" data-incident-id="${escapeHtml(incident.id)}">Résoudre</button>` : ''}</article>`).join('') : '<p class="subtitle">Aucun incident déclaré.</p>'}</div>
+    </section>
+
+    <section class="card" style="margin-top:18px"><h2>Chronologie</h2><ol class="timeline">${order.events.map((event) => `<li><div>${badge(event.to_status)}${event.from_status ? `<span class="timeline-from"> depuis ${escapeHtml(event.from_status)}</span>` : ''}</div><strong>${escapeHtml(event.actor_name)}</strong><small>${escapeHtml(formatDate(event.created_at))}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
+
+  const transitionForm = document.getElementById('transitionForm');
+  if (transitionForm) transitionForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    if (reasonRequiredStatuses.includes(values.toStatus) && String(values.reason || '').trim().length < 5) {
+      document.getElementById('transitionResult').innerHTML = '<div class="notice error">Expliquez la raison de cette étape.</div>';
+      return;
+    }
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      const idempotencyKey = idempotencyKeyFor(event.currentTarget, 'transition', values);
+      await api(`/api/app/orders/${encodeURIComponent(id)}/transition`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...values, idempotencyKey }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('transitionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+
+  const generateOtp = document.getElementById('generateOtp');
+  if (generateOtp) generateOtp.addEventListener('click', async () => {
+    generateOtp.disabled = true;
+    try {
+      const idempotencyKey = generateOtp.dataset.idempotencyKey || actionKey('otp');
+      generateOtp.dataset.idempotencyKey = idempotencyKey;
+      const result = await api(`/api/app/orders/${encodeURIComponent(id)}/otp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey }),
+      });
+      document.getElementById('otpGenerated').innerHTML = `<div class="otp-code"><span>Code à transmettre au destinataire</span><strong>${escapeHtml(result.code)}</strong><small>Expire le ${escapeHtml(formatDate(result.expiresAt))} · ${escapeHtml(result.attemptsRemaining)} essais</small></div>`;
+      generateOtp.textContent = 'Régénérer et invalider l’ancien code';
+      delete generateOtp.dataset.idempotencyKey;
+      generateOtp.disabled = false;
+    } catch (error) {
+      document.getElementById('otpGenerated').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      generateOtp.disabled = false;
+    }
+  });
+
+  const verifyOtp = document.getElementById('verifyOtp');
+  if (verifyOtp) verifyOtp.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      const code = String(new FormData(event.currentTarget).get('code') || '').trim();
+      const idempotencyKey = idempotencyKeyFor(event.currentTarget, 'otp-verify', { code });
+      await api(`/api/app/orders/${encodeURIComponent(id)}/otp/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, idempotencyKey }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('otpResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+
+  document.getElementById('incidentForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      const values = Object.fromEntries(new FormData(event.currentTarget));
+      const idempotencyKey = idempotencyKeyFor(event.currentTarget, 'incident', values);
+      await api(`/api/app/orders/${encodeURIComponent(id)}/incidents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...values, idempotencyKey }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('incidentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+
+  document.querySelectorAll('.resolveIncident').forEach((button) => button.addEventListener('click', async () => {
+    const resolution = prompt('Comment cet incident a-t-il été résolu ?');
+    if (!resolution) return;
+    button.disabled = true;
+    try {
+      const idempotencyKey = idempotencyKeyFor(button, 'incident-resolution', { resolution });
+      await api(`/api/app/incidents/${encodeURIComponent(button.dataset.incidentId)}/resolve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolution, idempotencyKey }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('incidentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  }));
 }
 
 async function renderDrivers() {
@@ -245,6 +394,8 @@ async function start() {
     const path = location.pathname;
     const detail = path.match(/^\/app\/demandes\/(\d+)$/);
     if (detail) return await renderRequestDetail(detail[1]);
+    const orderDetail = path.match(/^\/app\/commandes\/(\d+)$/);
+    if (orderDetail) return await renderOrderDetail(orderDetail[1]);
     if (path === '/app') return await renderDashboard();
     if (path === '/app/demandes') return await renderRequests();
     if (path === '/app/nouvelle-commande') return await renderNewOrder();

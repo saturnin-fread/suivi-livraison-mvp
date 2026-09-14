@@ -32,3 +32,11 @@
 - Remplacement de la confirmation isolée par une conversion atomique demande → commande → lien de suivi.
 - Ajout d'une protection contre les doubles clics et les conversions répétées.
 - Extension du test automatique à l'affectation, la conversion sans doublon et au verrouillage client.
+- Ajout de la machine d'états contrôlée des commandes et de la fiche d'exécution détaillée.
+- Ajout d'un journal chronologique des changements avec acteur, date et motif.
+- Ajout de clés d'idempotence et de verrous de ligne pour les doubles clics et actions concurrentes.
+- Ajout des incidents typés, de leur gravité et de leur résolution sans effacement de la déclaration.
+- Ajout de la preuve de remise OTP : six chiffres, hachage salé, expiration, révocation et cinq essais.
+- Blocage du statut `Livrée` en l'absence d'une preuve OTP valide.
+- Arrêt de l'exposition de la position précise sur le lien public après livraison, retour ou annulation.
+- Extension du test automatique aux transitions concurrentes, incidents, OTP, preuve et confidentialité terminale.

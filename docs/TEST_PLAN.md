@@ -42,6 +42,18 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - arrêter temporairement Traccar ;
 - vérifier que l’interface affiche une position ancienne ou indisponible sans planter.
 
+## Test F2 — exécution et preuve
+
+- refuser une transition qui saute des étapes ;
+- envoyer deux fois simultanément la même action et vérifier un seul événement ;
+- exiger un motif pour échec, retour et annulation ;
+- générer deux fois la même requête OTP et obtenir le même résultat ;
+- vérifier qu'un mauvais code retire exactement un essai ;
+- vérifier qu'un nouveau code révoque l'ancien ;
+- vérifier qu'un code correct crée une seule preuve et passe la commande à `Livrée` ;
+- vérifier qu'après livraison le lien public ne contient plus latitude ni longitude ;
+- créer puis résoudre un incident sans modifier sa description d'origine.
+
 ## Test G — confirmation et modification client
 
 - vérifier la redirection vers la page de confirmation ;

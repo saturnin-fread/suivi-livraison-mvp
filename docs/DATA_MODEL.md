@@ -30,6 +30,18 @@ Comptes, rôles par entreprise et sessions de connexion. L'espace plateforme res
 
 Journal minimal des actions sensibles déjà utilisé pour les demandes, commandes et disponibilités.
 
+### `order_status_events`
+
+Chronologie append-only des transitions de commande, avec acteur, motif, clé d'idempotence et empreinte de la requête.
+
+### `delivery_otp_challenges`, `delivery_otp_attempts` et `delivery_proofs`
+
+Défis OTP temporaires, tentatives idempotentes et preuves de remise durables. Le code en clair n'est jamais stocké.
+
+### `delivery_incidents`
+
+Déclarations factuelles et résolutions d'incidents rattachées à une commande.
+
 ## Tables à ajouter ensuite
 
 ```text
@@ -44,9 +56,6 @@ delivery_runs
 delivery_run_orders
 delivery_stops
 packages
-order_status_events
-proofs_of_delivery
-incidents
 payments
 customer_interactions
 notifications_log

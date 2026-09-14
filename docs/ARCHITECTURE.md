@@ -77,6 +77,7 @@ TRACCAR_DEVICE_ID
 DATABASE_URL
 ADMIN_USER
 ADMIN_PASSWORD
+OTP_PEPPER
 ```
 
 Les valeurs ne sont pas documentées ici volontairement.

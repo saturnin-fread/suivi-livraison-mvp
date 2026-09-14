@@ -28,6 +28,12 @@
 | Tournée réordonnée | Recalculer les estimations, demander confirmation et tracer l'auteur |
 | Colis sans GPS individuel | Afficher une position déduite clairement identifiée |
 | Estimation impossible | Afficher le statut et la dernière position sans inventer une heure d'arrivée |
+| Double clic sur une étape | Retourner le même résultat grâce à la clé d'idempotence |
+| Deux opérateurs avancent la même commande | Verrouiller la ligne puis refuser l'action devenue incohérente |
+| Mauvais code de remise | Décrémenter les essais, ne jamais journaliser le code et révoquer après la limite |
+| Code expiré ou régénéré | Refuser la remise et demander un nouveau code |
+| Livraison sans preuve | Interdire le passage manuel à `Livrée` |
+| Incident résolu | Conserver la déclaration initiale et ajouter la résolution séparément |
 
 ## Cartographie et temps réel
 

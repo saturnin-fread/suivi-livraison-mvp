@@ -47,3 +47,11 @@ Le CRM relie les clients, lieux, commandes, livreurs, communications, paiements 
 ## 2026-09-14 — Preuve et prudence des indicateurs
 
 La position GPS est un élément de contexte et non une preuve absolue. Les décisions en cas de litige utilisent une chronologie, les preuves de remise, la précision, les horodatages et l'audit. Aucun indicateur GPS ne sanctionne automatiquement un livreur.
+
+## 2026-09-14 — Transitions explicites et idempotentes
+
+Une commande suit une machine d'états côté serveur. Chaque mutation sensible porte une clé d'idempotence, verrouille la commande et écrit un événement distinct. L'interface ne peut donc pas inventer ou sauter une transition.
+
+## 2026-09-14 — OTP comme première preuve de remise
+
+La première preuve exigée est un code à six chiffres, limité en durée et en essais. Le passage à `Livrée` et la création de la preuve sont atomiques. Photo et signature resteront des options configurables, notamment pour éviter une collecte excessive de données personnelles.

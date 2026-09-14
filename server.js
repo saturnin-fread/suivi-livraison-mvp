@@ -11,6 +11,22 @@ const port = Number(process.env.PORT || 3000);
 const demoToken = process.env.DEMO_TRACKING_TOKEN || 'demo-ccg-2026';
 const sessionDurationMs = 8 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
+const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
+const orderTransitions = {
+  'En préparation': ['Confirmée', 'Annulée'],
+  'Confirmée': ['Récupérée', 'Annulée'],
+  'Récupérée': ['En tournée', 'Retour'],
+  'En tournée': ['En livraison', 'Échec', 'Retour'],
+  'En livraison': ['Arrivée', 'Échec', 'Retour'],
+  'Arrivée': ['Échec', 'Retour'],
+  'Échec': ['En livraison', 'Retour'],
+  'Retour': ['Retournée'],
+  'Livrée': [],
+  'Retournée': [],
+  'Annulée': [],
+};
+const reasonRequiredStatuses = ['Échec', 'Retour', 'Retournée', 'Annulée'];
+const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement', 'vehicule', 'gps', 'autre'];
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -55,6 +71,24 @@ function passwordMatches(password, salt, expectedHash) {
 
 function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
+}
+
+function normalizeIdempotencyKey(value) {
+  const key = String(value || '').trim();
+  return key.length >= 8 && key.length <= 128 && /^[A-Za-z0-9:._-]+$/.test(key) ? key : null;
+}
+
+function otpCodeFor(companyId, orderId, idempotencyKey) {
+  const secret = process.env.OTP_PEPPER || process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD;
+  if (!secret) throw Object.assign(new Error('La génération OTP n’est pas configurée.'), { statusCode: 503 });
+  const digestBytes = crypto.createHmac('sha256', secret)
+    .update(`${companyId}:${orderId}:${idempotencyKey}`)
+    .digest();
+  return String(digestBytes.readUInt32BE(0) % 1000000).padStart(6, '0');
+}
+
+function allowedOrderTransitions(status) {
+  return orderTransitions[status] || [];
 }
 
 function optionalNumber(value) {
@@ -228,8 +262,95 @@ async function initDatabase() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS landmark TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
       CREATE UNIQUE INDEX IF NOT EXISTS orders_customer_request_unique
         ON orders(customer_request_id) WHERE customer_request_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS order_status_events (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        reason TEXT,
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS delivery_otp_challenges (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        code_salt TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        attempts_remaining INTEGER NOT NULL DEFAULT 5,
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS delivery_proofs (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        proof_type TEXT NOT NULL,
+        otp_challenge_id BIGINT REFERENCES delivery_otp_challenges(id) ON DELETE SET NULL,
+        verified_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(order_id, proof_type)
+      );
+
+      CREATE TABLE IF NOT EXISTS delivery_otp_attempts (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        otp_challenge_id BIGINT REFERENCES delivery_otp_challenges(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        success BOOLEAN NOT NULL,
+        attempts_remaining INTEGER NOT NULL,
+        attempted_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS delivery_incidents (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'medium',
+        description TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        opened_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        resolved_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        resolution TEXT,
+        resolution_idempotency_key TEXT,
+        resolution_fingerprint TEXT,
+        resolved_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+      ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS request_fingerprint TEXT;
+      ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS resolution_idempotency_key TEXT;
+      ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS resolution_fingerprint TEXT;
 
       CREATE TABLE IF NOT EXISTS audit_logs (
         id BIGSERIAL PRIMARY KEY,
@@ -248,6 +369,28 @@ async function initDatabase() {
         ON orders(company_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS audit_logs_company_created_idx
         ON audit_logs(company_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS order_status_events_order_created_idx
+        ON order_status_events(order_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS delivery_otp_challenges_order_created_idx
+        ON delivery_otp_challenges(order_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS delivery_otp_attempts_order_created_idx
+        ON delivery_otp_attempts(order_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS delivery_incidents_order_created_idx
+        ON delivery_incidents(order_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_incidents_resolution_key_unique
+        ON delivery_incidents(company_id, resolution_idempotency_key)
+        WHERE resolution_idempotency_key IS NOT NULL;
+
+      INSERT INTO order_status_events (
+        company_id, order_id, from_status, to_status, actor_user_id,
+        idempotency_key, request_fingerprint, metadata, created_at
+      )
+      SELECT o.company_id, o.id, NULL, o.status, NULL,
+             'system:bootstrap-order:' || o.id,
+             md5('bootstrap:' || o.id || ':' || o.status),
+             jsonb_build_object('source', 'bootstrap'), o.created_at
+      FROM orders o
+      WHERE NOT EXISTS (SELECT 1 FROM order_status_events e WHERE e.order_id = o.id);
     `);
 
     let company = await client.query(
@@ -421,6 +564,9 @@ app.get(companyPages, requireCompanyPage, (_req, res) => {
 app.get('/app/demandes/:id', requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
+app.get('/app/commandes/:id', requireCompanyPage, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
 
 app.get('/suivi/:token', (req, res) => {
   if (req.params.token !== demoToken && !pool) return res.status(404).send('Lien de suivi introuvable ou expiré.');
@@ -587,6 +733,13 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       [order.rows[0].id, trackingToken]
     );
     await client.query(
+      `INSERT INTO order_status_events (
+         company_id, order_id, from_status, to_status, actor_user_id,
+         idempotency_key, request_fingerprint, metadata
+       ) VALUES ($1, $2, NULL, 'Confirmée', $3, $4, $5, jsonb_build_object('source', 'customer_request', 'requestId', $6::bigint))`,
+      [req.auth.company_id, order.rows[0].id, req.auth.user_id, `system:request-conversion:${request.id}`, digest(`request-conversion:${request.id}:${driver.id}`), request.id]
+    );
+    await client.query(
       `UPDATE customer_requests
        SET status = 'Confirmée', validated_at = NOW(), version = version + 1, updated_at = NOW()
        WHERE id = $1`,
@@ -686,6 +839,393 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   return res.json(result.rows);
 }));
 
+app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT o.*, d.name AS driver_name, d.phone AS driver_phone,
+            d.vehicle_type AS driver_vehicle_type, t.token AS tracking_token,
+            t.expires_at AS tracking_expires_at,
+            p.id AS proof_id, p.proof_type, p.verified_at AS proof_verified_at,
+            (SELECT c.expires_at FROM delivery_otp_challenges c
+             WHERE c.order_id = o.id AND c.consumed_at IS NULL AND c.revoked_at IS NULL
+               AND c.expires_at > NOW()
+             ORDER BY c.created_at DESC LIMIT 1) AS active_otp_expires_at
+     FROM orders o
+     JOIN drivers d ON d.id = o.driver_id
+     LEFT JOIN tracking_links t ON t.order_id = o.id
+     LEFT JOIN delivery_proofs p ON p.order_id = o.id AND p.proof_type = 'otp'
+     WHERE o.id = $1 AND o.company_id = $2`,
+    [req.params.id, req.auth.company_id]
+  );
+  const order = result.rows[0];
+  if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
+  const [events, incidents] = await Promise.all([
+    pool.query(
+      `SELECT e.id, e.from_status, e.to_status, e.reason, e.metadata, e.created_at,
+              COALESCE(u.display_name, 'Système') AS actor_name
+       FROM order_status_events e
+       LEFT JOIN users u ON u.id = e.actor_user_id
+       WHERE e.order_id = $1 AND e.company_id = $2 ORDER BY e.created_at ASC, e.id ASC`,
+      [order.id, req.auth.company_id]
+    ),
+    pool.query(
+      `SELECT i.id, i.category, i.severity, i.description, i.status, i.resolution,
+              i.created_at, i.resolved_at, COALESCE(u.display_name, 'Système') AS opened_by
+       FROM delivery_incidents i
+       LEFT JOIN users u ON u.id = i.opened_by_user_id
+       WHERE i.order_id = $1 AND i.company_id = $2 ORDER BY i.created_at DESC, i.id DESC`,
+      [order.id, req.auth.company_id]
+    ),
+  ]);
+  return res.json({
+    ...order,
+    allowedTransitions: allowedOrderTransitions(order.status),
+    requiresOtpForDelivery: order.status === 'Arrivée' && !order.proof_id,
+    isTerminal: terminalOrderStatuses.includes(order.status),
+    events: events.rows,
+    incidents: incidents.rows,
+  });
+}));
+
+app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (req, res) => {
+  const toStatus = String(req.body.toStatus || '').trim();
+  const reason = String(req.body.reason || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide. Rechargez puis réessayez.' });
+  if (!Object.prototype.hasOwnProperty.call(orderTransitions, toStatus)) {
+    return res.status(400).json({ error: 'Étape de livraison invalide.' });
+  }
+  if (reasonRequiredStatuses.includes(toStatus) && reason.length < 5) {
+    return res.status(400).json({ error: 'Expliquez la raison en au moins 5 caractères.' });
+  }
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), toStatus, reason }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status, version FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+
+    const repeated = await client.query(
+      `SELECT id, order_id, to_status, request_fingerprint FROM order_status_events
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée pour une autre opération.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: repeated.rows[0].to_status, eventId: repeated.rows[0].id, alreadyApplied: true });
+    }
+    if (!allowedOrderTransitions(order.status).includes(toStatus)) {
+      throw Object.assign(new Error(`La commande est maintenant « ${order.status} ». Cette transition n’est plus possible.`), { statusCode: 409 });
+    }
+
+    const event = await client.query(
+      `INSERT INTO order_status_events (
+         company_id, order_id, from_status, to_status, reason, actor_user_id,
+         idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
+      [req.auth.company_id, order.id, order.status, toStatus, reason || null, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `UPDATE orders SET status = $1, version = version + 1, status_changed_at = NOW(), updated_at = NOW(),
+         completed_at = CASE WHEN $1 = ANY($2::text[]) THEN NOW() ELSE completed_at END,
+         cancelled_at = CASE WHEN $1 = 'Annulée' THEN NOW() ELSE cancelled_at END,
+         failure_reason = CASE WHEN $1 = ANY($3::text[]) THEN $4 ELSE failure_reason END
+       WHERE id = $5`,
+      [toStatus, terminalOrderStatuses, reasonRequiredStatuses, reason || null, order.id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'status_changed', jsonb_build_object('from', $4::text, 'to', $5::text, 'eventId', $6::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, status: toStatus, eventId: event.rows[0].id, version: Number(order.version) + 1 });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Order transition error:', error.message);
+    return res.status(500).json({ error: 'Impossible de mettre à jour cette livraison.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/otp', requireCompanyApi, asyncRoute(async (req, res) => {
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (order.status !== 'Arrivée') {
+      throw Object.assign(new Error('Le code de remise est disponible uniquement lorsque le livreur est arrivé.'), { statusCode: 409 });
+    }
+    const proof = await client.query(`SELECT id FROM delivery_proofs WHERE order_id = $1 AND proof_type = 'otp'`, [order.id]);
+    if (proof.rows[0]) throw Object.assign(new Error('La remise de cette commande est déjà confirmée.'), { statusCode: 409 });
+
+    const existing = await client.query(
+      `SELECT id, order_id, expires_at, attempts_remaining FROM delivery_otp_challenges
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    const code = otpCodeFor(req.auth.company_id, order.id, idempotencyKey);
+    if (existing.rows[0]) {
+      if (String(existing.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée pour une autre commande.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ code, expiresAt: existing.rows[0].expires_at, attemptsRemaining: existing.rows[0].attempts_remaining, alreadyGenerated: true });
+    }
+
+    await client.query(
+      `UPDATE delivery_otp_challenges SET revoked_at = NOW()
+       WHERE order_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL`,
+      [order.id]
+    );
+    const salt = crypto.randomBytes(16).toString('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    const challenge = await client.query(
+      `INSERT INTO delivery_otp_challenges (
+         company_id, order_id, code_salt, code_hash, idempotency_key,
+         attempts_remaining, expires_at, created_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5, 5, $6, $7) RETURNING id`,
+      [req.auth.company_id, order.id, salt, hashPassword(code, salt), idempotencyKey, expiresAt, req.auth.user_id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'delivery_otp_generated', jsonb_build_object('challengeId', $4::bigint, 'expiresAt', $5::text))`,
+      [req.auth.company_id, req.auth.user_id, order.id, challenge.rows[0].id, expiresAt.toISOString()]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ code, expiresAt, attemptsRemaining: 5 });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('OTP generation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de générer le code de remise.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/otp/verify', requireCompanyApi, asyncRoute(async (req, res) => {
+  const code = String(req.body.code || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: 'Saisissez le code à 6 chiffres.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), action: 'verify_otp', codeDigest: digest(code) }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status, version FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const previousAttempt = await client.query(
+      `SELECT id, order_id, request_fingerprint, success, attempts_remaining
+       FROM delivery_otp_attempts WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (previousAttempt.rows[0]) {
+      const attempt = previousAttempt.rows[0];
+      if (attempt.request_fingerprint !== fingerprint || String(attempt.order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée pour une autre tentative.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      if (attempt.success) return res.json({ orderId: order.id, status: 'Livrée', alreadyVerified: true });
+      const retryStatus = attempt.attempts_remaining ? 400 : 429;
+      return res.status(retryStatus).json({
+        error: attempt.attempts_remaining ? `Code incorrect. ${attempt.attempts_remaining} essai(s) restant(s).` : 'Trop d’essais. Générez un nouveau code.',
+        attemptsRemaining: attempt.attempts_remaining,
+        alreadyAttempted: true,
+      });
+    }
+    const repeated = await client.query(
+      `SELECT id, order_id, request_fingerprint FROM order_status_events
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: 'Livrée', alreadyVerified: true });
+    }
+    if (order.status !== 'Arrivée') {
+      throw Object.assign(new Error(`La commande est maintenant « ${order.status} » et ne peut pas être remise avec ce code.`), { statusCode: 409 });
+    }
+    const challengeResult = await client.query(
+      `SELECT id, code_salt, code_hash, attempts_remaining FROM delivery_otp_challenges
+       WHERE order_id = $1 AND company_id = $2 AND consumed_at IS NULL AND revoked_at IS NULL
+         AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+      [order.id, req.auth.company_id]
+    );
+    const challenge = challengeResult.rows[0];
+    if (!challenge) throw Object.assign(new Error('Aucun code actif. Générez un nouveau code de remise.'), { statusCode: 409 });
+    if (!passwordMatches(code, challenge.code_salt, challenge.code_hash)) {
+      const remaining = Math.max(0, challenge.attempts_remaining - 1);
+      await client.query(
+        `UPDATE delivery_otp_challenges SET attempts_remaining = $1,
+           revoked_at = CASE WHEN $1 = 0 THEN NOW() ELSE revoked_at END WHERE id = $2`,
+        [remaining, challenge.id]
+      );
+      await client.query(
+        `INSERT INTO delivery_otp_attempts (
+           company_id, order_id, otp_challenge_id, idempotency_key, request_fingerprint,
+           success, attempts_remaining, attempted_by_user_id
+         ) VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7)`,
+        [req.auth.company_id, order.id, challenge.id, idempotencyKey, fingerprint, remaining, req.auth.user_id]
+      );
+      await client.query(
+        `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+         VALUES ($1, $2, 'order', $3, 'delivery_otp_failed', jsonb_build_object('attemptsRemaining', $4::int))`,
+        [req.auth.company_id, req.auth.user_id, order.id, remaining]
+      );
+      await client.query('COMMIT');
+      return res.status(remaining ? 400 : 429).json({ error: remaining ? `Code incorrect. ${remaining} essai(s) restant(s).` : 'Trop d’essais. Générez un nouveau code.', attemptsRemaining: remaining });
+    }
+
+    const proof = await client.query(
+      `INSERT INTO delivery_proofs (company_id, order_id, proof_type, otp_challenge_id, verified_by_user_id, details)
+       VALUES ($1, $2, 'otp', $3, $4, jsonb_build_object('method', 'one_time_code')) RETURNING id, verified_at`,
+      [req.auth.company_id, order.id, challenge.id, req.auth.user_id]
+    );
+    await client.query(
+      `INSERT INTO delivery_otp_attempts (
+         company_id, order_id, otp_challenge_id, idempotency_key, request_fingerprint,
+         success, attempts_remaining, attempted_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5, TRUE, 0, $6)`,
+      [req.auth.company_id, order.id, challenge.id, idempotencyKey, fingerprint, req.auth.user_id]
+    );
+    await client.query(`UPDATE delivery_otp_challenges SET consumed_at = NOW(), attempts_remaining = 0 WHERE id = $1`, [challenge.id]);
+    const event = await client.query(
+      `INSERT INTO order_status_events (
+         company_id, order_id, from_status, to_status, actor_user_id,
+         idempotency_key, request_fingerprint, metadata
+       ) VALUES ($1, $2, 'Arrivée', 'Livrée', $3, $4, $5, jsonb_build_object('proofId', $6::bigint, 'proofType', 'otp')) RETURNING id`,
+      [req.auth.company_id, order.id, req.auth.user_id, idempotencyKey, fingerprint, proof.rows[0].id]
+    );
+    await client.query(
+      `UPDATE orders SET status = 'Livrée', version = version + 1, status_changed_at = NOW(),
+         completed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [order.id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'delivered_with_otp', jsonb_build_object('proofId', $4::bigint, 'eventId', $5::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, proof.rows[0].id, event.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, status: 'Livrée', proofId: proof.rows[0].id, verifiedAt: proof.rows[0].verified_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('OTP verification error:', error.message);
+    return res.status(500).json({ error: 'Impossible de confirmer la remise.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/incidents', requireCompanyApi, asyncRoute(async (req, res) => {
+  const category = String(req.body.category || '').trim();
+  const severity = String(req.body.severity || 'medium').trim();
+  const description = String(req.body.description || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!incidentCategories.includes(category) || !['low', 'medium', 'high'].includes(severity)) {
+    return res.status(400).json({ error: 'Type ou gravité d’incident invalide.' });
+  }
+  if (description.length < 5 || description.length > 2000) {
+    return res.status(400).json({ error: 'Décrivez l’incident entre 5 et 2 000 caractères.' });
+  }
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const order = await pool.query(`SELECT id FROM orders WHERE id = $1 AND company_id = $2`, [req.params.id, req.auth.company_id]);
+  if (!order.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), category, severity, description }));
+  const inserted = await pool.query(
+    `INSERT INTO delivery_incidents (
+       company_id, order_id, category, severity, description, idempotency_key,
+       request_fingerprint, opened_by_user_id
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (company_id, idempotency_key) DO NOTHING RETURNING id, created_at`,
+    [req.auth.company_id, order.rows[0].id, category, severity, description, idempotencyKey, fingerprint, req.auth.user_id]
+  );
+  if (!inserted.rows[0]) {
+    const existing = await pool.query(
+      `SELECT id, order_id, request_fingerprint, created_at FROM delivery_incidents
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (!existing.rows[0] || String(existing.rows[0].order_id) !== String(order.rows[0].id) || existing.rows[0].request_fingerprint !== fingerprint) {
+      return res.status(409).json({ error: 'Cette clé d’action a déjà été utilisée pour un autre incident.' });
+    }
+    return res.json({ id: existing.rows[0].id, createdAt: existing.rows[0].created_at, alreadyCreated: true });
+  }
+  await writeAudit(req.auth, 'order', order.rows[0].id, 'incident_opened', { incidentId: inserted.rows[0].id, category, severity });
+  return res.status(201).json({ id: inserted.rows[0].id, createdAt: inserted.rows[0].created_at });
+}));
+
+app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (req, res) => {
+  const resolution = String(req.body.resolution || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (resolution.length < 5 || resolution.length > 2000) return res.status(400).json({ error: 'Précisez la résolution de l’incident.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(JSON.stringify({ incidentId: String(req.params.id), resolution }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const incidentResult = await client.query(
+      `SELECT id, order_id, status, resolution_idempotency_key, resolution_fingerprint
+       FROM delivery_incidents WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const incident = incidentResult.rows[0];
+    if (!incident) throw Object.assign(new Error('Incident introuvable.'), { statusCode: 404 });
+    if (incident.status === 'resolved') {
+      if (incident.resolution_idempotency_key !== idempotencyKey || incident.resolution_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cet incident a déjà été résolu.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ id: incident.id, status: 'resolved', alreadyResolved: true });
+    }
+    await client.query(
+      `UPDATE delivery_incidents SET status = 'resolved', resolution = $1, resolved_by_user_id = $2,
+         resolution_idempotency_key = $3, resolution_fingerprint = $4,
+         resolved_at = NOW(), updated_at = NOW() WHERE id = $5`,
+      [resolution, req.auth.user_id, idempotencyKey, fingerprint, incident.id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'incident_resolved', jsonb_build_object('incidentId', $4::bigint))`,
+      [req.auth.company_id, req.auth.user_id, incident.order_id, incident.id]
+    );
+    await client.query('COMMIT');
+    return res.json({ id: incident.id, status: 'resolved' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Incident resolution error:', error.message);
+    return res.status(500).json({ error: 'Impossible de résoudre cet incident.' });
+  } finally {
+    client.release();
+  }
+}));
+
 app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   const { customerName, customerPhone, deliveryAddress, driverId } = req.body;
   if (!customerName || !deliveryAddress || !driverId) {
@@ -701,14 +1241,21 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     );
     if (!driver.rows[0]) throw Object.assign(new Error('Livreur non autorisé.'), { statusCode: 400 });
     const order = await client.query(
-      `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address, status)
+       VALUES ($1, $2, $3, $4, $5, 'Confirmée') RETURNING id`,
       [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress]
     );
     const token = randomToken(24);
     await client.query(
       `INSERT INTO tracking_links (order_id, token, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`,
       [order.rows[0].id, token]
+    );
+    await client.query(
+      `INSERT INTO order_status_events (
+         company_id, order_id, from_status, to_status, actor_user_id,
+         idempotency_key, request_fingerprint, metadata
+       ) VALUES ($1, $2, NULL, 'Confirmée', $3, $4, $5, '{"source":"direct"}'::jsonb)`,
+      [req.auth.company_id, order.rows[0].id, req.auth.user_id, `system:direct-order:${order.rows[0].id}`, digest(`direct-order:${order.rows[0].id}`)]
     );
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action)
@@ -808,17 +1355,27 @@ app.put('/api/public/requests/:token', asyncRoute(async (req, res) => {
 app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
   const traccarUrl = process.env.TRACCAR_URL;
   let deviceId = process.env.TRACCAR_DEVICE_ID;
+  let orderStatus = null;
+  let statusChangedAt = null;
   if (pool && req.params.token !== demoToken) {
     const link = await pool.query(
-      `SELECT d.traccar_unique_id FROM tracking_links t
+      `SELECT d.traccar_unique_id, o.status, o.status_changed_at FROM tracking_links t
        JOIN orders o ON o.id = t.order_id JOIN drivers d ON d.id = o.driver_id
        WHERE t.token = $1 AND (t.expires_at IS NULL OR t.expires_at > NOW())`,
       [req.params.token]
     );
     if (!link.rows[0]) return res.status(404).json({ error: 'Lien de suivi introuvable ou expiré.' });
     deviceId = link.rows[0].traccar_unique_id;
+    orderStatus = link.rows[0].status;
+    statusChangedAt = link.rows[0].status_changed_at;
   } else if (req.params.token !== demoToken && !pool) {
     return res.status(404).json({ error: 'Lien de suivi introuvable ou expiré.' });
+  }
+  if (terminalOrderStatuses.includes(orderStatus)) {
+    const message = orderStatus === 'Livrée' ? 'Votre livraison a été remise.'
+      : orderStatus === 'Retournée' ? 'La livraison a été retournée à l’entreprise.'
+        : 'Cette livraison a été annulée.';
+    return res.json({ status: 'completed', orderStatus, message, timestamp: statusChangedAt });
   }
   if (!traccarUrl || !deviceId || !process.env.TRACCAR_USER || !process.env.TRACCAR_PASSWORD) {
     return res.status(503).json({ error: 'Le suivi n’est pas encore configuré.' });
@@ -839,7 +1396,8 @@ app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
     const timestamp = position.fixTime || position.deviceTime || position.serverTime;
     const isStale = timestamp && (Date.now() - new Date(timestamp).getTime()) > 10 * 60 * 1000;
     return res.json({
-      status: isStale ? 'stale' : 'online', latitude: position.latitude, longitude: position.longitude,
+      status: isStale ? 'stale' : 'online', orderStatus,
+      latitude: position.latitude, longitude: position.longitude,
       speed: position.speed, course: position.course, accuracy: position.accuracy, timestamp,
     });
   } catch (error) {

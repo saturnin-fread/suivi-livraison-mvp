@@ -77,6 +77,21 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .detail span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 12px; }
 .placeholder { max-width: 700px; }
 .placeholder ul { color: var(--muted); line-height: 1.8; }
+.otp-code { margin-top: 16px; padding: 18px; border: 1px solid #b9d3ed; border-radius: 12px; background: #f2f8fe; text-align: center; }
+.otp-code span, .otp-code small { display: block; color: var(--muted); }
+.otp-code strong { display: block; margin: 8px 0; font-size: 34px; letter-spacing: .18em; color: var(--navy-dark); }
+.incident-list { display: grid; gap: 12px; margin-top: 20px; }
+.incident { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 15px; border: 1px solid var(--line); border-radius: 11px; }
+.incident p { margin: 8px 0; }
+.incident small { color: var(--muted); }
+.timeline { position: relative; list-style: none; margin: 0; padding: 0 0 0 20px; }
+.timeline::before { content: ''; position: absolute; left: 5px; top: 8px; bottom: 8px; width: 2px; background: var(--line); }
+.timeline li { position: relative; padding: 0 0 22px 16px; }
+.timeline li:last-child { padding-bottom: 0; }
+.timeline li::before { content: ''; position: absolute; left: -20px; top: 7px; width: 12px; height: 12px; border-radius: 50%; background: var(--navy); box-shadow: 0 0 0 4px #e9f0f8; }
+.timeline strong, .timeline small { display: block; margin-top: 6px; }
+.timeline small, .timeline-from { color: var(--muted); font-size: 12px; }
+.timeline p { margin: 7px 0 0; }
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; z-index: 20; width: min(280px, 86vw); transform: translateX(-105%); transition: transform .2s ease; box-shadow: 12px 0 30px #071a2f55; }
@@ -90,4 +105,5 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
   .stats, .form-grid, .detail-grid { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
   .page-header { flex-direction: column; }
+  .incident { flex-direction: column; }
 }

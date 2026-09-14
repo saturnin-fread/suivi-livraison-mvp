@@ -6,6 +6,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 
 - [Plan d'action priorisé](ROADMAP.md)
 - [Vision et parcours métier](PRODUCT_WORKFLOW.md)
+- [Cycle d'exécution des commandes](ORDER_STATE_MACHINE.md)
 - [Architecture technique](ARCHITECTURE.md)
 - [Modèle de données](DATA_MODEL.md)
 - [Erreurs et cas limites](ERRORS_AND_EDGE_CASES.md)
@@ -23,9 +24,10 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - `delivery-app` est déployé sur Railway.
 - Le suivi public fonctionne avec un lien de démonstration.
 - Le formulaire client avec position GPS, repères et créneau fonctionne en version prototype.
-- La page `/admin` actuelle est un écran technique provisoire et non l'espace final des entreprises.
+- `/app` est l'espace entreprise et `/admin` reste réservé à l'administration de la plateforme.
 - La fondation multi-entreprises, la navigation `/app`, la séparation `/admin` et la confirmation modifiable sont déployées en première version.
-- La prochaine évolution prioritaire est la sélection dynamique détaillée des livreurs puis la conversion coordonnée demande → commande.
+- La sélection dynamique, la conversion demande → commande, l'exécution par étapes, les incidents et la preuve OTP disposent d'une première version.
+- Le prochain lot complète l'encaissement, les preuves configurables, les permissions livreur et les tournées.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

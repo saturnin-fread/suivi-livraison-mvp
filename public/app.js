@@ -42,6 +42,7 @@ const paymentStatusLabels = {
 const paymentMethodLabels = {
   cash: 'Espèces', mobile_money: 'Mobile Money', card: 'Carte', bank_transfer: 'Virement', other: 'Autre',
 };
+const roleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
 
 function renderPaymentSection(order) {
   const configured = Boolean(order.payment_account_id);
@@ -496,6 +497,68 @@ async function renderDrivers() {
   }));
 }
 
+async function renderTeam() {
+  setHeader('Équipe et accès', 'Comptes, rôles et invitations');
+  const [team, drivers] = await Promise.all([api('/api/app/team'), api('/api/app/drivers')]);
+  const linkedDriverIds = new Set([
+    ...team.members.filter((member) => member.driver_id).map((member) => String(member.driver_id)),
+    ...team.invitations.filter((invitation) => invitation.driver_id).map((invitation) => String(invitation.driver_id)),
+  ]);
+  const availableDrivers = drivers.filter((driver) => driver.active && !linkedDriverIds.has(String(driver.id)));
+  page.innerHTML = `<div class="page-header"><div><h1>Équipe et accès</h1><p class="subtitle">Chaque personne possède son propre compte. Ne partagez jamais le compte propriétaire.</p></div></div>
+    <section class="card"><h2>Membres actifs</h2>${team.members.length ? `<div class="table-wrap"><table><thead><tr><th>Personne</th><th>Rôle</th><th>Profil livreur</th><th>État</th></tr></thead><tbody>${team.members.map((member) => `<tr><td><strong>${escapeHtml(member.display_name)}</strong><br><small>${escapeHtml(member.email)}</small></td><td>${escapeHtml(roleLabels[member.role] || member.role)}</td><td>${escapeHtml(member.driver_name || '—')}</td><td>${badge(member.disabled ? 'Désactivé' : 'Actif')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun membre.</div>'}</section>
+    <section class="card" style="margin-top:18px"><h2>Inviter une personne</h2><p class="subtitle">Le lien expire après 48 heures et ne fonctionne qu’une seule fois.</p>
+      <form id="invitationForm" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Nom</label><input name="displayName" minlength="2" maxlength="100" required /></div><div class="field"><label>Adresse e-mail</label><input name="email" type="email" required /></div><div class="field"><label>Rôle</label><select name="role" id="invitationRole"><option value="operator">Opérateur</option>${context.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}<option value="driver">Livreur</option></select></div><div class="field" id="driverField" hidden><label>Profil livreur associé</label><select name="driverId" id="invitationDriver"><option value="">Sélectionner</option>${availableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join('')}</select></div></div><button class="primary" style="margin-top:16px">Créer l’invitation</button></form><div id="invitationResult"></div>
+    </section>
+    <section class="card" style="margin-top:18px"><h2>Invitations en attente</h2><div id="pendingInvitations">${team.invitations.length ? `<div class="table-wrap"><table><thead><tr><th>Personne</th><th>Rôle</th><th>Expiration</th><th>Action</th></tr></thead><tbody>${team.invitations.map((invitation) => `<tr><td><strong>${escapeHtml(invitation.display_name)}</strong><br><small>${escapeHtml(invitation.email)}</small></td><td>${escapeHtml(roleLabels[invitation.role] || invitation.role)}${invitation.driver_name ? `<br><small>${escapeHtml(invitation.driver_name)}</small>` : ''}</td><td>${escapeHtml(formatDate(invitation.expires_at))}</td><td><button class="danger revokeInvitation" data-id="${escapeHtml(invitation.id)}">Révoquer</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune invitation en attente.</div>'}</div></section>`;
+
+  const role = document.getElementById('invitationRole');
+  const driverField = document.getElementById('driverField');
+  const driverSelect = document.getElementById('invitationDriver');
+  const updateDriverField = () => {
+    const isDriver = role.value === 'driver';
+    driverField.hidden = !isDriver;
+    driverSelect.required = isDriver;
+    if (!isDriver) driverSelect.value = '';
+  };
+  role.addEventListener('change', updateDriverField);
+  updateDriverField();
+  document.getElementById('invitationForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      const payload = Object.fromEntries(new FormData(event.currentTarget));
+      const result = await api('/api/app/invitations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      const url = `${location.origin}${result.path}`;
+      document.getElementById('invitationResult').innerHTML = `<div class="notice success"><strong>Invitation créée.</strong><br><a target="_blank" rel="noopener" href="${escapeHtml(url)}">${escapeHtml(url)}</a><div class="actions" style="margin-top:10px"><button class="secondary" id="copyInvitation" type="button">Copier le lien</button></div></div>`;
+      event.currentTarget.reset();
+      updateDriverField();
+      button.disabled = false;
+      document.getElementById('copyInvitation').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(url);
+        document.getElementById('copyInvitation').textContent = 'Lien copié';
+      });
+    } catch (error) {
+      document.getElementById('invitationResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+  document.querySelectorAll('.revokeInvitation').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Révoquer cette invitation ? Le lien ne fonctionnera plus.')) return;
+    button.disabled = true;
+    try {
+      await api(`/api/app/invitations/${encodeURIComponent(button.dataset.id)}/revoke`, { method: 'POST' });
+      await renderTeam();
+    } catch (error) {
+      button.disabled = false;
+      document.getElementById('pendingInvitations').insertAdjacentHTML('afterbegin', `<div class="notice error">${escapeHtml(error.message)}</div>`);
+    }
+  }));
+}
+
 function renderPlaceholder(title, description, items) {
   setHeader(title, description);
   page.innerHTML = `<div class="page-header"><div><h1>${escapeHtml(title)}</h1><p class="subtitle">${escapeHtml(description)}</p></div></div><section class="card placeholder"><h2>Prévu dans la feuille de route</h2><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul><p>Cette page est séparée dès maintenant afin d’éviter d’empiler toutes les fonctions dans un seul écran.</p></section>`;
@@ -508,6 +571,9 @@ async function start() {
     document.getElementById('topCompany').textContent = context.company.name;
     document.getElementById('topRole').textContent = context.user.role;
     document.getElementById('userName').textContent = `${context.user.name} · ${context.user.email}`;
+    if (!['owner', 'manager'].includes(context.user.role)) {
+      document.querySelector('[data-route="/app/equipe"]')?.remove();
+    }
     activateNavigation();
     const path = location.pathname;
     const detail = path.match(/^\/app\/demandes\/(\d+)$/);
@@ -520,6 +586,7 @@ async function start() {
     if (path === '/app/commandes') return await renderOrders();
     if (path === '/app/carte') return renderPlaceholder('Carte d’exploitation', 'Flotte, destinations et tournées', ['Tous les livreurs autorisés', 'Arrêts et parcours restant', 'Filtres et incidents']);
     if (path === '/app/livreurs') return await renderDrivers();
+    if (path === '/app/equipe') return await renderTeam();
     if (path === '/app/clients') return renderPlaceholder('Clients', 'CRM opérationnel', ['Historique des commandes', 'Lieux et repères', 'Interactions et incidents']);
     if (path === '/app/rapports') return renderPlaceholder('Rapports', 'Analyses et exports', ['Suivi mensuel', 'Indicateurs vérifiables', 'Exports Excel']);
     if (path === '/app/parametres') return renderPlaceholder('Paramètres', 'Configuration de l’entreprise', ['Utilisateurs et rôles', 'Règles de livraison', 'Conservation des données']);

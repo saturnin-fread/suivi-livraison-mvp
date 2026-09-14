@@ -72,6 +72,17 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - valider côté entreprise puis vérifier que l'édition est bloquée ;
 - tester expiration, révocation et double soumission.
 
+## Test G2 — comptes et espace livreur
+
+- créer une invitation livreur et vérifier son expiration à 48 heures ;
+- activer le compte puis refuser une seconde utilisation du même lien ;
+- vérifier la redirection du compte livreur vers `/driver` ;
+- désactiver le profil pendant une session et vérifier le refus immédiat ;
+- vérifier qu'un livreur ne peut pas appeler `/api/app/*` ;
+- affecter deux commandes à deux livreurs et tenter de manipuler leurs identifiants ;
+- vérifier que lecture, transition et incident sur la commande étrangère répondent comme introuvables ;
+- répéter une transition et vérifier qu'un seul événement est créé.
+
 ## Test H — tournée multi-colis
 
 - affecter plusieurs commandes au même livreur ;

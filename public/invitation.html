@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Activer mon compte — Livraisons</title>
+    <link rel="stylesheet" href="/app.css" />
+    <style>
+      .invite-page{min-height:100vh;display:grid;place-items:center;padding:18px}
+      .invite-card{width:min(500px,100%)}
+      .invite-card button{width:100%;margin-top:18px}
+    </style>
+  </head>
+  <body>
+    <main class="invite-page">
+      <section class="card invite-card">
+        <h1>Activer mon compte</h1>
+        <p class="subtitle" id="inviteSummary">Vérification de l’invitation…</p>
+        <form id="inviteForm" hidden>
+          <div class="field" style="margin-top:20px">
+            <label>Nouveau mot de passe</label>
+            <input type="password" name="password" minlength="12" maxlength="128" autocomplete="new-password" required />
+            <small>Au moins 12 caractères. Une phrase facile à retenir est recommandée.</small>
+          </div>
+          <div class="field" style="margin-top:15px">
+            <label>Confirmer le mot de passe</label>
+            <input type="password" name="passwordConfirmation" minlength="12" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <button class="primary">Activer mon compte</button>
+        </form>
+        <div id="inviteResult"></div>
+      </section>
+    </main>
+    <script>
+      const token = decodeURIComponent(location.pathname.split('/').pop());
+      const summary = document.getElementById('inviteSummary');
+      const form = document.getElementById('inviteForm');
+      const result = document.getElementById('inviteResult');
+      const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+      }[character]));
+      async function load() {
+        const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}`);
+        const invitation = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(invitation.error || 'Invitation indisponible.');
+        summary.innerHTML = `Bonjour <strong>${escapeHtml(invitation.display_name)}</strong>. ${escapeHtml(invitation.company_name)} vous invite comme ${invitation.role === 'driver' ? 'livreur' : invitation.role}.`;
+        form.hidden = false;
+      }
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const button = form.querySelector('button');
+        button.disabled = true;
+        result.innerHTML = '';
+        try {
+          const payload = Object.fromEntries(new FormData(form));
+          const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}/accept`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'Activation impossible.');
+          result.innerHTML = '<div class="notice success">Compte activé. Ouverture de votre espace…</div>';
+          location.href = data.redirect;
+        } catch (error) {
+          result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+          button.disabled = false;
+        }
+      });
+      load().catch((error) => { summary.textContent = error.message; result.innerHTML = '<div class="notice error">Demandez une nouvelle invitation à votre responsable.</div>'; });
+    </script>
+  </body>
+</html>

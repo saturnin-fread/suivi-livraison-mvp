@@ -1,0 +1,28 @@
+.driver-body { background: #eef3f8; padding-bottom: 78px; }
+.driver-header { position: sticky; z-index: 10; top: 0; min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; color: #fff; background: var(--navy-dark); box-shadow: 0 3px 14px #0d2e5833; }
+.driver-header strong, .driver-header small { display: block; }
+.driver-header small { margin-top: 3px; color: #c7d7e9; font-size: 12px; }
+.driver-logout { border: 1px solid #ffffff55; border-radius: 9px; padding: 8px 11px; color: #fff; background: transparent; }
+.driver-main { width: min(720px, 100%); margin: 0 auto; padding: 18px 14px 30px; }
+.driver-title { margin-bottom: 16px; }
+.driver-title h1 { font-size: 26px; }
+.delivery-list { display: grid; gap: 13px; }
+.delivery-card { display: block; padding: 17px; border: 1px solid var(--line); border-radius: 14px; color: inherit; background: #fff; text-decoration: none; box-shadow: 0 5px 16px #183a6210; }
+.delivery-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.delivery-card h2 { margin: 0; font-size: 18px; }
+.delivery-card p { margin: 9px 0 0; color: var(--muted); }
+.driver-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.driver-actions .button, .driver-actions button { width: 100%; min-height: 50px; }
+.driver-nav { position: fixed; z-index: 12; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: 1fr 1fr; min-height: 66px; border-top: 1px solid var(--line); background: #fff; box-shadow: 0 -4px 18px #183a6214; }
+.driver-nav a { display: grid; place-items: center; color: var(--muted); text-decoration: none; font-weight: 750; }
+.driver-nav a.active { color: var(--navy); background: #f2f7fc; }
+.driver-detail-grid { display: grid; gap: 12px; }
+.driver-detail-grid .detail { background: #fff; }
+.driver-section { margin-top: 14px; }
+.driver-section h2 { font-size: 18px; }
+.driver-back { display: inline-block; margin-bottom: 13px; color: var(--navy); font-weight: 750; text-decoration: none; }
+@media (max-width: 460px) {
+  .driver-actions { grid-template-columns: 1fr; }
+  .driver-main { padding-right: 10px; padding-left: 10px; }
+  .card { padding: 18px; }
+}

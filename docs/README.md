@@ -8,6 +8,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Vision et parcours métier](PRODUCT_WORKFLOW.md)
 - [Cycle d'exécution des commandes](ORDER_STATE_MACHINE.md)
 - [Encaissement et rapprochement](PAYMENT_RECONCILIATION.md)
+- [Espace livreur et contrôle d'accès](DRIVER_PORTAL_ACCESS.md)
 - [Architecture technique](ARCHITECTURE.md)
 - [Modèle de données](DATA_MODEL.md)
 - [Erreurs et cas limites](ERRORS_AND_EDGE_CASES.md)
@@ -29,7 +30,8 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - La fondation multi-entreprises, la navigation `/app`, la séparation `/admin` et la confirmation modifiable sont déployées en première version.
 - La sélection dynamique, la conversion demande → commande, l'exécution par étapes, les incidents et la preuve OTP disposent d'une première version.
 - L'encaissement à la livraison, les écarts et le rapprochement disposent d'une première version auditée.
-- Le prochain lot traite les permissions et l'espace mobile du livreur, puis les tournées.
+- Les invitations à usage unique et l'espace mobile cloisonné du livreur disposent d'une première version testée.
+- Le prochain lot ajoute les actions terrain sensibles du livreur, puis les preuves complémentaires et les tournées.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

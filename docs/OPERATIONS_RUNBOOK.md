@@ -28,6 +28,7 @@ L'application `delivery-app` utilise la base PostgreSQL nommée `delivery`, dist
 ```text
 /app/login   espace de connexion d'une entreprise
 /app         opérations quotidiennes de l'entreprise
+/driver      espace mobile d'un livreur invité et lié à son profil
 /admin/login administration de la plateforme uniquement
 ```
 

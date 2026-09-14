@@ -39,6 +39,12 @@
 | Double déclaration de collecte | Retourner le même résultat sans doubler le montant |
 | Encaissement saisi par erreur | Permettre l'annulation avant fin de livraison et garder les deux événements |
 | Correction après livraison terminée | Refuser l'annulation simple et exiger un futur ajustement comptable |
+| Invitation déjà utilisée ou expirée | Refuser sans recréer ni modifier le compte |
+| E-mail déjà associé à un compte | Refuser l'invitation tant que le sélecteur multi-entreprises n'existe pas |
+| Profil livreur déjà lié | Empêcher la création d'un second compte pour le même profil |
+| Livreur désactivé avec session ouverte | Refuser immédiatement toutes les API livreur |
+| Livreur modifie l'identifiant d'une commande | Filtrer aussi par `driver_id` et répondre comme si la commande était introuvable |
+| Manager tente d'inviter ou révoquer un manager | Refuser ; cette autorité reste au propriétaire |
 
 ## Cartographie et temps réel
 

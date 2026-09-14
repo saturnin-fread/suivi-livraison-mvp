@@ -59,3 +59,7 @@ La première preuve exigée est un code à six chiffres, limité en durée et en
 ## 2026-09-14 — Encaissement distinct du rapprochement
 
 Le livreur ou l'opérateur déclare ce qui a réellement été reçu. Un propriétaire ou gestionnaire décide ensuite du rapprochement, particulièrement lorsqu'il existe un écart. Les montants XOF sont stockés comme entiers et toutes les corrections ajoutent un événement au lieu de réécrire l'historique.
+
+## 2026-09-14 — Compte livreur lié et accès minimal
+
+Un compte livreur référence exactement un profil `driver` de son entreprise. Il utilise `/driver`, ne peut pas ouvrir les API d'exploitation et chaque objet terrain est filtré simultanément par entreprise et par livreur. Les comptes sont activés par invitation temporaire à usage unique plutôt que par partage d'un mot de passe commun.

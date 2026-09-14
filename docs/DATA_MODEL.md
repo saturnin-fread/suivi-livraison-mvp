@@ -24,7 +24,11 @@ Demande non encore convertie en commande : nom, téléphone, créneau, position,
 
 ### `users`, `company_memberships` et `sessions`
 
-Comptes, rôles par entreprise et sessions de connexion. L'espace plateforme reste séparé de l'espace entreprise.
+Comptes, rôles par entreprise et sessions de connexion. Pour le rôle `driver`, l'appartenance référence aussi le profil livreur autorisé. L'espace plateforme reste séparé de l'espace entreprise.
+
+### `user_invitations`
+
+Invitation temporaire à usage unique : entreprise, e-mail normalisé, rôle, profil livreur facultatif, empreinte du token, créateur, expiration, acceptation ou révocation.
 
 ### `audit_logs`
 

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d2e58" />
+    <title>Mes livraisons</title>
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="/driver.css" />
+  </head>
+  <body class="driver-body">
+    <header class="driver-header">
+      <div><strong id="driverName">Espace livreur</strong><small id="companyName">Chargement…</small></div>
+      <form method="post" action="/app/logout"><button class="driver-logout">Quitter</button></form>
+    </header>
+    <main class="driver-main" id="driverPage"><div class="card">Chargement…</div></main>
+    <nav class="driver-nav" aria-label="Navigation livreur">
+      <a href="/driver" id="activeLink">À livrer</a>
+      <a href="/driver?scope=history" id="historyLink">Historique</a>
+    </nav>
+    <script src="/driver.js" defer></script>
+  </body>
+</html>

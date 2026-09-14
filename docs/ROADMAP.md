@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 et 2 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 3 livrés
 
 ### Objectif
 
@@ -237,9 +237,9 @@ Valider le produit sur de vraies tournées avant généralisation.
 
 Les phases 1 à 3 disposent désormais d'une première version exploitable : espaces séparés, isolation par entreprise, demande modifiable, affectation dynamique, conversion atomique et lien de suivi. Les invitations multi-utilisateurs, les conflits de capacité avancés et les règles d'archivage seront renforcés pendant le pilote.
 
-Le prochain lot doit commencer la phase 4 dans cet ordre :
+Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. créer une vue mobile limitée pour le livreur avec permissions dédiées ;
+1. permettre au livreur de saisir l'encaissement et l'OTP uniquement sur sa commande affectée ;
 2. compléter les preuves par photo ou signature configurable, sans les rendre obligatoires par défaut ;
 3. constituer le dossier d'incident exportable et le gel de conservation ;
 4. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;

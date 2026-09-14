@@ -28,6 +28,8 @@ const orderTransitions = {
 const reasonRequiredStatuses = ['Échec', 'Retour', 'Retournée', 'Annulée'];
 const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement', 'vehicule', 'gps', 'autre'];
 const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'];
+const invitationRoles = ['manager', 'operator', 'driver'];
+const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -211,6 +213,40 @@ async function initDatabase() {
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS availability_status TEXT NOT NULL DEFAULT 'available';
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+      ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS driver_id BIGINT;
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'company_memberships_driver_fk') THEN
+          ALTER TABLE company_memberships
+            ADD CONSTRAINT company_memberships_driver_fk FOREIGN KEY (driver_id) REFERENCES drivers(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+      CREATE UNIQUE INDEX IF NOT EXISTS company_memberships_driver_unique
+        ON company_memberships(company_id, driver_id) WHERE driver_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS user_invitations (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        driver_id BIGINT REFERENCES drivers(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        accepted_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS user_invitations_company_created_idx
+        ON user_invitations(company_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS user_invitations_active_email_unique
+        ON user_invitations(company_id, email)
+        WHERE accepted_at IS NULL AND revoked_at IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS user_invitations_active_driver_unique
+        ON user_invitations(company_id, driver_id)
+        WHERE driver_id IS NOT NULL AND accepted_at IS NULL AND revoked_at IS NULL;
 
       CREATE TABLE IF NOT EXISTS orders (
         id BIGSERIAL PRIMARY KEY,
@@ -501,11 +537,13 @@ async function readSession(req, scope) {
   const result = await pool.query(
     `SELECT s.user_id, s.company_id, s.scope, s.expires_at,
             u.email, u.display_name, u.is_platform_admin, u.disabled,
-            c.name AS company_name, c.slug AS company_slug, m.role
+            c.name AS company_name, c.slug AS company_slug, m.role, m.driver_id,
+            d.active AS driver_active
      FROM app_sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN companies c ON c.id = s.company_id
      LEFT JOIN company_memberships m ON m.company_id = s.company_id AND m.user_id = s.user_id
+     LEFT JOIN drivers d ON d.id = m.driver_id AND d.company_id = m.company_id
      WHERE s.token_hash = $1 AND s.scope = $2 AND s.expires_at > NOW()`,
     [digest(token), scope]
   );
@@ -519,6 +557,16 @@ async function readSession(req, scope) {
 function requireCompanyPage(req, res, next) {
   return readSession(req, 'company').then((session) => {
     if (!session) return res.redirect('/app/login');
+    if (session.role === 'driver') return res.redirect('/driver');
+    req.auth = session;
+    return next();
+  }).catch(next);
+}
+
+function requireDriverPage(req, res, next) {
+  return readSession(req, 'company').then((session) => {
+    if (!session) return res.redirect('/app/login');
+    if (session.role !== 'driver' || !session.driver_id || !session.driver_active) return res.redirect('/app');
     req.auth = session;
     return next();
   }).catch(next);
@@ -535,6 +583,16 @@ function requirePlatformPage(req, res, next) {
 function requireCompanyApi(req, res, next) {
   return readSession(req, 'company').then((session) => {
     if (!session) return res.status(401).json({ error: 'Session entreprise requise.' });
+    if (session.role === 'driver') return res.status(403).json({ error: 'Cette fonction est réservée à l’équipe d’exploitation.' });
+    req.auth = session;
+    return next();
+  }).catch(next);
+}
+
+function requireDriverApi(req, res, next) {
+  return readSession(req, 'company').then((session) => {
+    if (!session) return res.status(401).json({ error: 'Session livreur requise.' });
+    if (session.role !== 'driver' || !session.driver_id || !session.driver_active) return res.status(403).json({ error: 'Compte livreur actif requis.' });
     req.auth = session;
     return next();
   }).catch(next);
@@ -575,7 +633,7 @@ app.post('/app/login', asyncRoute(async (req, res) => {
     return res.redirect('/app/login?error=1');
   }
   await createSession(req, res, user.id, user.company_id, 'company');
-  return res.redirect('/app');
+  return res.redirect(user.role === 'driver' ? '/driver' : '/app');
 }));
 
 app.post('/app/logout', asyncRoute(async (req, res) => {
@@ -614,7 +672,7 @@ app.get('/admin', requirePlatformPage, (_req, res) => {
 
 const companyPages = [
   '/app', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/carte',
-  '/app/livreurs', '/app/clients', '/app/rapports', '/app/parametres',
+  '/app/livreurs', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
 ];
 app.get(companyPages, requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
@@ -624,6 +682,10 @@ app.get('/app/demandes/:id', requireCompanyPage, (_req, res) => {
 });
 app.get('/app/commandes/:id', requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
+
+app.get(['/driver', '/driver/commandes/:id'], requireDriverPage, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'driver.html'));
 });
 
 app.get('/suivi/:token', (req, res) => {
@@ -651,9 +713,363 @@ app.get('/demande/:token/confirmation', asyncRoute(async (req, res) => {
   return res.sendFile(path.join(__dirname, 'public', 'confirmation.html'));
 }));
 
+app.get('/invitation/:token', asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).send('Service momentanément indisponible.');
+  const result = await pool.query(
+    `SELECT id FROM user_invitations
+     WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
+    [digest(req.params.token)]
+  );
+  if (!result.rows[0]) return res.status(404).send('Cette invitation est invalide, expirée ou déjà utilisée.');
+  return res.sendFile(path.join(__dirname, 'public', 'invitation.html'));
+}));
+
+app.get('/api/public/invitations/:token', asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const result = await pool.query(
+    `SELECT i.email, i.display_name, i.role, i.expires_at, c.name AS company_name, d.name AS driver_name
+     FROM user_invitations i
+     JOIN companies c ON c.id = i.company_id
+     LEFT JOIN drivers d ON d.id = i.driver_id
+     WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()`,
+    [digest(req.params.token)]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Cette invitation est invalide, expirée ou déjà utilisée.' });
+  return res.json(result.rows[0]);
+}));
+
+app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const password = String(req.body.password || '');
+  const passwordConfirmation = String(req.body.passwordConfirmation || '');
+  if (password.length < 12 || password.length > 128 || password.trim().length < 12) {
+    return res.status(400).json({ error: 'Le mot de passe doit contenir entre 12 et 128 caractères.' });
+  }
+  if (password !== passwordConfirmation) return res.status(400).json({ error: 'Les deux mots de passe ne correspondent pas.' });
+  const client = await pool.connect();
+  let invitation;
+  let userId;
+  try {
+    await client.query('BEGIN');
+    const invitationResult = await client.query(
+      `SELECT * FROM user_invitations WHERE token_hash = $1 FOR UPDATE`,
+      [digest(req.params.token)]
+    );
+    invitation = invitationResult.rows[0];
+    if (!invitation || invitation.accepted_at || invitation.revoked_at || new Date(invitation.expires_at) <= new Date()) {
+      throw Object.assign(new Error('Cette invitation est invalide, expirée ou déjà utilisée.'), { statusCode: 410 });
+    }
+    const existing = await client.query('SELECT id FROM users WHERE email = $1', [invitation.email]);
+    if (existing.rows[0]) {
+      throw Object.assign(new Error('Un compte utilise déjà cette adresse. Demandez une nouvelle invitation à l’entreprise.'), { statusCode: 409 });
+    }
+    if (invitation.role === 'driver') {
+      const driver = await client.query(
+        `SELECT id FROM drivers WHERE id = $1 AND company_id = $2 AND active = TRUE FOR UPDATE`,
+        [invitation.driver_id, invitation.company_id]
+      );
+      if (!driver.rows[0]) throw Object.assign(new Error('Le profil livreur associé n’est plus disponible.'), { statusCode: 409 });
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const createdUser = await client.query(
+      `INSERT INTO users (email, display_name, password_salt, password_hash)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [invitation.email, invitation.display_name, salt, hashPassword(password, salt)]
+    );
+    userId = createdUser.rows[0].id;
+    await client.query(
+      `INSERT INTO company_memberships (company_id, user_id, role, driver_id)
+       VALUES ($1, $2, $3, $4)`,
+      [invitation.company_id, userId, invitation.role, invitation.role === 'driver' ? invitation.driver_id : null]
+    );
+    await client.query('UPDATE user_invitations SET accepted_at = NOW() WHERE id = $1', [invitation.id]);
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'user_invitation', $3, 'accepted', jsonb_build_object('role', $4::text))`,
+      [invitation.company_id, userId, invitation.id, invitation.role]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Invitation acceptance error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’activer ce compte.' });
+  } finally {
+    client.release();
+  }
+  await createSession(req, res, userId, invitation.company_id, 'company');
+  return res.status(201).json({ status: 'accepted', redirect: invitation.role === 'driver' ? '/driver' : '/app' });
+}));
+
+app.get('/api/app/team', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const [members, invitations] = await Promise.all([
+    pool.query(
+      `SELECT m.id, m.role, m.driver_id, u.email, u.display_name, u.disabled, u.created_at,
+              d.name AS driver_name
+       FROM company_memberships m JOIN users u ON u.id = m.user_id
+       LEFT JOIN drivers d ON d.id = m.driver_id
+       WHERE m.company_id = $1 ORDER BY u.display_name, u.email`,
+      [req.auth.company_id]
+    ),
+    pool.query(
+      `SELECT i.id, i.email, i.display_name, i.role, i.driver_id, i.expires_at, i.created_at, d.name AS driver_name
+       FROM user_invitations i LEFT JOIN drivers d ON d.id = i.driver_id
+       WHERE i.company_id = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()
+       ORDER BY i.created_at DESC`,
+      [req.auth.company_id]
+    ),
+  ]);
+  return res.json({ members: members.rows, invitations: invitations.rows });
+}));
+
+app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const displayName = String(req.body.displayName || '').trim();
+  const role = String(req.body.role || '').trim();
+  const driverId = req.body.driverId ? String(req.body.driverId) : null;
+  if (!/^\S+@\S+\.\S+$/.test(email) || displayName.length < 2 || displayName.length > 100 || !invitationRoles.includes(role)) {
+    return res.status(400).json({ error: 'Nom, adresse e-mail ou rôle invalide.' });
+  }
+  if (req.auth.role === 'manager' && role === 'manager') {
+    return res.status(403).json({ error: 'Seul un propriétaire peut inviter un autre manager.' });
+  }
+  if (role === 'driver' && !driverId) return res.status(400).json({ error: 'Sélectionnez le livreur associé à ce compte.' });
+  if (role !== 'driver' && driverId) return res.status(400).json({ error: 'Un profil livreur ne peut être associé qu’au rôle livreur.' });
+  const token = randomToken();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existingUser = await client.query('SELECT 1 FROM users WHERE email = $1', [email]);
+    if (existingUser.rows[0]) throw Object.assign(new Error('Un compte utilise déjà cette adresse e-mail.'), { statusCode: 409 });
+    if (role === 'driver') {
+      const driver = await client.query(
+        `SELECT d.id FROM drivers d
+         WHERE d.id = $1 AND d.company_id = $2 AND d.active = TRUE
+           AND NOT EXISTS (
+             SELECT 1 FROM company_memberships m WHERE m.company_id = d.company_id AND m.driver_id = d.id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM user_invitations i
+             WHERE i.company_id = d.company_id AND i.driver_id = d.id
+               AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()
+           )
+         FOR UPDATE`,
+        [driverId, req.auth.company_id]
+      );
+      if (!driver.rows[0]) throw Object.assign(new Error('Ce livreur est introuvable, inactif ou possède déjà un compte.'), { statusCode: 409 });
+    }
+    await client.query(
+      `UPDATE user_invitations SET revoked_at = NOW()
+       WHERE company_id = $1 AND email = $2 AND accepted_at IS NULL AND revoked_at IS NULL`,
+      [req.auth.company_id, email]
+    );
+    const invitation = await client.query(
+      `INSERT INTO user_invitations (
+         company_id, email, display_name, role, driver_id, token_hash, created_by_user_id, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + INTERVAL '48 hours')
+       RETURNING id, expires_at`,
+      [req.auth.company_id, email, displayName, role, role === 'driver' ? driverId : null, digest(token), req.auth.user_id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'user_invitation', $3, 'created', jsonb_build_object('role', $4::text, 'email', $5::text))`,
+      [req.auth.company_id, req.auth.user_id, invitation.rows[0].id, role, email]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ id: invitation.rows[0].id, path: `/invitation/${token}`, expiresAt: invitation.rows[0].expires_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.code === '23505') return res.status(409).json({ error: 'Une invitation active existe déjà pour cette adresse ou ce livreur.' });
+    console.error('Invitation creation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de créer cette invitation.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/invitations/:id/revoke', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE user_invitations SET revoked_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL
+       AND ($3::text = 'owner' OR role <> 'manager')
+     RETURNING id`,
+    [req.params.id, req.auth.company_id, req.auth.role]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Invitation active introuvable.' });
+  await writeAudit(req.auth, 'user_invitation', result.rows[0].id, 'revoked');
+  return res.json({ status: 'revoked' });
+}));
+
 app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
   user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
   company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug },
+}));
+
+app.get('/api/driver/context', requireDriverApi, asyncRoute(async (req, res) => {
+  const driver = await pool.query(
+    `SELECT id, name, phone, vehicle_type, availability_status, active
+     FROM drivers WHERE id = $1 AND company_id = $2`,
+    [req.auth.driver_id, req.auth.company_id]
+  );
+  if (!driver.rows[0] || !driver.rows[0].active) return res.status(403).json({ error: 'Ce profil livreur est désactivé.' });
+  return res.json({
+    user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
+    company: { id: req.auth.company_id, name: req.auth.company_name },
+    driver: driver.rows[0],
+  });
+}));
+
+app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
+  const history = req.query.scope === 'history';
+  const result = await pool.query(
+    `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.delivery_address,
+            o.requested_time, o.neighborhood, o.landmark, o.destination_lat, o.destination_lng,
+            o.created_at, o.updated_at, pa.expected_amount_minor, pa.currency AS payment_currency,
+            pa.status AS payment_status
+     FROM orders o
+     LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
+     WHERE o.company_id = $1 AND o.driver_id = $2
+       AND ${history ? 'o.status = ANY($3::text[])' : 'NOT (o.status = ANY($3::text[]))'}
+     ORDER BY o.updated_at DESC, o.id DESC LIMIT 100`,
+    [req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
+  );
+  return res.json(result.rows);
+}));
+
+app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT o.*, pa.expected_amount_minor, pa.currency AS payment_currency,
+            pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
+            pa.collection_reference, pa.discrepancy_reason,
+            p.id AS proof_id, p.verified_at AS proof_verified_at
+     FROM orders o
+     LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
+     LEFT JOIN delivery_proofs p ON p.order_id = o.id AND p.proof_type = 'otp'
+     WHERE o.id = $1 AND o.company_id = $2 AND o.driver_id = $3`,
+    [req.params.id, req.auth.company_id, req.auth.driver_id]
+  );
+  const order = result.rows[0];
+  if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
+  const incidents = await pool.query(
+    `SELECT id, category, severity, description, status, resolution, created_at, resolved_at
+     FROM delivery_incidents WHERE order_id = $1 AND company_id = $2
+     ORDER BY created_at DESC, id DESC`,
+    [order.id, req.auth.company_id]
+  );
+  return res.json({
+    ...order,
+    allowedTransitions: allowedOrderTransitions(order.status).filter((status) => driverTransitionTargets.includes(status)),
+    isTerminal: terminalOrderStatuses.includes(order.status),
+    incidents: incidents.rows,
+  });
+}));
+
+app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async (req, res) => {
+  const toStatus = String(req.body.toStatus || '').trim();
+  const reason = String(req.body.reason || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!driverTransitionTargets.includes(toStatus)) return res.status(403).json({ error: 'Cette étape doit être gérée par l’exploitation.' });
+  if (reasonRequiredStatuses.includes(toStatus) && reason.length < 5) {
+    return res.status(400).json({ error: 'Expliquez la raison en au moins 5 caractères.' });
+  }
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), toStatus, reason }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status, version FROM orders
+       WHERE id = $1 AND company_id = $2 AND driver_id = $3 FOR UPDATE`,
+      [req.params.id, req.auth.company_id, req.auth.driver_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const repeated = await client.query(
+      `SELECT id, order_id, to_status, request_fingerprint FROM order_status_events
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].request_fingerprint !== fingerprint || String(repeated.rows[0].order_id) !== String(order.id)) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, status: repeated.rows[0].to_status, alreadyApplied: true });
+    }
+    if (!allowedOrderTransitions(order.status).includes(toStatus)) {
+      throw Object.assign(new Error(`La commande est maintenant « ${order.status} ». Cette action n’est plus possible.`), { statusCode: 409 });
+    }
+    const event = await client.query(
+      `INSERT INTO order_status_events (
+         company_id, order_id, from_status, to_status, reason, actor_user_id,
+         idempotency_key, request_fingerprint, metadata
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{"source":"driver_portal"}'::jsonb)
+       RETURNING id`,
+      [req.auth.company_id, order.id, order.status, toStatus, reason || null, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `UPDATE orders SET status = $1, version = version + 1, status_changed_at = NOW(), updated_at = NOW(),
+         failure_reason = CASE WHEN $1 = ANY($2::text[]) THEN $3 ELSE failure_reason END
+       WHERE id = $4`,
+      [toStatus, reasonRequiredStatuses, reason || null, order.id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'driver_status_changed',
+         jsonb_build_object('from', $4::text, 'to', $5::text, 'eventId', $6::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, status: toStatus, version: Number(order.version) + 1 });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Driver transition error:', error.message);
+    return res.status(500).json({ error: 'Impossible de mettre à jour cette livraison.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/driver/orders/:id/incidents', requireDriverApi, asyncRoute(async (req, res) => {
+  const category = String(req.body.category || '').trim();
+  const severity = String(req.body.severity || 'medium').trim();
+  const description = String(req.body.description || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!incidentCategories.includes(category) || !['low', 'medium', 'high'].includes(severity)) {
+    return res.status(400).json({ error: 'Type ou gravité d’incident invalide.' });
+  }
+  if (description.length < 5 || description.length > 2000 || !idempotencyKey) {
+    return res.status(400).json({ error: 'Décrivez correctement l’incident et réessayez.' });
+  }
+  const order = await pool.query(
+    `SELECT id FROM orders WHERE id = $1 AND company_id = $2 AND driver_id = $3`,
+    [req.params.id, req.auth.company_id, req.auth.driver_id]
+  );
+  if (!order.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), category, severity, description }));
+  const inserted = await pool.query(
+    `INSERT INTO delivery_incidents (
+       company_id, order_id, category, severity, description, idempotency_key,
+       request_fingerprint, opened_by_user_id
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (company_id, idempotency_key) DO NOTHING RETURNING id, created_at`,
+    [req.auth.company_id, order.rows[0].id, category, severity, description, idempotencyKey, fingerprint, req.auth.user_id]
+  );
+  if (!inserted.rows[0]) {
+    const existing = await pool.query(
+      `SELECT id, order_id, request_fingerprint, created_at FROM delivery_incidents
+       WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (!existing.rows[0] || String(existing.rows[0].order_id) !== String(order.rows[0].id) || existing.rows[0].request_fingerprint !== fingerprint) {
+      return res.status(409).json({ error: 'Cette clé d’action a déjà été utilisée ailleurs.' });
+    }
+    return res.json({ id: existing.rows[0].id, createdAt: existing.rows[0].created_at, alreadyCreated: true });
+  }
+  await writeAudit(req.auth, 'order', order.rows[0].id, 'driver_incident_opened', { incidentId: inserted.rows[0].id, category, severity });
+  return res.status(201).json({ id: inserted.rows[0].id, createdAt: inserted.rows[0].created_at });
 }));
 
 app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {

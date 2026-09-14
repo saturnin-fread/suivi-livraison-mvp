@@ -47,3 +47,8 @@
 - Blocage de la preuve finale lorsqu'un encaissement requis manque ou présente un écart non décidé.
 - Ajout d'un ledger financier append-only et de clés d'idempotence sur chaque mutation.
 - Extension du test automatique aux corrections de saisie, écarts et rapprochements.
+- Ajout des invitations d'équipe à usage unique avec expiration de 48 heures et token stocké sous forme d'empreinte.
+- Ajout du lien explicite entre un compte livreur et son profil opérationnel.
+- Ajout de l'espace mobile `/driver` avec file active, historique, appel, itinéraire, transitions et incidents.
+- Interdiction des API d'exploitation aux comptes livreurs et contrôle `company_id` + `driver_id` sur chaque objet terrain.
+- Ajout d'un test croisé avec deux livreurs vérifiant l'absence d'accès horizontal.

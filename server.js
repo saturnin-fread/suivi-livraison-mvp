@@ -165,6 +165,12 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE(company_id, traccar_unique_id)
       );
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS phone TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_type TEXT NOT NULL DEFAULT 'Moto';
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS capacity INTEGER NOT NULL DEFAULT 3;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS availability_status TEXT NOT NULL DEFAULT 'available';
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
       CREATE TABLE IF NOT EXISTS orders (
         id BIGSERIAL PRIMARY KEY,
@@ -212,6 +218,18 @@ async function initDatabase() {
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
       CREATE UNIQUE INDEX IF NOT EXISTS customer_requests_edit_token_unique
         ON customer_requests(edit_token_hash) WHERE edit_token_hash IS NOT NULL;
+
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_request_id BIGINT REFERENCES customer_requests(id);
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS requested_time TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination_lat DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination_lng DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination_accuracy DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS neighborhood TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS landmark TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      CREATE UNIQUE INDEX IF NOT EXISTS orders_customer_request_unique
+        ON orders(customer_request_id) WHERE customer_request_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS audit_logs (
         id BIGSERIAL PRIMARY KEY,
@@ -473,11 +491,17 @@ app.get('/api/app/requests', requireCompanyApi, asyncRoute(async (req, res) => {
 
 app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT id, status, customer_name, customer_phone, requested_time,
-            location_lat, location_lng, location_accuracy, location_at,
-            neighborhood, landmark, notes, created_at, submitted_at, updated_at,
-            expires_at, archived_at, validated_at, version
-     FROM customer_requests WHERE id = $1 AND company_id = $2`,
+    `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time,
+            r.location_lat, r.location_lng, r.location_accuracy, r.location_at,
+            r.neighborhood, r.landmark, r.notes, r.created_at, r.submitted_at, r.updated_at,
+            r.expires_at, r.archived_at, r.validated_at, r.version,
+            o.id AS order_id, o.status AS order_status, d.name AS driver_name,
+            t.token AS tracking_token, t.expires_at AS tracking_expires_at
+     FROM customer_requests r
+     LEFT JOIN orders o ON o.customer_request_id = r.id
+     LEFT JOIN drivers d ON d.id = o.driver_id
+     LEFT JOIN tracking_links t ON t.order_id = o.id
+     WHERE r.id = $1 AND r.company_id = $2`,
     [req.params.id, req.auth.company_id]
   );
   if (!result.rows[0]) return res.status(404).json({ error: 'Demande introuvable.' });
@@ -485,7 +509,7 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
 }));
 
 app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (req, res) => {
-  const allowed = ['À vérifier', 'Informations à compléter', 'Confirmée', 'Refusée', 'Archivée'];
+  const allowed = ['À vérifier', 'Informations à compléter', 'Refusée', 'Archivée'];
   if (!allowed.includes(req.body.status)) return res.status(400).json({ error: 'Statut non autorisé.' });
   const result = await pool.query(
     `UPDATE customer_requests
@@ -502,30 +526,164 @@ app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (re
   return res.json(result.rows[0]);
 }));
 
+app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (req, res) => {
+  const driverId = Number(req.body.driverId);
+  if (!Number.isInteger(driverId)) return res.status(400).json({ error: 'Sélectionnez un livreur.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const requestResult = await client.query(
+      `SELECT * FROM customer_requests WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const request = requestResult.rows[0];
+    if (!request) throw Object.assign(new Error('Demande introuvable.'), { statusCode: 404 });
+
+    const existing = await client.query(
+      `SELECT o.id, t.token FROM orders o LEFT JOIN tracking_links t ON t.order_id = o.id
+       WHERE o.customer_request_id = $1`,
+      [request.id]
+    );
+    if (existing.rows[0]) {
+      await client.query('COMMIT');
+      return res.json({ orderId: existing.rows[0].id, path: `/suivi/${existing.rows[0].token}`, alreadyConverted: true });
+    }
+    if (!editableRequestStatuses.includes(request.status)) {
+      throw Object.assign(new Error('Cette demande ne peut plus être convertie.'), { statusCode: 409 });
+    }
+    if (!request.customer_name || !request.customer_phone || !request.neighborhood) {
+      throw Object.assign(new Error('Les informations du client sont incomplètes.'), { statusCode: 400 });
+    }
+
+    const driverResult = await client.query(
+      `SELECT id, name, active, availability_status FROM drivers
+       WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [driverId, req.auth.company_id]
+    );
+    const driver = driverResult.rows[0];
+    if (!driver || !driver.active) throw Object.assign(new Error('Livreur indisponible ou non autorisé.'), { statusCode: 400 });
+    if (['off_duty', 'incident'].includes(driver.availability_status)) {
+      throw Object.assign(new Error('Ce livreur est actuellement indisponible.'), { statusCode: 409 });
+    }
+
+    const deliveryAddress = [request.neighborhood, request.landmark, request.notes].filter(Boolean).join(' — ');
+    const order = await client.query(
+      `INSERT INTO orders (
+         company_id, driver_id, customer_request_id, customer_name, customer_phone,
+         delivery_address, requested_time, destination_lat, destination_lng,
+         destination_accuracy, neighborhood, landmark, notes, status
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Confirmée')
+       RETURNING id`,
+      [
+        req.auth.company_id, driver.id, request.id, request.customer_name, request.customer_phone,
+        deliveryAddress, request.requested_time, request.location_lat, request.location_lng,
+        request.location_accuracy, request.neighborhood, request.landmark, request.notes,
+      ]
+    );
+    const trackingToken = randomToken(24);
+    await client.query(
+      `INSERT INTO tracking_links (order_id, token, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '30 days')`,
+      [order.rows[0].id, trackingToken]
+    );
+    await client.query(
+      `UPDATE customer_requests
+       SET status = 'Confirmée', validated_at = NOW(), version = version + 1, updated_at = NOW()
+       WHERE id = $1`,
+      [request.id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES
+         ($1, $2, 'customer_request', $3, 'converted_to_order', jsonb_build_object('orderId', $4::bigint, 'driverId', $5::bigint)),
+         ($1, $2, 'order', $4, 'created_from_request', jsonb_build_object('requestId', $3::bigint, 'driverId', $5::bigint))`,
+      [req.auth.company_id, req.auth.user_id, request.id, order.rows[0].id, driver.id]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ orderId: order.rows[0].id, path: `/suivi/${trackingToken}`, driverName: driver.name });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Request conversion error:', error.message);
+    return res.status(500).json({ error: 'Impossible de convertir la demande en commande.' });
+  } finally {
+    client.release();
+  }
+}));
+
 app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
   const localDrivers = await pool.query(
-    'SELECT id, name, traccar_unique_id FROM drivers WHERE company_id = $1 ORDER BY name',
+    `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
+            d.active, d.traccar_unique_id,
+            COUNT(o.id) FILTER (WHERE o.status NOT IN ('Livrée', 'Annulée', 'Retournée'))::int AS active_orders
+     FROM drivers d
+     LEFT JOIN orders o ON o.driver_id = d.id
+     WHERE d.company_id = $1
+     GROUP BY d.id
+     ORDER BY d.name`,
     [req.auth.company_id]
   );
+  const enrich = (driver, device) => {
+    const lastUpdate = device?.lastUpdate || null;
+    const stale = !lastUpdate || Date.now() - new Date(lastUpdate).getTime() > 10 * 60 * 1000;
+    let operationalState = 'available';
+    if (!driver.active) operationalState = 'inactive';
+    else if (driver.availability_status !== 'available') operationalState = driver.availability_status;
+    else if (!device || device.status === 'offline') operationalState = 'offline';
+    else if (stale) operationalState = 'stale';
+    else if (driver.active_orders >= driver.capacity) operationalState = 'full';
+    else if (driver.active_orders > 0) operationalState = 'busy';
+    return {
+      id: driver.id, name: driver.name, phone: driver.phone, vehicleType: driver.vehicle_type,
+      capacity: driver.capacity, availabilityStatus: driver.availability_status, active: driver.active,
+      uniqueId: driver.traccar_unique_id, trackerStatus: device?.status || 'unknown', lastUpdate,
+      category: device?.category || null, activeOrders: driver.active_orders, operationalState,
+    };
+  };
   if (!process.env.TRACCAR_URL || !process.env.TRACCAR_USER || !process.env.TRACCAR_PASSWORD) {
-    return res.json(localDrivers.rows.map((driver) => ({ ...driver, uniqueId: driver.traccar_unique_id, status: 'unknown', lastUpdate: null })));
+    return res.json(localDrivers.rows.map((driver) => enrich(driver, null)));
   }
   try {
     const response = await axios.get(`${process.env.TRACCAR_URL}/api/devices`, {
       auth: { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD }, timeout: 10000,
     });
     const byUniqueId = new Map(response.data.map((device) => [device.uniqueId, device]));
-    return res.json(localDrivers.rows.map((driver) => {
-      const device = byUniqueId.get(driver.traccar_unique_id);
-      return {
-        id: driver.id, name: driver.name, uniqueId: driver.traccar_unique_id,
-        status: device?.status || 'unknown', lastUpdate: device?.lastUpdate || null, category: device?.category || null,
-      };
-    }));
+    const ranking = { available: 0, busy: 1, full: 2, pause: 3, stale: 4, offline: 5, off_duty: 6, incident: 7, inactive: 8 };
+    return res.json(localDrivers.rows
+      .map((driver) => enrich(driver, byUniqueId.get(driver.traccar_unique_id)))
+      .sort((a, b) => (ranking[a.operationalState] ?? 9) - (ranking[b.operationalState] ?? 9) || a.activeOrders - b.activeOrders || a.name.localeCompare(b.name)));
   } catch (error) {
     console.error('Drivers API error:', error.response?.status || error.message);
-    return res.json(localDrivers.rows.map((driver) => ({ ...driver, uniqueId: driver.traccar_unique_id, status: 'unknown', lastUpdate: null })));
+    return res.json(localDrivers.rows.map((driver) => enrich(driver, null)));
   }
+}));
+
+app.patch('/api/app/drivers/:id/availability', requireCompanyApi, asyncRoute(async (req, res) => {
+  const allowed = ['available', 'pause', 'off_duty', 'incident'];
+  if (!allowed.includes(req.body.status)) return res.status(400).json({ error: 'État de disponibilité invalide.' });
+  const result = await pool.query(
+    `UPDATE drivers SET availability_status = $1, updated_at = NOW()
+     WHERE id = $2 AND company_id = $3 AND active = TRUE
+     RETURNING id, availability_status`,
+    [req.body.status, req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+  await writeAudit(req.auth, 'driver', result.rows[0].id, 'availability_changed', { status: req.body.status });
+  return res.json(result.rows[0]);
+}));
+
+app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.requested_time,
+            o.neighborhood, o.landmark, o.created_at, o.updated_at,
+            d.name AS driver_name, t.token AS tracking_token, t.expires_at AS tracking_expires_at
+     FROM orders o
+     JOIN drivers d ON d.id = o.driver_id
+     LEFT JOIN tracking_links t ON t.order_id = o.id
+     WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 100`,
+    [req.auth.company_id]
+  );
+  return res.json(result.rows);
 }));
 
 app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {

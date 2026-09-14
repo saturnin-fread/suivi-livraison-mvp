@@ -62,7 +62,7 @@ Permettre au client de transmettre, vérifier et modifier ses informations jusqu
 - un double envoi ne crée pas deux demandes ;
 - les demandes traitées quittent la file active mais restent consultables dans les archives.
 
-## Phase 3 — Livreurs, appareils et création de commande
+## Phase 3 — Livreurs, appareils et création de commande — première version livrée
 
 ### Objectif
 
@@ -235,16 +235,16 @@ Valider le produit sur de vraies tournées avant généralisation.
 
 ## Prochain lot d'implémentation recommandé
 
-Le lot phases 1 et 2 a livré la structure, l'isolation, la fiche demande, la confirmation client et le verrouillage. Les invitations multi-utilisateurs et les règles avancées d'archivage seront renforcées pendant le pilote.
+Les phases 1 à 3 disposent désormais d'une première version exploitable : espaces séparés, isolation par entreprise, demande modifiable, affectation dynamique, conversion atomique et lien de suivi. Les invitations multi-utilisateurs, les conflits de capacité avancés et les règles d'archivage seront renforcés pendant le pilote.
 
-Le prochain lot doit commencer la phase 3 dans cet ordre :
+Le prochain lot doit commencer la phase 4 dans cet ordre :
 
-1. enrichir la synchronisation des appareils Traccar et les états des livreurs ;
-2. créer la fiche livreur et son état de disponibilité ;
-3. remplacer la simple confirmation par une validation avec affectation ;
-4. convertir la demande en commande dans une transaction unique ;
-5. gérer plusieurs commandes actives par livreur ;
-6. tester les conflits d'affectation et les positions anciennes.
+1. définir les transitions autorisées du cycle de livraison ;
+2. ajouter le journal immuable des changements de statut ;
+3. créer l'interface d'exécution pour le livreur ou l'opérateur ;
+4. traiter échec, retour et annulation avec motif obligatoire ;
+5. ajouter une première preuve de remise par code OTP ;
+6. tester les doubles actions, reprises réseau et conflits simultanés.
 
 ## Règles transversales
 

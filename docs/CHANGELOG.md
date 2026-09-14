@@ -25,3 +25,10 @@
 - Ajout de l'expiration des formulaires, des archives et du journal d'audit minimal.
 - Ajout d'un test automatique couvrant isolation, soumission, édition, validation et verrouillage.
 - Déploiement Railway validé par test automatique sur le service public.
+- Enrichissement des livreurs avec téléphone, véhicule, capacité, disponibilité manuelle et activité.
+- Croisement des fiches livreurs avec l'état et la fraîcheur des appareils Traccar.
+- Priorisation dynamique des livreurs disponibles, occupés, complets, en pause, hors ligne ou en incident.
+- Ajout des pages fonctionnelles `/app/livreurs` et `/app/commandes`.
+- Remplacement de la confirmation isolée par une conversion atomique demande → commande → lien de suivi.
+- Ajout d'une protection contre les doubles clics et les conversions répétées.
+- Extension du test automatique à l'affectation, la conversion sans doublon et au verrouillage client.

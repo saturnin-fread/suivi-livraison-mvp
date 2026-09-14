@@ -17,6 +17,7 @@ async function run() {
   ensure(email && password, 'ADMIN_USER et ADMIN_PASSWORD sont requis.');
   let requestToken;
   let requestId;
+  let orderId;
   let pool;
 
   try {
@@ -89,12 +90,28 @@ async function run() {
     ensure(request, 'Demande absente de la file entreprise.');
     requestId = request.id;
 
-    const confirmed = await json(await fetch(`${baseUrl}/api/app/requests/${requestId}/status`, {
+    const drivers = await json(await fetch(`${baseUrl}/api/app/drivers`, { headers: { Cookie: cookie } }));
+    ensure(drivers.response.ok && Array.isArray(drivers.payload), 'Liste des livreurs indisponible.');
+    const driver = drivers.payload.find((item) => item.active && !['off_duty', 'incident', 'inactive'].includes(item.operationalState));
+    ensure(driver, 'Aucun livreur utilisable pour convertir la demande.');
+
+    const converted = await json(await fetch(`${baseUrl}/api/app/requests/${requestId}/convert`, {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'Confirmée' }),
+      body: JSON.stringify({ driverId: driver.id }),
     }));
-    ensure(confirmed.response.ok, 'Validation entreprise impossible.');
+    ensure(converted.response.status === 201 && converted.payload.orderId && converted.payload.path, 'Conversion en commande impossible.');
+    orderId = converted.payload.orderId;
+
+    const repeated = await json(await fetch(`${baseUrl}/api/app/requests/${requestId}/convert`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driverId: driver.id }),
+    }));
+    ensure(repeated.response.ok && repeated.payload.alreadyConverted && repeated.payload.orderId === orderId, 'La conversion répétée doit rester sans doublon.');
+
+    const orders = await json(await fetch(`${baseUrl}/api/app/orders`, { headers: { Cookie: cookie } }));
+    ensure(orders.response.ok && orders.payload.some((item) => item.id === orderId), 'Commande absente de la liste entreprise.');
 
     const locked = await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, {
       method: 'PUT',
@@ -109,7 +126,7 @@ async function run() {
     });
     ensure(locked.status === 409, `La modification après validation devait être bloquée, reçue ${locked.status}.`);
 
-    console.log('Smoke test réussi : isolation, demande, édition, validation et verrouillage.');
+    console.log('Smoke test réussi : isolation, demande, édition, affectation, conversion sans doublon et verrouillage.');
   } finally {
     if (requestToken && process.env.DATABASE_URL) {
       pool = new Pool({
@@ -124,6 +141,12 @@ async function run() {
           requestId = found.rows[0]?.id;
         }
         if (requestId) {
+          const order = await client.query('SELECT id FROM orders WHERE customer_request_id = $1', [requestId]);
+          orderId = order.rows[0]?.id || orderId;
+          if (orderId) {
+            await client.query("DELETE FROM audit_logs WHERE entity_type = 'order' AND entity_id = $1", [orderId]);
+            await client.query('DELETE FROM orders WHERE id = $1', [orderId]);
+          }
           await client.query("DELETE FROM audit_logs WHERE entity_type = 'customer_request' AND entity_id = $1", [requestId]);
           await client.query('DELETE FROM customer_requests WHERE id = $1 AND token = $2', [requestId, requestToken]);
         }

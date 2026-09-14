@@ -8,11 +8,11 @@ Entreprise cliente. Toutes les données métier doivent être rattachées à `co
 
 ### `drivers`
 
-Livreur lié à une entreprise et à un `traccar_unique_id`.
+Livreur lié à une entreprise et à un `traccar_unique_id`, avec capacité, véhicule et disponibilité opérationnelle.
 
 ### `orders`
 
-Commande validée, avec statut, client et livreur affecté.
+Commande validée, avec statut, client, destination, demande d'origine et livreur affecté.
 
 ### `tracking_links`
 
@@ -22,11 +22,17 @@ Token public unique, date d’expiration et commande associée.
 
 Demande non encore convertie en commande : nom, téléphone, créneau, position, précision GPS, quartier, repère et notes.
 
+### `users`, `company_memberships` et `sessions`
+
+Comptes, rôles par entreprise et sessions de connexion. L'espace plateforme reste séparé de l'espace entreprise.
+
+### `audit_logs`
+
+Journal minimal des actions sensibles déjà utilisé pour les demandes, commandes et disponibilités.
+
 ## Tables à ajouter ensuite
 
 ```text
-users
-company_memberships
 roles
 customer_request_links
 customer_request_revisions

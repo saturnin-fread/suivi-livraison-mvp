@@ -1,6 +1,13 @@
-# Suivi livraison — MVP
+# Suivi livraison — SaaS métier en construction
 
-Prototype de page publique de suivi pour le téléphone test Traccar.
+Application multi-entreprises de préparation et de suivi des livraisons, reliée à Traccar pour la géolocalisation.
+
+## Espaces
+
+- `/app` : espace de gestion de l'entreprise ;
+- `/admin` : administration de la plateforme, séparée des entreprises ;
+- `/demande/:token` : collecte des informations du destinataire ;
+- `/suivi/:token` : suivi public d'une commande, limité à ce client.
 
 ## Démarrage
 
@@ -17,3 +24,5 @@ http://localhost:3000/suivi/demo-ccg-2026
 ```
 
 Le serveur utilise un compte Traccar côté serveur pour récupérer la dernière position. Les identifiants Traccar ne sont jamais envoyés au navigateur.
+
+La base `delivery` reste la source de vérité métier. Traccar reste la source de vérité GPS.

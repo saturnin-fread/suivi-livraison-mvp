@@ -22,6 +22,11 @@ Déplacer le marqueur et vérifier que la position modifiée est enregistrée av
 
 Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livraisons actives.
 
+- vérifier le tri des livreurs utilisables avant les indisponibles ;
+- vérifier que pause, hors service et incident empêchent l'affectation ;
+- vérifier que la capacité et la charge active sont visibles ;
+- répéter la conversion d'une même demande et vérifier qu'aucun doublon n'est créé.
+
 ## Test E — sécurité
 
 - ouvrir une demande inexistante ;

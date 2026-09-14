@@ -88,6 +88,12 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - vérifier que le livreur ne peut ni générer ni lire le code de remise ;
 - répéter une mauvaise saisie OTP avec la même clé et vérifier qu'un seul essai est consommé ;
 - vérifier l'auteur livreur sur la collecte et la preuve, puis masquer toute commande étrangère.
+- activer une photo obligatoire et vérifier qu'elle bloque la remise tant qu'elle manque ;
+- refuser un fichier déguisé en image et un fichier trop lourd ;
+- refuser l'ajout ou la lecture d'une preuve appartenant à un autre livreur ;
+- répéter le même envoi et vérifier une seule preuve ;
+- vérifier la lecture privée par le livreur affecté et l'entreprise, jamais par le lien client ;
+- remplacer une preuve et vérifier que l'ancien contenu binaire n'est plus servi.
 
 ## Test H — tournée multi-colis
 

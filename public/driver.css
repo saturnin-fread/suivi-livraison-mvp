@@ -23,6 +23,8 @@
 .driver-form { display: grid; gap: 13px; margin-top: 18px; }
 .driver-form button { min-height: 50px; }
 .driver-form .notice { margin: 0; }
+.evidence-picker { width: 100%; cursor: pointer; }
+.signature-canvas { width: 100%; aspect-ratio: 600 / 260; border: 2px dashed #aebdce; border-radius: 9px; background: #fff; touch-action: none; }
 .driver-back { display: inline-block; margin-bottom: 13px; color: var(--navy); font-weight: 750; text-decoration: none; }
 @media (max-width: 460px) {
   .driver-actions { grid-template-columns: 1fr; }

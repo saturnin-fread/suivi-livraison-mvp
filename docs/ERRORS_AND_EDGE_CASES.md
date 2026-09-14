@@ -50,6 +50,12 @@
 | Double appui sur l'encaissement terrain | Retourner le premier résultat avec la même clé d'idempotence |
 | Livreur tente de générer le code client | Ne fournir aucune route livreur de génération ou de lecture du code |
 | Mauvaise saisie OTP répétée après une coupure | Avec la même clé, ne consommer qu'un seul essai et retourner le même résultat |
+| Fichier renommé en `.png` mais contenu invalide | Refuser selon la signature binaire, pas seulement le nom ou l'en-tête déclaré |
+| Photo trop lourde | Compresser côté mobile, limiter côté serveur et expliquer comment reprendre |
+| Photo/signature obligatoire absente | Bloquer la remise côté serveur et indiquer la preuve manquante |
+| Mauvaise photo prise | Autoriser un remplacement avant remise, supprimer l'ancien binaire et conserver la trace |
+| URL de preuve devinée | Exiger une session et contrôler `company_id` puis `driver_id` pour le portail terrain |
+| Preuve sur lien client | Ne jamais inclure le fichier ni son identifiant dans l'API publique |
 
 ## Cartographie et temps réel
 

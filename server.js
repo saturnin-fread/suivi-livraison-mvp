@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
 const axios = require('axios');
+const multer = require('multer');
 const { Pool } = require('pg');
 
 const app = express();
@@ -30,6 +31,9 @@ const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement'
 const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'];
 const invitationRoles = ['manager', 'operator', 'driver'];
 const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
+const evidenceTypes = ['photo', 'signature'];
+const evidenceModes = ['off', 'optional', 'required'];
+const evidenceUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1200 * 1024, files: 1, fields: 4 } });
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -44,6 +48,21 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+}
+
+function receiveEvidence(req, res, next) {
+  evidenceUpload.single('file')(req, res, (error) => {
+    if (!error) return next();
+    if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'L’image dépasse la limite de 1,2 Mo après compression.' });
+    return res.status(400).json({ error: 'Fichier de preuve invalide.' });
+  });
+}
+
+function detectedImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer)) return null;
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  return null;
 }
 
 function parseCookies(req) {
@@ -159,6 +178,8 @@ async function initDatabase() {
       );
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS slug TEXT;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS photo_proof_mode TEXT NOT NULL DEFAULT 'off';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS signature_proof_mode TEXT NOT NULL DEFAULT 'off';
 
       UPDATE companies
       SET slug = 'chicago-consulting-group', updated_at = NOW()
@@ -355,6 +376,29 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE(order_id, proof_type)
       );
+
+      CREATE TABLE IF NOT EXISTS delivery_evidence_files (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        evidence_type TEXT NOT NULL CHECK (evidence_type IN ('photo', 'signature')),
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png')),
+        byte_size INTEGER NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        content BYTEA,
+        uploaded_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        superseded_at TIMESTAMPTZ,
+        deleted_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_evidence_active_unique
+        ON delivery_evidence_files(order_id, evidence_type)
+        WHERE superseded_at IS NULL AND deleted_at IS NULL;
+      CREATE INDEX IF NOT EXISTS delivery_evidence_order_created_idx
+        ON delivery_evidence_files(order_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS delivery_otp_attempts (
         id BIGSERIAL PRIMARY KEY,
@@ -609,12 +653,23 @@ function requireCompanyRoles(...allowedRoles) {
 
 async function writeAudit(auth, entityType, entityId, action, details = {}) {
   if (!pool) return;
-  await pool.query(
+  const result = await pool.query(
     `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
     [auth?.company_id || null, auth?.user_id || null, entityType, entityId || null, action, details]
   );
+  return result.rows[0]?.id;
 }
+
+app.get('/health', asyncRoute(async (_req, res) => {
+  if (!pool) return res.status(503).json({ status: 'unavailable', database: 'not_configured' });
+  try {
+    await pool.query('SELECT 1');
+    return res.json({ status: 'ok', database: 'reachable' });
+  } catch (_error) {
+    return res.status(503).json({ status: 'unavailable', database: 'unreachable' });
+  }
+}));
 
 app.get('/', (_req, res) => res.redirect('/app'));
 
@@ -943,11 +998,13 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
              pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
              pa.collection_reference, pa.discrepancy_reason,
              p.id AS proof_id, p.verified_at AS proof_verified_at,
+             c.photo_proof_mode, c.signature_proof_mode,
              (SELECT c.expires_at FROM delivery_otp_challenges c
               WHERE c.order_id = o.id AND c.consumed_at IS NULL AND c.revoked_at IS NULL
                 AND c.expires_at > NOW()
               ORDER BY c.created_at DESC LIMIT 1) AS active_otp_expires_at
      FROM orders o
+     JOIN companies c ON c.id = o.company_id
      LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
      LEFT JOIN delivery_proofs p ON p.order_id = o.id AND p.proof_type = 'otp'
      WHERE o.id = $1 AND o.company_id = $2 AND o.driver_id = $3`,
@@ -955,17 +1012,27 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
   );
   const order = result.rows[0];
   if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
-  const incidents = await pool.query(
-    `SELECT id, category, severity, description, status, resolution, created_at, resolved_at
-     FROM delivery_incidents WHERE order_id = $1 AND company_id = $2
-     ORDER BY created_at DESC, id DESC`,
-    [order.id, req.auth.company_id]
-  );
+  const [incidents, evidence] = await Promise.all([
+    pool.query(
+      `SELECT id, category, severity, description, status, resolution, created_at, resolved_at
+       FROM delivery_incidents WHERE order_id = $1 AND company_id = $2
+       ORDER BY created_at DESC, id DESC`,
+      [order.id, req.auth.company_id]
+    ),
+    pool.query(
+      `SELECT id, evidence_type, mime_type, byte_size, created_at
+       FROM delivery_evidence_files
+       WHERE order_id = $1 AND company_id = $2 AND superseded_at IS NULL AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+      [order.id, req.auth.company_id]
+    ),
+  ]);
   return res.json({
     ...order,
     allowedTransitions: allowedOrderTransitions(order.status).filter((status) => driverTransitionTargets.includes(status)),
     isTerminal: terminalOrderStatuses.includes(order.status),
     incidents: incidents.rows,
+    evidence: evidence.rows,
   });
 }));
 
@@ -1082,6 +1149,150 @@ app.post('/api/driver/orders/:id/payment/collect', requireDriverApi, asyncRoute(
 
 app.post('/api/driver/orders/:id/otp/verify', requireDriverApi, asyncRoute(async (req, res) => {
   return verifyOrderOtp(req, res, true);
+}));
+
+async function saveOrderEvidence(req, res, driverScoped = false) {
+  const evidenceType = String(req.params.type || '').trim();
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey || req.get('Idempotency-Key'));
+  if (!evidenceTypes.includes(evidenceType)) return res.status(404).json({ error: 'Type de preuve introuvable.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!req.file?.buffer?.length) return res.status(400).json({ error: 'Sélectionnez une image.' });
+  const mimeType = detectedImageMime(req.file.buffer);
+  if (!mimeType || !['image/jpeg', 'image/png'].includes(req.file.mimetype)) {
+    return res.status(415).json({ error: 'Seules les images JPEG et PNG valides sont acceptées.' });
+  }
+  const contentSha256 = digest(req.file.buffer);
+  const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), evidenceType, contentSha256 }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT o.id, o.status, c.photo_proof_mode, c.signature_proof_mode
+       FROM orders o JOIN companies c ON c.id = o.company_id
+       WHERE o.id = $1 AND o.company_id = $2${driverScoped ? ' AND o.driver_id = $3' : ''} FOR UPDATE OF o`,
+      driverScoped ? [req.params.id, req.auth.company_id, req.auth.driver_id] : [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const repeated = await client.query(
+      `SELECT id, order_id, evidence_type, request_fingerprint, created_at
+       FROM delivery_evidence_files WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      const previous = repeated.rows[0];
+      if (String(previous.order_id) !== String(order.id) || previous.evidence_type !== evidenceType || previous.request_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ id: previous.id, type: previous.evidence_type, createdAt: previous.created_at, alreadyUploaded: true });
+    }
+    if (!['En livraison', 'Arrivée'].includes(order.status)) {
+      throw Object.assign(new Error('La preuve peut être ajoutée uniquement pendant la remise au client.'), { statusCode: 409 });
+    }
+    const configuredMode = evidenceType === 'photo' ? order.photo_proof_mode : order.signature_proof_mode;
+    if (configuredMode === 'off') throw Object.assign(new Error('Cette preuve n’est pas activée par l’entreprise.'), { statusCode: 403 });
+    await client.query(
+      `UPDATE delivery_evidence_files SET superseded_at = NOW(), content = NULL
+       WHERE order_id = $1 AND evidence_type = $2 AND superseded_at IS NULL AND deleted_at IS NULL`,
+      [order.id, evidenceType]
+    );
+    const inserted = await client.query(
+      `INSERT INTO delivery_evidence_files (
+         company_id, order_id, evidence_type, mime_type, byte_size, content_sha256,
+         content, uploaded_by_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, created_at`,
+      [req.auth.company_id, order.id, evidenceType, mimeType, req.file.size, contentSha256,
+        req.file.buffer, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'delivery_evidence_uploaded',
+         jsonb_build_object('evidenceId', $4::bigint, 'type', $5::text, 'mimeType', $6::text, 'byteSize', $7::int))`,
+      [req.auth.company_id, req.auth.user_id, order.id, inserted.rows[0].id, evidenceType, mimeType, req.file.size]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ id: inserted.rows[0].id, type: evidenceType, createdAt: inserted.rows[0].created_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Delivery evidence upload error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’enregistrer cette preuve.' });
+  } finally {
+    client.release();
+  }
+}
+
+app.post('/api/driver/orders/:id/evidence/:type', requireDriverApi, receiveEvidence, asyncRoute(async (req, res) => {
+  return saveOrderEvidence(req, res, true);
+}));
+
+app.get('/api/driver/evidence/:id', requireDriverApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT e.mime_type, e.content FROM delivery_evidence_files e
+     JOIN orders o ON o.id = e.order_id
+     WHERE e.id = $1 AND e.company_id = $2 AND o.driver_id = $3
+       AND e.superseded_at IS NULL AND e.deleted_at IS NULL`,
+    [req.params.id, req.auth.company_id, req.auth.driver_id]
+  );
+  if (!result.rows[0]?.content) return res.status(404).json({ error: 'Preuve introuvable.' });
+  res.set({ 'Content-Type': result.rows[0].mime_type, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+  return res.send(result.rows[0].content);
+}));
+
+app.get('/api/app/settings/proofs', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT photo_proof_mode, signature_proof_mode FROM companies WHERE id = $1`,
+    [req.auth.company_id]
+  );
+  return res.json(result.rows[0]);
+}));
+
+app.patch('/api/app/settings/proofs', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const photoMode = String(req.body.photoMode || 'off');
+  const signatureMode = String(req.body.signatureMode || 'off');
+  if (!evidenceModes.includes(photoMode) || !evidenceModes.includes(signatureMode)) {
+    return res.status(400).json({ error: 'Règle de preuve invalide.' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE companies SET photo_proof_mode = $1, signature_proof_mode = $2, updated_at = NOW()
+       WHERE id = $3 RETURNING photo_proof_mode, signature_proof_mode`,
+      [photoMode, signatureMode, req.auth.company_id]
+    );
+    const audit = await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'company', $1, 'proof_policy_changed', jsonb_build_object('photoMode', $3::text, 'signatureMode', $4::text))
+       RETURNING id`,
+      [req.auth.company_id, req.auth.user_id, photoMode, signatureMode]
+    );
+    await client.query('COMMIT');
+    return res.json({ ...result.rows[0], auditId: audit.rows[0].id });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Proof policy update error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’enregistrer les règles de preuve.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/evidence/:type', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), receiveEvidence, asyncRoute(async (req, res) => {
+  return saveOrderEvidence(req, res);
+}));
+
+app.get('/api/app/evidence/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT mime_type, content FROM delivery_evidence_files
+     WHERE id = $1 AND company_id = $2 AND superseded_at IS NULL AND deleted_at IS NULL`,
+    [req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]?.content) return res.status(404).json({ error: 'Preuve introuvable.' });
+  res.set({ 'Content-Type': result.rows[0].mime_type, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+  return res.send(result.rows[0].content);
 }));
 
 app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -1335,12 +1546,14 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
             pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
             pa.collection_reference, pa.discrepancy_reason, pa.collected_at,
             pa.reconciled_at, pa.reconciliation_note,
+            c.photo_proof_mode, c.signature_proof_mode,
             (SELECT c.expires_at FROM delivery_otp_challenges c
              WHERE c.order_id = o.id AND c.consumed_at IS NULL AND c.revoked_at IS NULL
                AND c.expires_at > NOW()
              ORDER BY c.created_at DESC LIMIT 1) AS active_otp_expires_at
      FROM orders o
      JOIN drivers d ON d.id = o.driver_id
+     JOIN companies c ON c.id = o.company_id
      LEFT JOIN tracking_links t ON t.order_id = o.id
      LEFT JOIN delivery_proofs p ON p.order_id = o.id AND p.proof_type = 'otp'
      LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
@@ -1349,7 +1562,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
   );
   const order = result.rows[0];
   if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
-  const [events, incidents, paymentEvents] = await Promise.all([
+  const [events, incidents, paymentEvents, evidence] = await Promise.all([
     pool.query(
       `SELECT e.id, e.from_status, e.to_status, e.reason, e.metadata, e.created_at,
               COALESCE(u.display_name, 'Système') AS actor_name
@@ -1374,6 +1587,13 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
        WHERE pe.order_id = $1 AND pe.company_id = $2 ORDER BY pe.created_at ASC, pe.id ASC`,
       [order.id, req.auth.company_id]
     ),
+    pool.query(
+      `SELECT id, evidence_type, mime_type, byte_size, created_at
+       FROM delivery_evidence_files
+       WHERE order_id = $1 AND company_id = $2 AND superseded_at IS NULL AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+      [order.id, req.auth.company_id]
+    ),
   ]);
   return res.json({
     ...order,
@@ -1384,6 +1604,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
     events: events.rows,
     incidents: incidents.rows,
     paymentEvents: paymentEvents.rows,
+    evidence: evidence.rows,
   });
 }));
 
@@ -1579,6 +1800,20 @@ async function verifyOrderOtp(req, res, driverScoped = false) {
         ? 'L’écart d’encaissement doit être rapproché avant de confirmer la remise.'
         : 'Enregistrez l’encaissement attendu avant de confirmer la remise.';
       throw Object.assign(new Error(message), { statusCode: 409 });
+    }
+    const evidencePolicy = await client.query(
+      `SELECT c.photo_proof_mode, c.signature_proof_mode,
+              EXISTS (SELECT 1 FROM delivery_evidence_files e WHERE e.order_id = $2 AND e.evidence_type = 'photo' AND e.superseded_at IS NULL AND e.deleted_at IS NULL) AS has_photo,
+              EXISTS (SELECT 1 FROM delivery_evidence_files e WHERE e.order_id = $2 AND e.evidence_type = 'signature' AND e.superseded_at IS NULL AND e.deleted_at IS NULL) AS has_signature
+       FROM companies c WHERE c.id = $1`,
+      [req.auth.company_id, order.id]
+    );
+    const policy = evidencePolicy.rows[0];
+    const missingEvidence = [];
+    if (policy?.photo_proof_mode === 'required' && !policy.has_photo) missingEvidence.push('photo');
+    if (policy?.signature_proof_mode === 'required' && !policy.has_signature) missingEvidence.push('signature');
+    if (missingEvidence.length) {
+      throw Object.assign(new Error(`Ajoutez la preuve obligatoire avant la remise : ${missingEvidence.join(' et ')}.`), { statusCode: 409 });
     }
     const challengeResult = await client.query(
       `SELECT id, code_salt, code_hash, attempts_remaining FROM delivery_otp_challenges
@@ -2240,8 +2475,6 @@ app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
     return res.status(502).json({ error: 'Le service de localisation est temporairement indisponible.' });
   }
 }));
-
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.use((error, _req, res, _next) => {
   const correlationId = crypto.randomUUID();

@@ -32,6 +32,9 @@ async function run() {
   const orderIds = [];
   let invitationId;
   let invitedUserId;
+  let companyId;
+  let previousProofSettings;
+  let proofSettingsAuditId;
 
   try {
     const login = await fetch(`${baseUrl}/app/login`, {
@@ -44,6 +47,19 @@ async function run() {
     ensure(ownerCookie, 'Cookie propriétaire absent.');
     const context = await json(await fetch(`${baseUrl}/api/app/context`, { headers: { Cookie: ownerCookie } }));
     ensure(context.response.ok && context.payload.company?.id, 'Contexte entreprise indisponible.');
+    companyId = context.payload.company.id;
+    const storedProofSettings = await pool.query(
+      `SELECT photo_proof_mode, signature_proof_mode FROM companies WHERE id = $1`,
+      [companyId]
+    );
+    previousProofSettings = storedProofSettings.rows[0];
+    const proofSettings = await json(await fetch(`${baseUrl}/api/app/settings/proofs`, {
+      method: 'PATCH',
+      headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photoMode: 'required', signatureMode: 'optional' }),
+    }));
+    proofSettingsAuditId = proofSettings.payload.auditId;
+    ensure(proofSettings.response.ok && proofSettings.payload.photo_proof_mode === 'required', 'Configuration des preuves complémentaires impossible.');
 
     const firstDriver = await pool.query(
       `INSERT INTO drivers (company_id, name, traccar_unique_id, phone, active)
@@ -267,6 +283,65 @@ async function run() {
     }));
     ensure(reconciledPayment.response.ok && reconciledPayment.payload.status === 'reconciled', 'Le responsable ne peut pas débloquer la remise après vérification de l’écart.');
 
+    const missingPhotoOtp = await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/otp/verify`, {
+      method: 'POST',
+      headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: generatedOtp.payload.code, idempotencyKey: `driver-missing-photo-${marker}` }),
+    });
+    ensure(missingPhotoOtp.status === 409, 'Une photo obligatoire manquante n’a pas bloqué la remise.');
+
+    const invalidEvidence = new FormData();
+    invalidEvidence.append('file', new Blob(['<svg></svg>'], { type: 'image/png' }), 'fausse-preuve.png');
+    invalidEvidence.append('idempotencyKey', `driver-invalid-evidence-${marker}`);
+    const invalidEvidenceResponse = await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/evidence/photo`, {
+      method: 'POST', headers: { Cookie: driverCookie }, body: invalidEvidence,
+    });
+    ensure(invalidEvidenceResponse.status === 415, 'Un fichier déguisé en image a été accepté.');
+
+    const oversizedEvidence = new FormData();
+    oversizedEvidence.append('file', new Blob([Buffer.alloc(1200 * 1024 + 1)], { type: 'image/png' }), 'preuve-trop-lourde.png');
+    oversizedEvidence.append('idempotencyKey', `driver-oversized-evidence-${marker}`);
+    const oversizedEvidenceResponse = await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/evidence/photo`, {
+      method: 'POST', headers: { Cookie: driverCookie }, body: oversizedEvidence,
+    });
+    ensure(oversizedEvidenceResponse.status === 413, 'Une preuve dépassant la limite serveur a été acceptée.');
+
+    const pngBuffer = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    const evidenceForm = (key) => {
+      const form = new FormData();
+      form.append('file', new Blob([pngBuffer], { type: 'image/png' }), 'preuve.png');
+      form.append('idempotencyKey', key);
+      return form;
+    };
+    const foreignEvidenceResponse = await fetch(`${baseUrl}/api/driver/orders/${orderIds[1]}/evidence/photo`, {
+      method: 'POST', headers: { Cookie: driverCookie }, body: evidenceForm(`driver-foreign-evidence-${marker}`),
+    });
+    ensure(foreignEvidenceResponse.status === 404, 'Un livreur a ajouté une preuve à une commande étrangère.');
+    const evidenceKey = `driver-evidence-${marker}`;
+    const uploadedEvidence = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/evidence/photo`, {
+      method: 'POST', headers: { Cookie: driverCookie }, body: evidenceForm(evidenceKey),
+    }));
+    ensure(uploadedEvidence.response.status === 201 && uploadedEvidence.payload.id, 'La photo de preuve valide n’a pas été enregistrée.');
+    const repeatedEvidence = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/evidence/photo`, {
+      method: 'POST', headers: { Cookie: driverCookie }, body: evidenceForm(evidenceKey),
+    }));
+    ensure(repeatedEvidence.response.ok && repeatedEvidence.payload.alreadyUploaded, 'La répétition réseau a dupliqué la photo de preuve.');
+    const driverEvidenceView = await fetch(`${baseUrl}/api/driver/evidence/${uploadedEvidence.payload.id}`, { headers: { Cookie: driverCookie } });
+    ensure(driverEvidenceView.status === 200 && driverEvidenceView.headers.get('content-type')?.startsWith('image/png'), 'Le livreur affecté ne peut pas relire la preuve privée.');
+    const ownerEvidenceView = await fetch(`${baseUrl}/api/app/evidence/${uploadedEvidence.payload.id}`, { headers: { Cookie: ownerCookie } });
+    ensure(ownerEvidenceView.status === 200, 'L’exploitation ne peut pas consulter la preuve privée.');
+    const replacementEvidence = await json(await fetch(`${baseUrl}/api/driver/orders/${orderIds[0]}/evidence/photo`, {
+      method: 'POST', headers: { Cookie: driverCookie }, body: evidenceForm(`driver-evidence-replace-${marker}`),
+    }));
+    ensure(replacementEvidence.response.status === 201 && replacementEvidence.payload.id !== uploadedEvidence.payload.id, 'Le remplacement d’une preuve incorrecte a échoué.');
+    const oldEvidenceView = await fetch(`${baseUrl}/api/driver/evidence/${uploadedEvidence.payload.id}`, { headers: { Cookie: driverCookie } });
+    ensure(oldEvidenceView.status === 404, 'L’ancien contenu remplacé reste accessible.');
+    const oldEvidenceStorage = await pool.query(
+      `SELECT content IS NULL AS content_removed, superseded_at IS NOT NULL AS superseded FROM delivery_evidence_files WHERE id = $1`,
+      [uploadedEvidence.payload.id]
+    );
+    ensure(oldEvidenceStorage.rows[0]?.content_removed && oldEvidenceStorage.rows[0]?.superseded, 'L’ancien binaire n’a pas été supprimé après remplacement.');
+
     const foreignOtp = await fetch(`${baseUrl}/api/driver/orders/${orderIds[1]}/otp/verify`, {
       method: 'POST',
       headers: { Cookie: driverCookie, 'Content-Type': 'application/json' },
@@ -318,7 +393,7 @@ async function run() {
     });
     ensure(foreignIncident.status === 404, 'Un incident a pu être créé sur une commande étrangère.');
 
-    console.log('Smoke livreur réussi : accès cloisonné, transitions, encaissement, OTP et incidents.');
+    console.log('Smoke livreur réussi : accès cloisonné, transitions, encaissement, preuves privées, OTP et incidents.');
   } finally {
     const client = await pool.connect();
     try {
@@ -326,6 +401,13 @@ async function run() {
       if (orderIds.length) {
         await client.query("DELETE FROM audit_logs WHERE entity_type = 'order' AND entity_id = ANY($1::bigint[])", [orderIds]);
         await client.query('DELETE FROM orders WHERE id = ANY($1::bigint[])', [orderIds]);
+      }
+      if (companyId && previousProofSettings) {
+        await client.query(
+          `UPDATE companies SET photo_proof_mode = $1, signature_proof_mode = $2, updated_at = NOW() WHERE id = $3`,
+          [previousProofSettings.photo_proof_mode, previousProofSettings.signature_proof_mode, companyId]
+        );
+        if (proofSettingsAuditId) await client.query('DELETE FROM audit_logs WHERE id = $1', [proofSettingsAuditId]);
       }
       if (invitationId) await client.query("DELETE FROM audit_logs WHERE entity_type = 'user_invitation' AND entity_id = $1", [invitationId]);
       if (invitedUserId) {

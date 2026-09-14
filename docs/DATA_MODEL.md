@@ -42,6 +42,10 @@ Chronologie append-only des transitions de commande, avec acteur, motif, clé d'
 
 Défis OTP temporaires, tentatives idempotentes et preuves de remise durables. Le code en clair n'est jamais stocké.
 
+### `delivery_evidence_files`
+
+Métadonnées et contenu privé actif des preuves photo/signature. Une seule preuve active existe par commande et type. Lors d'un remplacement, l'ancienne ligne conserve son empreinte, son auteur et son horodatage mais son contenu binaire est supprimé. Les règles `photo_proof_mode` et `signature_proof_mode` de l'entreprise définissent si chaque preuve est désactivée, facultative ou obligatoire.
+
 ### `delivery_incidents`
 
 Déclarations factuelles et résolutions d'incidents rattachées à une commande.

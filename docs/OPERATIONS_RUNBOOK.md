@@ -23,6 +23,8 @@ GET /suivi/demo-ccg-2026
 
 L'application `delivery-app` utilise la base PostgreSQL nommée `delivery`, distincte de la base par défaut éventuellement utilisée par n8n. Lors d'un accès externe pour un diagnostic ou un test, partir de `DATABASE_PUBLIC_URL` du service Postgres et conserver explicitement `/delivery` comme nom de base. Ne jamais exécuter un test de nettoyage sur l'URL dont le chemin ne désigne pas `delivery`.
 
+Les petites preuves photo/signature du pilote sont incluses dans cette base. Surveiller sa taille et tester leur restauration avec les sauvegardes. Avant montée en charge, suivre `docs/DELIVERY_EVIDENCE.md` pour les migrer vers un stockage objet privé.
+
 ## Accès aux interfaces
 
 ```text

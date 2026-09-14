@@ -80,6 +80,11 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .otp-code { margin-top: 16px; padding: 18px; border: 1px solid #b9d3ed; border-radius: 12px; background: #f2f8fe; text-align: center; }
 .otp-code span, .otp-code small { display: block; color: var(--muted); }
 .otp-code strong { display: block; margin: 8px 0; font-size: 34px; letter-spacing: .18em; color: var(--navy-dark); }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+.evidence-card { display: grid; gap: 9px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; }
+.evidence-card small { color: var(--muted); }
+.evidence-card img { display: block; width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #eef2f6; }
+.evidence-empty { display: grid; min-height: 100px; place-items: center; border-radius: 8px; color: var(--muted); background: #f5f7fa; }
 .incident-list { display: grid; gap: 12px; margin-top: 20px; }
 .incident { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 15px; border: 1px solid var(--line); border-radius: 11px; }
 .incident p { margin: 8px 0; }
@@ -102,7 +107,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
   .topbar .identity { margin-left: auto; text-align: right; }
 }
 @media (max-width: 620px) {
-  .stats, .form-grid, .detail-grid { grid-template-columns: 1fr; }
+  .stats, .form-grid, .detail-grid, .evidence-grid { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
   .page-header { flex-direction: column; }
   .incident { flex-direction: column; }

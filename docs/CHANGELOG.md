@@ -57,3 +57,9 @@
 - Blocage terrain des écarts financiers jusqu'au rapprochement par un responsable.
 - Ajout de protections idempotentes contre les doubles mouvements et la double consommation d'un essai OTP.
 - Extension du test livreur au parcours complet, aux écarts, à l'auteur des preuves et aux tentatives sur une commande étrangère.
+- Ajout des règles entreprise pour photo et signature : désactivée, facultative ou obligatoire.
+- Ajout de la capture photo compressée et de la signature tactile dans le portail livreur.
+- Ajout du contrôle JPEG/PNG par signature binaire, de la limite à 1,2 Mo et du stockage privé.
+- Ajout du remplacement avec suppression de l'ancien contenu et conservation de la trace d'audit.
+- Blocage serveur de la remise lorsqu'une preuve configurée comme obligatoire manque.
+- Ajout de la consultation privée des preuves dans la fiche commande et des tests d'accès croisés.

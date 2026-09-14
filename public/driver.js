@@ -35,6 +35,39 @@ function actionKey(prefix) {
   return `${prefix}:${random}`;
 }
 
+async function canvasBlob(canvas, type = 'image/png', quality) {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+async function compressedPhoto(file) {
+  if (!['image/jpeg', 'image/png'].includes(file.type)) throw new Error('Choisissez une photo JPEG ou PNG.');
+  const bitmap = await createImageBitmap(file);
+  const ratio = Math.min(1, 1280 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
+  canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  let quality = 0.82;
+  let blob = await canvasBlob(canvas, 'image/jpeg', quality);
+  while (blob && blob.size > 1100 * 1024 && quality > 0.45) {
+    quality -= 0.1;
+    blob = await canvasBlob(canvas, 'image/jpeg', quality);
+  }
+  if (!blob || blob.size > 1200 * 1024) throw new Error('La photo reste trop lourde. Recadrez-la ou réduisez sa résolution.');
+  return blob;
+}
+
+async function uploadEvidence(orderId, type, blob, resultId) {
+  const form = new FormData();
+  form.append('file', blob, type === 'photo' ? 'preuve.jpg' : 'signature.png');
+  form.append('idempotencyKey', actionKey(`driver-evidence-${type}`));
+  const response = await fetch(`/api/driver/orders/${encodeURIComponent(orderId)}/evidence/${type}`, { method: 'POST', body: form });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || 'Impossible d’enregistrer la preuve.');
+  document.getElementById(resultId).innerHTML = '<div class="notice success">Preuve enregistrée.</div>';
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   if (response.status === 401) {
@@ -76,6 +109,12 @@ async function renderDetail(id) {
   const paymentBlocksDelivery = order.expected_amount_minor != null
     && ['pending', 'discrepancy'].includes(order.payment_status);
   const hasActiveOtp = Boolean(order.active_otp_expires_at);
+  const evidenceByType = Object.fromEntries((order.evidence || []).map((item) => [item.evidence_type, item]));
+  const canAddEvidence = ['En livraison', 'Arrivée'].includes(order.status);
+  const missingRequiredEvidence = [
+    order.photo_proof_mode === 'required' && !evidenceByType.photo ? 'photo' : null,
+    order.signature_proof_mode === 'required' && !evidenceByType.signature ? 'signature' : null,
+  ].filter(Boolean);
   page.innerHTML = `<a class="driver-back" href="/driver">← Mes livraisons</a>
     <div class="page-header"><div><h1>${escapeHtml(order.customer_name || 'Client')}</h1><p class="subtitle">Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
     <section class="card driver-detail-grid">
@@ -94,7 +133,8 @@ async function renderDetail(id) {
       ${order.payment_status === 'discrepancy' ? `<div class="notice error"><strong>Écart à traiter par un responsable.</strong> La remise reste bloquée.${order.discrepancy_reason ? ` Motif : ${escapeHtml(order.discrepancy_reason)}` : ''}</div>` : ''}
       ${canCollectPayment ? `<form id="paymentForm" class="driver-form"><div class="field"><label>Somme réellement reçue en FCFA</label><input name="amountMinor" type="number" min="0" step="1" value="${escapeHtml(order.expected_amount_minor)}" required /></div><div class="field"><label>Mode d’encaissement</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Transaction Mobile Money, reçu…" /></div><div class="field" id="discrepancyField" hidden><label>Pourquoi le montant diffère-t-il ?</label><textarea name="discrepancyReason" minlength="5" maxlength="1000" placeholder="Ex. client sans monnaie suffisante"></textarea></div><div class="notice warning">Vérifiez la somme avant de confirmer. Une différence devra être validée par un responsable et bloquera la remise.</div><button class="primary">Confirmer l’encaissement</button></form><div id="paymentResult"></div>` : order.payment_status === 'pending' ? '<p class="notice">La saisie sera disponible à partir de l’étape « En livraison ».</p>' : ''}
     </section>` : ''}
-    ${canVerifyOtp ? `<section class="card driver-section"><h2>Confirmer la remise</h2><p>Demandez au client le code à 6 chiffres reçu pour cette commande.</p><p class="subtitle">Le portail livreur n’affiche et ne génère jamais ce code.</p>${hasActiveOtp ? `<div class="notice success">Un code est actif jusqu’au ${escapeHtml(formatDate(order.active_otp_expires_at))}.</div>` : '<div class="notice warning">Aucun code actif. Demandez à l’exploitation d’en générer un pour le client.</div>'}${paymentBlocksDelivery ? '<div class="notice error">La remise est bloquée tant que l’encaissement ou son écart n’est pas finalisé.</div>' : ''}<form id="otpForm" class="driver-form"><div class="field"><label>Code donné par le client</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><button class="primary" ${!hasActiveOtp || paymentBlocksDelivery ? 'disabled' : ''}>Valider la remise au client</button></form><div id="otpResult"></div></section>` : ''}
+    ${(order.photo_proof_mode !== 'off' || order.signature_proof_mode !== 'off') ? `<section class="card driver-section"><h2>Preuves complémentaires</h2><p class="subtitle">Photographiez le colis ou le lieu sans visage ni document d’identité. Demandez l’accord avant une signature.</p><div class="evidence-grid">${order.photo_proof_mode !== 'off' ? `<article class="evidence-card"><strong>Photo ${order.photo_proof_mode === 'required' ? '— obligatoire' : '— facultative'}</strong>${evidenceByType.photo ? `<img src="/api/driver/evidence/${escapeHtml(evidenceByType.photo.id)}" alt="Photo de remise" /><small>Déjà enregistrée. Une nouvelle photo la remplacera.</small>` : '<div class="evidence-empty">Aucune photo</div>'}${canAddEvidence ? '<label class="button secondary evidence-picker">Prendre ou choisir une photo<input id="photoEvidence" type="file" accept="image/jpeg,image/png" capture="environment" hidden /></label>' : ''}<div id="photoEvidenceResult"></div></article>` : ''}${order.signature_proof_mode !== 'off' ? `<article class="evidence-card"><strong>Signature ${order.signature_proof_mode === 'required' ? '— obligatoire' : '— facultative'}</strong>${evidenceByType.signature ? `<img src="/api/driver/evidence/${escapeHtml(evidenceByType.signature.id)}" alt="Signature du destinataire" /><small>Déjà enregistrée. Une nouvelle signature la remplacera.</small>` : ''}${canAddEvidence ? '<canvas id="signatureCanvas" class="signature-canvas" width="600" height="260" aria-label="Zone de signature"></canvas><div class="driver-actions"><button class="secondary" id="clearSignature" type="button">Effacer</button><button class="primary" id="saveSignature" type="button">Enregistrer</button></div>' : ''}<div id="signatureEvidenceResult"></div></article>` : ''}</div></section>` : ''}
+    ${canVerifyOtp ? `<section class="card driver-section"><h2>Confirmer la remise</h2><p>Demandez au client le code à 6 chiffres reçu pour cette commande.</p><p class="subtitle">Le portail livreur n’affiche et ne génère jamais ce code.</p>${hasActiveOtp ? `<div class="notice success">Un code est actif jusqu’au ${escapeHtml(formatDate(order.active_otp_expires_at))}.</div>` : '<div class="notice warning">Aucun code actif. Demandez à l’exploitation d’en générer un pour le client.</div>'}${paymentBlocksDelivery ? '<div class="notice error">La remise est bloquée tant que l’encaissement ou son écart n’est pas finalisé.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<form id="otpForm" class="driver-form"><div class="field"><label>Code donné par le client</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><button class="primary" ${!hasActiveOtp || paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Valider la remise au client</button></form><div id="otpResult"></div></section>` : ''}
     ${order.proof_id ? `<section class="card driver-section"><h2>Remise confirmée</h2><div class="notice success">Le code client a été vérifié le ${escapeHtml(formatDate(order.proof_verified_at))}. Cette livraison est terminée.</div></section>` : ''}
     ${!order.isTerminal ? `<section class="card driver-section"><h2>Mettre à jour l’étape</h2><div class="driver-actions">${order.allowedTransitions.map((status) => `<button class="${['Échec', 'Retour'].includes(status) ? 'danger' : 'primary'} transition" data-status="${escapeHtml(status)}">${escapeHtml(transitionLabels[status] || status)}</button>`).join('')}</div><div id="transitionResult"></div></section>` : ''}
     <section class="card driver-section"><h2>Signaler un incident</h2>
@@ -176,6 +216,52 @@ async function renderDetail(id) {
       button.disabled = false;
     }
   });
+
+  const photoInput = document.getElementById('photoEvidence');
+  if (photoInput) photoInput.addEventListener('change', async () => {
+    const result = document.getElementById('photoEvidenceResult');
+    const picker = photoInput.closest('label');
+    picker.style.pointerEvents = 'none';
+    result.innerHTML = '<div class="notice">Compression et envoi…</div>';
+    try {
+      const blob = await compressedPhoto(photoInput.files[0]);
+      await uploadEvidence(id, 'photo', blob, 'photoEvidenceResult');
+      await renderDetail(id);
+    } catch (error) {
+      result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      picker.style.pointerEvents = '';
+    }
+  });
+
+  const signatureCanvas = document.getElementById('signatureCanvas');
+  if (signatureCanvas) {
+    const drawing = signatureCanvas.getContext('2d');
+    drawing.lineWidth = 4;
+    drawing.lineCap = 'round';
+    drawing.strokeStyle = '#172033';
+    let active = false;
+    let signed = false;
+    const point = (event) => {
+      const rect = signatureCanvas.getBoundingClientRect();
+      return { x: (event.clientX - rect.left) * (signatureCanvas.width / rect.width), y: (event.clientY - rect.top) * (signatureCanvas.height / rect.height) };
+    };
+    signatureCanvas.addEventListener('pointerdown', (event) => { active = true; signed = true; signatureCanvas.setPointerCapture(event.pointerId); const p = point(event); drawing.beginPath(); drawing.moveTo(p.x, p.y); });
+    signatureCanvas.addEventListener('pointermove', (event) => { if (!active) return; const p = point(event); drawing.lineTo(p.x, p.y); drawing.stroke(); });
+    signatureCanvas.addEventListener('pointerup', () => { active = false; });
+    document.getElementById('clearSignature').addEventListener('click', () => { drawing.clearRect(0, 0, signatureCanvas.width, signatureCanvas.height); signed = false; });
+    document.getElementById('saveSignature').addEventListener('click', async (event) => {
+      if (!signed) return document.getElementById('signatureEvidenceResult').innerHTML = '<div class="notice error">Faites signer dans la zone avant d’enregistrer.</div>';
+      event.currentTarget.disabled = true;
+      try {
+        const blob = await canvasBlob(signatureCanvas);
+        await uploadEvidence(id, 'signature', blob, 'signatureEvidenceResult');
+        await renderDetail(id);
+      } catch (error) {
+        document.getElementById('signatureEvidenceResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        event.currentTarget.disabled = false;
+      }
+    });
+  }
 
   document.getElementById('incidentForm').addEventListener('submit', async (event) => {
     event.preventDefault();

@@ -269,6 +269,11 @@ async function renderOrderDetail(id) {
   const destination = [order.neighborhood, order.landmark, order.delivery_address].filter(Boolean).join(' — ') || '—';
   const incidentOptions = Object.entries(incidentCategoryLabels)
     .map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
+  const evidenceByType = Object.fromEntries((order.evidence || []).map((item) => [item.evidence_type, item]));
+  const missingRequiredEvidence = [
+    order.photo_proof_mode === 'required' && !evidenceByType.photo ? 'photo' : null,
+    order.signature_proof_mode === 'required' && !evidenceByType.signature ? 'signature' : null,
+  ].filter(Boolean);
   page.innerHTML = `
     <div class="page-header"><div><a href="/app/commandes">← Retour aux commandes</a><h1 style="margin-top:12px">Commande n° ${escapeHtml(order.id)}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
     <section class="card"><h2>Livraison</h2><div class="detail-grid">
@@ -283,7 +288,8 @@ async function renderOrderDetail(id) {
 
     ${!order.isTerminal && order.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la livraison</h2><p class="subtitle">Seules les étapes compatibles avec l’état actuel sont proposées.</p><form id="transitionForm" style="margin-top:16px"><div class="form-grid"><div class="field"><label>Nouvelle étape</label><select name="toStatus" required><option value="">Choisir une étape</option>${order.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('')}</select></div><div class="field"><label>Motif ou observation</label><textarea name="reason" placeholder="Obligatoire pour un échec, retour ou une annulation"></textarea></div></div><div class="actions" style="margin-top:16px"><button class="primary">Enregistrer l’étape</button></div></form><div id="transitionResult"></div></section>` : ''}
 
-    ${order.requiresOtpForDelivery ? `<section class="card" style="margin-top:18px"><h2>Confirmer la remise avec un code</h2><p class="subtitle">Le code est valable 30 minutes et ne peut être utilisé qu’une fois. Communiquez-le au destinataire par un canal fiable.</p>${order.paymentBlocksDelivery ? '<div class="notice error">Finalisez l’encaissement ou son rapprochement avant de confirmer la livraison.</div>' : ''}<div class="actions" style="margin-top:16px"><button class="secondary" id="generateOtp">Générer un code de remise</button></div><div id="otpGenerated"></div><form id="verifyOtp" style="margin-top:18px"><div class="field"><label>Code communiqué par le destinataire</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><div class="actions" style="margin-top:12px"><button class="primary" ${order.paymentBlocksDelivery ? 'disabled' : ''}>Confirmer la livraison</button></div></form><div id="otpResult"></div></section>` : ''}
+    ${(order.photo_proof_mode !== 'off' || order.signature_proof_mode !== 'off' || order.evidence?.length) ? `<section class="card" style="margin-top:18px"><h2>Preuves complémentaires</h2><p class="subtitle">Visibles uniquement par l’entreprise et le livreur affecté. Elles ne sont pas publiées sur le lien client.</p><div class="evidence-grid">${['photo', 'signature'].filter((type) => order[`${type}_proof_mode`] !== 'off' || evidenceByType[type]).map((type) => { const item = evidenceByType[type]; const label = type === 'photo' ? 'Photo de remise' : 'Signature'; const mode = order[`${type}_proof_mode`]; return `<article class="evidence-card"><strong>${label}</strong><small>${mode === 'required' ? 'Obligatoire' : 'Facultative'}</small>${item ? `<a target="_blank" rel="noopener" href="/api/app/evidence/${escapeHtml(item.id)}"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="${label}" /></a><small>Ajoutée le ${escapeHtml(formatDate(item.created_at))}</small>` : '<div class="evidence-empty">Pas encore ajoutée</div>'}</article>`; }).join('')}</div></section>` : ''}
+    ${order.requiresOtpForDelivery ? `<section class="card" style="margin-top:18px"><h2>Confirmer la remise avec un code</h2><p class="subtitle">Le code est valable 30 minutes et ne peut être utilisé qu’une fois. Communiquez-le au destinataire par un canal fiable.</p>${order.paymentBlocksDelivery ? '<div class="notice error">Finalisez l’encaissement ou son rapprochement avant de confirmer la livraison.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<div class="actions" style="margin-top:16px"><button class="secondary" id="generateOtp">Générer un code de remise</button></div><div id="otpGenerated"></div><form id="verifyOtp" style="margin-top:18px"><div class="field"><label>Code communiqué par le destinataire</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><div class="actions" style="margin-top:12px"><button class="primary" ${order.paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Confirmer la livraison</button></div></form><div id="otpResult"></div></section>` : ''}
     ${order.proof_id ? `<section class="card" style="margin-top:18px"><h2>Preuve de remise</h2><div class="notice success">Remise confirmée par code à usage unique le ${escapeHtml(formatDate(order.proof_verified_at))}.</div></section>` : ''}
 
     <section class="card" style="margin-top:18px"><h2>Incidents</h2><form id="incidentForm"><div class="form-grid"><div class="field"><label>Type</label><select name="category">${incidentOptions}</select></div><div class="field"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div><div class="field full"><label>Description factuelle</label><textarea name="description" maxlength="2000" required placeholder="Décrivez ce qui s’est passé, sans supprimer les faits précédents."></textarea></div></div><div class="actions" style="margin-top:14px"><button class="secondary">Déclarer l’incident</button></div></form><div id="incidentResult"></div>
@@ -559,6 +565,34 @@ async function renderTeam() {
   }));
 }
 
+async function renderSettings() {
+  setHeader('Paramètres', 'Règles de livraison de l’entreprise');
+  const settings = await api('/api/app/settings/proofs');
+  const canEdit = ['owner', 'manager'].includes(context.user.role);
+  const modeOptions = (selected) => [
+    ['off', 'Désactivée'], ['optional', 'Facultative'], ['required', 'Obligatoire'],
+  ].map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
+  page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Les preuves doivent rester proportionnées au risque de vos livraisons.</p></div></div>
+    <section class="card"><h2>Preuves complémentaires de remise</h2><p>Le code client reste la preuve principale. Activez une photo ou une signature seulement si votre activité le justifie.</p><div class="notice">Une preuve « obligatoire » empêchera la validation finale tant que le livreur ne l’aura pas ajoutée. Les images restent privées.</div><form id="proofSettings"><div class="form-grid"><div class="field"><label>Photo de remise</label><select name="photoMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.photo_proof_mode)}</select><small>Privilégiez le colis ou le lieu, sans visage ni document d’identité.</small></div><div class="field"><label>Signature du destinataire</label><select name="signatureMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.signature_proof_mode)}</select><small>Ne demandez la signature que lorsqu’elle est réellement utile.</small></div></div>${canEdit ? '<div class="actions" style="margin-top:18px"><button class="primary">Enregistrer les règles</button></div>' : '<p class="notice">Seul un propriétaire ou manager peut modifier ces règles.</p>'}</form><div id="settingsResult"></div></section>`;
+  const form = document.getElementById('proofSettings');
+  if (canEdit) form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      const payload = Object.fromEntries(new FormData(event.currentTarget));
+      await api('/api/app/settings/proofs', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      document.getElementById('settingsResult').innerHTML = '<div class="notice success">Règles de preuve enregistrées.</div>';
+    } catch (error) {
+      document.getElementById('settingsResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 function renderPlaceholder(title, description, items) {
   setHeader(title, description);
   page.innerHTML = `<div class="page-header"><div><h1>${escapeHtml(title)}</h1><p class="subtitle">${escapeHtml(description)}</p></div></div><section class="card placeholder"><h2>Prévu dans la feuille de route</h2><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul><p>Cette page est séparée dès maintenant afin d’éviter d’empiler toutes les fonctions dans un seul écran.</p></section>`;
@@ -589,7 +623,7 @@ async function start() {
     if (path === '/app/equipe') return await renderTeam();
     if (path === '/app/clients') return renderPlaceholder('Clients', 'CRM opérationnel', ['Historique des commandes', 'Lieux et repères', 'Interactions et incidents']);
     if (path === '/app/rapports') return renderPlaceholder('Rapports', 'Analyses et exports', ['Suivi mensuel', 'Indicateurs vérifiables', 'Exports Excel']);
-    if (path === '/app/parametres') return renderPlaceholder('Paramètres', 'Configuration de l’entreprise', ['Utilisateurs et rôles', 'Règles de livraison', 'Conservation des données']);
+    if (path === '/app/parametres') return await renderSettings();
   } catch (error) {
     renderError(error);
   }

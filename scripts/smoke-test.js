@@ -16,6 +16,8 @@ async function json(response) {
 
 async function run() {
   ensure(email && password, 'ADMIN_USER et ADMIN_PASSWORD sont requis.');
+  const health = await json(await fetch(`${baseUrl}/health`));
+  ensure(health.response.ok && health.payload.status === 'ok', 'Le contrôle de santé de l’application a échoué.');
   let requestToken;
   let requestId;
   let orderId;

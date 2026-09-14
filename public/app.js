@@ -7,12 +7,13 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 }[character]));
 
 const formatDate = (value) => value ? new Date(value).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+const formatDateOnly = (value) => value ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(`${String(value).slice(0, 10)}T00:00:00Z`)) : '—';
 const formatMoney = (value, currency = 'XOF') => value == null ? '—' : new Intl.NumberFormat('fr-FR', {
   style: 'currency', currency, maximumFractionDigits: 0,
 }).format(Number(value));
 
 function badge(status) {
-  const type = ['Livrée', 'Disponible', 'Confirmée'].includes(status) ? 'success'
+  const type = ['Livrée', 'Disponible', 'Confirmée', 'Terminée'].includes(status) ? 'success'
     : ['Refusée', 'Annulée', 'Retournée', 'Incident', 'Échec'].includes(status) ? 'danger'
       : ['À vérifier', 'Arrivée', 'Retour', 'Position ancienne'].includes(status) ? 'warning' : '';
   return `<span class="badge ${type}">${escapeHtml(status || '—')}</span>`;
@@ -43,6 +44,13 @@ const paymentMethodLabels = {
   cash: 'Espèces', mobile_money: 'Mobile Money', card: 'Carte', bank_transfer: 'Virement', other: 'Autre',
 };
 const roleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
+const runStatusLabels = {
+  draft: 'Brouillon', planned: 'Planifiée', active: 'En cours', completed: 'Terminée', cancelled: 'Annulée',
+};
+const runEventLabels = {
+  created: 'Tournée créée', order_added: 'Colis ajouté', order_removed: 'Colis retiré',
+  stops_reordered: 'Ordre des arrêts modifié', status_changed: 'État de la tournée modifié',
+};
 
 function renderPaymentSection(order) {
   const configured = Boolean(order.payment_account_id);
@@ -106,10 +114,11 @@ async function renderDashboard() {
       <article class="stat"><span>À vérifier</span><strong>${escapeHtml(summary.to_review)}</strong></article>
       <article class="stat"><span>Commandes créées</span><strong>${escapeHtml(summary.orders)}</strong></article>
       <article class="stat"><span>Livreurs enregistrés</span><strong>${escapeHtml(summary.drivers)}</strong></article>
+      <article class="stat"><span>Tournées ouvertes</span><strong>${escapeHtml(summary.open_runs)}</strong></article>
       <article class="stat"><span>Incidents ouverts</span><strong>${escapeHtml(summary.open_incidents)}</strong></article>
       <article class="stat"><span>Gels à réviser</span><strong>${escapeHtml(summary.overdue_holds)}</strong></article>
     </section>
-    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/demandes">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
+    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/demandes">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/tournees">Préparer une tournée</a><a class="button secondary" href="/app/incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
 }
 
 async function renderRequests() {
@@ -263,6 +272,176 @@ async function renderOrders() {
     if (event.target.closest('a, button, input, select')) return;
     location.href = row.dataset.href;
   }));
+}
+
+async function renderRuns() {
+  setHeader('Tournées', 'Regrouper et ordonner les colis d’un livreur');
+  const [runs, drivers] = await Promise.all([api('/api/app/runs'), api('/api/app/drivers')]);
+  const now = new Date();
+  const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const selectableDrivers = drivers.filter((driver) => driver.active && !['inactive', 'off_duty', 'incident'].includes(driver.operationalState));
+  page.innerHTML = `<div class="page-header"><div><h1>Tournées</h1><p class="subtitle">Un même livreur peut transporter plusieurs colis, dans un ordre confirmé par l’équipe.</p></div></div>
+    <section class="card"><h2>Préparer une nouvelle tournée</h2><p class="subtitle">Une seule tournée ouverte par livreur et par date. Une seconde pourra être créée lorsque la première sera terminée ou annulée.</p>
+      <form id="runForm" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Nom de la tournée</label><input name="name" minlength="2" maxlength="120" value="Tournée du ${escapeHtml(new Date().toLocaleDateString('fr-FR'))}" required /></div><div class="field"><label>Date de service</label><input name="serviceDate" type="date" value="${escapeHtml(today)}" required /></div><div class="field full"><label>Livreur</label><select name="driverId" required><option value="">Sélectionner</option>${selectableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)} — ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)} — capacité ${escapeHtml(driver.capacity)} colis</option>`).join('')}</select></div></div><div class="actions" style="margin-top:18px"><button class="primary">Créer le brouillon</button></div></form><div id="runCreateResult"></div>
+    </section>
+    <section class="card" style="margin-top:18px"><h2>Historique des tournées</h2>${runs.length ? `<div class="table-wrap"><table><thead><tr><th>Tournée</th><th>Date</th><th>Livreur</th><th>Progression</th><th>État</th></tr></thead><tbody>${runs.map((run) => `<tr data-href="/app/tournees/${escapeHtml(run.id)}"><td><strong>${escapeHtml(run.name)}</strong><br><small>N° ${escapeHtml(run.id)}</small></td><td>${escapeHtml(formatDateOnly(run.service_date))}</td><td>${escapeHtml(run.driver_name)}<br><small>${escapeHtml(run.vehicle_type || '')}</small></td><td>${escapeHtml(run.terminal_stop_count)} / ${escapeHtml(run.stop_count)} arrêts terminés</td><td>${badge(runStatusLabels[run.status] || run.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune tournée créée.</div>'}</section>`;
+
+  document.getElementById('runForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const values = Object.fromEntries(new FormData(form));
+    const idempotencyKey = idempotencyKeyFor(form, 'run-create', values);
+    button.disabled = true;
+    try {
+      const result = await api('/api/app/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...values, idempotencyKey }),
+      });
+      location.href = `/app/tournees/${encodeURIComponent(result.id)}`;
+    } catch (error) {
+      document.getElementById('runCreateResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+  document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', () => { location.href = row.dataset.href; }));
+}
+
+async function renderRunDetail(id) {
+  setHeader('Tournée', 'Préparation et ordre des arrêts');
+  const run = await api(`/api/app/runs/${encodeURIComponent(id)}`);
+  let localStops = [...run.stops];
+  const atCapacity = run.stops.length >= Number(run.capacity);
+  const eventDescription = (event) => {
+    if (event.event_type === 'status_changed') return `${runStatusLabels[event.details.fromStatus] || event.details.fromStatus} → ${runStatusLabels[event.details.toStatus] || event.details.toStatus}${event.details.reason ? ` · ${event.details.reason}` : ''}`;
+    if (event.event_type === 'order_added') return `Commande n° ${event.details.orderId} ajoutée à l’arrêt ${event.details.sequence}`;
+    if (event.event_type === 'order_removed') return `Commande n° ${event.details.orderId} retirée`;
+    if (event.event_type === 'stops_reordered') return `${event.details.stopIds?.length || 0} arrêts réorganisés`;
+    return `${run.driver_name} · ${formatDateOnly(run.service_date)}`;
+  };
+  page.innerHTML = `<div class="page-header"><div><a href="/app/tournees">← Retour aux tournées</a><h1 style="margin-top:12px">${escapeHtml(run.name)}</h1><p class="subtitle">${escapeHtml(formatDateOnly(run.service_date))} · ${escapeHtml(run.driver_name)} · capacité ${escapeHtml(run.capacity)} colis</p></div>${badge(runStatusLabels[run.status] || run.status)}</div>
+    <section class="card"><div class="actions" style="justify-content:space-between"><div><h2 style="margin:0">Arrêts de la tournée</h2><p class="subtitle">${run.canReorderStops ? 'Déplacez les arrêts, puis confirmez explicitement le nouvel ordre.' : 'L’ordre est verrouillé pendant l’exécution.'}</p></div><span>${escapeHtml(run.stops.length)} / ${escapeHtml(run.capacity)} colis</span></div><div id="runNotice"></div><div id="runStops" style="margin-top:18px"></div>
+      ${run.canReorderStops && run.stops.length > 1 ? `<div class="actions" style="margin-top:18px"><button class="secondary" id="suggestRunOrder">Proposer un ordre indicatif</button><button class="primary" id="saveRunOrder">Enregistrer cet ordre</button></div><div class="notice warning">La suggestion compare uniquement les positions GPS à vol d’oiseau. Elle ne connaît ni les routes, ni le trafic, ni les créneaux clients. L’équipe doit toujours la vérifier.</div>` : ''}
+    </section>
+    ${run.canEditStops ? `<section class="card" style="margin-top:18px"><h2>Ajouter un colis</h2>${atCapacity ? `<div class="notice warning">La capacité déclarée de ${escapeHtml(run.capacity)} colis est atteinte.</div>` : run.eligibleOrders.length ? `<form id="addRunOrder"><div class="field"><label>Commande affectée à ${escapeHtml(run.driver_name)}</label><select name="orderId" required><option value="">Sélectionner une commande</option>${run.eligibleOrders.map((order) => `<option value="${escapeHtml(order.id)}">N° ${escapeHtml(order.id)} — ${escapeHtml(order.customer_name || 'Client')} — ${escapeHtml(order.neighborhood || order.landmark || order.delivery_address || 'destination à préciser')}${order.destination_lat == null ? ' — GPS manquant' : ''}</option>`).join('')}</select></div><div class="actions" style="margin-top:14px"><button class="primary">Ajouter à la tournée</button></div></form>` : '<div class="empty">Aucune autre commande active et compatible pour ce livreur.</div>'}<div id="addRunOrderResult"></div></section>` : ''}
+    ${run.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la tournée</h2><form id="runStatusForm"><div class="form-grid"><div class="field"><label>Nouvel état</label><select name="toStatus" required><option value="">Sélectionner</option>${run.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(runStatusLabels[status] || status)}</option>`).join('')}</select></div><div class="field"><label>Motif</label><textarea name="reason" maxlength="1000" placeholder="Obligatoire pour une annulation (10 caractères minimum)"></textarea></div></div><div class="actions" style="margin-top:14px"><button class="primary">Confirmer le changement</button></div></form><div id="runStatusResult"></div></section>` : ''}
+    <section class="card" style="margin-top:18px"><h2>Historique</h2>${run.events.length ? `<ol class="timeline">${run.events.map((event) => `<li><strong>${escapeHtml(runEventLabels[event.event_type] || event.event_type)}</strong><span>${escapeHtml(eventDescription(event))}</span><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small></li>`).join('')}</ol>` : '<div class="empty">Aucun événement.</div>'}</section>`;
+
+  const renderStopList = () => {
+    const container = document.getElementById('runStops');
+    if (!localStops.length) {
+      container.innerHTML = '<div class="empty">Ajoutez les colis confiés à ce livreur.</div>';
+      return;
+    }
+    container.innerHTML = `<div class="stop-list">${localStops.map((stop, index) => {
+      const destination = stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser';
+      return `<article class="stop-card"><div class="stop-number">${index + 1}</div><div class="stop-main"><strong>Commande n° ${escapeHtml(stop.order_id)} · ${escapeHtml(stop.customer_name || 'Client')}</strong><span>${escapeHtml(destination)}</span><small>${escapeHtml(stop.requested_time || 'Créneau non renseigné')} · ${stop.destination_lat == null ? 'Position GPS manquante' : 'Position GPS disponible'} · ${escapeHtml(stop.order_status)}</small></div>${run.canReorderStops ? `<div class="stop-actions"><button class="secondary move-stop" data-direction="up" data-id="${escapeHtml(stop.id)}" ${index === 0 ? 'disabled' : ''} aria-label="Monter cet arrêt">↑</button><button class="secondary move-stop" data-direction="down" data-id="${escapeHtml(stop.id)}" ${index === localStops.length - 1 ? 'disabled' : ''} aria-label="Descendre cet arrêt">↓</button>${run.canEditStops ? `<button class="danger remove-stop" data-id="${escapeHtml(stop.id)}">Retirer</button>` : ''}</div>` : ''}</article>`;
+    }).join('')}</div>`;
+    container.querySelectorAll('.move-stop').forEach((button) => button.addEventListener('click', () => {
+      const index = localStops.findIndex((stop) => String(stop.id) === button.dataset.id);
+      const target = button.dataset.direction === 'up' ? index - 1 : index + 1;
+      if (index < 0 || target < 0 || target >= localStops.length) return;
+      [localStops[index], localStops[target]] = [localStops[target], localStops[index]];
+      renderStopList();
+    }));
+    container.querySelectorAll('.remove-stop').forEach((button) => button.addEventListener('click', async () => {
+      const stop = localStops.find((item) => String(item.id) === button.dataset.id);
+      if (!stop || !confirm(`Retirer la commande n° ${stop.order_id} de ce brouillon ? Elle restera disponible et son historique sera conservé.`)) return;
+      button.disabled = true;
+      try {
+        await api(`/api/app/runs/${encodeURIComponent(id)}/stops/${encodeURIComponent(stop.id)}/remove`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expectedVersion: run.version, idempotencyKey: actionKey('run-remove') }),
+        });
+        location.reload();
+      } catch (error) {
+        document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        button.disabled = false;
+      }
+    }));
+  };
+  renderStopList();
+
+  const addForm = document.getElementById('addRunOrder');
+  if (addForm) addForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const orderId = new FormData(form).get('orderId');
+    if (!orderId) return;
+    button.disabled = true;
+    try {
+      await api(`/api/app/runs/${encodeURIComponent(id)}/orders`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId, expectedVersion: run.version, idempotencyKey: idempotencyKeyFor(form, 'run-add', { orderId }) }),
+      });
+      location.reload();
+    } catch (error) {
+      document.getElementById('addRunOrderResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+
+  const suggestButton = document.getElementById('suggestRunOrder');
+  if (suggestButton) suggestButton.addEventListener('click', async () => {
+    suggestButton.disabled = true;
+    try {
+      const suggestion = await api(`/api/app/runs/${encodeURIComponent(id)}/suggestion`);
+      if (!suggestion.available) {
+        document.getElementById('runNotice').innerHTML = `<div class="notice warning">${escapeHtml(suggestion.reason)}${suggestion.missingOrderIds?.length ? ` Commandes concernées : ${escapeHtml(suggestion.missingOrderIds.join(', '))}.` : ''}</div>`;
+        return;
+      }
+      const ranking = new Map(suggestion.stopIds.map((stopId, index) => [String(stopId), index]));
+      localStops.sort((a, b) => ranking.get(String(a.id)) - ranking.get(String(b.id)));
+      renderStopList();
+      document.getElementById('runNotice').innerHTML = `<div class="notice warning"><strong>Proposition non enregistrée.</strong> Environ ${escapeHtml(suggestion.distanceKm)} km à vol d’oiseau entre les arrêts. ${escapeHtml(suggestion.warning)} Vérifiez l’ordre puis cliquez sur « Enregistrer cet ordre ».</div>`;
+    } catch (error) {
+      document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    } finally {
+      suggestButton.disabled = false;
+    }
+  });
+
+  const saveOrderButton = document.getElementById('saveRunOrder');
+  if (saveOrderButton) saveOrderButton.addEventListener('click', async () => {
+    const stopIds = localStops.map((stop) => Number(stop.id));
+    if (!confirm('Enregistrer cet ordre comme ordre opérationnel de la tournée ?')) return;
+    saveOrderButton.disabled = true;
+    try {
+      await api(`/api/app/runs/${encodeURIComponent(id)}/reorder`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopIds, expectedVersion: run.version, idempotencyKey: idempotencyKeyFor(saveOrderButton, 'run-reorder', { stopIds }) }),
+      });
+      location.reload();
+    } catch (error) {
+      document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      saveOrderButton.disabled = false;
+    }
+  });
+
+  const statusForm = document.getElementById('runStatusForm');
+  if (statusForm) statusForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const values = Object.fromEntries(new FormData(form));
+    if (values.toStatus === 'cancelled' && String(values.reason || '').trim().length < 10) {
+      document.getElementById('runStatusResult').innerHTML = '<div class="notice error">Expliquez brièvement la raison de l’annulation.</div>';
+      return;
+    }
+    if (!confirm(`Passer cette tournée à l’état « ${runStatusLabels[values.toStatus] || values.toStatus} » ?`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/app/runs/${encodeURIComponent(id)}/status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...values, expectedVersion: run.version, idempotencyKey: idempotencyKeyFor(form, 'run-status', values) }),
+      });
+      location.reload();
+    } catch (error) {
+      document.getElementById('runStatusResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
 }
 
 async function renderOrderDetail(id) {
@@ -673,10 +852,13 @@ async function start() {
     if (orderDetail) return await renderOrderDetail(orderDetail[1]);
     const incidentDetail = path.match(/^\/app\/incidents\/(\d+)$/);
     if (incidentDetail) return await renderIncidentDetail(incidentDetail[1]);
+    const runDetail = path.match(/^\/app\/tournees\/(\d+)$/);
+    if (runDetail) return await renderRunDetail(runDetail[1]);
     if (path === '/app') return await renderDashboard();
     if (path === '/app/demandes') return await renderRequests();
     if (path === '/app/nouvelle-commande') return await renderNewOrder();
     if (path === '/app/commandes') return await renderOrders();
+    if (path === '/app/tournees') return await renderRuns();
     if (path === '/app/incidents') return await renderIncidents();
     if (path === '/app/carte') return renderPlaceholder('Carte d’exploitation', 'Flotte, destinations et tournées', ['Tous les livreurs autorisés', 'Arrêts et parcours restant', 'Filtres et incidents']);
     if (path === '/app/livreurs') return await renderDrivers();

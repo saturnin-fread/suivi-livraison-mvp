@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 à 6 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 7 livrés
 
 ### Objectif
 
@@ -243,11 +243,13 @@ Les preuves photo et signature sont désormais configurables, privées et désac
 
 Les incidents disposent désormais d'une file séparée, d'un responsable, d'une chronologie append-only vérifiable, d'un gel de conservation révisable et d'un export audité.
 
+Les tournées multi-colis disposent désormais d'un cycle brouillon → planifiée → en cours → terminée, d'arrêts ordonnés, de corrections historisées, d'un contrôle de capacité et de concurrence, et d'une suggestion géométrique qui exige une confirmation humaine.
+
 Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. préparer les tournées et arrêts ordonnés nécessaires à la carte d'exploitation ;
-2. tester les reprises hors connexion et les actions différées du livreur ;
-3. ajouter les ajustements financiers postérieurs à une commande terminée.
+1. tester les reprises hors connexion et les actions différées du livreur ;
+2. ajouter les ajustements financiers postérieurs à une commande terminée ;
+3. relier l'ordre de tournée au portail livreur, puis préparer la carte d'exploitation routière.
 
 ## Règles transversales
 

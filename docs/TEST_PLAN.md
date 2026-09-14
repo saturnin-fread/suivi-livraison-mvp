@@ -109,10 +109,20 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 
 ## Test H — tournée multi-colis
 
-- affecter plusieurs commandes au même livreur ;
-- ordonner puis réordonner les arrêts ;
-- vérifier le recalcul des estimations ;
-- vérifier que chaque client ne voit que sa commande.
+- créer une tournée puis répéter la requête avec la même clé sans doublon ;
+- refuser une seconde tournée ouverte pour le même livreur et la même date ;
+- affecter plusieurs commandes au même livreur et respecter sa capacité ;
+- refuser un colis d'un autre livreur, d'une autre entreprise ou déjà actif dans une tournée ;
+- envoyer deux ajouts concurrents avec la même version et obtenir exactement un conflit ;
+- ordonner puis réordonner les arrêts, y compris lorsqu'ils sont planifiés ;
+- retirer un arrêt intermédiaire en brouillon, vérifier la séquence puis le réajouter ;
+- vérifier qu'une suggestion ne change ni l'ordre ni la version avant confirmation ;
+- refuser la suggestion si une destination n'a pas de coordonnées ;
+- annuler avec motif, libérer les colis et conserver l'historique ;
+- refuser ajout et retrait après planification ;
+- refuser la clôture avant que tous les colis soient terminaux ;
+- vérifier que chaque client ne voit toujours que sa commande ;
+- contrôler l'affichage de la date sur plusieurs fuseaux horaires.
 
 ## Test I — cartes
 

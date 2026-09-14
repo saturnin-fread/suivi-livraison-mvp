@@ -64,6 +64,18 @@
 | Levée répétée après une coupure | Retourner la première levée sans créer un second événement |
 | Chaîne d'empreintes invalide | Signaler le dossier comme non vérifié et déclencher une investigation |
 | Export de dossier | Journaliser l'auteur et l'empreinte, ne jamais inclure de secret ni de code OTP |
+| Double création de tournée | Retourner la tournée créée avec la même clé, sans doublon |
+| Deux tournées ouvertes même livreur/date | Refuser la seconde et indiquer la tournée déjà ouverte |
+| Colis dans deux tournées | Autoriser une seule affectation active et conserver les affectations historiques |
+| Colis d'un autre livreur ou d'une autre entreprise | Refuser côté serveur sans révéler les données étrangères |
+| Capacité atteinte | Refuser l'ajout et afficher la capacité déclarée |
+| Deux opérateurs modifient l'ordre | Accepter la première version et demander au second de recharger |
+| Retrait d'un arrêt intermédiaire | Libérer le colis, conserver la trace et refermer la séquence sans collision |
+| Suggestion avec GPS manquant | Lister les commandes concernées et ne modifier aucun arrêt |
+| Suggestion géométrique | L'annoncer à vol d'oiseau, sans route, durée, trafic ni créneau garanti |
+| Annulation de tournée | Exiger un motif, conserver les arrêts et libérer les affectations actives |
+| Clôture prématurée | Refuser tant que tous les colis ne sont pas dans un état terminal |
+| Date affichée la veille | Sérialiser la date civile sans conversion de fuseau horaire |
 
 ## Cartographie et temps réel
 

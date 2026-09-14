@@ -62,6 +62,18 @@ Historique des gels de conservation appliqués au dossier complet d'une commande
 
 État courant de l'encaissement d'une commande et ledger append-only de ses configurations, collectes, écarts, annulations et rapprochements.
 
+### `delivery_runs`
+
+Tournée datée d'un livreur : nom, état, version de concurrence, démarrage, clôture ou annulation et clé idempotente de création.
+
+### `delivery_stops`
+
+Arrêts ordonnés d'une tournée. Chaque arrêt référence une commande, conserve sa séquence et distingue retrait historique et affectation encore active. Une commande ne peut avoir qu'une affectation de tournée active.
+
+### `delivery_run_events`
+
+Journal append-only des créations, ajouts, retraits, réorganisations et changements d'état d'une tournée, avec acteur, clé d'idempotence, empreinte de requête et détails.
+
 ## Tables à ajouter ensuite
 
 ```text
@@ -72,9 +84,6 @@ customers
 customer_locations
 driver_shifts
 driver_status_events
-delivery_runs
-delivery_run_orders
-delivery_stops
 packages
 customer_interactions
 notifications_log

@@ -27,11 +27,14 @@ Les petites preuves photo/signature du pilote sont incluses dans cette base. Sur
 
 Les commandes sous gel actif dans `order_retention_holds` ne doivent être supprimées par aucune future purge. Contrôler régulièrement les dates `review_due_at`. Une date dépassée impose une révision humaine et ne lève jamais automatiquement le gel. Voir `docs/INCIDENT_DOSSIERS.md`.
 
+Les tournées sont conservées dans `delivery_runs`, `delivery_stops` et `delivery_run_events`. Une suppression manuelle de tournée détruirait son historique ; en exploitation, utiliser l'annulation motivée. Voir `docs/DELIVERY_RUNS.md`.
+
 ## Accès aux interfaces
 
 ```text
 /app/login   espace de connexion d'une entreprise
 /app         opérations quotidiennes de l'entreprise
+/app/tournees préparation et suivi des tournées multi-colis
 /driver      espace mobile d'un livreur invité et lié à son profil
 /admin/login administration de la plateforme uniquement
 ```
@@ -46,6 +49,17 @@ Depuis le dossier `suivi-livraison-mvp` :
 railway up --service delivery-app --environment production
 ```
 
+## Tests avant et après déploiement
+
+```powershell
+npm run test:syntax
+npm run test:runs
+npm run test:smoke
+npm run test:driver
+```
+
+Exécuter les trois scénarios fonctionnels l'un après l'autre. Ils créent des données temporaires identifiables dans la base `delivery` et les suppriment dans un bloc de nettoyage final.
+
 ## Restaurer la compréhension du système
 
 Lire dans cet ordre :
@@ -54,9 +68,10 @@ Lire dans cet ordre :
 2. `docs/PRODUCT_WORKFLOW.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/DATA_MODEL.md`
-5. `server.js`
-6. `public/admin.html`
-7. `public/request.html`
+5. `docs/DELIVERY_RUNS.md`
+6. `server.js`
+7. `public/app.js`
+8. `public/request.html`
 
 ## Secrets
 

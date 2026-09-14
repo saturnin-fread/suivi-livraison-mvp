@@ -75,3 +75,11 @@ Photo et signature sont désactivées par défaut. L'entreprise peut les rendre 
 ## 2026-09-14 — Incident immuable et conservation révisable
 
 La déclaration d'un incident n'est jamais modifiée : tout complément devient un événement horodaté relié par empreinte au précédent. Le gel de conservation porte sur toute la commande, exige un motif et une date de révision, et ne se lève jamais automatiquement. Les durées légales restent configurées par le responsable de traitement selon sa juridiction ; le SaaS ne les invente pas.
+
+## 2026-09-14 — Ordre de tournée humainement confirmé
+
+La tournée est un objet métier versionné distinct des commandes. Une commande n'a qu'une affectation de tournée active et une tournée ouverte est unique par livreur et par date. L'algorithme actuel suggère seulement un ordre géométrique à vol d'oiseau et ne modifie rien sans confirmation. Une distance routière, un temps de trajet ou une ETA ne seront affichés qu'après intégration d'une matrice issue d'un véritable moteur routier.
+
+## 2026-09-14 — Date de service sans conversion de fuseau
+
+`service_date` est une date civile et non un instant. L'API la sérialise explicitement en `YYYY-MM-DD` afin d'empêcher le navigateur de l'afficher la veille selon le fuseau horaire.

@@ -61,6 +61,8 @@ Le formulaire demande une autorisation explicite avant d’utiliser la géolocal
 
 Un livreur peut avoir plusieurs commandes actives dans une même zone. Il ne faut donc pas modéliser « livreur disponible = aucune commande ». La sélection doit tenir compte du nombre de livraisons, de la zone, de la fraîcheur de la position et de la capacité disponible.
 
+L'entreprise prépare ensuite une tournée datée : elle ajoute les commandes du même livreur, vérifie les créneaux et confirme leur ordre. La proposition automatique actuelle est uniquement géométrique. Elle ne devient jamais l'ordre opérationnel sans action humaine.
+
 ## Deux expériences cartographiques
 
 ### Carte client

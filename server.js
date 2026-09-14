@@ -33,6 +33,14 @@ const invitationRoles = ['manager', 'operator', 'driver'];
 const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
 const evidenceTypes = ['photo', 'signature'];
 const evidenceModes = ['off', 'optional', 'required'];
+const runStatuses = ['draft', 'planned', 'active', 'completed', 'cancelled'];
+const runTransitions = {
+  draft: ['planned', 'cancelled'],
+  planned: ['draft', 'active', 'cancelled'],
+  active: ['completed', 'cancelled'],
+  completed: [],
+  cancelled: [],
+};
 const evidenceUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1200 * 1024, files: 1, fields: 4 } });
 const pool = process.env.DATABASE_URL
   ? new Pool({
@@ -198,6 +206,49 @@ function optionalNumber(value) {
 function moneyInteger(value) {
   const amount = Number(value);
   return Number.isSafeInteger(amount) && amount >= 0 && amount <= 1000000000000 ? amount : null;
+}
+
+function validDateOnly(value) {
+  const text = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const parsed = new Date(`${text}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== text ? null : text;
+}
+
+function haversineKm(first, second) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const dLat = radians(second.lat - first.lat);
+  const dLng = radians(second.lng - first.lng);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(radians(first.lat)) * Math.cos(radians(second.lat)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function suggestGeometricStopOrder(stops) {
+  if (stops.length < 2) return { stopIds: stops.map((stop) => stop.id), distanceKm: 0 };
+  let best = null;
+  for (const start of stops) {
+    const remaining = new Map(stops.filter((stop) => stop.id !== start.id).map((stop) => [String(stop.id), stop]));
+    const ordered = [start];
+    let distanceKm = 0;
+    while (remaining.size) {
+      const current = ordered[ordered.length - 1];
+      let next = null;
+      let nextDistance = Number.POSITIVE_INFINITY;
+      for (const candidate of remaining.values()) {
+        const distance = haversineKm(current, candidate);
+        if (distance < nextDistance || (distance === nextDistance && Number(candidate.id) < Number(next?.id))) {
+          next = candidate;
+          nextDistance = distance;
+        }
+      }
+      ordered.push(next);
+      remaining.delete(String(next.id));
+      distanceKm += nextDistance;
+    }
+    if (!best || distanceKm < best.distanceKm) best = { stopIds: ordered.map((stop) => stop.id), distanceKm };
+  }
+  return best;
 }
 
 function setSessionCookie(req, res, token) {
@@ -555,6 +606,61 @@ async function initDatabase() {
         ON order_retention_holds(company_id, release_idempotency_key)
         WHERE release_idempotency_key IS NOT NULL;
 
+      CREATE TABLE IF NOT EXISTS delivery_runs (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        driver_id BIGINT NOT NULL REFERENCES drivers(id),
+        name TEXT NOT NULL,
+        service_date DATE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'planned', 'active', 'completed', 'cancelled')),
+        version INTEGER NOT NULL DEFAULT 1,
+        create_idempotency_key TEXT NOT NULL,
+        create_fingerprint TEXT NOT NULL,
+        created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        cancelled_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, create_idempotency_key)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_runs_driver_day_open_unique
+        ON delivery_runs(company_id, driver_id, service_date)
+        WHERE status IN ('draft', 'planned', 'active');
+
+      CREATE TABLE IF NOT EXISTS delivery_stops (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        run_id BIGINT NOT NULL REFERENCES delivery_runs(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        assignment_active BOOLEAN NOT NULL DEFAULT TRUE,
+        removed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_stops_active_order_unique
+        ON delivery_stops(order_id) WHERE assignment_active = TRUE;
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_stops_run_sequence_unique
+        ON delivery_stops(run_id, sequence) WHERE removed_at IS NULL;
+      CREATE INDEX IF NOT EXISTS delivery_stops_run_idx
+        ON delivery_stops(run_id, sequence) WHERE removed_at IS NULL;
+
+      CREATE TABLE IF NOT EXISTS delivery_run_events (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        run_id BIGINT NOT NULL REFERENCES delivery_runs(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS delivery_run_events_run_created_idx
+        ON delivery_run_events(run_id, created_at ASC, id ASC);
+
       CREATE TABLE IF NOT EXISTS audit_logs (
         id BIGSERIAL PRIMARY KEY,
         company_id BIGINT REFERENCES companies(id) ON DELETE SET NULL,
@@ -780,6 +886,87 @@ async function writeAudit(auth, entityType, entityId, action, details = {}) {
   return result.rows[0]?.id;
 }
 
+async function repeatedRunEvent(client, auth, runId, idempotencyKey, fingerprint) {
+  const repeated = await client.query(
+    `SELECT id, run_id, event_type, request_fingerprint, details, created_at
+     FROM delivery_run_events WHERE company_id = $1 AND idempotency_key = $2`,
+    [auth.company_id, idempotencyKey]
+  );
+  if (!repeated.rows[0]) return null;
+  if (String(repeated.rows[0].run_id) !== String(runId) || repeated.rows[0].request_fingerprint !== fingerprint) {
+    throw Object.assign(new Error('Cette clé d’action a déjà été utilisée pour une autre modification.'), { statusCode: 409 });
+  }
+  return repeated.rows[0];
+}
+
+async function appendRunEvent(client, auth, runId, eventType, idempotencyKey, fingerprint, details = {}) {
+  const result = await client.query(
+    `INSERT INTO delivery_run_events (
+       company_id, run_id, event_type, actor_user_id, idempotency_key, request_fingerprint, details
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, event_type, details, created_at`,
+    [auth.company_id, runId, eventType, auth.user_id, idempotencyKey, fingerprint, details]
+  );
+  return result.rows[0];
+}
+
+async function loadDeliveryRun(companyId, runId, queryable = pool) {
+  const runResult = await queryable.query(
+    `SELECT r.id, r.driver_id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date, r.status, r.version,
+            r.started_at, r.completed_at, r.cancelled_at, r.created_at, r.updated_at,
+            d.name AS driver_name, d.phone AS driver_phone, d.vehicle_type, d.capacity,
+            d.availability_status, d.active AS driver_active
+     FROM delivery_runs r
+     JOIN drivers d ON d.id = r.driver_id AND d.company_id = r.company_id
+     WHERE r.id = $1 AND r.company_id = $2`,
+    [runId, companyId]
+  );
+  const run = runResult.rows[0];
+  if (!run) return null;
+  const [stops, eligibleOrders, events] = await Promise.all([
+    queryable.query(
+      `SELECT s.id, s.order_id, s.sequence, s.assignment_active, s.created_at,
+              o.status AS order_status, o.customer_name, o.customer_phone, o.requested_time,
+              o.neighborhood, o.landmark, o.delivery_address, o.destination_lat, o.destination_lng
+       FROM delivery_stops s
+       JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
+       WHERE s.run_id = $1 AND s.company_id = $2 AND s.removed_at IS NULL
+       ORDER BY s.sequence ASC, s.id ASC`,
+      [runId, companyId]
+    ),
+    queryable.query(
+      `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.requested_time,
+              o.neighborhood, o.landmark, o.delivery_address, o.destination_lat, o.destination_lng
+       FROM orders o
+       WHERE o.company_id = $1 AND o.driver_id = $2
+         AND o.status <> ALL($3::text[])
+         AND NOT EXISTS (
+           SELECT 1 FROM delivery_stops s WHERE s.order_id = o.id AND s.assignment_active = TRUE
+         )
+       ORDER BY o.created_at ASC, o.id ASC LIMIT 100`,
+      [companyId, run.driver_id, terminalOrderStatuses]
+    ),
+    queryable.query(
+      `SELECT e.id, e.event_type, e.details, e.created_at,
+              COALESCE(u.display_name, 'Système') AS actor_name
+       FROM delivery_run_events e
+       LEFT JOIN users u ON u.id = e.actor_user_id
+       WHERE e.run_id = $1 AND e.company_id = $2
+       ORDER BY e.created_at ASC, e.id ASC`,
+      [runId, companyId]
+    ),
+  ]);
+  return {
+    ...run,
+    stops: stops.rows,
+    eligibleOrders: eligibleOrders.rows,
+    events: events.rows,
+    allowedTransitions: runTransitions[run.status] || [],
+    canEditStops: run.status === 'draft',
+    canReorderStops: ['draft', 'planned'].includes(run.status),
+  };
+}
+
 app.get('/health', asyncRoute(async (_req, res) => {
   if (!pool) return res.status(503).json({ status: 'unavailable', database: 'not_configured' });
   try {
@@ -846,7 +1033,7 @@ app.get('/admin', requirePlatformPage, (_req, res) => {
 
 const companyPages = [
   '/app', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/carte',
-  '/app/livreurs', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
+  '/app/livreurs', '/app/tournees', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
 ];
 app.get(companyPages, requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
@@ -858,6 +1045,9 @@ app.get('/app/commandes/:id', requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
 app.get('/app/incidents/:id', requireCompanyPage, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
+app.get('/app/tournees/:id', requireCompanyPage, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
 
@@ -1452,6 +1642,7 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
             COUNT(*) FILTER (WHERE status = 'À vérifier' AND archived_at IS NULL) AS to_review,
             (SELECT COUNT(*) FROM orders WHERE company_id = $1) AS orders,
             (SELECT COUNT(*) FROM drivers WHERE company_id = $1) AS drivers,
+            (SELECT COUNT(*) FROM delivery_runs WHERE company_id = $1 AND status IN ('draft', 'planned', 'active')) AS open_runs,
             (SELECT COUNT(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open') AS open_incidents,
             (SELECT COUNT(*) FROM order_retention_holds WHERE company_id = $1 AND status = 'active' AND review_due_at < NOW()) AS overdue_holds
      FROM customer_requests WHERE company_id = $1`,
@@ -1673,6 +1864,437 @@ app.patch('/api/app/drivers/:id/availability', requireCompanyApi, asyncRoute(asy
   if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
   await writeAudit(req.auth, 'driver', result.rows[0].id, 'availability_changed', { status: req.body.status });
   return res.json(result.rows[0]);
+}));
+
+app.get('/api/app/runs', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT r.id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date, r.status, r.version, r.created_at, r.updated_at,
+            d.id AS driver_id, d.name AS driver_name, d.vehicle_type,
+            COUNT(s.id) FILTER (WHERE s.removed_at IS NULL)::int AS stop_count,
+            COUNT(s.id) FILTER (WHERE s.removed_at IS NULL AND o.status = ANY($2::text[]))::int AS terminal_stop_count
+     FROM delivery_runs r
+     JOIN drivers d ON d.id = r.driver_id AND d.company_id = r.company_id
+     LEFT JOIN delivery_stops s ON s.run_id = r.id AND s.company_id = r.company_id
+     LEFT JOIN orders o ON o.id = s.order_id AND o.company_id = r.company_id
+     WHERE r.company_id = $1
+     GROUP BY r.id, d.id
+     ORDER BY r.service_date DESC, r.created_at DESC LIMIT 100`,
+    [req.auth.company_id, terminalOrderStatuses]
+  );
+  return res.json(result.rows);
+}));
+
+app.post('/api/app/runs', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const driverId = Number(req.body.driverId);
+  const name = String(req.body.name || '').trim();
+  const serviceDate = validDateOnly(req.body.serviceDate);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!Number.isInteger(driverId) || driverId <= 0) return res.status(400).json({ error: 'Sélectionnez un livreur.' });
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Le nom de la tournée doit contenir entre 2 et 120 caractères.' });
+  if (!serviceDate) return res.status(400).json({ error: 'La date de tournée est invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité invalide. Rechargez la page puis réessayez.' });
+  const fingerprint = digest(canonicalJson({ driverId, name, serviceDate }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const repeated = await client.query(
+      `SELECT id, create_fingerprint FROM delivery_runs
+       WHERE company_id = $1 AND create_idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (repeated.rows[0].create_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé de création a déjà été utilisée avec d’autres informations.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      const payload = await loadDeliveryRun(req.auth.company_id, repeated.rows[0].id);
+      return res.json({ ...payload, alreadyApplied: true });
+    }
+    const driver = await client.query(
+      `SELECT id, name, active FROM drivers WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [driverId, req.auth.company_id]
+    );
+    if (!driver.rows[0]?.active) throw Object.assign(new Error('Livreur actif introuvable.'), { statusCode: 404 });
+    const conflicting = await client.query(
+      `SELECT id FROM delivery_runs
+       WHERE company_id = $1 AND driver_id = $2 AND service_date = $3
+         AND status IN ('draft', 'planned', 'active') LIMIT 1`,
+      [req.auth.company_id, driverId, serviceDate]
+    );
+    if (conflicting.rows[0]) {
+      throw Object.assign(new Error(`Ce livreur possède déjà une tournée ouverte à cette date (n° ${conflicting.rows[0].id}).`), { statusCode: 409 });
+    }
+    const created = await client.query(
+      `INSERT INTO delivery_runs (
+         company_id, driver_id, name, service_date, create_idempotency_key,
+         create_fingerprint, created_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, version`,
+      [req.auth.company_id, driverId, name, serviceDate, idempotencyKey, fingerprint, req.auth.user_id]
+    );
+    await appendRunEvent(client, req.auth, created.rows[0].id, 'created', idempotencyKey, fingerprint, {
+      driverId, serviceDate, name, version: created.rows[0].version,
+    });
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'delivery_run', $3, 'created', jsonb_build_object('driverId', $4::bigint, 'serviceDate', $5::text))`,
+      [req.auth.company_id, req.auth.user_id, created.rows[0].id, driverId, serviceDate]
+    );
+    await client.query('COMMIT');
+    const payload = await loadDeliveryRun(req.auth.company_id, created.rows[0].id);
+    return res.status(201).json(payload);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.code === '23505') return res.status(409).json({ error: 'Une tournée ouverte existe déjà pour ce livreur à cette date.' });
+    console.error('Run creation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de créer la tournée.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/app/runs/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const payload = await loadDeliveryRun(req.auth.company_id, req.params.id);
+  if (!payload) return res.status(404).json({ error: 'Tournée introuvable.' });
+  return res.json(payload);
+}));
+
+app.post('/api/app/runs/:id/orders', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const orderId = Number(req.body.orderId);
+  const expectedVersion = Number(req.body.expectedVersion);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!Number.isInteger(orderId) || orderId <= 0 || !Number.isInteger(expectedVersion) || !idempotencyKey) {
+    return res.status(400).json({ error: 'Commande, version ou clé d’action invalide.' });
+  }
+  const fingerprint = digest(canonicalJson({ action: 'add_order', orderId, expectedVersion }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const repeated = await repeatedRunEvent(client, req.auth, req.params.id, idempotencyKey, fingerprint);
+    if (repeated) {
+      await client.query('COMMIT');
+      return res.json({ runId: Number(req.params.id), version: repeated.details.version, alreadyApplied: true });
+    }
+    const runResult = await client.query(
+      `SELECT r.*, d.capacity FROM delivery_runs r JOIN drivers d ON d.id = r.driver_id
+       WHERE r.id = $1 AND r.company_id = $2 FOR UPDATE OF r`,
+      [req.params.id, req.auth.company_id]
+    );
+    const run = runResult.rows[0];
+    if (!run) throw Object.assign(new Error('Tournée introuvable.'), { statusCode: 404 });
+    if (run.version !== expectedVersion) throw Object.assign(new Error('Cette tournée a changé. Rechargez-la avant de continuer.'), { statusCode: 409 });
+    if (run.status !== 'draft') throw Object.assign(new Error('Les colis ne peuvent être ajoutés que pendant la préparation de la tournée.'), { statusCode: 409 });
+    const count = await client.query(
+      `SELECT COUNT(*)::int AS count FROM delivery_stops WHERE run_id = $1 AND removed_at IS NULL`,
+      [run.id]
+    );
+    if (count.rows[0].count >= run.capacity) {
+      throw Object.assign(new Error(`La capacité déclarée du livreur est atteinte (${run.capacity} colis).`), { statusCode: 409 });
+    }
+    const order = await client.query(
+      `SELECT id, driver_id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [orderId, req.auth.company_id]
+    );
+    if (!order.rows[0]) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (String(order.rows[0].driver_id) !== String(run.driver_id)) {
+      throw Object.assign(new Error('Cette commande est affectée à un autre livreur.'), { statusCode: 409 });
+    }
+    if (terminalOrderStatuses.includes(order.rows[0].status)) {
+      throw Object.assign(new Error('Une commande terminée ne peut pas être ajoutée à une tournée.'), { statusCode: 409 });
+    }
+    const existing = await client.query(
+      `SELECT run_id FROM delivery_stops WHERE order_id = $1 AND assignment_active = TRUE LIMIT 1`,
+      [orderId]
+    );
+    if (existing.rows[0]) throw Object.assign(new Error(`Cette commande appartient déjà à la tournée n° ${existing.rows[0].run_id}.`), { statusCode: 409 });
+    const nextSequence = count.rows[0].count + 1;
+    const stop = await client.query(
+      `INSERT INTO delivery_stops (company_id, run_id, order_id, sequence)
+       VALUES ($1, $2, $3, $4) RETURNING id, sequence`,
+      [req.auth.company_id, run.id, orderId, nextSequence]
+    );
+    const updated = await client.query(
+      `UPDATE delivery_runs SET version = version + 1, updated_at = NOW() WHERE id = $1 RETURNING version`,
+      [run.id]
+    );
+    await appendRunEvent(client, req.auth, run.id, 'order_added', idempotencyKey, fingerprint, {
+      stopId: stop.rows[0].id, orderId, sequence: stop.rows[0].sequence, version: updated.rows[0].version,
+    });
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'delivery_run', $3, 'order_added', jsonb_build_object('orderId', $4::bigint, 'stopId', $5::bigint))`,
+      [req.auth.company_id, req.auth.user_id, run.id, orderId, stop.rows[0].id]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ runId: run.id, stopId: stop.rows[0].id, version: updated.rows[0].version });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.code === '23505') return res.status(409).json({ error: 'Cette commande est déjà affectée à une tournée.' });
+    console.error('Run order add error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’ajouter cette commande.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/runs/:id/stops/:stopId/remove', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const expectedVersion = Number(req.body.expectedVersion);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  const stopId = Number(req.params.stopId);
+  if (!Number.isInteger(stopId) || !Number.isInteger(expectedVersion) || !idempotencyKey) {
+    return res.status(400).json({ error: 'Arrêt, version ou clé d’action invalide.' });
+  }
+  const fingerprint = digest(canonicalJson({ action: 'remove_stop', stopId, expectedVersion }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const repeated = await repeatedRunEvent(client, req.auth, req.params.id, idempotencyKey, fingerprint);
+    if (repeated) {
+      await client.query('COMMIT');
+      return res.json({ runId: Number(req.params.id), version: repeated.details.version, alreadyApplied: true });
+    }
+    const runResult = await client.query(
+      `SELECT * FROM delivery_runs WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const run = runResult.rows[0];
+    if (!run) throw Object.assign(new Error('Tournée introuvable.'), { statusCode: 404 });
+    if (run.version !== expectedVersion) throw Object.assign(new Error('Cette tournée a changé. Rechargez-la avant de continuer.'), { statusCode: 409 });
+    if (run.status !== 'draft') throw Object.assign(new Error('Un colis ne peut être retiré que pendant la préparation.'), { statusCode: 409 });
+    const stop = await client.query(
+      `SELECT id, order_id, sequence FROM delivery_stops
+       WHERE id = $1 AND run_id = $2 AND company_id = $3 AND removed_at IS NULL FOR UPDATE`,
+      [stopId, run.id, req.auth.company_id]
+    );
+    if (!stop.rows[0]) throw Object.assign(new Error('Arrêt introuvable ou déjà retiré.'), { statusCode: 404 });
+    await client.query(
+      `UPDATE delivery_stops SET removed_at = NOW(), assignment_active = FALSE, updated_at = NOW() WHERE id = $1`,
+      [stopId]
+    );
+    await client.query(
+      `UPDATE delivery_stops SET sequence = sequence + 100000, updated_at = NOW()
+       WHERE run_id = $1 AND removed_at IS NULL AND sequence > $2`,
+      [run.id, stop.rows[0].sequence]
+    );
+    await client.query(
+      `UPDATE delivery_stops SET sequence = sequence - 100001, updated_at = NOW()
+       WHERE run_id = $1 AND removed_at IS NULL AND sequence > 100000`,
+      [run.id]
+    );
+    const updated = await client.query(
+      `UPDATE delivery_runs SET version = version + 1, updated_at = NOW() WHERE id = $1 RETURNING version`,
+      [run.id]
+    );
+    await appendRunEvent(client, req.auth, run.id, 'order_removed', idempotencyKey, fingerprint, {
+      stopId, orderId: stop.rows[0].order_id, formerSequence: stop.rows[0].sequence, version: updated.rows[0].version,
+    });
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'delivery_run', $3, 'order_removed', jsonb_build_object('orderId', $4::bigint, 'stopId', $5::bigint))`,
+      [req.auth.company_id, req.auth.user_id, run.id, stop.rows[0].order_id, stopId]
+    );
+    await client.query('COMMIT');
+    return res.json({ runId: run.id, version: updated.rows[0].version });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Run stop remove error:', error.message);
+    return res.status(500).json({ error: 'Impossible de retirer cet arrêt.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/runs/:id/reorder', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const expectedVersion = Number(req.body.expectedVersion);
+  const stopIds = Array.isArray(req.body.stopIds) ? req.body.stopIds.map(Number) : [];
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!Number.isInteger(expectedVersion) || !idempotencyKey || !stopIds.length || stopIds.length > 100
+      || stopIds.some((id) => !Number.isInteger(id) || id <= 0) || new Set(stopIds).size !== stopIds.length) {
+    return res.status(400).json({ error: 'Ordre des arrêts, version ou clé d’action invalide.' });
+  }
+  const fingerprint = digest(canonicalJson({ action: 'reorder', stopIds, expectedVersion }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const repeated = await repeatedRunEvent(client, req.auth, req.params.id, idempotencyKey, fingerprint);
+    if (repeated) {
+      await client.query('COMMIT');
+      return res.json({ runId: Number(req.params.id), version: repeated.details.version, alreadyApplied: true });
+    }
+    const runResult = await client.query(
+      `SELECT * FROM delivery_runs WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const run = runResult.rows[0];
+    if (!run) throw Object.assign(new Error('Tournée introuvable.'), { statusCode: 404 });
+    if (run.version !== expectedVersion) throw Object.assign(new Error('Cette tournée a changé. Rechargez-la avant d’enregistrer l’ordre.'), { statusCode: 409 });
+    if (!['draft', 'planned'].includes(run.status)) throw Object.assign(new Error('Cette tournée ne peut plus être réorganisée.'), { statusCode: 409 });
+    const current = await client.query(
+      `SELECT id FROM delivery_stops WHERE run_id = $1 AND company_id = $2 AND removed_at IS NULL ORDER BY sequence FOR UPDATE`,
+      [run.id, req.auth.company_id]
+    );
+    const currentIds = current.rows.map((row) => Number(row.id));
+    if (currentIds.length !== stopIds.length || currentIds.some((id) => !stopIds.includes(id))) {
+      throw Object.assign(new Error('La liste des arrêts a changé. Rechargez la tournée.'), { statusCode: 409 });
+    }
+    await client.query(
+      `UPDATE delivery_stops SET sequence = sequence + 100000, updated_at = NOW()
+       WHERE run_id = $1 AND removed_at IS NULL`,
+      [run.id]
+    );
+    for (let index = 0; index < stopIds.length; index += 1) {
+      await client.query(
+        `UPDATE delivery_stops SET sequence = $1, updated_at = NOW()
+         WHERE id = $2 AND run_id = $3 AND company_id = $4 AND removed_at IS NULL`,
+        [index + 1, stopIds[index], run.id, req.auth.company_id]
+      );
+    }
+    const updated = await client.query(
+      `UPDATE delivery_runs SET version = version + 1, updated_at = NOW() WHERE id = $1 RETURNING version`,
+      [run.id]
+    );
+    await appendRunEvent(client, req.auth, run.id, 'stops_reordered', idempotencyKey, fingerprint, {
+      stopIds, version: updated.rows[0].version,
+    });
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'delivery_run', $3, 'stops_reordered', jsonb_build_object('stopCount', $4::int))`,
+      [req.auth.company_id, req.auth.user_id, run.id, stopIds.length]
+    );
+    await client.query('COMMIT');
+    return res.json({ runId: run.id, version: updated.rows[0].version });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Run reorder error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’enregistrer l’ordre des arrêts.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/app/runs/:id/suggestion', requireCompanyApi, asyncRoute(async (req, res) => {
+  const payload = await loadDeliveryRun(req.auth.company_id, req.params.id);
+  if (!payload) return res.status(404).json({ error: 'Tournée introuvable.' });
+  if (!['draft', 'planned'].includes(payload.status)) {
+    return res.status(409).json({ error: 'Cette tournée ne peut plus être réorganisée.' });
+  }
+  if (payload.stops.length < 2) {
+    return res.json({ available: false, reason: 'Ajoutez au moins deux arrêts pour obtenir une suggestion.' });
+  }
+  if (payload.stops.length > 50) {
+    return res.json({ available: false, reason: 'La suggestion indicative est limitée à 50 arrêts.' });
+  }
+  const missingOrderIds = payload.stops
+    .filter((stop) => !Number.isFinite(Number(stop.destination_lat)) || !Number.isFinite(Number(stop.destination_lng)))
+    .map((stop) => stop.order_id);
+  if (missingOrderIds.length) {
+    return res.json({
+      available: false,
+      reason: 'Certaines destinations n’ont pas de position GPS.',
+      missingOrderIds,
+    });
+  }
+  const suggestion = suggestGeometricStopOrder(payload.stops.map((stop) => ({
+    id: Number(stop.id), lat: Number(stop.destination_lat), lng: Number(stop.destination_lng),
+  })));
+  return res.json({
+    available: true,
+    ...suggestion,
+    distanceKm: Number(suggestion.distanceKm.toFixed(2)),
+    method: 'straight_line_nearest_neighbor',
+    warning: 'Ordre indicatif à vol d’oiseau : il ne tient pas compte des routes, du trafic ni des créneaux clients.',
+  });
+}));
+
+app.post('/api/app/runs/:id/status', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const toStatus = String(req.body.toStatus || '').trim();
+  const reason = String(req.body.reason || '').trim();
+  const expectedVersion = Number(req.body.expectedVersion);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!runStatuses.includes(toStatus) || !Number.isInteger(expectedVersion) || !idempotencyKey) {
+    return res.status(400).json({ error: 'État, version ou clé d’action invalide.' });
+  }
+  if (toStatus === 'cancelled' && (reason.length < 10 || reason.length > 1000)) {
+    return res.status(400).json({ error: 'Expliquez l’annulation en 10 à 1 000 caractères.' });
+  }
+  const fingerprint = digest(canonicalJson({ action: 'status', toStatus, reason: reason || null, expectedVersion }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const repeated = await repeatedRunEvent(client, req.auth, req.params.id, idempotencyKey, fingerprint);
+    if (repeated) {
+      await client.query('COMMIT');
+      return res.json({ runId: Number(req.params.id), status: repeated.details.toStatus, version: repeated.details.version, alreadyApplied: true });
+    }
+    const runResult = await client.query(
+      `SELECT r.*, d.active AS driver_active, d.availability_status
+       FROM delivery_runs r JOIN drivers d ON d.id = r.driver_id
+       WHERE r.id = $1 AND r.company_id = $2 FOR UPDATE OF r`,
+      [req.params.id, req.auth.company_id]
+    );
+    const run = runResult.rows[0];
+    if (!run) throw Object.assign(new Error('Tournée introuvable.'), { statusCode: 404 });
+    if (run.version !== expectedVersion) throw Object.assign(new Error('Cette tournée a changé. Rechargez-la avant de continuer.'), { statusCode: 409 });
+    if (!(runTransitions[run.status] || []).includes(toStatus)) {
+      throw Object.assign(new Error(`Le passage de « ${run.status} » à « ${toStatus} » n’est pas autorisé.`), { statusCode: 409 });
+    }
+    const stops = await client.query(
+      `SELECT s.id, o.status FROM delivery_stops s JOIN orders o ON o.id = s.order_id
+       WHERE s.run_id = $1 AND s.company_id = $2 AND s.removed_at IS NULL FOR UPDATE OF s, o`,
+      [run.id, req.auth.company_id]
+    );
+    if (['planned', 'active'].includes(toStatus) && !stops.rowCount) {
+      throw Object.assign(new Error('Ajoutez au moins un colis avant de planifier ou démarrer la tournée.'), { statusCode: 409 });
+    }
+    if (toStatus === 'active') {
+      if (!run.driver_active || ['off_duty', 'incident'].includes(run.availability_status)) {
+        throw Object.assign(new Error('Le livreur doit être actif et disponible avant le départ.'), { statusCode: 409 });
+      }
+      if (stops.rows.some((stop) => terminalOrderStatuses.includes(stop.status))) {
+        throw Object.assign(new Error('Une commande de cette tournée est déjà terminée. Revenez au brouillon pour la corriger.'), { statusCode: 409 });
+      }
+    }
+    if (toStatus === 'completed' && (!stops.rowCount || stops.rows.some((stop) => !terminalOrderStatuses.includes(stop.status)))) {
+      throw Object.assign(new Error('La tournée ne peut être terminée que lorsque tous ses colis sont livrés, retournés ou annulés.'), { statusCode: 409 });
+    }
+    const updated = await client.query(
+      `UPDATE delivery_runs
+       SET status = $1, version = version + 1, updated_at = NOW(),
+           started_at = CASE WHEN $1 = 'active' THEN COALESCE(started_at, NOW()) ELSE started_at END,
+           completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE completed_at END,
+           cancelled_at = CASE WHEN $1 = 'cancelled' THEN NOW() ELSE cancelled_at END
+       WHERE id = $2 RETURNING version`,
+      [toStatus, run.id]
+    );
+    if (['completed', 'cancelled'].includes(toStatus)) {
+      await client.query(
+        `UPDATE delivery_stops SET assignment_active = FALSE, updated_at = NOW()
+         WHERE run_id = $1 AND removed_at IS NULL`,
+        [run.id]
+      );
+    }
+    await appendRunEvent(client, req.auth, run.id, 'status_changed', idempotencyKey, fingerprint, {
+      fromStatus: run.status, toStatus, reason: reason || null, version: updated.rows[0].version,
+    });
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'delivery_run', $3, 'status_changed', jsonb_build_object('fromStatus', $4::text, 'toStatus', $5::text, 'reason', $6::text))`,
+      [req.auth.company_id, req.auth.user_id, run.id, run.status, toStatus, reason || null]
+    );
+    await client.query('COMMIT');
+    return res.json({ runId: run.id, status: toStatus, version: updated.rows[0].version });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Run status error:', error.message);
+    return res.status(500).json({ error: 'Impossible de changer l’état de la tournée.' });
+  } finally {
+    client.release();
+  }
 }));
 
 app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {

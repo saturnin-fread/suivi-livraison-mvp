@@ -9,6 +9,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Cycle d'exécution des commandes](ORDER_STATE_MACHINE.md)
 - [Encaissement et rapprochement](PAYMENT_RECONCILIATION.md)
 - [Espace livreur et contrôle d'accès](DRIVER_PORTAL_ACCESS.md)
+- [Tournées multi-colis](DELIVERY_RUNS.md)
 - [Architecture technique](ARCHITECTURE.md)
 - [Modèle de données](DATA_MODEL.md)
 - [Erreurs et cas limites](ERRORS_AND_EDGE_CASES.md)
@@ -31,7 +32,9 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - La sélection dynamique, la conversion demande → commande, l'exécution par étapes, les incidents et la preuve OTP disposent d'une première version.
 - L'encaissement à la livraison, les écarts et le rapprochement disposent d'une première version auditée.
 - Les invitations à usage unique et l'espace mobile cloisonné du livreur disposent d'une première version testée.
-- Le prochain lot ajoute les actions terrain sensibles du livreur, puis les preuves complémentaires et les tournées.
+- Les actions terrain sensibles, les preuves complémentaires, les dossiers d'incident et les tournées multi-colis disposent d'une première version testée.
+- La page `/app/tournees` permet de créer, corriger, ordonner, planifier, démarrer, annuler et terminer une tournée avec historique.
+- Le prochain lot renforce la reprise hors connexion des actions du livreur.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

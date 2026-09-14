@@ -69,3 +69,13 @@
 - Ajout de l'impression PDF et de l'export JSON vérifiable, réservé aux responsables et inscrit dans l'audit.
 - Ajout de la gestion des erreurs de connexion PostgreSQL inactive sans arrêt brutal du serveur.
 - Extension du test automatique aux permissions, doubles actions, gel, export, levée et intégrité du dossier.
+- Ajout de la page séparée `/app/tournees` avec création et historique des tournées multi-colis.
+- Ajout du cycle brouillon, planifiée, en cours, terminée ou annulée avec transitions contrôlées.
+- Ajout des arrêts ordonnés, du retrait logique, de la libération après annulation et de la capacité par livreur.
+- Ajout d'une version optimiste et de clés d'idempotence sur chaque mutation de tournée.
+- Ajout du journal append-only des créations, ajouts, retraits, réorganisations et changements d'état.
+- Ajout d'une proposition d'ordre à vol d'oiseau, sans mutation automatique ni fausse ETA.
+- Ajout du blocage des colis étrangers, mal affectés, terminés ou déjà présents dans une tournée active.
+- Ajout d'un test dédié couvrant concurrence, doublons, capacité, correction, annulation, suggestion et clôture.
+- Correction de la sérialisation de la date civile des tournées pour éviter un décalage de fuseau horaire.
+- Vérification visuelle de la liste et de la fiche tournée sur ordinateur et mobile.

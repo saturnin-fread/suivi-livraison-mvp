@@ -30,6 +30,7 @@ Les identifiants Traccar ne doivent jamais être envoyés au navigateur.
 | Route | Public | Responsabilité |
 |---|---|---|
 | `/app` | Utilisateurs d'entreprise | Opérations quotidiennes de l'entreprise |
+| `/app/tournees` | Utilisateurs d'entreprise | Préparation, ordre et cycle de vie des tournées |
 | `/admin` | Administrateurs plateforme | Entreprises, offres, facturation, support et supervision |
 | `/demande/:token` | Client invité | Saisie et modification contrôlée d'une demande |
 | `/suivi/:token` | Client invité | Suivi limité à une commande |
@@ -53,7 +54,8 @@ delivery-app crée un token de formulaire
 ```text
 Traccar API/WebSocket → positions et événements GPS
 Base delivery         → colis, destinations, affectations et statuts
-Moteur d'itinéraire   → ordre des arrêts, distances et durées
+Suggestion actuelle  → ordre géométrique à confirmer, sans durée routière
+Moteur d'itinéraire futur → matrice routière, contraintes, distances et durées
 delivery-app          → filtrage par entreprise et par lien public
 ```
 

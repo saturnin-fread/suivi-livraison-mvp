@@ -1,5 +1,12 @@
 const page = document.getElementById('driverPage');
+const connectivity = document.getElementById('driverConnectivity');
+const connectivityTitle = document.getElementById('connectivityTitle');
+const connectivityDetail = document.getElementById('connectivityDetail');
+const syncButton = document.getElementById('syncDriverActions');
+const outbox = document.getElementById('driverOutbox');
 let context;
+let queueOwner;
+let syncInProgress = false;
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
@@ -59,6 +66,7 @@ async function compressedPhoto(file) {
 }
 
 async function uploadEvidence(orderId, type, blob, resultId) {
+  requireOnline('Les preuves ne sont pas conservées sur le téléphone. Reconnectez-vous pour les envoyer.');
   const form = new FormData();
   form.append('file', blob, type === 'photo' ? 'preuve.jpg' : 'signature.png');
   form.append('idempotencyKey', actionKey(`driver-evidence-${type}`));
@@ -69,14 +77,136 @@ async function uploadEvidence(orderId, type, blob, resultId) {
 }
 
 async function api(url, options = {}) {
-  const response = await fetch(url, options);
+  let response;
+  try {
+    response = await fetch(url, { credentials: 'same-origin', ...options });
+  } catch (error) {
+    error.networkFailure = true;
+    throw error;
+  }
   if (response.status === 401) {
     location.href = '/app/login';
-    throw new Error('Session expirée.');
+    const error = new Error('Session expirée.');
+    error.status = 401;
+    throw error;
   }
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || 'Une erreur est survenue.');
+  if (!response.ok) {
+    const error = new Error(payload.error || 'Une erreur est survenue.');
+    error.status = response.status;
+    throw error;
+  }
   return payload;
+}
+
+function requireOnline(message = 'Cette action nécessite une connexion internet.') {
+  if (!navigator.onLine) throw new Error(message);
+}
+
+function queueLabel(item) {
+  return item.type === 'transition'
+    ? `Étape « ${item.payload.toStatus} » — commande n° ${item.orderId}`
+    : `Incident — commande n° ${item.orderId}`;
+}
+
+async function requestBackgroundSync() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    if ('sync' in registration) await registration.sync.register('delivery-driver-sync');
+  } catch (_error) {
+    // La synchronisation manuelle et l’événement online restent disponibles.
+  }
+}
+
+async function renderQueueState() {
+  if (!queueOwner || !window.DriverQueue) return;
+  let items;
+  try {
+    await DriverQueue.purgeExpired(queueOwner);
+    items = await DriverQueue.list(queueOwner);
+  } catch (_error) {
+    connectivity.hidden = false;
+    connectivity.classList.remove('online');
+    connectivityTitle.textContent = 'Stockage hors ligne indisponible';
+    connectivityDetail.textContent = 'Gardez une connexion active pour mettre à jour les livraisons.';
+    syncButton.hidden = true;
+    return;
+  }
+  const pending = items.filter((item) => item.status === 'pending').length;
+  const attention = items.filter((item) => item.status === 'attention').length;
+  const online = navigator.onLine;
+  connectivity.hidden = online && items.length === 0;
+  connectivity.classList.toggle('online', online && items.length > 0 && attention === 0);
+  connectivityTitle.textContent = online ? 'Connexion disponible' : 'Vous êtes hors ligne';
+  connectivityDetail.textContent = items.length
+    ? `${pending} action${pending > 1 ? 's' : ''} à envoyer${attention ? ` · ${attention} à vérifier` : ''}`
+    : 'Les actions sensibles restent bloquées jusqu’au retour du réseau.';
+  syncButton.hidden = !online || pending === 0;
+  syncButton.disabled = syncInProgress;
+  syncButton.textContent = syncInProgress ? 'Synchronisation…' : 'Synchroniser';
+  outbox.hidden = items.length === 0;
+  outbox.innerHTML = items.length ? `<h2>Actions enregistrées sur ce téléphone</h2>
+    <p class="subtitle">Elles sont supprimées après confirmation du serveur, ou automatiquement après 24 h.</p>
+    ${items.map((item) => `<article class="outbox-item"><div><strong>${escapeHtml(queueLabel(item))}</strong><small>${escapeHtml(formatDate(item.createdAt))}</small>${item.status === 'attention' ? `<p>${escapeHtml(item.error || 'Cette action doit être vérifiée.')}</p>` : ''}</div><button type="button" data-remove-queued="${escapeHtml(item.idempotencyKey)}">Supprimer</button></article>`).join('')}` : '';
+  outbox.querySelectorAll('[data-remove-queued]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Supprimer cette action non synchronisée ? Elle ne sera pas envoyée à l’entreprise.')) return;
+    await DriverQueue.remove(button.dataset.removeQueued);
+    await renderQueueState();
+    const detail = location.pathname.match(/^\/driver\/commandes\/(\d+)$/);
+    if (detail) await renderDetail(detail[1]);
+  }));
+  const pendingOrderIds = new Set(items.filter((item) => item.type === 'transition').map((item) => String(item.orderId)));
+  const currentDetail = location.pathname.match(/^\/driver\/commandes\/(\d+)$/);
+  if (currentDetail && pendingOrderIds.has(currentDetail[1])) {
+    document.querySelectorAll('.transition').forEach((button) => { button.disabled = true; });
+  }
+}
+
+async function queueAction(type, orderId, url, payload) {
+  const queued = await DriverQueue.enqueue({
+    type, owner: queueOwner, orderId, url, payload, idempotencyKey: payload.idempotencyKey,
+  });
+  await requestBackgroundSync();
+  await renderQueueState();
+  return queued;
+}
+
+async function sendOrQueue(type, orderId, url, payload) {
+  if (!navigator.onLine) {
+    await queueAction(type, orderId, url, payload);
+    return { queued: true };
+  }
+  try {
+    return { payload: await api(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }), queued: false };
+  } catch (error) {
+    if (error.networkFailure || error.status >= 500) {
+      await queueAction(type, orderId, url, payload);
+      return { queued: true };
+    }
+    throw error;
+  }
+}
+
+async function flushQueuedActions() {
+  if (!queueOwner || !navigator.onLine || syncInProgress) return;
+  syncInProgress = true;
+  await renderQueueState();
+  try {
+    const result = await DriverQueue.flush({ owner: queueOwner });
+    await renderQueueState();
+    if (result.sent > 0) {
+      const target = document.getElementById('transitionResult') || document.getElementById('incidentResult');
+      if (target) target.innerHTML = `<div class="notice success">${result.sent} action${result.sent > 1 ? 's' : ''} confirmée${result.sent > 1 ? 's' : ''} par le serveur.</div>`;
+      const detail = location.pathname.match(/^\/driver\/commandes\/(\d+)$/);
+      if (detail) await renderDetail(detail[1]); else await renderList();
+    }
+  } finally {
+    syncInProgress = false;
+    await renderQueueState();
+  }
 }
 
 function renderError(error) {
@@ -155,11 +285,11 @@ async function renderDetail(id) {
     if (!confirm(`Confirmer l’étape « ${toStatus} » ?`)) return;
     document.querySelectorAll('.transition').forEach((item) => { item.disabled = true; });
     try {
-      await api(`/api/driver/orders/${encodeURIComponent(id)}/transition`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toStatus, reason, idempotencyKey: actionKey('driver-transition') }),
-      });
-      await renderDetail(id);
+      const payload = { toStatus, reason, idempotencyKey: actionKey('driver-transition') };
+      const result = await sendOrQueue('transition', id, `/api/driver/orders/${encodeURIComponent(id)}/transition`, payload);
+      if (result.queued) {
+        document.getElementById('transitionResult').innerHTML = '<div class="notice warning">Action enregistrée sur ce téléphone. Elle reste en attente de confirmation du serveur.</div>';
+      } else await renderDetail(id);
     } catch (error) {
       document.getElementById('transitionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       document.querySelectorAll('.transition').forEach((item) => { item.disabled = false; });
@@ -180,12 +310,14 @@ async function renderDetail(id) {
     updateDiscrepancy();
     paymentForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const button = event.currentTarget.querySelector('button[type="submit"], button:not([type])');
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"], button:not([type])');
       button.disabled = true;
-      event.currentTarget.dataset.actionKey ||= actionKey('driver-payment');
+      form.dataset.actionKey ||= actionKey('driver-payment');
       try {
-        const payload = Object.fromEntries(new FormData(event.currentTarget));
-        payload.idempotencyKey = event.currentTarget.dataset.actionKey;
+        requireOnline('Un encaissement doit être confirmé immédiatement par le serveur. Reconnectez-vous avant de continuer.');
+        const payload = Object.fromEntries(new FormData(form));
+        payload.idempotencyKey = form.dataset.actionKey;
         await api(`/api/driver/orders/${encodeURIComponent(id)}/payment/collect`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
         });
@@ -200,19 +332,21 @@ async function renderDetail(id) {
   const otpForm = document.getElementById('otpForm');
   if (otpForm) otpForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
     button.disabled = true;
-    event.currentTarget.dataset.actionKey ||= actionKey('driver-otp');
+    form.dataset.actionKey ||= actionKey('driver-otp');
     try {
-      const payload = Object.fromEntries(new FormData(event.currentTarget));
-      payload.idempotencyKey = event.currentTarget.dataset.actionKey;
+      requireOnline('Le code de remise doit être vérifié en direct. Reconnectez-vous avant de continuer.');
+      const payload = Object.fromEntries(new FormData(form));
+      payload.idempotencyKey = form.dataset.actionKey;
       await api(`/api/driver/orders/${encodeURIComponent(id)}/otp/verify`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       });
       await renderDetail(id);
     } catch (error) {
       document.getElementById('otpResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      event.currentTarget.dataset.actionKey = '';
+      form.dataset.actionKey = '';
       button.disabled = false;
     }
   });
@@ -224,6 +358,7 @@ async function renderDetail(id) {
     picker.style.pointerEvents = 'none';
     result.innerHTML = '<div class="notice">Compression et envoi…</div>';
     try {
+      requireOnline('La photo ne sera pas conservée localement. Reconnectez-vous pour l’envoyer.');
       const blob = await compressedPhoto(photoInput.files[0]);
       await uploadEvidence(id, 'photo', blob, 'photoEvidenceResult');
       await renderDetail(id);
@@ -253,6 +388,7 @@ async function renderDetail(id) {
       if (!signed) return document.getElementById('signatureEvidenceResult').innerHTML = '<div class="notice error">Faites signer dans la zone avant d’enregistrer.</div>';
       event.currentTarget.disabled = true;
       try {
+        requireOnline('La signature ne sera pas conservée localement. Reconnectez-vous pour l’envoyer.');
         const blob = await canvasBlob(signatureCanvas);
         await uploadEvidence(id, 'signature', blob, 'signatureEvidenceResult');
         await renderDetail(id);
@@ -265,15 +401,18 @@ async function renderDetail(id) {
 
   document.getElementById('incidentForm').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
     button.disabled = true;
     try {
-      const payload = Object.fromEntries(new FormData(event.currentTarget));
+      const payload = Object.fromEntries(new FormData(form));
       payload.idempotencyKey = actionKey('driver-incident');
-      await api(`/api/driver/orders/${encodeURIComponent(id)}/incidents`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      });
-      await renderDetail(id);
+      const result = await sendOrQueue('incident', id, `/api/driver/orders/${encodeURIComponent(id)}/incidents`, payload);
+      if (result.queued) {
+        form.reset();
+        document.getElementById('incidentResult').innerHTML = '<div class="notice warning">Incident enregistré sur ce téléphone. Il sera envoyé après reconnexion.</div>';
+        button.disabled = false;
+      } else await renderDetail(id);
     } catch (error) {
       document.getElementById('incidentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
@@ -284,11 +423,32 @@ async function renderDetail(id) {
 async function start() {
   try {
     context = await api('/api/driver/context');
+    queueOwner = `${context.company.id}:${context.user.id}:${context.driver.id}`;
+    await DriverQueue.resumeSessionItems(queueOwner);
     document.getElementById('driverName').textContent = context.driver.name;
     document.getElementById('companyName').textContent = context.company.name;
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/driver-sw.js', { scope: '/' }).catch(() => {});
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'driver-sync-requested') flushQueuedActions();
+      });
+    }
+    window.addEventListener('online', flushQueuedActions);
+    window.addEventListener('offline', renderQueueState);
+    syncButton.addEventListener('click', flushQueuedActions);
+    document.querySelector('.driver-header form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      try {
+        const items = await DriverQueue.list(queueOwner);
+        if (items.length && !confirm(`${items.length} action${items.length > 1 ? 's' : ''} non synchronisée${items.length > 1 ? 's' : ''} sera${items.length > 1 ? 'ont' : ''} abandonnée${items.length > 1 ? 's' : ''}. Se déconnecter quand même ?`)) return;
+        await DriverQueue.clearOwner(queueOwner);
+      } catch (_error) { /* La session serveur sera tout de même fermée. */ }
+      event.currentTarget.submit();
+    });
     const detail = location.pathname.match(/^\/driver\/commandes\/(\d+)$/);
-    if (detail) return await renderDetail(detail[1]);
-    return await renderList();
+    if (detail) await renderDetail(detail[1]); else await renderList();
+    await renderQueueState();
+    if (navigator.onLine) await flushQueuedActions();
   } catch (error) {
     renderError(error);
   }

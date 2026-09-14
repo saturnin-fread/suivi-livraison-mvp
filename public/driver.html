@@ -13,11 +13,17 @@
       <div><strong id="driverName">Espace livreur</strong><small id="companyName">Chargement…</small></div>
       <form method="post" action="/app/logout"><button class="driver-logout">Quitter</button></form>
     </header>
+    <aside class="driver-connectivity" id="driverConnectivity" hidden aria-live="polite">
+      <div><strong id="connectivityTitle">Connexion disponible</strong><small id="connectivityDetail"></small></div>
+      <button id="syncDriverActions" type="button">Synchroniser</button>
+    </aside>
+    <section class="driver-outbox" id="driverOutbox" hidden aria-live="polite"></section>
     <main class="driver-main" id="driverPage"><div class="card">Chargement…</div></main>
     <nav class="driver-nav" aria-label="Navigation livreur">
       <a href="/driver" id="activeLink">À livrer</a>
       <a href="/driver?scope=history" id="historyLink">Historique</a>
     </nav>
+    <script src="/driver-queue.js" defer></script>
     <script src="/driver.js" defer></script>
   </body>
 </html>

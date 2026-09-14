@@ -10,6 +10,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Encaissement et rapprochement](PAYMENT_RECONCILIATION.md)
 - [Espace livreur et contrôle d'accès](DRIVER_PORTAL_ACCESS.md)
 - [Tournées multi-colis](DELIVERY_RUNS.md)
+- [Fonctionnement hors connexion du livreur](OFFLINE_OPERATIONS.md)
 - [Architecture technique](ARCHITECTURE.md)
 - [Modèle de données](DATA_MODEL.md)
 - [Erreurs et cas limites](ERRORS_AND_EDGE_CASES.md)
@@ -18,7 +19,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Décisions prises](DECISIONS.md)
 - [Historique des changements](CHANGELOG.md)
 
-## État au 14 septembre 2026
+## État au 15 septembre 2026
 
 - Traccar 6.15.3 est déployé sur Railway.
 - Le téléphone test Traccar utilise l’identifiant `61779795`.
@@ -34,7 +35,8 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - Les invitations à usage unique et l'espace mobile cloisonné du livreur disposent d'une première version testée.
 - Les actions terrain sensibles, les preuves complémentaires, les dossiers d'incident et les tournées multi-colis disposent d'une première version testée.
 - La page `/app/tournees` permet de créer, corriger, ordonner, planifier, démarrer, annuler et terminer une tournée avec historique.
-- Le prochain lot renforce la reprise hors connexion des actions du livreur.
+- Les transitions et incidents peuvent attendre une reprise réseau contrôlée sur le téléphone du livreur ; les actions sensibles restent en ligne.
+- Le prochain lot traite les ajustements financiers postérieurs à une commande terminée.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

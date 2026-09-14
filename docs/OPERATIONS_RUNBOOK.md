@@ -29,6 +29,8 @@ Les commandes sous gel actif dans `order_retention_holds` ne doivent être suppr
 
 Les tournées sont conservées dans `delivery_runs`, `delivery_stops` et `delivery_run_events`. Une suppression manuelle de tournée détruirait son historique ; en exploitation, utiliser l'annulation motivée. Voir `docs/DELIVERY_RUNS.md`.
 
+La file hors connexion du livreur se trouve sur son téléphone, pas dans PostgreSQL. Une action affichée « en attente » n'est donc pas encore acquise par l'entreprise. Demander au livreur d'ouvrir `/driver` avec du réseau et d'utiliser **Synchroniser**. En cas de conflit « à vérifier », comparer d'abord l'état serveur avant de supprimer ou ressaisir l'action. Voir `docs/OFFLINE_OPERATIONS.md`.
+
 ## Accès aux interfaces
 
 ```text
@@ -58,7 +60,14 @@ npm run test:smoke
 npm run test:driver
 ```
 
-Exécuter les trois scénarios fonctionnels l'un après l'autre. Ils créent des données temporaires identifiables dans la base `delivery` et les suppriment dans un bloc de nettoyage final.
+Le test navigateur hors connexion requiert Playwright et Chrome. Dans l'environnement Codex local :
+
+```powershell
+$env:NODE_PATH='C:\Users\Saturnin001\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
+node scripts/driver-offline-browser-test.js
+```
+
+Exécuter les scénarios fonctionnels l'un après l'autre. Ils créent des données temporaires identifiables dans la base `delivery` et les suppriment dans un bloc de nettoyage final.
 
 ## Restaurer la compréhension du système
 
@@ -69,9 +78,10 @@ Lire dans cet ordre :
 3. `docs/ARCHITECTURE.md`
 4. `docs/DATA_MODEL.md`
 5. `docs/DELIVERY_RUNS.md`
-6. `server.js`
-7. `public/app.js`
-8. `public/request.html`
+6. `docs/OFFLINE_OPERATIONS.md`
+7. `server.js`
+8. `public/app.js`
+9. `public/request.html`
 
 ## Secrets
 

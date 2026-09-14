@@ -63,6 +63,10 @@ Un livreur peut avoir plusieurs commandes actives dans une même zone. Il ne fau
 
 L'entreprise prépare ensuite une tournée datée : elle ajoute les commandes du même livreur, vérifie les créneaux et confirme leur ordre. La proposition automatique actuelle est uniquement géométrique. Elle ne devient jamais l'ordre opérationnel sans action humaine.
 
+## Coupure réseau pendant l'exécution
+
+Une transition ou un incident saisi sur une commande déjà ouverte peut attendre localement le retour du réseau. Le portail affiche qu'il ne s'agit pas encore d'une confirmation serveur. Le code de remise, l'encaissement, la photo et la signature restent en ligne afin de vérifier immédiatement les règles de sécurité et de ne pas conserver de contenus sensibles sur le téléphone.
+
 ## Deux expériences cartographiques
 
 ### Carte client

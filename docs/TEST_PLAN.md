@@ -124,6 +124,19 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - vérifier que chaque client ne voit toujours que sa commande ;
 - contrôler l'affichage de la date sur plusieurs fuseaux horaires.
 
+## Test H2 — coupure réseau du livreur
+
+- ouvrir une commande en ligne puis couper le réseau ;
+- conserver une transition et un incident avec leurs clés d'idempotence ;
+- refuser une seconde transition locale sur la même commande ;
+- rétablir le réseau et vérifier un seul événement de statut et un seul incident ;
+- provoquer un conflit serveur et conserver l'action en état « à vérifier » ;
+- simuler une session expirée et ne jamais rejouer sous un autre compte ;
+- refuser hors ligne l'encaissement, l'OTP, la photo et la signature ;
+- vérifier la limite de 30 actions et l'expiration après 24 heures ;
+- vérifier que Cache Storage ne contient aucune URL `/api/` ;
+- vérifier `Cache-Control: private, no-store` sur toutes les API authentifiées.
+
 ## Test I — cartes
 
 - tester ma position, recentrage, vue complète et suivi automatique ;

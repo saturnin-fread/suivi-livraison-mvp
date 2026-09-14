@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 à 7 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 8 livrés
 
 ### Objectif
 
@@ -245,11 +245,13 @@ Les incidents disposent désormais d'une file séparée, d'un responsable, d'une
 
 Les tournées multi-colis disposent désormais d'un cycle brouillon → planifiée → en cours → terminée, d'arrêts ordonnés, de corrections historisées, d'un contrôle de capacité et de concurrence, et d'une suggestion géométrique qui exige une confirmation humaine.
 
+Le portail livreur supporte désormais les coupures courtes : transitions et incidents sont conservés au maximum 24 heures avec leur clé d'idempotence, tandis que remise OTP, encaissement et preuves restent strictement en ligne.
+
 Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. tester les reprises hors connexion et les actions différées du livreur ;
-2. ajouter les ajustements financiers postérieurs à une commande terminée ;
-3. relier l'ordre de tournée au portail livreur, puis préparer la carte d'exploitation routière.
+1. ajouter les ajustements financiers postérieurs à une commande terminée ;
+2. relier l'ordre de tournée au portail livreur ;
+3. préparer la carte d'exploitation routière et les estimations explicables.
 
 ## Règles transversales
 

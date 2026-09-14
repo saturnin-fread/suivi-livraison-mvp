@@ -3,6 +3,17 @@
 .driver-header strong, .driver-header small { display: block; }
 .driver-header small { margin-top: 3px; color: #c7d7e9; font-size: 12px; }
 .driver-logout { border: 1px solid #ffffff55; border-radius: 9px; padding: 8px 11px; color: #fff; background: transparent; }
+.driver-connectivity { position: sticky; z-index: 9; top: 66px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px; color: #6b4300; background: #fff3cd; border-bottom: 1px solid #e8cd79; }
+.driver-connectivity.online { color: #155b3b; background: #e6f7ef; border-color: #a6dec5; }
+.driver-connectivity strong, .driver-connectivity small { display: block; }
+.driver-connectivity small { margin-top: 2px; font-size: 12px; }
+.driver-connectivity button { flex: none; border: 1px solid currentColor; border-radius: 8px; padding: 7px 10px; color: inherit; background: transparent; font-weight: 750; }
+.driver-outbox { width: min(720px, calc(100% - 28px)); margin: 12px auto 0; padding: 12px 14px; border: 1px solid #e8cd79; border-radius: 12px; background: #fff9e8; }
+.driver-outbox h2 { margin: 0 0 8px; font-size: 16px; }
+.outbox-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid #eadfb8; }
+.outbox-item:first-of-type { border-top: 0; }
+.outbox-item p, .outbox-item small { display: block; margin: 2px 0 0; color: var(--muted); }
+.outbox-item button { flex: none; border: 0; color: #9b1c1c; background: transparent; text-decoration: underline; }
 .driver-main { width: min(720px, 100%); margin: 0 auto; padding: 18px 14px 30px; }
 .driver-title { margin-bottom: 16px; }
 .driver-title h1 { font-size: 26px; }

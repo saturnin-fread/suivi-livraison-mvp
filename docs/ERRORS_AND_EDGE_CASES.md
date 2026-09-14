@@ -76,6 +76,12 @@
 | Annulation de tournée | Exiger un motif, conserver les arrêts et libérer les affectations actives |
 | Clôture prématurée | Refuser tant que tous les colis ne sont pas dans un état terminal |
 | Date affichée la veille | Sérialiser la date civile sans conversion de fuseau horaire |
+| Coupure pendant une transition livreur | Conserver la requête et sa clé au maximum 24 h, puis confirmer seulement après réponse serveur |
+| Deux transitions hors ligne sur le même colis | Bloquer la seconde jusqu'à synchronisation ou suppression explicite de la première |
+| État modifié au bureau avant la reprise | Conserver le conflit « à vérifier » et arrêter le rejeu ordonné |
+| Session expirée pendant la reprise | Ne pas supprimer l'action et exiger une nouvelle connexion du même compte |
+| Téléphone partagé après déconnexion | Supprimer la file locale du compte avant de fermer la session |
+| Encaissement, OTP ou preuve sans réseau | Refuser clairement ; ne jamais simuler le succès ni conserver ces données localement |
 
 ## Cartographie et temps réel
 

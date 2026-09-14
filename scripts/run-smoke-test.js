@@ -286,9 +286,13 @@ async function run() {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      if (runIds.length) {
-        await client.query(`DELETE FROM audit_logs WHERE entity_type = 'delivery_run' AND entity_id = ANY($1::bigint[])`, [runIds]);
-        await client.query('DELETE FROM delivery_runs WHERE id = ANY($1::bigint[])', [runIds]);
+      const recordedRuns = driverIds.length
+        ? await client.query('SELECT id FROM delivery_runs WHERE driver_id = ANY($1::bigint[])', [driverIds])
+        : { rows: [] };
+      const cleanupRunIds = [...new Set([...runIds, ...recordedRuns.rows.map((row) => row.id)].map(String))];
+      if (cleanupRunIds.length) {
+        await client.query(`DELETE FROM audit_logs WHERE entity_type = 'delivery_run' AND entity_id = ANY($1::bigint[])`, [cleanupRunIds]);
+        await client.query('DELETE FROM delivery_runs WHERE id = ANY($1::bigint[])', [cleanupRunIds]);
       }
       if (orderIds.length) await client.query('DELETE FROM orders WHERE id = ANY($1::bigint[])', [orderIds]);
       if (driverIds.length) await client.query('DELETE FROM drivers WHERE id = ANY($1::bigint[])', [driverIds]);

@@ -31,6 +31,7 @@ Les identifiants Traccar ne doivent jamais être envoyés au navigateur.
 |---|---|---|
 | `/app` | Utilisateurs d'entreprise | Opérations quotidiennes de l'entreprise |
 | `/app/tournees` | Utilisateurs d'entreprise | Préparation, ordre et cycle de vie des tournées |
+| `/driver` | Livreurs liés à un profil | Exécution mobile et reprise limitée après coupure réseau |
 | `/admin` | Administrateurs plateforme | Entreprises, offres, facturation, support et supervision |
 | `/demande/:token` | Client invité | Saisie et modification contrôlée d'une demande |
 | `/suivi/:token` | Client invité | Suivi limité à une commande |
@@ -68,6 +69,18 @@ La carte client reçoit un sous-ensemble strict concernant une seule commande. L
 - n8n/WAHA : automatisation et communication, jamais stockage métier principal.
 
 L'application ne modifie pas directement les tables internes de Traccar. Elle utilise ses API.
+
+## Reprise réseau du portail livreur
+
+```text
+action terrain sûre → tentative API
+  → succès : confirmation serveur
+  → coupure/5xx : IndexedDB pendant 24 h maximum
+  → retour réseau : rejeu FIFO avec la même clé d'idempotence
+  → conflit/autorisation : état à vérifier, sans suppression
+```
+
+Le service worker ne contient que la coque statique du portail. Les réponses authentifiées `/api/*`, positions, commandes et preuves portent `private, no-store` et ne sont jamais mises en cache. L'encaissement, l'OTP et les preuves exigent toujours le serveur en direct.
 
 ## Configuration requise de `delivery-app`
 

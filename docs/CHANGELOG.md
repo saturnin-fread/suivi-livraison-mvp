@@ -1,5 +1,18 @@
 # Historique des changements
 
+## 2026-09-15
+
+- Ajout d'une file locale IndexedDB limitée aux transitions et incidents du portail livreur.
+- Conservation de la même clé d'idempotence pendant la reprise pour empêcher les doubles événements.
+- Ajout d'un état visible hors ligne, du nombre d'actions en attente, d'une reprise automatique et d'un bouton manuel.
+- Mise en attente explicite des conflits et sessions expirées sans suppression silencieuse.
+- Maintien obligatoire en ligne de l'encaissement, du code de remise, des photos et des signatures.
+- Ajout d'un service worker qui ne met en cache que la coque statique du portail, jamais les réponses API.
+- Ajout de `Cache-Control: private, no-store` sur l'ensemble des API.
+- Limitation de la file à 30 actions et suppression automatique après 24 heures ou déconnexion volontaire confirmée.
+- Ajout d'un test navigateur couvrant coupure, reprise unique, conflit, cache et refus financier hors ligne.
+- Correction de la référence aux formulaires après une attente asynchrone afin de préserver les messages d'erreur réseau.
+
 ## 2026-09-14
 
 - Ajout de la documentation de reprise et d’exploitation.

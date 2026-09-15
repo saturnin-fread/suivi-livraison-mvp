@@ -1,5 +1,17 @@
 # Décisions d’architecture
 
+## 2026-09-15 — Isolation des services de données du projet livraison
+
+Le projet livraison ne partage plus son Postgres ni son Redis avec n8n. Deux
+services dédiés sont provisionnés sur Railway (`Postgres-L9xy`, `Redis-sPlS`),
+avec leurs propres volumes. Motifs : réduire le rayon d'impact (un incident n8n
+ne doit pas atteindre les données livraison), séparer sauvegardes, rétention
+légale et rôles PostgreSQL. La bascule Postgres se fait par `pg_dump`/restore car
+le pilote contient des données à conserver ; l'ancienne base est gardée comme
+repli jusqu'à confirmation. La procédure complète est dans
+`docs/INFRA_ISOLATION_RUNBOOK.md`. Le Redis dédié sera câblé avec la migration du
+rate-limiting, pas avant.
+
 ## 2026-09-15 — Liens de suivi à secret contrôlé
 
 Un lien de suivi expire par défaut après sept jours et peut être révoqué ou renouvelé. Les listes entreprise n’exposent ni token ni URL. L’affichage unitaire est volontaire, autorisé et audité. Le token reste chiffré dans le coffre applicatif afin de permettre cet affichage ; une empreinte distincte sert à la recherche publique. Après validation de la phase compatible, la colonne historique en clair est vidée.

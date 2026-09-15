@@ -27,6 +27,8 @@ Vérifier sans afficher de secret :
 6. le nombre de lignes protégées correspond au nombre de liens ;
 7. les tests publics et le contrôle navigateur mobile réussissent.
 
+Le diagnostic de compteurs se lance avec `npm run check:tracking-storage`. Il refuse toute base dont le nom n’est pas `delivery` et ne sort que des nombres.
+
 À ce stade seulement, le retour vers la dernière version historique reste possible car la colonne en clair existe encore.
 
 ## Phase 2 — suppression du clair

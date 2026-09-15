@@ -64,6 +64,7 @@ npm run test:map
 npm run test:routing
 npm run test:tracking-links
 npm run test:rate-limit
+npm run check:tracking-storage
 npm run test:smoke
 npm run test:driver
 ```

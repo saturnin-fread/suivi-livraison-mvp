@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test:syntax": "node --check server.js && node --check lib/routing.js && node --check lib/rate-limit.js && node --check lib/tracking-link-policy.js && node --check public/app.js && node --check public/driver.js && node --check public/driver-queue.js && node --check public/driver-sw.js && node --check scripts/smoke-test.js && node --check scripts/driver-smoke-test.js && node --check scripts/driver-offline-browser-test.js && node --check scripts/payment-adjustment-smoke-test.js && node --check scripts/run-smoke-test.js && node --check scripts/operations-map-smoke-test.js && node --check scripts/routing-adapter-test.js && node --check scripts/rate-limit-test.js && node --check scripts/tracking-link-policy-test.js",
+    "test:syntax": "node --check server.js && node --check lib/routing.js && node --check lib/rate-limit.js && node --check lib/tracking-link-policy.js && node --check public/app.js && node --check public/driver.js && node --check public/driver-queue.js && node --check public/driver-sw.js && node --check scripts/smoke-test.js && node --check scripts/driver-smoke-test.js && node --check scripts/driver-offline-browser-test.js && node --check scripts/payment-adjustment-smoke-test.js && node --check scripts/run-smoke-test.js && node --check scripts/operations-map-smoke-test.js && node --check scripts/routing-adapter-test.js && node --check scripts/rate-limit-test.js && node --check scripts/tracking-link-policy-test.js && node --check scripts/tracking-link-storage-check.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:driver": "node scripts/driver-smoke-test.js",
     "test:runs": "node scripts/run-smoke-test.js",
@@ -14,7 +14,8 @@
     "test:map": "node scripts/operations-map-smoke-test.js",
     "test:routing": "node scripts/routing-adapter-test.js",
     "test:rate-limit": "node scripts/rate-limit-test.js",
-    "test:tracking-links": "node scripts/tracking-link-policy-test.js"
+    "test:tracking-links": "node scripts/tracking-link-policy-test.js",
+    "check:tracking-storage": "node scripts/tracking-link-storage-check.js"
   },
   "engines": {
     "node": ">=20"

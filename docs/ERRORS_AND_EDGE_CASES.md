@@ -38,7 +38,14 @@
 | Somme reçue différente | Exiger un motif et un rapprochement responsable avant remise |
 | Double déclaration de collecte | Retourner le même résultat sans doubler le montant |
 | Encaissement saisi par erreur | Permettre l'annulation avant fin de livraison et garder les deux événements |
-| Correction après livraison terminée | Refuser l'annulation simple et exiger un futur ajustement comptable |
+| Correction après livraison terminée | Conserver l'original et créer un remboursement ou complément motivé |
+| Erreur dans un ajustement clôturé | Créer une écriture inverse liée ; ne jamais modifier ou supprimer l'original |
+| Remboursement supérieur au total net | Refuser sans créer d'écriture |
+| Deux remboursements simultanés | Verrouiller le compte ; accepter seulement ceux qui respectent le solde restant |
+| Répétition réseau d'un ajustement | Retourner la première écriture avec la même clé et les mêmes paramètres |
+| Même clé avec un montant différent | Refuser comme conflit de sécurité |
+| Date effective future ou antérieure à la clôture | Refuser et demander une date civile valide |
+| Opérateur ou livreur tente un ajustement post-clôture | Refuser côté serveur même si le bouton est masqué |
 | Invitation déjà utilisée ou expirée | Refuser sans recréer ni modifier le compte |
 | E-mail déjà associé à un compte | Refuser l'invitation tant que le sélecteur multi-entreprises n'existe pas |
 | Profil livreur déjà lié | Empêcher la création d'un second compte pour le même profil |

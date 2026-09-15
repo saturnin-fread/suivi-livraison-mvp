@@ -43,6 +43,9 @@ const paymentStatusLabels = {
 const paymentMethodLabels = {
   cash: 'Espèces', mobile_money: 'Mobile Money', card: 'Carte', bank_transfer: 'Virement', other: 'Autre',
 };
+const paymentAdjustmentLabels = {
+  refund: 'Remboursement au client', additional_collection: 'Complément reçu', reversal: 'Écriture inverse',
+};
 const roleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
 const runStatusLabels = {
   draft: 'Brouillon', planned: 'Planifiée', active: 'En cours', completed: 'Terminée', cancelled: 'Annulée',
@@ -60,11 +63,15 @@ function renderPaymentSection(order) {
   const canReconcile = canControl && ['collected', 'discrepancy'].includes(order.payment_status);
   const canReverse = canControl && ['collected', 'discrepancy'].includes(order.payment_status) && !order.isTerminal;
   const events = order.paymentEvents || [];
+  const adjustments = order.paymentAdjustments || [];
+  const canAdjust = canControl && order.isTerminal && configured && ['collected', 'reconciled'].includes(order.payment_status);
+  const today = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
   return `<section class="card" style="margin-top:18px"><h2>Encaissement à la livraison</h2>
     ${configured ? `<div class="detail-grid"><div class="detail"><span>Montant attendu</span><strong>${escapeHtml(formatMoney(order.expected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>État financier</span><strong>${badge(paymentStatusLabels[order.payment_status] || order.payment_status)}</strong></div><div class="detail"><span>Montant reçu</span><strong>${escapeHtml(formatMoney(order.collected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>Mode</span><strong>${escapeHtml(paymentMethodLabels[order.collection_method] || order.collection_method || '—')}</strong></div><div class="detail"><span>Référence</span><strong>${escapeHtml(order.collection_reference || '—')}</strong></div><div class="detail"><span>Rapprochement</span><strong>${escapeHtml(formatDate(order.reconciled_at))}</strong></div></div>${order.discrepancy_reason ? `<div class="notice error"><strong>Écart déclaré :</strong> ${escapeHtml(order.discrepancy_reason)}</div>` : ''}` : '<p class="subtitle">Aucun paiement ne sera exigé tant qu’un montant n’est pas configuré.</p>'}
     ${canConfigure ? `<form id="paymentConfigure" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Montant attendu en FCFA</label><input name="expectedAmountMinor" type="number" min="1" step="1" value="${configured && order.payment_status !== 'not_required' ? escapeHtml(order.expected_amount_minor) : ''}" required /></div><input type="hidden" name="currency" value="XOF" /></div><div class="actions" style="margin-top:12px"><button class="secondary">${configured ? 'Modifier le montant attendu' : 'Exiger un encaissement'}</button>${configured && order.payment_status === 'pending' ? '<button class="danger" type="button" id="removePaymentRequirement">Retirer cette exigence</button>' : ''}</div></form>` : ''}
     ${canCollect ? `<form id="paymentCollect" style="margin-top:18px"><h3>Déclarer la somme reçue</h3><div class="form-grid"><div class="field"><label>Montant reçu en FCFA</label><input name="amountMinor" type="number" min="0" step="1" value="${escapeHtml(order.expected_amount_minor)}" required /></div><div class="field"><label>Mode d’encaissement</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Référence Mobile Money, reçu…" /></div><div class="field"><label>Motif en cas d’écart</label><textarea name="discrepancyReason" placeholder="Obligatoire si le montant reçu diffère"></textarea></div></div><div class="actions" style="margin-top:12px"><button class="primary">Enregistrer l’encaissement</button></div></form>` : configured && order.payment_status === 'pending' ? '<p class="notice">L’encaissement pourra être déclaré lorsque la commande sera « En livraison » ou « Arrivée ».</p>' : ''}
     ${canReconcile ? `<form id="paymentReconcile" style="margin-top:18px"><div class="field"><label>Note de rapprochement ${order.payment_status === 'discrepancy' ? '(obligatoire)' : '(facultative)'}</label><textarea name="note" placeholder="Contrôle de caisse, justification de l’écart…"></textarea></div><div class="actions" style="margin-top:12px"><button class="primary">Marquer comme rapproché</button>${canReverse ? '<button class="danger" type="button" id="reversePayment">Annuler la saisie</button>' : ''}</div></form>` : ''}
+    ${order.isTerminal && configured ? `<section class="adjustment-panel"><h3>Ajustements après clôture</h3><p class="subtitle">L’encaissement d’origine reste inchangé. Chaque remboursement ou complément crée une nouvelle écriture traçable.</p><div class="detail-grid"><div class="detail"><span>Total d’origine</span><strong>${escapeHtml(formatMoney(order.collected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>Total net après ajustements</span><strong>${escapeHtml(formatMoney(order.paymentAdjustedTotalMinor, order.payment_currency))}</strong></div></div>${canAdjust ? `<details style="margin-top:14px"><summary>Enregistrer un ajustement</summary><form id="paymentAdjustment" style="margin-top:14px"><div class="form-grid"><div class="field"><label>Nature</label><select name="adjustmentType"><option value="refund">Remboursement au client</option><option value="additional_collection">Complément reçu</option></select></div><div class="field"><label>Montant en FCFA</label><input name="amountMinor" type="number" min="1" step="1" required /></div><div class="field"><label>Mode</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Date effective</label><input name="effectiveDate" type="date" max="${today}" value="${today}" required /></div><div class="field full"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Reçu, transaction Mobile Money…" /></div><div class="field full"><label>Motif détaillé</label><textarea name="reason" minlength="10" maxlength="1000" required placeholder="Pourquoi cet ajustement est-il nécessaire ?"></textarea></div></div><div class="notice warning" style="margin-top:12px">Vérifiez le sens et le montant. Une erreur sera corrigée par une écriture inverse, jamais par suppression.</div><div class="actions" style="margin-top:12px"><button class="primary">Enregistrer l’ajustement</button></div></form></details>` : '<div class="notice">Seuls le propriétaire et les managers peuvent créer un ajustement après clôture.</div>'}${adjustments.length ? `<ol class="timeline adjustment-timeline">${adjustments.map((adjustment) => `<li><strong>${escapeHtml(paymentAdjustmentLabels[adjustment.adjustment_type] || adjustment.adjustment_type)}</strong><span>${adjustment.direction === 'inflow' ? '+' : '−'} ${escapeHtml(formatMoney(adjustment.amount_minor, adjustment.currency))} · ${escapeHtml(paymentMethodLabels[adjustment.method] || adjustment.method)}</span><small>Date effective : ${escapeHtml(adjustment.effective_date)} · saisi le ${escapeHtml(formatDate(adjustment.created_at))} · ${escapeHtml(adjustment.actor_name)}</small><p>${escapeHtml(adjustment.reason)}</p>${adjustment.reference ? `<small>Référence : ${escapeHtml(adjustment.reference)}</small>` : ''}${adjustment.reversed ? '<div class="notice">Cette écriture possède une correction inverse.</div>' : canAdjust && adjustment.adjustment_type !== 'reversal' ? `<button class="secondary reverse-adjustment" type="button" data-adjustment-id="${escapeHtml(adjustment.id)}">Corriger cette écriture</button>` : ''}</li>`).join('')}</ol>` : '<p class="subtitle">Aucun ajustement après clôture.</p>'}</section>` : ''}
     <div id="paymentResult"></div>
     ${events.length ? `<details style="margin-top:18px"><summary>Historique financier (${events.length})</summary><ol class="timeline" style="margin-top:16px">${events.map((event) => `<li><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(formatMoney(event.amount_minor, event.currency))}${event.method ? ` · ${escapeHtml(paymentMethodLabels[event.method] || event.method)}` : ''}</span><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></details>` : ''}
   </section>`;
@@ -566,6 +573,45 @@ async function renderOrderDetail(id) {
       reversePayment.disabled = false;
     }
   });
+
+  const paymentAdjustment = document.getElementById('paymentAdjustment');
+  if (paymentAdjustment) paymentAdjustment.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const button = form.querySelector('button');
+    if (!confirm(`Confirmer : ${paymentAdjustmentLabels[values.adjustmentType]} de ${formatMoney(values.amountMinor, 'XOF')} ?`)) return;
+    button.disabled = true;
+    try {
+      const idempotencyKey = idempotencyKeyFor(form, 'payment-adjustment', values);
+      await api(`/api/app/orders/${encodeURIComponent(id)}/payment/adjustments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+
+  document.querySelectorAll('.reverse-adjustment').forEach((button) => button.addEventListener('click', async () => {
+    const reason = prompt('Pourquoi cette écriture doit-elle être corrigée ? (10 caractères minimum)') || '';
+    if (reason.trim().length < 10) return;
+    const effectiveDate = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
+    if (!confirm('Créer l’écriture inverse ? L’original restera visible.')) return;
+    button.disabled = true;
+    try {
+      const values = { adjustmentId: button.dataset.adjustmentId, reason: reason.trim(), effectiveDate };
+      const idempotencyKey = idempotencyKeyFor(button, 'payment-adjustment-reverse', values);
+      await api(`/api/app/orders/${encodeURIComponent(id)}/payment/adjustments/${encodeURIComponent(button.dataset.adjustmentId)}/reverse`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: values.reason, effectiveDate, idempotencyKey }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  }));
 
   const transitionForm = document.getElementById('transitionForm');
   if (transitionForm) transitionForm.addEventListener('submit', async (event) => {

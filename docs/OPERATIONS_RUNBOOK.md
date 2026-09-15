@@ -29,6 +29,8 @@ Les commandes sous gel actif dans `order_retention_holds` ne doivent être suppr
 
 Les tournées sont conservées dans `delivery_runs`, `delivery_stops` et `delivery_run_events`. Une suppression manuelle de tournée détruirait son historique ; en exploitation, utiliser l'annulation motivée. Voir `docs/DELIVERY_RUNS.md`.
 
+Les corrections financières après clôture sont conservées dans `payment_adjustments`. Ne jamais modifier ou supprimer ces lignes manuellement : utiliser l'écriture inverse prévue dans la fiche commande. Ce journal opérationnel ne remplace pas la comptabilité légale. Voir `docs/PAYMENT_RECONCILIATION.md`.
+
 La file hors connexion du livreur se trouve sur son téléphone, pas dans PostgreSQL. Une action affichée « en attente » n'est donc pas encore acquise par l'entreprise. Demander au livreur d'ouvrir `/driver` avec du réseau et d'utiliser **Synchroniser**. En cas de conflit « à vérifier », comparer d'abord l'état serveur avant de supprimer ou ressaisir l'action. Voir `docs/OFFLINE_OPERATIONS.md`.
 
 ## Accès aux interfaces
@@ -55,6 +57,7 @@ railway up --service delivery-app --environment production
 
 ```powershell
 npm run test:syntax
+npm run test:payments
 npm run test:runs
 npm run test:smoke
 npm run test:driver

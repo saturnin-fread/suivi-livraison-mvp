@@ -77,6 +77,19 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - résoudre l'incident sans altérer la déclaration initiale ;
 - modifier volontairement un événement dans une base de test et vérifier que la chaîne devient invalide.
 
+## Test F5 — ajustements financiers après clôture
+
+- refuser une commande non terminée, une commande d'une autre entreprise et un rôle opérateur ;
+- refuser un motif trop court, une date future et une date antérieure à la clôture ;
+- rembourser une partie du montant et vérifier le total net ;
+- répéter la requête avec la même clé sans créer une seconde écriture ;
+- refuser la même clé avec des paramètres différents ;
+- refuser un remboursement supérieur au total net ;
+- envoyer deux remboursements concurrents et vérifier que le total ne devient jamais négatif ;
+- ajouter un complément, puis le corriger avec une écriture inverse unique ;
+- vérifier qu'aucune route ne modifie ou ne supprime une écriture existante ;
+- vérifier la présence du journal dans la fiche commande et dans l'export d'incident.
+
 ## Test G — confirmation et modification client
 
 - vérifier la redirection vers la page de confirmation ;

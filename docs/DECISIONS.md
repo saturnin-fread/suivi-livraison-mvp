@@ -83,3 +83,7 @@ La tournée est un objet métier versionné distinct des commandes. Une commande
 ## 2026-09-14 — Date de service sans conversion de fuseau
 
 `service_date` est une date civile et non un instant. L'API la sérialise explicitement en `YYYY-MM-DD` afin d'empêcher le navigateur de l'afficher la veille selon le fuseau horaire.
+
+## 2026-09-15 — Ajustements financiers immuables après clôture
+
+L'encaissement finalisé ne peut plus être annulé ni réécrit. Un remboursement ou un complément crée une écriture distincte, et une erreur crée une écriture inverse liée. Les actions sont idempotentes, sérialisées par verrou et réservées aux responsables. Ce journal sert au suivi opérationnel et au litige, mais ne se substitue pas aux obligations comptables SYSCOHADA.

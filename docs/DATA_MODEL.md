@@ -62,6 +62,10 @@ Historique des gels de conservation appliqués au dossier complet d'une commande
 
 État courant de l'encaissement d'une commande et ledger append-only de ses configurations, collectes, écarts, annulations et rapprochements.
 
+### `payment_adjustments`
+
+Journal append-only des remboursements et compléments postérieurs à la clôture. Une correction crée une écriture inverse liée ; aucune route ne modifie ou ne supprime une écriture existante. Le total net obtenu est mémorisé pour rendre chaque réponse idempotente et explicable.
+
 ### `delivery_runs`
 
 Tournée datée d'un livreur : nom, état, version de concurrence, démarrage, clôture ou annulation et clé idempotente de création.
@@ -104,5 +108,6 @@ plans
 - Une tournée ordonne plusieurs arrêts et un arrêt peut contenir plusieurs colis destinés au même lieu.
 - La position d'un colis sans traceur est une position déduite de son état et de son porteur.
 - Les changements de statut, affectations, preuves et incidents sont historisés sans écraser les événements précédents.
+- Un encaissement finalisé et ses ajustements ne sont jamais réécrits ; une erreur est corrigée par une écriture inverse.
 - Les statistiques agrégées ne remplacent jamais les données sources et doivent conserver une méthode de calcul documentée.
 - Chaque export est rattaché à l'utilisateur, l'entreprise, la période et les filtres utilisés.

@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 à 8 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 9 livrés
 
 ### Objectif
 
@@ -247,11 +247,13 @@ Les tournées multi-colis disposent désormais d'un cycle brouillon → planifi�
 
 Le portail livreur supporte désormais les coupures courtes : transitions et incidents sont conservés au maximum 24 heures avec leur clé d'idempotence, tandis que remise OTP, encaissement et preuves restent strictement en ligne.
 
+Les corrections financières postérieures à la clôture sont désormais immuables : remboursement, complément et écriture inverse sont datés, motivés, idempotents, limités aux responsables et intégrés au dossier de litige. Le journal reste opérationnel et ne remplace pas la comptabilité SYSCOHADA.
+
 Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. ajouter les ajustements financiers postérieurs à une commande terminée ;
-2. relier l'ordre de tournée au portail livreur ;
-3. préparer la carte d'exploitation routière et les estimations explicables.
+1. relier l'ordre de tournée au portail livreur ;
+2. préparer la carte d'exploitation routière et les estimations explicables ;
+3. renforcer les conflits de capacité pendant une tournée active.
 
 ## Règles transversales
 

@@ -29,6 +29,7 @@ const orderTransitions = {
 const reasonRequiredStatuses = ['Échec', 'Retour', 'Retournée', 'Annulée'];
 const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement', 'vehicule', 'gps', 'autre'];
 const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'];
+const paymentAdjustmentTypes = ['refund', 'additional_collection'];
 const invitationRoles = ['manager', 'operator', 'driver'];
 const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
 const evidenceTypes = ['photo', 'signature'];
@@ -738,6 +739,32 @@ async function initDatabase() {
 
       CREATE INDEX IF NOT EXISTS payment_events_order_created_idx
         ON payment_events(order_id, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS payment_adjustments (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        payment_account_id BIGINT NOT NULL REFERENCES order_payment_accounts(id) ON DELETE CASCADE,
+        adjustment_type TEXT NOT NULL CHECK (adjustment_type IN ('refund', 'additional_collection', 'reversal')),
+        direction TEXT NOT NULL CHECK (direction IN ('inflow', 'outflow')),
+        amount_minor BIGINT NOT NULL CHECK (amount_minor > 0),
+        currency TEXT NOT NULL,
+        method TEXT NOT NULL,
+        reference TEXT,
+        reason TEXT NOT NULL,
+        effective_date DATE NOT NULL,
+        resulting_total_minor BIGINT NOT NULL,
+        reverses_adjustment_id BIGINT REFERENCES payment_adjustments(id),
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(company_id, idempotency_key)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS payment_adjustments_reversal_unique
+        ON payment_adjustments(reverses_adjustment_id) WHERE reverses_adjustment_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS payment_adjustments_order_created_idx
+        ON payment_adjustments(order_id, created_at ASC, id ASC);
 
       INSERT INTO order_status_events (
         company_id, order_id, from_status, to_status, actor_user_id,
@@ -2341,7 +2368,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
   );
   const order = result.rows[0];
   if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
-  const [events, incidents, paymentEvents, evidence] = await Promise.all([
+  const [events, incidents, paymentEvents, paymentAdjustments, evidence] = await Promise.all([
     pool.query(
       `SELECT e.id, e.from_status, e.to_status, e.reason, e.metadata, e.created_at,
               COALESCE(u.display_name, 'Système') AS actor_name
@@ -2367,6 +2394,16 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
       [order.id, req.auth.company_id]
     ),
     pool.query(
+      `SELECT a.id, a.adjustment_type, a.direction, a.amount_minor, a.currency, a.method,
+              a.reference, a.reason, TO_CHAR(a.effective_date, 'YYYY-MM-DD') AS effective_date,
+              a.reverses_adjustment_id, a.created_at,
+              COALESCE(u.display_name, 'Système') AS actor_name,
+              EXISTS (SELECT 1 FROM payment_adjustments r WHERE r.reverses_adjustment_id = a.id) AS reversed
+       FROM payment_adjustments a LEFT JOIN users u ON u.id = a.actor_user_id
+       WHERE a.order_id = $1 AND a.company_id = $2 ORDER BY a.created_at ASC, a.id ASC`,
+      [order.id, req.auth.company_id]
+    ),
+    pool.query(
       `SELECT id, evidence_type, mime_type, byte_size, created_at
        FROM delivery_evidence_files
        WHERE order_id = $1 AND company_id = $2 AND superseded_at IS NULL AND deleted_at IS NULL
@@ -2383,6 +2420,10 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
     events: events.rows,
     incidents: incidents.rows,
     paymentEvents: paymentEvents.rows,
+    paymentAdjustments: paymentAdjustments.rows,
+    paymentAdjustedTotalMinor: Number(order.collected_amount_minor || 0) + paymentAdjustments.rows.reduce(
+      (total, adjustment) => total + (adjustment.direction === 'inflow' ? Number(adjustment.amount_minor) : -Number(adjustment.amount_minor)), 0
+    ),
     evidence: evidence.rows,
   });
 }));
@@ -2771,7 +2812,7 @@ async function loadIncidentDossier(companyId, incidentId) {
   );
   const incident = incidentResult.rows[0];
   if (!incident) return null;
-  const [events, holds, evidence, orderEvents, paymentEvents, proofs, relatedIncidents, members] = await Promise.all([
+  const [events, holds, evidence, orderEvents, paymentEvents, paymentAdjustments, proofs, relatedIncidents, members] = await Promise.all([
     pool.query(
       `SELECT e.id, e.incident_id, e.event_type, e.body, e.details, e.actor_user_id,
               e.previous_hash, e.event_hash, e.created_at,
@@ -2805,9 +2846,18 @@ async function loadIncidentDossier(companyId, incidentId) {
     ),
     pool.query(
       `SELECT p.id, p.event_type, p.amount_minor, p.currency, p.method, p.reference,
-              p.reason, p.actor_user_id, p.created_at, COALESCE(u.display_name, 'Système') AS actor_name
+               p.reason, p.actor_user_id, p.created_at, COALESCE(u.display_name, 'Système') AS actor_name
        FROM payment_events p LEFT JOIN users u ON u.id = p.actor_user_id
        WHERE p.order_id = $1 AND p.company_id = $2 ORDER BY p.created_at ASC, p.id ASC`,
+      [incident.order_id, companyId]
+    ),
+    pool.query(
+      `SELECT a.id, a.adjustment_type, a.direction, a.amount_minor, a.currency, a.method,
+              a.reference, a.reason, TO_CHAR(a.effective_date, 'YYYY-MM-DD') AS effective_date,
+              a.resulting_total_minor, a.reverses_adjustment_id, a.actor_user_id, a.created_at,
+              COALESCE(u.display_name, 'Système') AS actor_name
+       FROM payment_adjustments a LEFT JOIN users u ON u.id = a.actor_user_id
+       WHERE a.order_id = $1 AND a.company_id = $2 ORDER BY a.created_at ASC, a.id ASC`,
       [incident.order_id, companyId]
     ),
     pool.query(
@@ -2836,6 +2886,7 @@ async function loadIncidentDossier(companyId, incidentId) {
     evidence: evidence.rows,
     orderEvents: orderEvents.rows,
     paymentEvents: paymentEvents.rows,
+    paymentAdjustments: paymentAdjustments.rows,
     proofs: proofs.rows,
     relatedIncidents: relatedIncidents.rows,
     members: members.rows,
@@ -3058,6 +3109,7 @@ app.get('/api/app/incidents/:id/export', requireCompanyApi, requireCompanyRoles(
     retentionHolds: dossier.holds,
     orderStatusEvents: dossier.orderEvents,
     paymentEvents: dossier.paymentEvents,
+    paymentAdjustments: dossier.paymentAdjustments,
     deliveryProofs: dossier.proofs,
     deliveryEvidenceMetadata: dossier.evidence,
     relatedIncidents: dossier.relatedIncidents,
@@ -3389,6 +3441,180 @@ app.post('/api/app/orders/:id/payment/reverse', requireCompanyApi, requireCompan
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
     console.error('Payment reversal error:', error.message);
     return res.status(500).json({ error: 'Impossible d’annuler cet encaissement.' });
+  } finally {
+    client.release();
+  }
+}));
+
+async function paymentAdjustedTotal(client, paymentAccountId) {
+  const result = await client.query(
+    `SELECT COALESCE(pa.collected_amount_minor, 0)
+       + COALESCE(SUM(CASE WHEN a.direction = 'inflow' THEN a.amount_minor ELSE -a.amount_minor END), 0) AS total
+     FROM order_payment_accounts pa
+     LEFT JOIN payment_adjustments a ON a.payment_account_id = pa.id
+     WHERE pa.id = $1 GROUP BY pa.id`,
+    [paymentAccountId]
+  );
+  const total = Number(result.rows[0]?.total || 0);
+  if (!Number.isSafeInteger(total)) throw Object.assign(new Error('Le total financier dépasse la limite prise en charge.'), { statusCode: 409 });
+  return total;
+}
+
+function pilotLocalDate() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Porto-Novo', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+app.post('/api/app/orders/:id/payment/adjustments', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const adjustmentType = String(req.body.adjustmentType || '').trim();
+  const amount = moneyInteger(req.body.amountMinor);
+  const method = String(req.body.method || '').trim();
+  const reference = String(req.body.reference || '').trim().slice(0, 120);
+  const reason = String(req.body.reason || '').trim();
+  const effectiveDate = validDateOnly(req.body.effectiveDate);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (!paymentAdjustmentTypes.includes(adjustmentType) || amount === null || amount <= 0 || !paymentMethods.includes(method)) {
+    return res.status(400).json({ error: 'Type, montant ou mode de l’ajustement invalide.' });
+  }
+  if (reason.length < 10 || reason.length > 1000) return res.status(400).json({ error: 'Expliquez l’ajustement en 10 à 1 000 caractères.' });
+  if (!effectiveDate || effectiveDate > pilotLocalDate()) return res.status(400).json({ error: 'La date effective est invalide ou future.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(canonicalJson({ orderId: String(req.params.id), adjustmentType, amount, method, reference, reason, effectiveDate }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, status,
+              TO_CHAR((COALESCE(completed_at, cancelled_at, status_changed_at) AT TIME ZONE 'Africa/Porto-Novo')::date, 'YYYY-MM-DD') AS terminal_date
+       FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const repeated = await client.query(
+      `SELECT id, order_id, request_fingerprint, resulting_total_minor
+       FROM payment_adjustments WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (String(repeated.rows[0].order_id) !== String(order.id) || repeated.rows[0].request_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ id: repeated.rows[0].id, orderId: order.id, resultingTotalMinor: Number(repeated.rows[0].resulting_total_minor), alreadyApplied: true });
+    }
+    if (!terminalOrderStatuses.includes(order.status)) throw Object.assign(new Error('Un ajustement est réservé à une commande terminée.'), { statusCode: 409 });
+    if (effectiveDate < order.terminal_date) throw Object.assign(new Error('La date effective ne peut pas précéder la clôture de la commande.'), { statusCode: 400 });
+    const accountResult = await client.query('SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE', [order.id]);
+    const account = accountResult.rows[0];
+    if (!account || !['collected', 'reconciled'].includes(account.status) || account.collected_amount_minor === null) {
+      throw Object.assign(new Error('Aucun encaissement finalisé ne peut être ajusté.'), { statusCode: 409 });
+    }
+    const currentTotal = await paymentAdjustedTotal(client, account.id);
+    const direction = adjustmentType === 'refund' ? 'outflow' : 'inflow';
+    const resultingTotal = currentTotal + (direction === 'inflow' ? amount : -amount);
+    if (resultingTotal < 0) throw Object.assign(new Error('Le remboursement dépasse le total net encaissé.'), { statusCode: 409 });
+    if (!Number.isSafeInteger(resultingTotal) || resultingTotal > 1000000000000) {
+      throw Object.assign(new Error('Le total ajusté dépasse la limite prise en charge.'), { statusCode: 409 });
+    }
+    const inserted = await client.query(
+      `INSERT INTO payment_adjustments (
+         company_id, order_id, payment_account_id, adjustment_type, direction, amount_minor,
+         currency, method, reference, reason, effective_date, resulting_total_minor,
+         actor_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       RETURNING id, created_at`,
+      [req.auth.company_id, order.id, account.id, adjustmentType, direction, amount, account.currency,
+        method, reference || null, reason, effectiveDate, resultingTotal, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_adjustment_posted',
+         jsonb_build_object('adjustmentId', $4::bigint, 'type', $5::text, 'amountMinor', $6::bigint, 'resultingTotalMinor', $7::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, inserted.rows[0].id, adjustmentType, amount, resultingTotal]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ id: inserted.rows[0].id, orderId: order.id, resultingTotalMinor: resultingTotal, createdAt: inserted.rows[0].created_at });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Payment adjustment error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’enregistrer cet ajustement.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/payment/adjustments/:adjustmentId/reverse', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  const effectiveDate = validDateOnly(req.body.effectiveDate);
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  if (reason.length < 10 || reason.length > 1000) return res.status(400).json({ error: 'Expliquez la correction en 10 à 1 000 caractères.' });
+  if (!effectiveDate || effectiveDate > pilotLocalDate()) return res.status(400).json({ error: 'La date effective est invalide ou future.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  const fingerprint = digest(canonicalJson({ orderId: String(req.params.id), adjustmentId: String(req.params.adjustmentId), reason, effectiveDate }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query('SELECT id FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE', [req.params.id, req.auth.company_id]);
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    const repeated = await client.query(
+      `SELECT id, order_id, request_fingerprint, resulting_total_minor
+       FROM payment_adjustments WHERE company_id = $1 AND idempotency_key = $2`,
+      [req.auth.company_id, idempotencyKey]
+    );
+    if (repeated.rows[0]) {
+      if (String(repeated.rows[0].order_id) !== String(order.id) || repeated.rows[0].request_fingerprint !== fingerprint) {
+        throw Object.assign(new Error('Cette clé d’action a déjà été utilisée ailleurs.'), { statusCode: 409 });
+      }
+      await client.query('COMMIT');
+      return res.json({ id: repeated.rows[0].id, orderId: order.id, resultingTotalMinor: Number(repeated.rows[0].resulting_total_minor), alreadyApplied: true });
+    }
+    const accountResult = await client.query('SELECT * FROM order_payment_accounts WHERE order_id = $1 FOR UPDATE', [order.id]);
+    const account = accountResult.rows[0];
+    if (!account) throw Object.assign(new Error('Aucun encaissement associé.'), { statusCode: 409 });
+    const targetResult = await client.query(
+      `SELECT a.*, TO_CHAR(a.effective_date, 'YYYY-MM-DD') AS effective_date_text FROM payment_adjustments a
+       WHERE id = $1 AND order_id = $2 AND company_id = $3 FOR UPDATE`,
+      [req.params.adjustmentId, order.id, req.auth.company_id]
+    );
+    const target = targetResult.rows[0];
+    if (!target) throw Object.assign(new Error('Ajustement introuvable.'), { statusCode: 404 });
+    if (target.adjustment_type === 'reversal') throw Object.assign(new Error('Une écriture inverse ne peut pas être inversée à nouveau.'), { statusCode: 409 });
+    if (effectiveDate < target.effective_date_text) throw Object.assign(new Error('La correction ne peut pas précéder l’ajustement original.'), { statusCode: 400 });
+    const alreadyReversed = await client.query('SELECT id FROM payment_adjustments WHERE reverses_adjustment_id = $1', [target.id]);
+    if (alreadyReversed.rows[0]) throw Object.assign(new Error('Cet ajustement possède déjà une écriture inverse.'), { statusCode: 409 });
+    const currentTotal = await paymentAdjustedTotal(client, account.id);
+    const direction = target.direction === 'inflow' ? 'outflow' : 'inflow';
+    const amount = Number(target.amount_minor);
+    const resultingTotal = currentTotal + (direction === 'inflow' ? amount : -amount);
+    if (resultingTotal < 0) throw Object.assign(new Error('Cette correction rendrait le total net négatif.'), { statusCode: 409 });
+    const inserted = await client.query(
+      `INSERT INTO payment_adjustments (
+         company_id, order_id, payment_account_id, adjustment_type, direction, amount_minor,
+         currency, method, reference, reason, effective_date, resulting_total_minor,
+         reverses_adjustment_id, actor_user_id, idempotency_key, request_fingerprint
+       ) VALUES ($1, $2, $3, 'reversal', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       RETURNING id, created_at`,
+      [req.auth.company_id, order.id, account.id, direction, amount, target.currency, target.method,
+        target.reference, reason, effectiveDate, resultingTotal, target.id, req.auth.user_id, idempotencyKey, fingerprint]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'payment_adjustment_reversed',
+         jsonb_build_object('adjustmentId', $4::bigint, 'reversesAdjustmentId', $5::bigint, 'resultingTotalMinor', $6::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, inserted.rows[0].id, target.id, resultingTotal]
+    );
+    await client.query('COMMIT');
+    return res.status(201).json({ id: inserted.rows[0].id, orderId: order.id, resultingTotalMinor: resultingTotal, reversesAdjustmentId: target.id });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.code === '23505') return res.status(409).json({ error: 'Cet ajustement a déjà été corrigé.' });
+    console.error('Payment adjustment reversal error:', error.message);
+    return res.status(500).json({ error: 'Impossible de corriger cet ajustement.' });
   } finally {
     client.release();
   }

@@ -108,6 +108,10 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .timeline strong, .timeline small { display: block; margin-top: 6px; }
 .timeline small, .timeline-from { color: var(--muted); font-size: 12px; }
 .timeline p { margin: 7px 0 0; }
+.adjustment-panel { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+.adjustment-panel h3 { margin: 0; }
+.adjustment-timeline { margin-top: 20px; }
+.adjustment-timeline .reverse-adjustment { margin-top: 10px; }
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; z-index: 20; width: min(280px, 86vw); transform: translateX(-105%); transition: transform .2s ease; box-shadow: 12px 0 30px #071a2f55; }

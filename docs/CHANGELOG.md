@@ -2,6 +2,12 @@
 
 ## 2026-09-15
 
+- Ajout des remboursements et compléments reçus après clôture d'une commande.
+- Conservation immuable de l'encaissement original et correction des erreurs par écriture inverse liée.
+- Limitation des ajustements aux propriétaires et gestionnaires avec motif, date effective et clé d'idempotence.
+- Protection contre les remboursements excessifs et les écritures concurrentes.
+- Ajout du total net et du journal des ajustements dans la fiche commande et les dossiers d'incident exportés.
+- Ajout d'un test automatisé couvrant droits, dates, concurrence, isolation et répétition réseau.
 - Ajout d'une file locale IndexedDB limitée aux transitions et incidents du portail livreur.
 - Conservation de la même clé d'idempotence pendant la reprise pour empêcher les doubles événements.
 - Ajout d'un état visible hors ligne, du nombre d'actions en attente, d'une reprise automatique et d'un bouton manuel.

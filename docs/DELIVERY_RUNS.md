@@ -15,6 +15,18 @@ Une tournée regroupe plusieurs commandes déjà affectées au même livreur et 
 7. Traiter chaque commande avec sa propre machine d'états et ses propres preuves.
 8. Terminer la tournée lorsque toutes les commandes sont dans un état terminal.
 
+## Parcours livreur
+
+- seules les tournées `Planifiée` et `En cours` du livreur connecté sont visibles ;
+- une tournée active reste visible même si sa date est ancienne, afin de ne pas masquer une tournée non clôturée ;
+- les tournées planifiées en retard restent visibles jusqu'à traitement, ainsi que celles des quatorze prochains jours ;
+- les arrêts reprennent exactement l'ordre confirmé par l'exploitation ;
+- le premier colis non terminal est signalé comme prochain arrêt et la progression est recalculée à chaque lecture ;
+- les commandes affectées qui ne figurent dans aucune tournée visible restent dans une section « Hors tournée » ;
+- ouvrir une commande affiche son rang et sa tournée, sans bloquer un changement d'ordre nécessaire sur le terrain.
+
+Le portail n'affiche pas encore de durée ou d'heure d'arrivée calculée. L'ordre est une instruction opérationnelle, pas une preuve que la route est optimale. Le client final ne reçoit jamais ce manifeste ni les autres arrêts.
+
 ## États
 
 ```text
@@ -72,14 +84,20 @@ POST /api/app/runs/:id/stops/:stopId/remove
 POST /api/app/runs/:id/reorder
 GET  /api/app/runs/:id/suggestion
 POST /api/app/runs/:id/status
+GET  /api/driver/runs
 ```
 
-Toutes les lectures et écritures sont filtrées par `company_id`. Le portail livreur et le lien public ne reçoivent pas encore les autres arrêts d'une tournée.
+Toutes les lectures et écritures sont filtrées par `company_id`. L'API livreur filtre en plus par `driver_id`. Le lien public ne reçoit jamais les autres arrêts d'une tournée.
 
 ## Étapes suivantes
 
 - file d'actions terrain hors connexion et reprise idempotente ;
-- affichage au livreur de son ordre d'arrêts sans exposer les autres clients à un client final ;
 - moteur routier avec matrice route/temps, dépôt, capacité et créneaux structurés ;
 - carte entreprise : position réelle, arrêts restants et route planifiée visuellement distincts ;
 - recalcul et notification contrôlée après une modification de tournée active.
+
+## Références de conception
+
+- Google Routes : une optimisation renvoie un ordre explicite de waypoints et considère notamment temps, distance et virages : https://developers.google.com/maps/documentation/routes/opt-way
+- Mapbox Optimization : une solution de tournée distingue séquence, ETA, attente et durée de service, ainsi que les arrêts non servis : https://docs.mapbox.com/api/navigation/optimization/
+- MDN `aria-live` : les mises à jour dynamiques importantes doivent être annoncées sans déplacer le focus : https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-live

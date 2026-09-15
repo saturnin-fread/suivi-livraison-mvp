@@ -2,6 +2,11 @@
 
 ## 2026-09-15
 
+- Ajout du manifeste de tournée dans le portail livreur avec ordre confirmé, progression et prochain arrêt.
+- Séparation visible entre arrêts planifiés et commandes encore hors tournée.
+- Ajout du contexte de tournée et du rang dans chaque fiche de livraison du livreur.
+- Filtrage serveur simultané par entreprise et livreur ; aucune donnée de tournée ajoutée au lien client.
+- Ajout d'un test API et navigateur mobile couvrant ordre, progression, fiche d'arrêt et débordement horizontal.
 - Ajout des remboursements et compléments reçus après clôture d'une commande.
 - Conservation immuable de l'encaissement original et correction des erreurs par écriture inverse liée.
 - Limitation des ajustements aux propriétaires et gestionnaires avec motif, date effective et clé d'idempotence.

@@ -70,6 +70,15 @@ $env:NODE_PATH='C:\Users\Saturnin001\.cache\codex-runtimes\codex-primary-runtime
 node scripts/driver-offline-browser-test.js
 ```
 
+Le contrôle visuel mobile du manifeste de tournée utilise le même environnement :
+
+```powershell
+$env:RUN_BROWSER_TEST='1'
+$env:NODE_PATH='C:\Users\Saturnin001\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
+$env:CHROME_EXECUTABLE='C:\Program Files\Google\Chrome\Application\chrome.exe'
+npm run test:runs
+```
+
 Exécuter les scénarios fonctionnels l'un après l'autre. Ils créent des données temporaires identifiables dans la base `delivery` et les suppriment dans un bloc de nettoyage final.
 
 ## Restaurer la compréhension du système

@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const crypto = require('node:crypto');
 
 const nativeFetch = global.fetch;
 global.fetch = (url, options = {}) => nativeFetch(url, {
@@ -19,6 +20,32 @@ async function json(response) {
   return { response, payload };
 }
 
+async function verifyDriverRunBrowser({ driverCookie, runName, nextOrderId }) {
+  if (process.env.RUN_BROWSER_TEST !== '1') return;
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROME_EXECUTABLE || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  });
+  try {
+    const browserContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const separator = driverCookie.indexOf('=');
+    await browserContext.addCookies([{
+      name: driverCookie.slice(0, separator), value: driverCookie.slice(separator + 1), url: baseUrl,
+    }]);
+    const page = await browserContext.newPage();
+    await page.goto(`${baseUrl}/driver`, { waitUntil: 'domcontentloaded' });
+    await page.getByText(runName, { exact: true }).waitFor();
+    await page.getByText('Prochain arrêt prévu', { exact: true }).waitFor();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    ensure(overflow <= 1, `Le manifeste déborde horizontalement sur mobile (${overflow}px).`);
+    await page.goto(`${baseUrl}/driver/commandes/${nextOrderId}`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.run-context').getByText(runName, { exact: true }).waitFor();
+  } finally {
+    await browser.close();
+  }
+}
+
 async function run() {
   ensure(email && password && process.env.DATABASE_URL, 'ADMIN_USER, ADMIN_PASSWORD et DATABASE_URL sont requis.');
   const pool = new Pool({
@@ -30,6 +57,9 @@ async function run() {
   const orderIds = [];
   const runIds = [];
   let foreignCompanyId;
+  let driverInvitationId;
+  let driverUserId;
+  let driverCookie;
   try {
     const login = await fetch(`${baseUrl}/app/login`, {
       method: 'POST', redirect: 'manual',
@@ -100,6 +130,28 @@ async function run() {
     } finally {
       client.release();
     }
+
+    const driverEmail = `run-driver-${marker}@example.invalid`;
+    const driverPassword = `Run-${crypto.randomBytes(12).toString('hex')}-Aa1!`;
+    const invitation = await json(await fetch(`${baseUrl}/api/app/invitations`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        email: driverEmail, displayName: `Livreur tournée ${marker}`,
+        role: 'driver', driverId: driverIds[0],
+      }),
+    }));
+    ensure(invitation.response.status === 201 && invitation.payload.path, 'Invitation du livreur de tournée impossible.');
+    driverInvitationId = invitation.payload.id;
+    const invitationToken = invitation.payload.path.split('/').pop();
+    const accepted = await json(await fetch(`${baseUrl}/api/public/invitations/${encodeURIComponent(invitationToken)}/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: driverPassword, passwordConfirmation: driverPassword }),
+    }));
+    ensure(accepted.response.status === 201, 'Activation du compte livreur de tournée impossible.');
+    driverCookie = accepted.response.headers.get('set-cookie')?.split(';')[0];
+    const driverUser = await pool.query('SELECT id FROM users WHERE email = $1', [driverEmail]);
+    driverUserId = driverUser.rows[0]?.id;
+    ensure(driverCookie && driverUserId, 'Session ou utilisateur livreur de tournée absent.');
 
     const serviceDate = new Date().toISOString().slice(0, 10);
     const createKey = `run-smoke-create:${marker}`;
@@ -253,6 +305,25 @@ async function run() {
       body: JSON.stringify({ stopIds: plannedOrder, expectedVersion: detail.version, idempotencyKey: `run-smoke-planned-reorder:${marker}` }),
     }));
     ensure(plannedReorder.response.ok, 'La correction d’ordre avant départ doit rester possible.');
+    const driverManifest = await json(await fetch(`${baseUrl}/api/driver/runs`, { headers: { Cookie: driverCookie } }));
+    ensure(driverManifest.response.ok, 'Le manifeste de tournée du livreur est indisponible.');
+    const visibleRun = driverManifest.payload.find((run) => String(run.id) === String(created.payload.id));
+    ensure(visibleRun && visibleRun.status === 'planned' && visibleRun.totalStops === 4,
+      'La tournée planifiée ou sa progression est absente du portail livreur.');
+    ensure(visibleRun.stops.map((stop) => String(stop.id)).join(',') === plannedOrder.map(String).join(','),
+      'Le portail livreur ne respecte pas l’ordre confirmé par l’exploitation.');
+    ensure(String(visibleRun.nextOrderId) === String(visibleRun.stops[0].order_id),
+      'Le premier arrêt actif n’est pas identifié comme prochain arrêt.');
+    const driverOrders = await json(await fetch(`${baseUrl}/api/driver/orders`, { headers: { Cookie: driverCookie } }));
+    ensure(driverOrders.response.ok && driverOrders.payload.some((order) => String(order.run_id) === String(created.payload.id)),
+      'La liste des livraisons ne restitue pas le contexte de tournée.');
+    const nextOrderDetail = await json(await fetch(`${baseUrl}/api/driver/orders/${visibleRun.nextOrderId}`, { headers: { Cookie: driverCookie } }));
+    ensure(nextOrderDetail.response.ok && String(nextOrderDetail.payload.run?.id) === String(created.payload.id)
+      && String(nextOrderDetail.payload.run?.next_order_id) === String(visibleRun.nextOrderId),
+    'La fiche du prochain arrêt ne restitue pas son rang dans la tournée.');
+    await verifyDriverRunBrowser({
+      driverCookie, runName: `Tournée automatique ${marker}`, nextOrderId: visibleRun.nextOrderId,
+    });
     const active = await json(await fetch(`${baseUrl}/api/app/runs/${created.payload.id}/status`, {
       method: 'POST', headers,
       body: JSON.stringify({ toStatus: 'active', expectedVersion: plannedReorder.payload.version, idempotencyKey: `run-smoke-start:${marker}` }),
@@ -263,6 +334,11 @@ async function run() {
       body: JSON.stringify({ toStatus: 'completed', expectedVersion: active.payload.version, idempotencyKey: `run-smoke-premature:${marker}` }),
     });
     ensure(prematureCompletion.status === 409, 'La clôture avant traitement de tous les colis doit être refusée.');
+    await pool.query(`UPDATE orders SET status = 'Livrée', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, [visibleRun.nextOrderId]);
+    const progressedManifest = await json(await fetch(`${baseUrl}/api/driver/runs`, { headers: { Cookie: driverCookie } }));
+    const progressedRun = progressedManifest.payload.find((run) => String(run.id) === String(created.payload.id));
+    ensure(progressedRun?.completedStops === 1 && String(progressedRun.nextOrderId) !== String(visibleRun.nextOrderId),
+      'La progression ou le prochain arrêt ne se recalcule pas après une livraison terminée.');
     await pool.query(`UPDATE orders SET status = 'Livrée', completed_at = NOW(), updated_at = NOW() WHERE id = ANY($1::bigint[])`, [orderIds.slice(0, 4)]);
     const completed = await json(await fetch(`${baseUrl}/api/app/runs/${created.payload.id}/status`, {
       method: 'POST', headers,
@@ -295,6 +371,12 @@ async function run() {
         await client.query('DELETE FROM delivery_runs WHERE id = ANY($1::bigint[])', [cleanupRunIds]);
       }
       if (orderIds.length) await client.query('DELETE FROM orders WHERE id = ANY($1::bigint[])', [orderIds]);
+      if (driverInvitationId) await client.query("DELETE FROM audit_logs WHERE entity_type = 'user_invitation' AND entity_id = $1", [driverInvitationId]);
+      if (driverUserId) {
+        await client.query('DELETE FROM app_sessions WHERE user_id = $1', [driverUserId]);
+        await client.query('DELETE FROM users WHERE id = $1', [driverUserId]);
+      }
+      if (driverInvitationId) await client.query('DELETE FROM user_invitations WHERE id = $1', [driverInvitationId]);
       if (driverIds.length) await client.query('DELETE FROM drivers WHERE id = ANY($1::bigint[])', [driverIds]);
       if (foreignCompanyId) {
         await client.query('DELETE FROM drivers WHERE company_id = $1', [foreignCompanyId]);

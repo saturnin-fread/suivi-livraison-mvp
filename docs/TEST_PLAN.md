@@ -136,6 +136,12 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - refuser la clôture avant que tous les colis soient terminaux ;
 - vérifier que chaque client ne voit toujours que sa commande ;
 - contrôler l'affichage de la date sur plusieurs fuseaux horaires.
+- activer un compte livreur lié et vérifier qu'il ne voit que ses tournées planifiées ou actives ;
+- vérifier que l'ordre du manifeste correspond exactement à l'ordre confirmé au bureau ;
+- terminer le premier arrêt et vérifier le déplacement du prochain arrêt et la progression ;
+- vérifier que les commandes non planifiées restent dans « Hors tournée » sans doublon ;
+- ouvrir la fiche d'un arrêt et vérifier son rang et son contexte de tournée ;
+- contrôler le manifeste sur un écran mobile de 390 px sans débordement horizontal.
 
 ## Test H2 — coupure réseau du livreur
 

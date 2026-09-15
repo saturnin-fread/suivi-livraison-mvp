@@ -102,6 +102,11 @@
 | Permission de localisation client refusée | Ne pas redemander en boucle et expliquer comment l'activer |
 | Livraison terminée | Cesser d'exposer la position précise du livreur |
 | Plusieurs clients dans la tournée | Ne jamais envoyer les autres arrêts dans l'API publique |
+| Tournée active datée d'hier | Continuer à l'afficher au livreur jusqu'à clôture ou annulation |
+| Commande affectée sans tournée | La conserver dans « Hors tournée » plutôt que la masquer |
+| Arrêt précédent non terminé | Signaler l'écart d'ordre sans bloquer une adaptation terrain nécessaire |
+| Tournée réordonnée avant départ | Restituer le nouvel ordre au prochain chargement et ne pas conserver une copie locale comme vérité |
+| Aucun moteur routier configuré | Afficher un ordre d'arrêts sans inventer durée, ETA ou route optimale |
 
 ## Système
 

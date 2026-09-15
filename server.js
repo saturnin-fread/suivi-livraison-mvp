@@ -1318,18 +1318,73 @@ app.get('/api/driver/context', requireDriverApi, asyncRoute(async (req, res) => 
   });
 }));
 
+app.get('/api/driver/runs', requireDriverApi, asyncRoute(async (req, res) => {
+  const runsResult = await pool.query(
+    `SELECT r.id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date,
+            r.status, r.version, r.started_at, r.updated_at
+     FROM delivery_runs r
+     WHERE r.company_id = $1 AND r.driver_id = $2
+       AND (r.status = 'active' OR (r.status = 'planned' AND r.service_date <= CURRENT_DATE + 14))
+     ORDER BY CASE r.status WHEN 'active' THEN 0 ELSE 1 END, r.service_date ASC, r.id ASC
+     LIMIT 30`,
+    [req.auth.company_id, req.auth.driver_id]
+  );
+  const runIds = runsResult.rows.map((run) => run.id);
+  if (!runIds.length) return res.json([]);
+  const stopsResult = await pool.query(
+    `SELECT s.id, s.run_id, s.order_id, s.sequence,
+            o.status AS order_status, o.customer_name, o.requested_time,
+            o.neighborhood, o.landmark, o.delivery_address,
+            o.destination_lat, o.destination_lng
+     FROM delivery_stops s
+     JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = s.company_id
+     JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
+     WHERE s.run_id = ANY($1::bigint[]) AND s.company_id = $2
+       AND s.removed_at IS NULL AND s.assignment_active = TRUE
+       AND r.driver_id = $3 AND o.driver_id = $3
+     ORDER BY s.run_id ASC, s.sequence ASC, s.id ASC`,
+    [runIds, req.auth.company_id, req.auth.driver_id]
+  );
+  const stopsByRun = new Map();
+  for (const stop of stopsResult.rows) {
+    const key = String(stop.run_id);
+    if (!stopsByRun.has(key)) stopsByRun.set(key, []);
+    stopsByRun.get(key).push(stop);
+  }
+  return res.json(runsResult.rows.map((run) => {
+    const stops = stopsByRun.get(String(run.id)) || [];
+    const completedStops = stops.filter((stop) => terminalOrderStatuses.includes(stop.order_status)).length;
+    const nextStop = stops.find((stop) => !terminalOrderStatuses.includes(stop.order_status));
+    return {
+      ...run,
+      stops,
+      completedStops,
+      totalStops: stops.length,
+      nextStopId: nextStop?.id || null,
+      nextOrderId: nextStop?.order_id || null,
+    };
+  }));
+}));
+
 app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
   const history = req.query.scope === 'history';
   const result = await pool.query(
     `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.delivery_address,
             o.requested_time, o.neighborhood, o.landmark, o.destination_lat, o.destination_lng,
             o.created_at, o.updated_at, pa.expected_amount_minor, pa.currency AS payment_currency,
-            pa.status AS payment_status
+            pa.status AS payment_status,
+            s.sequence AS stop_sequence, r.id AS run_id, r.name AS run_name,
+            TO_CHAR(r.service_date, 'YYYY-MM-DD') AS run_service_date, r.status AS run_status
      FROM orders o
      LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
+     LEFT JOIN delivery_stops s ON s.order_id = o.id AND s.company_id = o.company_id
+       AND s.assignment_active = TRUE AND s.removed_at IS NULL
+     LEFT JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = o.company_id
+       AND r.driver_id = o.driver_id AND r.status IN ('planned', 'active')
      WHERE o.company_id = $1 AND o.driver_id = $2
        AND ${history ? 'o.status = ANY($3::text[])' : 'NOT (o.status = ANY($3::text[]))'}
-     ORDER BY o.updated_at DESC, o.id DESC LIMIT 100`,
+     ORDER BY CASE r.status WHEN 'active' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END,
+              r.service_date ASC NULLS LAST, s.sequence ASC NULLS LAST, o.updated_at DESC, o.id DESC LIMIT 100`,
     [req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
   );
   return res.json(result.rows);
@@ -1355,7 +1410,7 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
   );
   const order = result.rows[0];
   if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
-  const [incidents, evidence] = await Promise.all([
+  const [incidents, evidence, runContext] = await Promise.all([
     pool.query(
       `SELECT id, category, severity, description, status, resolution, created_at, resolved_at
        FROM delivery_incidents WHERE order_id = $1 AND company_id = $2
@@ -1369,6 +1424,25 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
        ORDER BY created_at ASC`,
       [order.id, req.auth.company_id]
     ),
+    pool.query(
+      `SELECT r.id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date,
+              r.status, s.id AS stop_id, s.sequence,
+              (SELECT COUNT(*)::int FROM delivery_stops total
+               WHERE total.run_id = r.id AND total.removed_at IS NULL) AS total_stops,
+              (SELECT next_stop.order_id FROM delivery_stops next_stop
+               JOIN orders next_order ON next_order.id = next_stop.order_id
+               WHERE next_stop.run_id = r.id AND next_stop.removed_at IS NULL
+                 AND next_stop.assignment_active = TRUE
+                 AND NOT (next_order.status = ANY($4::text[]))
+               ORDER BY next_stop.sequence ASC, next_stop.id ASC LIMIT 1) AS next_order_id
+       FROM delivery_stops s
+       JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = s.company_id
+       WHERE s.order_id = $1 AND s.company_id = $2 AND r.driver_id = $3
+         AND s.removed_at IS NULL AND s.assignment_active = TRUE
+         AND r.status IN ('planned', 'active')
+       LIMIT 1`,
+      [order.id, req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
+    ),
   ]);
   return res.json({
     ...order,
@@ -1376,6 +1450,7 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
     isTerminal: terminalOrderStatuses.includes(order.status),
     incidents: incidents.rows,
     evidence: evidence.rows,
+    run: runContext.rows[0] || null,
   });
 }));
 

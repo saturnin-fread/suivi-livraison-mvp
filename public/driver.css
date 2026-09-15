@@ -18,6 +18,24 @@
 .driver-title { margin-bottom: 16px; }
 .driver-title h1 { font-size: 26px; }
 .delivery-list { display: grid; gap: 13px; }
+.run-manifests { display: grid; gap: 16px; margin-bottom: 22px; }
+.run-manifest { padding: 18px; }
+.run-manifest-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.run-manifest h2, .driver-subtitle h2, .run-context h2 { margin: 3px 0 0; font-size: 19px; }
+.eyebrow { color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+.run-progress { height: 8px; margin: 15px 0 8px; overflow: hidden; border-radius: 999px; background: #dce6f0; }
+.run-progress span { display: block; height: 100%; border-radius: inherit; background: #16875d; }
+.run-stop-list { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
+.run-stop a { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 11px; color: inherit; background: #fff; text-decoration: none; }
+.run-stop.next a, .run-context.next { border-color: #e1a51a; background: #fff9e8; box-shadow: 0 0 0 2px #f7d98755; }
+.stop-number { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%; color: #fff; background: var(--navy); font-weight: 850; }
+.stop-copy { min-width: 0; flex: 1; }
+.stop-copy strong, .stop-copy small, .stop-copy em { display: block; overflow-wrap: anywhere; }
+.stop-copy small { margin-top: 3px; color: var(--muted); }
+.stop-copy em { margin-top: 4px; color: #8a5900; font-size: 12px; font-style: normal; font-weight: 800; }
+.driver-subtitle { margin: 24px 0 12px; }
+.run-context { margin-bottom: 14px; }
+.run-context p { margin-bottom: 0; }
 .delivery-card { display: block; padding: 17px; border: 1px solid var(--line); border-radius: 14px; color: inherit; background: #fff; text-decoration: none; box-shadow: 0 5px 16px #183a6210; }
 .delivery-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .delivery-card h2 { margin: 0; font-size: 18px; }

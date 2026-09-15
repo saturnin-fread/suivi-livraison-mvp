@@ -86,7 +86,7 @@ Transformer une demande validée en commande et sélectionner réellement un liv
 - une affectation concurrente ou obsolète est détectée ;
 - l'échec d'une étape ne laisse pas une commande partiellement créée.
 
-## Phase 4 — Exécution et preuve de livraison — lots 1 à 9 livrés
+## Phase 4 — Exécution et preuve de livraison — lots 1 à 10 livrés
 
 ### Objectif
 
@@ -249,11 +249,13 @@ Le portail livreur supporte désormais les coupures courtes : transitions et inc
 
 Les corrections financières postérieures à la clôture sont désormais immuables : remboursement, complément et écriture inverse sont datés, motivés, idempotents, limités aux responsables et intégrés au dossier de litige. Le journal reste opérationnel et ne remplace pas la comptabilité SYSCOHADA.
 
+Le portail livreur restitue désormais les tournées planifiées ou en cours, l'ordre confirmé des arrêts, le prochain arrêt et la progression. Les commandes hors tournée restent visibles séparément et le lien client ne reçoit aucun autre arrêt.
+
 Le prochain lot poursuit la phase 4 dans cet ordre :
 
-1. relier l'ordre de tournée au portail livreur ;
-2. préparer la carte d'exploitation routière et les estimations explicables ;
-3. renforcer les conflits de capacité pendant une tournée active.
+1. préparer la carte d'exploitation routière et les estimations explicables ;
+2. renforcer les conflits de capacité pendant une tournée active ;
+3. structurer les créneaux et temps de service avant toute optimisation automatique.
 
 ## Règles transversales
 

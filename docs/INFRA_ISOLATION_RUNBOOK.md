@@ -10,6 +10,22 @@ devient indépendant (rayon d'impact, sauvegardes, rétention et rôles séparé
 > bascule : elle reste le filet de sécurité tant que la nouvelle n'est pas
 > confirmée.
 
+## Statut
+
+- **Postgres : bascule effectuée le 2026-09-15.** `delivery-app` tourne sur le
+  Postgres dédié (`Postgres-L9xy`), base `delivery`, via `DATABASE_URL` composé
+  par variables de référence :
+  `postgresql://${{Postgres-L9xy.PGUSER}}:${{Postgres-L9xy.PGPASSWORD}}@${{Postgres-L9xy.RAILWAY_PRIVATE_DOMAIN}}:5432/delivery`.
+  Volumétries source/cible identiques (companies 6, orders 2, drivers 6,
+  customer_requests 7, users 1, tracking_links 2, delivery_runs 1,
+  payment_events 14). Connexion `/app` et données confirmées côté navigateur.
+  Ancienne valeur, pour rollback :
+  `postgresql://postgres:<ancien-mdp>@postgres.railway.internal:5432/delivery`.
+- **Reste à faire :** retirer le proxy TCP temporaire du nouveau Postgres ;
+  purger, après vérification qu'aucun workflow n8n ne les lit, les tables
+  livraison orphelines présentes dans la base `railway` de n8n ; brancher le
+  Redis dédié quand on passera à plusieurs répliques.
+
 ## Décision
 
 - 2026-09-15 — Isolation des services de données du projet livraison.

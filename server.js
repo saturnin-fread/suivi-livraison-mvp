@@ -22,6 +22,18 @@ const {
 } = require('./lib/rate-limit');
 const { createRedisTokenBucket } = require('./lib/redis-rate-limit');
 const {
+  createExportContract,
+  ExportContractError,
+  DATASETS: EXPORT_DATASETS,
+  OPERATIONAL_LIMITS: EXPORT_LIMITS,
+} = require('./lib/crm-export-contract');
+const { buildWorkbook: buildExportWorkbook } = require('./lib/crm-xlsx');
+const {
+  buildOperationsExportQuery,
+  normalizeExportRow,
+  OPERATIONS_NUMERIC_COLUMNS,
+} = require('./lib/crm-operations-export');
+const {
   TrackingLinkPolicyError,
   createTrackingLinkExpiration,
   evaluateTrackingLink,
@@ -1040,6 +1052,29 @@ async function initDatabase() {
         details JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS export_logs (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        dataset TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL,
+        purpose TEXT,
+        period_from DATE,
+        period_to DATE,
+        columns JSONB,
+        filters JSONB,
+        row_count INTEGER,
+        worksheet_count INTEGER,
+        artifact_bytes INTEGER,
+        artifact_sha256 TEXT,
+        request_fingerprint_sha256 TEXT,
+        failure_code TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS export_logs_company_created_idx
+        ON export_logs(company_id, created_at DESC);
 
       CREATE INDEX IF NOT EXISTS customer_requests_company_created_idx
         ON customer_requests(company_id, created_at DESC);
@@ -2307,6 +2342,142 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
   });
   if (!result) return res.status(404).json({ error: 'Client introuvable.' });
   return res.json(result);
+}));
+
+// --- CRM secure export (XLSX) ------------------------------------------------
+// Read-only. The export contract (lib/crm-export-contract.js) validates the
+// request, enforces role/period/column rules and formula neutralization; the
+// generator (lib/crm-xlsx.js) writes the workbook. Only the `operations`
+// dataset is wired for now; other datasets are validated by the contract but
+// their queries are not implemented yet.
+
+
+async function recordExportLog(auth, contract, status, outcome = {}) {
+  if (!pool) return;
+  try {
+    await pool.query(
+      `INSERT INTO export_logs
+         (company_id, actor_user_id, dataset, role, status, purpose, period_from, period_to,
+          columns, filters, row_count, worksheet_count, artifact_bytes, artifact_sha256,
+          request_fingerprint_sha256, failure_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [
+        auth?.company_id || null,
+        auth?.user_id || null,
+        contract?.dataset || outcome.dataset || 'unknown',
+        contract?.role || auth?.role || 'unknown',
+        status,
+        contract?.purpose || null,
+        contract?.period?.from || null,
+        contract?.period?.to || null,
+        contract ? JSON.stringify(contract.columns) : null,
+        contract ? JSON.stringify(contract.filters) : null,
+        Number.isInteger(outcome.rowCount) ? outcome.rowCount : null,
+        Number.isInteger(outcome.worksheetCount) ? outcome.worksheetCount : null,
+        Number.isInteger(outcome.artifactBytes) ? outcome.artifactBytes : null,
+        outcome.artifactSha256 || null,
+        contract?.requestFingerprintSha256 || null,
+        outcome.failureCode || null,
+      ]
+    );
+  } catch (error) {
+    // An export audit failure must not break the response, but should be visible.
+    console.warn('Échec d’écriture du journal d’export :', error.message);
+  }
+}
+
+app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) => {
+  const auth = req.auth;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+  let contract;
+  try {
+    contract = createExportContract({
+      companyId: String(auth.company_id),
+      actorId: String(auth.user_id),
+      role: String(auth.role || ''),
+      dataset: body.dataset,
+      purpose: body.purpose,
+      requestedAt: new Date().toISOString(),
+      period: body.period,
+      filters: body.filters,
+      sensitiveColumns: body.sensitiveColumns,
+    });
+  } catch (error) {
+    if (error instanceof ExportContractError) {
+      await recordExportLog(auth, null, 'failed', { dataset: body.dataset, failureCode: error.code });
+      return res.status(422).json({ error: error.message, code: error.code, details: error.details });
+    }
+    throw error;
+  }
+
+  if (contract.dataset !== 'operations') {
+    await recordExportLog(auth, contract, 'failed', { failureCode: 'DATASET_NOT_WIRED' });
+    return res.status(400).json({
+      error: `L’export du jeu de données « ${contract.dataset} » n’est pas encore disponible. Seul « operations » l’est pour l’instant.`,
+      code: 'DATASET_NOT_WIRED',
+    });
+  }
+
+  let rows;
+  try {
+    rows = await withCompanyTransaction(pool, auth.company_id, async (client) => {
+      const query = buildOperationsExportQuery(contract, auth.company_id);
+      const result = await client.query(query.text, query.values);
+      return result.rows;
+    });
+  } catch (error) {
+    await recordExportLog(auth, contract, 'failed', { failureCode: 'QUERY_FAILED' });
+    throw error;
+  }
+
+  if (rows.length > EXPORT_LIMITS.maxDataRowsPerWorkbook) {
+    await recordExportLog(auth, contract, 'failed', { failureCode: 'EXPORT_TOO_LARGE' });
+    return res.status(413).json({
+      error: 'Export trop volumineux : réduisez la période ou les filtres. Aucun tronquage n’est appliqué.',
+      code: 'EXPORT_TOO_LARGE',
+    });
+  }
+
+  const normalizedRows = rows.map((row) => normalizeExportRow(row, OPERATIONS_NUMERIC_COLUMNS));
+
+  let workbook;
+  try {
+    workbook = buildExportWorkbook(contract, normalizedRows);
+  } catch (error) {
+    if (error instanceof ExportContractError) {
+      await recordExportLog(auth, contract, 'failed', { failureCode: error.code });
+      return res.status(422).json({ error: error.message, code: error.code, details: error.details });
+    }
+    throw error;
+  }
+
+  const sensitiveIncluded = contract.columns.some((column) => (
+    EXPORT_DATASETS[contract.dataset].sensitiveColumns.includes(column)
+  ));
+  await recordExportLog(auth, contract, 'downloaded', {
+    rowCount: workbook.totalRows,
+    worksheetCount: workbook.worksheetCount,
+    artifactBytes: workbook.artifactBytes,
+    artifactSha256: workbook.artifactSha256,
+  });
+  await writeAudit(auth, 'export', null, 'crm_export_downloaded', {
+    dataset: contract.dataset,
+    role: contract.role,
+    purpose: contract.purpose,
+    period: contract.period,
+    rowCount: workbook.totalRows,
+    sensitiveIncluded,
+    artifactSha256: workbook.artifactSha256,
+    requestFingerprint: contract.requestFingerprintSha256,
+  });
+
+  const filename = `export-${contract.dataset}-${contract.period.from}_${contract.period.to}.xlsx`;
+  res.set('Content-Type', workbook.contentType);
+  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  res.set('Cache-Control', 'private, no-store');
+  res.set('X-Content-Type-Options', 'nosniff');
+  return res.send(workbook.buffer);
 }));
 
 app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) => {

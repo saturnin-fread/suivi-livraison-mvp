@@ -205,7 +205,7 @@ async function renderRequestDetail(id) {
       <div class="detail"><span>Précision</span><strong>${request.location_accuracy == null ? '—' : `${Math.round(request.location_accuracy)} m`}</strong></div>
       <div class="detail" style="grid-column:1/-1"><span>Instructions</span><strong>${escapeHtml(request.notes || 'Aucune')}</strong></div>
     </div></section>
-    ${request.order_id ? `<section class="card" style="margin-top:18px"><h2>Commande créée</h2><div class="detail-grid"><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(request.order_id)}</strong></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(request.driver_name)}</strong></div><div class="detail"><span>Statut</span><strong>${escapeHtml(request.order_status)}</strong></div></div><div class="actions" style="margin-top:18px"><a class="button primary" target="_blank" rel="noopener" href="/suivi/${escapeHtml(request.tracking_token)}">Ouvrir le suivi</a><a class="button secondary" href="/app/commandes">Voir les commandes</a></div></section>` : ''}
+    ${request.order_id ? `<section class="card" style="margin-top:18px"><h2>Commande créée</h2><div class="detail-grid"><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(request.order_id)}</strong></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(request.driver_name)}</strong></div><div class="detail"><span>Statut</span><strong>${escapeHtml(request.order_status)}</strong></div></div><div class="actions" style="margin-top:18px">${request.trackingLink?.path ? `<a class="button primary" target="_blank" rel="noopener" href="${escapeHtml(request.trackingLink.path)}">Ouvrir le suivi</a>` : ''}<a class="button secondary" href="/app/commandes">Voir les commandes</a></div></section>` : ''}
     ${convertible ? `<section class="card" style="margin-top:18px"><h2>Valider et affecter</h2><p class="subtitle">La création de la commande verrouillera les modifications du client.</p><div class="field" style="margin-top:16px"><label>Livreur</label><select id="conversionDriver"><option value="">Sélectionner un livreur</option>${drivers.map((driver) => {
       const unavailable = ['inactive', 'off_duty', 'incident'].includes(driver.operationalState);
       const state = driverStateLabels[driver.operationalState] || driver.operationalState;
@@ -284,7 +284,7 @@ async function renderNewOrder() {
 async function renderOrders() {
   setHeader('Commandes', 'Commandes confirmées et liens de suivi');
   const orders = await api('/api/app/orders');
-  page.innerHTML = `<div class="page-header"><div><h1>Commandes</h1><p class="subtitle">Ouvrez une commande pour exécuter la livraison, déclarer un incident ou confirmer la remise.</p></div><a class="button primary" href="/app/nouvelle-commande">Nouvelle commande</a></div><section class="card">${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th></tr></thead><tbody>${orders.map((order) => `<tr data-href="/app/commandes/${escapeHtml(order.id)}"><td>N° ${escapeHtml(order.id)}<br><small>${escapeHtml(formatDate(order.created_at))}</small></td><td><strong>${escapeHtml(order.customer_name || '—')}</strong><br><small>${escapeHtml(order.customer_phone || '')}</small></td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name)}</td><td>${badge(order.status)}</td><td>${order.tracking_token ? `<a href="/suivi/${escapeHtml(order.tracking_token)}" target="_blank" rel="noopener">Ouvrir</a>` : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune commande pour le moment.</div>'}</section>`;
+  page.innerHTML = `<div class="page-header"><div><h1>Commandes</h1><p class="subtitle">Ouvrez une commande pour exécuter la livraison, déclarer un incident ou confirmer la remise.</p></div><a class="button primary" href="/app/nouvelle-commande">Nouvelle commande</a></div><section class="card">${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th></tr></thead><tbody>${orders.map((order) => `<tr data-href="/app/commandes/${escapeHtml(order.id)}"><td>N° ${escapeHtml(order.id)}<br><small>${escapeHtml(formatDate(order.created_at))}</small></td><td><strong>${escapeHtml(order.customer_name || '—')}</strong><br><small>${escapeHtml(order.customer_phone || '')}</small></td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name)}</td><td>${badge(order.status)}</td><td>${order.trackingLink?.path ? `<a href="${escapeHtml(order.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir</a>` : escapeHtml(order.trackingLink?.state === 'revoked' ? 'Révoqué' : '—')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune commande pour le moment.</div>'}</section>`;
   document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', (event) => {
     if (event.target.closest('a, button, input, select')) return;
     location.href = row.dataset.href;
@@ -472,6 +472,11 @@ async function renderOrderDetail(id) {
     order.photo_proof_mode === 'required' && !evidenceByType.photo ? 'photo' : null,
     order.signature_proof_mode === 'required' && !evidenceByType.signature ? 'signature' : null,
   ].filter(Boolean);
+  const trackingLink = order.trackingLink || { state: 'unavailable', path: null };
+  const trackingStateLabels = {
+    active: 'Actif', terminal: 'Livraison terminée', revoked: 'Révoqué', expired: 'Expiré', unavailable: 'Indisponible',
+  };
+  const trackingLinkUsable = ['active', 'terminal'].includes(trackingLink.state);
   page.innerHTML = `
     <div class="page-header"><div><a href="/app/commandes">← Retour aux commandes</a><h1 style="margin-top:12px">Commande n° ${escapeHtml(order.id)}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
     <section class="card"><h2>Livraison</h2><div class="detail-grid">
@@ -480,7 +485,9 @@ async function renderOrderDetail(id) {
       <div class="detail"><span>Créneau</span><strong>${escapeHtml(order.requested_time || '—')}</strong></div>
       <div class="detail"><span>Livreur</span><strong>${escapeHtml(order.driver_name)} · ${escapeHtml(order.driver_vehicle_type || '')}</strong></div>
       <div class="detail" style="grid-column:span 2"><span>Destination et instructions</span><strong>${escapeHtml(destination)}</strong></div>
-    </div><div class="actions" style="margin-top:18px">${order.tracking_token ? `<a class="button secondary" href="/suivi/${escapeHtml(order.tracking_token)}" target="_blank" rel="noopener">Ouvrir le suivi client</a>` : ''}</div></section>
+    </div></section>
+
+    <section class="card" style="margin-top:18px"><h2>Lien de suivi client</h2><p class="subtitle">Ce lien donne accès uniquement au colis concerné. Il n’est révélé qu’à votre demande et chaque affichage est enregistré.</p><div class="detail-grid"><div class="detail"><span>État du lien</span><strong>${escapeHtml(trackingStateLabels[trackingLink.state] || trackingLink.state)}</strong></div><div class="detail"><span>Expiration</span><strong>${escapeHtml(formatDate(trackingLink.expiresAt))}</strong></div></div><div class="actions" style="margin-top:18px">${trackingLinkUsable ? '<button class="secondary" type="button" id="revealTrackingLink">Afficher et copier</button>' : ''}${!order.isTerminal ? `<label class="field" style="max-width:190px"><span>Nouvelle durée</span><select id="trackingTtl"><option value="1">1 jour</option><option value="3">3 jours</option><option value="7" selected>7 jours</option><option value="14">14 jours</option><option value="30">30 jours</option></select></label><button class="primary" type="button" id="rotateTrackingLink">${trackingLinkUsable ? 'Renouveler le lien' : 'Créer un nouveau lien'}</button>` : ''}${trackingLinkUsable ? '<button class="danger" type="button" id="revokeTrackingLink">Révoquer</button>' : ''}</div><div id="trackingLinkResult"></div></section>
 
     ${renderPaymentSection(order)}
 
@@ -495,6 +502,59 @@ async function renderOrderDetail(id) {
     </section>
 
     <section class="card" style="margin-top:18px"><h2>Chronologie</h2><ol class="timeline">${order.events.map((event) => `<li><div>${badge(event.to_status)}${event.from_status ? `<span class="timeline-from"> depuis ${escapeHtml(event.from_status)}</span>` : ''}</div><strong>${escapeHtml(event.actor_name)}</strong><small>${escapeHtml(formatDate(event.created_at))}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
+
+  const revealTrackingLink = document.getElementById('revealTrackingLink');
+  if (revealTrackingLink) revealTrackingLink.addEventListener('click', async () => {
+    revealTrackingLink.disabled = true;
+    try {
+      const result = await api(`/api/app/orders/${encodeURIComponent(id)}/tracking-link/reveal`, { method: 'POST' });
+      const fullUrl = new URL(result.trackingLink.path, location.origin).href;
+      try { await navigator.clipboard.writeText(fullUrl); } catch (_error) { /* Le lien reste affiché ci-dessous. */ }
+      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice success">Lien prêt${navigator.clipboard ? ' et copie demandée' : ''} : <a href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">ouvrir le suivi client</a>.</div>`;
+    } catch (error) {
+      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    } finally {
+      revealTrackingLink.disabled = false;
+    }
+  });
+
+  const rotateTrackingLink = document.getElementById('rotateTrackingLink');
+  if (rotateTrackingLink) rotateTrackingLink.addEventListener('click', async () => {
+    const expiresInDays = Number(document.getElementById('trackingTtl').value);
+    if (!confirm('Créer un nouveau lien ? L’ancien lien cessera immédiatement de fonctionner.')) return;
+    rotateTrackingLink.disabled = true;
+    try {
+      await api(`/api/app/orders/${encodeURIComponent(id)}/tracking-link/rotate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresInDays, expectedVersion: trackingLink.version, idempotencyKey: actionKey('tracking-link-rotate') }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      rotateTrackingLink.disabled = false;
+    }
+  });
+
+  const revokeTrackingLink = document.getElementById('revokeTrackingLink');
+  if (revokeTrackingLink) revokeTrackingLink.addEventListener('click', async () => {
+    const reason = prompt('Pourquoi révoquer ce lien ? (au moins 8 caractères)');
+    if (!reason) return;
+    if (reason.trim().length < 8) {
+      document.getElementById('trackingLinkResult').innerHTML = '<div class="notice error">Le motif doit contenir au moins 8 caractères.</div>';
+      return;
+    }
+    revokeTrackingLink.disabled = true;
+    try {
+      await api(`/api/app/orders/${encodeURIComponent(id)}/tracking-link/revoke`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason.trim(), expectedVersion: trackingLink.version, idempotencyKey: actionKey('tracking-link-revoke') }),
+      });
+      await renderOrderDetail(id);
+    } catch (error) {
+      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      revokeTrackingLink.disabled = false;
+    }
+  });
 
   const paymentConfigure = document.getElementById('paymentConfigure');
   if (paymentConfigure) paymentConfigure.addEventListener('submit', async (event) => {

@@ -14,6 +14,10 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Plan cartes, routage et estimations](MAPS_AND_ROUTING_PLAN.md)
 - [Contrat de l'adaptateur de routage](ROUTING_ADAPTER.md)
 - [Revue routage et carte publique](ROUTING_AND_PUBLIC_MAP_REVIEW.md)
+- [Cycle de vie des liens de suivi](TRACKING_LINK_LIFECYCLE.md)
+- [Limitation d'abus](RATE_LIMITING.md)
+- [Revue de sécurité des liens](TRACKING_LINK_SECURITY_REVIEW.md)
+- [Migration et retour arrière des liens](TRACKING_LINK_MIGRATION_RUNBOOK.md)
 - [Plan CRM, analyses et exports](CRM_ANALYTICS_PLAN.md)
 - [Plan de plateforme SaaS](SAAS_PLATFORM_PLAN.md)
 - [Barrières qualité et confidentialité](QUALITY_AND_PRIVACY_GATES.md)
@@ -47,6 +51,8 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - La carte d'exploitation affiche la flotte, les destinations, les tournées, les incidents et l'ordre restant sans inventer de route ni d'ETA.
 - La carte client affiche sa destination et la position autorisée du livreur, avec géolocalisation locale facultative et sans fuite des autres arrêts.
 - L'adaptateur OSRM est intégré mais reste désactivé jusqu'à la qualification terrain du profil moto au Bénin.
+- Les liens de suivi sont expirants, renouvelables et révocables, avec verrou concurrent, idempotence durable et limitation d'abus pour une seule réplique.
+- Les listes entreprise ne révèlent plus les liens : un affichage unitaire explicite, autorisé et audité est requis.
 - Les prochaines phases cartes/routage, CRM/exports, plateforme SaaS et qualité disposent de plans spécialisés relus avant implémentation.
 - WhatsApp/WAHA n’est pas encore intégré.
 

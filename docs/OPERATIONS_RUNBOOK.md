@@ -62,9 +62,13 @@ npm run test:payments
 npm run test:runs
 npm run test:map
 npm run test:routing
+npm run test:tracking-links
+npm run test:rate-limit
 npm run test:smoke
 npm run test:driver
 ```
+
+Avant de modifier le stockage des liens de suivi, suivre `docs/TRACKING_LINK_MIGRATION_RUNBOOK.md`. Ne jamais revenir à une version applicative qui ignore les états de révocation après le passage à `encrypted_only`. Conserver une seule réplique tant que la limitation de débit n’utilise pas Redis.
 
 Le test navigateur hors connexion requiert Playwright et Chrome. Dans l'environnement Codex local :
 
@@ -102,10 +106,12 @@ Lire dans cet ordre :
 6. `docs/OPERATIONS_MAP.md`
 7. `docs/ROUTING_ADAPTER.md`
 8. `docs/ROUTING_AND_PUBLIC_MAP_REVIEW.md`
-9. `docs/OFFLINE_OPERATIONS.md`
-10. `server.js`
-11. `public/app.js`
-12. `public/request.html`
+9. `docs/TRACKING_LINK_MIGRATION_RUNBOOK.md`
+10. `docs/TRACKING_LINK_SECURITY_REVIEW.md`
+11. `docs/OFFLINE_OPERATIONS.md`
+12. `server.js`
+13. `public/app.js`
+14. `public/request.html`
 
 ## Secrets
 

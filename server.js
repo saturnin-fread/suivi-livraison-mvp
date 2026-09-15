@@ -7,10 +7,28 @@ const axios = require('axios');
 const multer = require('multer');
 const { Pool } = require('pg');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
+const {
+  createIpPolicy,
+  createRateLimitMiddleware,
+  createTokenBucket,
+  createTokenPolicy,
+} = require('./lib/rate-limit');
+const {
+  TrackingLinkPolicyError,
+  createTrackingLinkExpiration,
+  evaluateTrackingLink,
+  planTrackingLinkRevocation,
+  planTrackingLinkRotation,
+  publicTrackingLinkMessage,
+} = require('./lib/tracking-link-policy');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const demoToken = process.env.DEMO_TRACKING_TOKEN || 'demo-ccg-2026';
+const demoTrackingEnabled = process.env.DEMO_TRACKING_ENABLED === 'true';
+if (demoTrackingEnabled && (!process.env.DEMO_TRACKING_TOKEN || process.env.RAILWAY_ENVIRONMENT_NAME === 'production')) {
+  throw new Error('DEMO_TRACKING_ENABLED est interdit en production et exige un jeton explicite ailleurs.');
+}
+const demoToken = demoTrackingEnabled ? process.env.DEMO_TRACKING_TOKEN : null;
 const sessionDurationMs = 8 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
 const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
@@ -166,6 +184,19 @@ function publicDestination(row) {
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: false }));
+
+const publicTrackingRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({
+      limiter: createTokenBucket({ capacity: 240, refillTokens: 240, refillIntervalMs: 60_000, maxEntries: 10_000 }),
+    }),
+    createTokenPolicy({
+      limiter: createTokenBucket({ capacity: 60, refillTokens: 60, refillIntervalMs: 60_000, maxEntries: 20_000 }),
+      key: (req) => req.params.token,
+    }),
+  ],
+});
 app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules', 'leaflet', 'dist'), {
   immutable: true,
   maxAge: '30d',
@@ -296,6 +327,115 @@ function passwordMatches(password, salt, expectedHash) {
 
 function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
+}
+
+function trackingTokenSecret() {
+  if (process.env.TRACKING_TOKEN_SECRET) return process.env.TRACKING_TOKEN_SECRET;
+  if (process.env.RAILWAY_ENVIRONMENT_NAME === 'production') return null;
+  return process.env.OTP_PEPPER || process.env.SESSION_SECRET || null;
+}
+
+function trackingTokenKey() {
+  const secret = trackingTokenSecret();
+  if (!secret || Buffer.byteLength(secret) < 16) {
+    throw Object.assign(new Error('Le coffre des liens de suivi n’est pas configuré.'), { statusCode: 503 });
+  }
+  return crypto.createHash('sha256').update(`tracking-token:v1:${secret}`).digest();
+}
+
+function encryptTrackingToken(token) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', trackingTokenKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(String(token), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1.${iv.toString('base64url')}.${tag.toString('base64url')}.${ciphertext.toString('base64url')}`;
+}
+
+function decryptTrackingToken(value) {
+  const [version, ivValue, tagValue, ciphertextValue, ...extra] = String(value || '').split('.');
+  if (version !== 'v1' || !ivValue || !tagValue || !ciphertextValue || extra.length) {
+    throw Object.assign(new Error('Format de lien chiffré invalide.'), { statusCode: 503 });
+  }
+  const decipher = crypto.createDecipheriv('aes-256-gcm', trackingTokenKey(), Buffer.from(ivValue, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tagValue, 'base64url'));
+  return Buffer.concat([
+    decipher.update(Buffer.from(ciphertextValue, 'base64url')),
+    decipher.final(),
+  ]).toString('utf8');
+}
+
+function trackingTokenStorage(token) {
+  return { tokenHash: digest(token), tokenCiphertext: encryptTrackingToken(token) };
+}
+
+function encryptedOnlyTrackingTokenStorage() {
+  return process.env.TRACKING_TOKEN_STORAGE_MODE === 'encrypted_only';
+}
+
+function trackingTokenFromRow(row) {
+  const ciphertext = row?.tracking_token_ciphertext ?? row?.token_ciphertext;
+  const legacyToken = row?.tracking_token ?? row?.token;
+  if (ciphertext) return decryptTrackingToken(ciphertext);
+  return legacyToken || null;
+}
+
+function trackingLinkBusinessView(row, revealToken = false) {
+  if (!row) return { state: 'unavailable', path: null, expiresAt: null, version: null };
+  const lifecycle = evaluateTrackingLink({
+    expires_at: row.tracking_expires_at ?? row.expires_at,
+    created_at: row.tracking_created_at ?? row.created_at,
+    revoked_at: row.tracking_revoked_at ?? row.revoked_at,
+    order_status: row.status ?? row.order_status,
+  });
+  let token = null;
+  if (revealToken) {
+    try {
+      token = trackingTokenFromRow(row);
+    } catch (_error) {
+      token = null;
+    }
+  }
+  return {
+    state: lifecycle.state,
+    path: token && !['revoked', 'expired', 'unavailable'].includes(lifecycle.state) ? `/suivi/${token}` : null,
+    expiresAt: lifecycle.expiresAt,
+    revokedAt: row.tracking_revoked_at ?? row.revoked_at ?? null,
+    version: Number(row.tracking_link_version ?? row.version ?? 1),
+  };
+}
+
+async function trackingLinkEventReplay(client, { companyId, orderId, eventType, idempotencyKey, fingerprint }) {
+  const repeated = await client.query(
+    `SELECT id, order_id, tracking_link_id, generation, request_fingerprint, result_version, created_at
+     FROM tracking_link_events
+     WHERE company_id = $1 AND event_type = $2 AND idempotency_key = $3`,
+    [companyId, eventType, idempotencyKey]
+  );
+  const event = repeated.rows[0];
+  if (!event) return null;
+  if (event.request_fingerprint !== fingerprint || String(event.order_id) !== String(orderId)) {
+    throw Object.assign(new Error('Cette clé d’action a déjà été utilisée pour une autre opération.'), { statusCode: 409 });
+  }
+  const currentResult = await client.query(
+    `SELECT o.status AS order_status, t.token, t.token_ciphertext, t.expires_at, t.created_at,
+            t.revoked_at, t.generation, t.version
+     FROM tracking_links t JOIN orders o ON o.id = t.order_id AND o.company_id = t.company_id
+     WHERE t.id = $1 AND t.company_id = $2`,
+    [event.tracking_link_id, companyId]
+  );
+  const current = currentResult.rows[0];
+  const sameGeneration = current && Number(current.generation) === Number(event.generation);
+  let trackingLink = {
+    state: eventType === 'revoked' ? 'revoked' : 'superseded',
+    path: null,
+    expiresAt: null,
+    revokedAt: eventType === 'revoked' ? event.created_at : null,
+    version: Number(event.result_version),
+  };
+  if (eventType === 'rotated' && sameGeneration) {
+    trackingLink = trackingLinkBusinessView({ ...current, status: current.order_status }, true);
+  }
+  return { orderId: Number(event.order_id), trackingLink, alreadyApplied: true };
 }
 
 function normalizeIdempotencyKey(value) {
@@ -528,11 +668,72 @@ async function initDatabase() {
 
       CREATE TABLE IF NOT EXISTS tracking_links (
         id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE,
         order_id BIGINT NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
-        token TEXT NOT NULL UNIQUE,
+        token TEXT UNIQUE,
+        token_hash TEXT,
+        token_ciphertext TEXT,
         expires_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        revoked_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        revocation_reason TEXT,
+        revocation_idempotency_key TEXT,
+        revocation_fingerprint TEXT,
+        last_rotated_at TIMESTAMPTZ,
+        rotation_idempotency_key TEXT,
+        rotation_fingerprint TEXT,
+        generation INTEGER NOT NULL DEFAULT 1,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+      ALTER TABLE tracking_links ALTER COLUMN token DROP NOT NULL;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS token_hash TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS token_ciphertext TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS revoked_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS revocation_idempotency_key TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS revocation_fingerprint TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS last_rotated_at TIMESTAMPTZ;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS rotation_idempotency_key TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS rotation_fingerprint TEXT;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS generation INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE tracking_links ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      UPDATE tracking_links t SET company_id = o.company_id FROM orders o
+      WHERE o.id = t.order_id AND t.company_id IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS tracking_links_token_hash_unique
+        ON tracking_links(token_hash) WHERE token_hash IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS tracking_links_active_token_idx
+        ON tracking_links(token) WHERE revoked_at IS NULL;
+      CREATE INDEX IF NOT EXISTS tracking_links_order_state_idx
+        ON tracking_links(order_id, revoked_at, expires_at);
+      UPDATE tracking_links
+      SET expires_at = created_at + INTERVAL '30 days'
+      WHERE expires_at IS NULL;
+
+      CREATE TABLE IF NOT EXISTS tracking_link_events (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        tracking_link_id BIGINT NOT NULL REFERENCES tracking_links(id) ON DELETE CASCADE,
+        order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL,
+        event_type TEXT NOT NULL CHECK (event_type IN ('created', 'rotated', 'revoked', 'revealed')),
+        actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        reason TEXT,
+        idempotency_key TEXT,
+        request_fingerprint TEXT,
+        result_version INTEGER NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE UNIQUE INDEX IF NOT EXISTS tracking_link_events_idempotency_unique
+        ON tracking_link_events(company_id, event_type, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS tracking_link_events_link_created_idx
+        ON tracking_link_events(tracking_link_id, created_at ASC, id ASC);
 
       CREATE TABLE IF NOT EXISTS customer_requests (
         id BIGSERIAL PRIMARY KEY,
@@ -892,6 +1093,21 @@ async function initDatabase() {
       WHERE NOT EXISTS (SELECT 1 FROM order_status_events e WHERE e.order_id = o.id);
     `);
 
+    const legacyTrackingLinks = await client.query(
+      `SELECT id, token FROM tracking_links WHERE token IS NOT NULL FOR UPDATE`
+    );
+    for (const link of legacyTrackingLinks.rows) {
+      const stored = trackingTokenStorage(link.token);
+      await client.query(
+        `UPDATE tracking_links
+         SET token_hash = $1, token_ciphertext = $2,
+             token = CASE WHEN $4::boolean THEN NULL ELSE token END,
+             updated_at = NOW()
+         WHERE id = $3`,
+        [stored.tokenHash, stored.tokenCiphertext, link.id, encryptedOnlyTrackingTokenStorage()]
+      );
+    }
+
     let company = await client.query(
       `SELECT id, name FROM companies WHERE slug = 'chicago-consulting-group' ORDER BY id LIMIT 1`
     );
@@ -1201,7 +1417,8 @@ app.get(['/driver', '/driver/commandes/:id'], requireDriverPage, (_req, res) => 
 });
 
 app.get('/suivi/:token', (req, res) => {
-  if (req.params.token !== demoToken && !pool) return res.status(404).send('Lien de suivi introuvable ou expiré.');
+  const isDemo = Boolean(demoToken && req.params.token === demoToken);
+  if (!isDemo && !pool) return res.status(404).send('Ce lien de suivi n’est plus disponible.');
   res.set({
     'Cache-Control': 'private, no-store',
     'Referrer-Policy': 'origin',
@@ -1908,7 +2125,9 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
             r.neighborhood, r.landmark, r.notes, r.created_at, r.submitted_at, r.updated_at,
             r.expires_at, r.archived_at, r.validated_at, r.version,
             o.id AS order_id, o.status AS order_status, d.name AS driver_name,
-            t.token AS tracking_token, t.expires_at AS tracking_expires_at
+            t.token_ciphertext AS tracking_token_ciphertext, t.expires_at AS tracking_expires_at,
+            t.revoked_at AS tracking_revoked_at, t.created_at AS tracking_created_at,
+            t.version AS tracking_link_version
      FROM customer_requests r
      LEFT JOIN orders o ON o.customer_request_id = r.id
      LEFT JOIN drivers d ON d.id = o.driver_id
@@ -1917,7 +2136,10 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
     [req.params.id, req.auth.company_id]
   );
   if (!result.rows[0]) return res.status(404).json({ error: 'Demande introuvable.' });
-  return res.json(result.rows[0]);
+  const request = result.rows[0];
+  const trackingLink = request.order_id ? trackingLinkBusinessView({ ...request, status: request.order_status }) : null;
+  delete request.tracking_token_ciphertext;
+  return res.json({ ...request, trackingLink });
 }));
 
 app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -1952,13 +2174,15 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
     if (!request) throw Object.assign(new Error('Demande introuvable.'), { statusCode: 404 });
 
     const existing = await client.query(
-      `SELECT o.id, t.token FROM orders o LEFT JOIN tracking_links t ON t.order_id = o.id
+      `SELECT o.id, o.status, t.token_ciphertext, t.expires_at, t.revoked_at, t.created_at, t.version
+       FROM orders o LEFT JOIN tracking_links t ON t.order_id = o.id
        WHERE o.customer_request_id = $1`,
       [request.id]
     );
     if (existing.rows[0]) {
+      const trackingLink = trackingLinkBusinessView(existing.rows[0]);
       await client.query('COMMIT');
-      return res.json({ orderId: existing.rows[0].id, path: `/suivi/${existing.rows[0].token}`, alreadyConverted: true });
+      return res.json({ orderId: existing.rows[0].id, path: trackingLink.path, trackingLink, alreadyConverted: true });
     }
     if (!editableRequestStatuses.includes(request.status)) {
       throw Object.assign(new Error('Cette demande ne peut plus être convertie.'), { statusCode: 409 });
@@ -1993,10 +2217,21 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       ]
     );
     const trackingToken = randomToken(24);
+    const trackingStorage = trackingTokenStorage(trackingToken);
+    const trackingExpiration = createTrackingLinkExpiration();
+    const trackingLink = await client.query(
+      `INSERT INTO tracking_links (company_id, order_id, token, token_hash, token_ciphertext, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, generation, version`,
+      [req.auth.company_id, order.rows[0].id, encryptedOnlyTrackingTokenStorage() ? null : trackingToken,
+        trackingStorage.tokenHash, trackingStorage.tokenCiphertext, trackingExpiration.expiresAt]
+    );
     await client.query(
-      `INSERT INTO tracking_links (order_id, token, expires_at)
-       VALUES ($1, $2, NOW() + INTERVAL '30 days')`,
-      [order.rows[0].id, trackingToken]
+      `INSERT INTO tracking_link_events (
+         company_id, tracking_link_id, order_id, generation, event_type,
+         actor_user_id, reason, result_version
+       ) VALUES ($1, $2, $3, $4, 'created', $5, 'customer_request_conversion', $6)`,
+      [req.auth.company_id, trackingLink.rows[0].id, order.rows[0].id,
+        trackingLink.rows[0].generation, req.auth.user_id, trackingLink.rows[0].version]
     );
     await client.query(
       `INSERT INTO order_status_events (
@@ -2019,7 +2254,12 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       [req.auth.company_id, req.auth.user_id, request.id, order.rows[0].id, driver.id]
     );
     await client.query('COMMIT');
-    return res.status(201).json({ orderId: order.rows[0].id, path: `/suivi/${trackingToken}`, driverName: driver.name });
+    return res.status(201).json({
+      orderId: order.rows[0].id,
+      path: `/suivi/${trackingToken}`,
+      trackingLink: { state: 'active', path: `/suivi/${trackingToken}`, expiresAt: trackingExpiration.expiresAt, version: 1 },
+      driverName: driver.name,
+    });
   } catch (error) {
     await client.query('ROLLBACK');
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
@@ -2817,21 +3057,28 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.requested_time,
             o.neighborhood, o.landmark, o.created_at, o.updated_at,
-            d.name AS driver_name, t.token AS tracking_token, t.expires_at AS tracking_expires_at
+            d.name AS driver_name, t.token_ciphertext AS tracking_token_ciphertext,
+            t.expires_at AS tracking_expires_at, t.revoked_at AS tracking_revoked_at,
+            t.created_at AS tracking_created_at, t.version AS tracking_link_version
      FROM orders o
      JOIN drivers d ON d.id = o.driver_id
      LEFT JOIN tracking_links t ON t.order_id = o.id
      WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 100`,
     [req.auth.company_id]
   );
-  return res.json(result.rows);
+  return res.json(result.rows.map((row) => {
+    const trackingLink = trackingLinkBusinessView(row);
+    delete row.tracking_token_ciphertext;
+    return { ...row, trackingLink };
+  }));
 }));
 
 app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.*, d.name AS driver_name, d.phone AS driver_phone,
-            d.vehicle_type AS driver_vehicle_type, t.token AS tracking_token,
-            t.expires_at AS tracking_expires_at,
+            d.vehicle_type AS driver_vehicle_type, t.token_ciphertext AS tracking_token_ciphertext,
+            t.expires_at AS tracking_expires_at, t.revoked_at AS tracking_revoked_at,
+            t.created_at AS tracking_created_at, t.version AS tracking_link_version,
             p.id AS proof_id, p.proof_type, p.verified_at AS proof_verified_at,
             pa.id AS payment_account_id, pa.expected_amount_minor, pa.currency AS payment_currency,
             pa.status AS payment_status, pa.collected_amount_minor, pa.collection_method,
@@ -2896,8 +3143,11 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
       [order.id, req.auth.company_id]
     ),
   ]);
+  const trackingLink = trackingLinkBusinessView(order);
+  delete order.tracking_token_ciphertext;
   return res.json({
     ...order,
+    trackingLink,
     allowedTransitions: allowedOrderTransitions(order.status),
     requiresOtpForDelivery: order.status === 'Arrivée' && !order.proof_id,
     paymentBlocksDelivery: Boolean(order.payment_account_id && ['pending', 'discrepancy'].includes(order.payment_status)),
@@ -2911,6 +3161,253 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
     ),
     evidence: evidence.rows,
   });
+}));
+
+app.post('/api/app/orders/:id/tracking-link/reveal', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `SELECT o.id AS order_id, o.status AS order_status,
+              t.id, t.token, t.token_ciphertext, t.expires_at, t.created_at,
+              t.revoked_at, t.generation, t.version
+       FROM orders o
+       JOIN tracking_links t ON t.order_id = o.id AND t.company_id = o.company_id
+       WHERE o.id = $1 AND o.company_id = $2
+       FOR SHARE OF t`,
+      [req.params.id, req.auth.company_id]
+    );
+    const link = result.rows[0];
+    if (!link) throw Object.assign(new Error('Commande ou lien de suivi introuvable.'), { statusCode: 404 });
+    const trackingLink = trackingLinkBusinessView({ ...link, status: link.order_status }, true);
+    if (!trackingLink.path) throw Object.assign(new Error('Ce lien n’est plus actif. Renouvelez-le si la livraison continue.'), { statusCode: 409 });
+    await client.query(
+      `INSERT INTO tracking_link_events (
+         company_id, tracking_link_id, order_id, generation, event_type,
+         actor_user_id, reason, result_version
+       ) VALUES ($1, $2, $3, $4, 'revealed', $5, 'manual_reveal', $6)`,
+      [req.auth.company_id, link.id, link.order_id, link.generation, req.auth.user_id, link.version]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'tracking_link', $3, 'revealed', jsonb_build_object('orderId', $4::bigint, 'version', $5::integer))`,
+      [req.auth.company_id, req.auth.user_id, link.id, link.order_id, link.version]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: link.order_id, trackingLink });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Tracking link reveal error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’afficher le lien de suivi.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/tracking-link/rotate', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  const expiresInDays = req.body.expiresInDays === undefined ? 7 : Number(req.body.expiresInDays);
+  const expectedVersion = Number(req.body.expectedVersion);
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide. Rechargez puis réessayez.' });
+  if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 30) {
+    return res.status(400).json({ error: 'Choisissez une durée comprise entre 1 et 30 jours.' });
+  }
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    return res.status(400).json({ error: 'La version du lien est absente. Rechargez la commande.' });
+  }
+  const fingerprint = digest(JSON.stringify({
+    action: 'rotate_tracking_link', orderId: String(req.params.id), expiresInDays, expectedVersion,
+  }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let replay = await trackingLinkEventReplay(client, {
+      companyId: req.auth.company_id, orderId: req.params.id, eventType: 'rotated', idempotencyKey, fingerprint,
+    });
+    if (replay) {
+      await client.query('COMMIT');
+      return res.json(replay);
+    }
+    const result = await client.query(
+      `SELECT o.id AS order_id, o.status AS order_status,
+              t.id, t.token, t.token_ciphertext, t.expires_at, t.created_at, t.revoked_at,
+              t.generation, t.version
+       FROM orders o
+       JOIN tracking_links t ON t.order_id = o.id AND t.company_id = o.company_id
+       WHERE o.id = $1 AND o.company_id = $2
+       FOR UPDATE OF o, t`,
+      [req.params.id, req.auth.company_id]
+    );
+    const link = result.rows[0];
+    if (!link) throw Object.assign(new Error('Commande ou lien de suivi introuvable.'), { statusCode: 404 });
+    replay = await trackingLinkEventReplay(client, {
+      companyId: req.auth.company_id, orderId: req.params.id, eventType: 'rotated', idempotencyKey, fingerprint,
+    });
+    if (replay) {
+      await client.query('COMMIT');
+      return res.json(replay);
+    }
+    if (Number(link.version) !== expectedVersion) {
+      throw Object.assign(new Error('Ce lien a été modifié ailleurs. Rechargez la commande avant de recommencer.'), { statusCode: 409 });
+    }
+    const plan = planTrackingLinkRotation({
+      link: {
+        expires_at: link.expires_at,
+        created_at: link.created_at,
+        revoked_at: link.revoked_at,
+        order_status: link.order_status,
+      },
+      ttlMs: expiresInDays * 24 * 60 * 60 * 1000,
+    });
+    const token = randomToken(24);
+    const stored = trackingTokenStorage(token);
+    const updated = await client.query(
+      `UPDATE tracking_links
+       SET token_hash = $1, token_ciphertext = $2, token = $3, expires_at = $4,
+           revoked_at = NULL, revoked_by_user_id = NULL, revocation_reason = NULL,
+           last_rotated_at = $5, generation = generation + 1, version = version + 1, updated_at = NOW()
+       WHERE id = $6
+       RETURNING generation, version`,
+      [stored.tokenHash, stored.tokenCiphertext, encryptedOnlyTrackingTokenStorage() ? null : token,
+        plan.next.expiresAt, plan.effectiveAt, link.id]
+    );
+    await client.query(
+      `INSERT INTO tracking_link_events (
+         company_id, tracking_link_id, order_id, generation, event_type, actor_user_id,
+         reason, idempotency_key, request_fingerprint, result_version
+       ) VALUES ($1, $2, $3, $4, 'rotated', $5, 'operator_rotation', $6, $7, $8)`,
+      [req.auth.company_id, link.id, link.order_id, updated.rows[0].generation, req.auth.user_id,
+        idempotencyKey, fingerprint, updated.rows[0].version]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'tracking_link', $3, 'rotated',
+         jsonb_build_object('orderId', $4::bigint, 'expiresAt', $5::text, 'version', $6::integer))`,
+      [req.auth.company_id, req.auth.user_id, link.id, link.order_id, plan.next.expiresAt, updated.rows[0].version]
+    );
+    await client.query('COMMIT');
+    return res.json({
+      orderId: link.order_id,
+      trackingLink: {
+        state: 'active', path: `/suivi/${token}`, expiresAt: plan.next.expiresAt,
+        revokedAt: null, version: Number(updated.rows[0].version),
+      },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error instanceof TrackingLinkPolicyError) {
+      const status = error.code === 'terminal_order' ? 409 : error.code === 'link_unavailable' ? 404 : 400;
+      const message = error.code === 'terminal_order'
+        ? 'Une commande terminée ne peut pas recevoir un nouveau lien.'
+        : 'Le lien de suivi ne peut pas être renouvelé.';
+      return res.status(status).json({ error: message });
+    }
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Tracking link rotation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de renouveler le lien de suivi.' });
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/app/orders/:id/tracking-link/revoke', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
+  const reason = String(req.body.reason || '').trim();
+  const expectedVersion = Number(req.body.expectedVersion);
+  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide. Rechargez puis réessayez.' });
+  if (reason.length < 8 || reason.length > 500) {
+    return res.status(400).json({ error: 'Expliquez la révocation en 8 à 500 caractères.' });
+  }
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    return res.status(400).json({ error: 'La version du lien est absente. Rechargez la commande.' });
+  }
+  const fingerprint = digest(JSON.stringify({
+    action: 'revoke_tracking_link', orderId: String(req.params.id), reason, expectedVersion,
+  }));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let replay = await trackingLinkEventReplay(client, {
+      companyId: req.auth.company_id, orderId: req.params.id, eventType: 'revoked', idempotencyKey, fingerprint,
+    });
+    if (replay) {
+      await client.query('COMMIT');
+      return res.json(replay);
+    }
+    const result = await client.query(
+      `SELECT o.id AS order_id, o.status AS order_status,
+              t.id, t.expires_at, t.created_at, t.revoked_at, t.generation, t.version
+       FROM orders o
+       JOIN tracking_links t ON t.order_id = o.id AND t.company_id = o.company_id
+       WHERE o.id = $1 AND o.company_id = $2
+       FOR UPDATE OF o, t`,
+      [req.params.id, req.auth.company_id]
+    );
+    const link = result.rows[0];
+    if (!link) throw Object.assign(new Error('Commande ou lien de suivi introuvable.'), { statusCode: 404 });
+    replay = await trackingLinkEventReplay(client, {
+      companyId: req.auth.company_id, orderId: req.params.id, eventType: 'revoked', idempotencyKey, fingerprint,
+    });
+    if (replay) {
+      await client.query('COMMIT');
+      return res.json(replay);
+    }
+    if (Number(link.version) !== expectedVersion) {
+      throw Object.assign(new Error('Ce lien a été modifié ailleurs. Rechargez la commande avant de recommencer.'), { statusCode: 409 });
+    }
+    const plan = planTrackingLinkRevocation({
+      link: { expires_at: link.expires_at, created_at: link.created_at, revoked_at: link.revoked_at, order_status: link.order_status },
+      reason: 'operator_request',
+    });
+    if (plan.action === 'no_op') {
+      await client.query(
+        `INSERT INTO tracking_link_events (
+           company_id, tracking_link_id, order_id, generation, event_type, actor_user_id,
+           reason, idempotency_key, request_fingerprint, result_version
+         ) VALUES ($1, $2, $3, $4, 'revoked', $5, $6, $7, $8, $9)`,
+        [req.auth.company_id, link.id, link.order_id, link.generation, req.auth.user_id,
+          reason, idempotencyKey, fingerprint, link.version]
+      );
+      await client.query('COMMIT');
+      return res.json({ orderId: link.order_id, trackingLink: { state: 'revoked', path: null, revokedAt: link.revoked_at, version: Number(link.version) }, alreadyApplied: true });
+    }
+    const updated = await client.query(
+      `UPDATE tracking_links
+       SET revoked_at = $1, revoked_by_user_id = $2, revocation_reason = $3,
+           version = version + 1, updated_at = NOW()
+       WHERE id = $4
+       RETURNING generation, version`,
+      [plan.effectiveAt, req.auth.user_id, reason, link.id]
+    );
+    await client.query(
+      `INSERT INTO tracking_link_events (
+         company_id, tracking_link_id, order_id, generation, event_type, actor_user_id,
+         reason, idempotency_key, request_fingerprint, result_version
+       ) VALUES ($1, $2, $3, $4, 'revoked', $5, $6, $7, $8, $9)`,
+      [req.auth.company_id, link.id, link.order_id, updated.rows[0].generation, req.auth.user_id,
+        reason, idempotencyKey, fingerprint, updated.rows[0].version]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'tracking_link', $3, 'revoked',
+         jsonb_build_object('orderId', $4::bigint, 'reason', $5::text, 'version', $6::integer))`,
+      [req.auth.company_id, req.auth.user_id, link.id, link.order_id, reason, updated.rows[0].version]
+    );
+    await client.query('COMMIT');
+    return res.json({
+      orderId: link.order_id,
+      trackingLink: { state: 'revoked', path: null, revokedAt: plan.effectiveAt, version: Number(updated.rows[0].version) },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error instanceof TrackingLinkPolicyError) return res.status(409).json({ error: 'Le lien de suivi ne peut pas être révoqué.' });
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Tracking link revocation error:', error.message);
+    return res.status(500).json({ error: 'Impossible de révoquer le lien de suivi.' });
+  } finally {
+    client.release();
+  }
 }));
 
 app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -4125,9 +4622,21 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
       [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress]
     );
     const token = randomToken(24);
+    const tokenStorage = trackingTokenStorage(token);
+    const trackingExpiration = createTrackingLinkExpiration();
+    const trackingLink = await client.query(
+      `INSERT INTO tracking_links (company_id, order_id, token, token_hash, token_ciphertext, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, generation, version`,
+      [req.auth.company_id, order.rows[0].id, encryptedOnlyTrackingTokenStorage() ? null : token,
+        tokenStorage.tokenHash, tokenStorage.tokenCiphertext, trackingExpiration.expiresAt]
+    );
     await client.query(
-      `INSERT INTO tracking_links (order_id, token, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`,
-      [order.rows[0].id, token]
+      `INSERT INTO tracking_link_events (
+         company_id, tracking_link_id, order_id, generation, event_type,
+         actor_user_id, reason, result_version
+       ) VALUES ($1, $2, $3, $4, 'created', $5, 'direct_order', $6)`,
+      [req.auth.company_id, trackingLink.rows[0].id, order.rows[0].id,
+        trackingLink.rows[0].generation, req.auth.user_id, trackingLink.rows[0].version]
     );
     await client.query(
       `INSERT INTO order_status_events (
@@ -4143,7 +4652,11 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     );
     await client.query('COMMIT');
     committed = true;
-    return res.status(201).json({ orderId: order.rows[0].id, token, path: `/suivi/${token}` });
+    return res.status(201).json({
+      orderId: order.rows[0].id,
+      path: `/suivi/${token}`,
+      trackingLink: { state: 'active', path: `/suivi/${token}`, expiresAt: trackingExpiration.expiresAt, version: 1 },
+    });
   } catch (error) {
     if (!committed) await client.query('ROLLBACK');
     if (error.statusCode === 400) return res.status(400).json({ error: error.message });
@@ -4231,7 +4744,7 @@ app.put('/api/public/requests/:token', asyncRoute(async (req, res) => {
   return res.json({ message: 'Vos informations ont été mises à jour.', version: result.rows[0].version });
 }));
 
-app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
+app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, res) => {
   let deviceId = process.env.TRACCAR_DEVICE_ID;
   let tracking = {
     orderStatus: null,
@@ -4243,18 +4756,33 @@ app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
     driverName: null,
     driverVehicleType: null,
   };
-  if (pool && req.params.token !== demoToken) {
+  const isDemo = Boolean(demoToken && req.params.token === demoToken);
+  if (!isDemo && !/^[A-Za-z0-9_-]{32,128}$/.test(req.params.token)) {
+    const unavailable = publicTrackingLinkMessage('unavailable');
+    return res.status(unavailable.statusCode).json({ error: unavailable.message });
+  }
+  if (pool && !isDemo) {
     const link = await pool.query(
       `SELECT d.traccar_unique_id, d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
-              o.status, o.status_changed_at, o.requested_time, o.neighborhood, o.landmark,
-              o.destination_lat, o.destination_lng, o.destination_accuracy
-       FROM tracking_links t
-       JOIN orders o ON o.id = t.order_id
-       JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
-       WHERE t.token = $1 AND (t.expires_at IS NULL OR t.expires_at > NOW())`,
-      [req.params.token]
+               o.status, o.status_changed_at, o.requested_time, o.neighborhood, o.landmark,
+               o.destination_lat, o.destination_lng, o.destination_accuracy,
+               t.expires_at, t.created_at, t.revoked_at
+        FROM tracking_links t
+        JOIN orders o ON o.id = t.order_id AND o.company_id = t.company_id
+        JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+        WHERE t.token_hash = $1 OR t.token = $2`,
+      [digest(req.params.token), req.params.token]
     );
-    if (!link.rows[0]) return res.status(404).json({ error: 'Lien de suivi introuvable ou expiré.' });
+    const lifecycle = evaluateTrackingLink(link.rows[0] ? {
+      expires_at: link.rows[0].expires_at,
+      created_at: link.rows[0].created_at,
+      revoked_at: link.rows[0].revoked_at,
+      order_status: link.rows[0].status,
+    } : null);
+    if (!['active', 'terminal'].includes(lifecycle.state)) {
+      const unavailable = publicTrackingLinkMessage(lifecycle.state);
+      return res.status(unavailable.statusCode).json({ error: unavailable.message });
+    }
     const row = link.rows[0];
     deviceId = row.traccar_unique_id;
     tracking = {
@@ -4267,8 +4795,9 @@ app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
       driverName: row.driver_name,
       driverVehicleType: row.driver_vehicle_type,
     };
-  } else if (req.params.token !== demoToken && !pool) {
-    return res.status(404).json({ error: 'Lien de suivi introuvable ou expiré.' });
+  } else if (!isDemo && !pool) {
+    const unavailable = publicTrackingLinkMessage('unavailable');
+    return res.status(unavailable.statusCode).json({ error: unavailable.message });
   }
   const publicDetails = {
     orderStatus: tracking.orderStatus,

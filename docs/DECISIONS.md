@@ -1,5 +1,17 @@
 # Décisions d’architecture
 
+## 2026-09-15 — Liens de suivi à secret contrôlé
+
+Un lien de suivi expire par défaut après sept jours et peut être révoqué ou renouvelé. Les listes entreprise n’exposent ni token ni URL. L’affichage unitaire est volontaire, autorisé et audité. Le token reste chiffré dans le coffre applicatif afin de permettre cet affichage ; une empreinte distincte sert à la recherche publique. Après validation de la phase compatible, la colonne historique en clair est vidée.
+
+## 2026-09-15 — Concurrence et idempotence des liens
+
+Renouvellement et révocation exigent une version attendue et une clé d’idempotence. Une transaction verrouille la ligne et inscrit le résultat logique dans `tracking_link_events`. Deux responsables agissant sur la même version obtiennent un seul succès et un conflit explicite ; le rejeu d’une ancienne révocation ne peut pas invalider une génération plus récente.
+
+## 2026-09-15 — Limitation locale avant Redis
+
+Le suivi public est protégé avant Traccar par des quotas IP et jeton, avec `429` et `Retry-After`. Le stockage étant en mémoire, une seule réplique `delivery-app` est autorisée pour le pilote. Redis devient obligatoire avant toute réplication horizontale.
+
 ## 2026-09-13 — Traccar comme moteur GPS
 
 Traccar est utilisé pour recevoir les positions et gérer les appareils. La couche métier est développée séparément.

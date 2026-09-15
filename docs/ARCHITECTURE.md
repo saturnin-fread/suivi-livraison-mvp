@@ -66,6 +66,10 @@ La première carte entreprise utilise `GET /api/app/operations-map`. Le serveur 
 
 Le suivi public utilise un DTO distinct. Il ne reçoit que l'état de sa commande, sa propre destination, des informations minimales sur le livreur et la position courante autorisée. La position est masquée avant `En tournée` et supprimée après livraison, retour ou annulation. La politique de référent envoie uniquement l'origine du site aux tuiles, jamais le chemin contenant le token. Le token ne doit apparaître dans aucun cache partagé ou journal.
 
+Chaque lien possède une durée, une génération et une version. Les mutations entreprise utilisent `company_id + order_id`, un verrou de ligne, une version attendue et un journal d'idempotence append-only. Les listes ne transportent pas le secret. L’affichage unitaire déchiffre le lien seulement après une action explicite autorisée et auditée. La lecture publique recherche d’abord l’empreinte ; le champ historique en clair n’est consulté que pendant la phase de compatibilité.
+
+La limitation publique combine un quota IP et un quota par jeton avant tout appel Traccar. Elle renvoie `429` avec `Retry-After`. Son stockage est local au processus : `delivery-app` doit rester à une seule réplique jusqu’au remplacement par Redis.
+
 `lib/routing.js` encapsule le fournisseur. `GET /api/app/runs/:id/route` est une lecture réservée à l'entreprise propriétaire de la tournée. Une réponse porte fournisseur, profil, date, versions et avertissement ; la durée routière brute n'est jamais appelée ETA. Le fournisseur reste `disabled` tant que le profil moto et le graphe Bénin ne sont pas qualifiés.
 
 ## Sources de vérité
@@ -99,6 +103,10 @@ DATABASE_URL
 ADMIN_USER
 ADMIN_PASSWORD
 OTP_PEPPER
+TRACKING_TOKEN_SECRET
+TRACKING_TOKEN_STORAGE_MODE (`dual` pendant la migration, puis `encrypted_only`)
+RATE_LIMIT_KEY_SECRET
+DEMO_TRACKING_ENABLED (`false` en production)
 MAP_TILE_URL (facultatif)
 MAP_TILE_ATTRIBUTION (facultatif)
 MAP_TILE_MAX_ZOOM (facultatif)

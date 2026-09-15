@@ -34,6 +34,13 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - appeler un endpoint admin sans session ;
 - vérifier qu’aucun secret Traccar n’est présent dans le navigateur ;
 - vérifier qu’une entreprise ne lit pas les données d’une autre.
+- vérifier qu’une liste entreprise ne contient aucun token ou chemin de suivi ;
+- afficher un lien unitaire et vérifier la présence d’un audit ;
+- renouveler le lien et vérifier que l’ancien répond comme introuvable ;
+- révoquer, réémettre puis rejouer l’ancienne révocation sans désactiver la nouvelle génération ;
+- lancer deux renouvellements simultanés avec la même version : exactement un succès et un `409` ;
+- dépasser le quota en environnement isolé et vérifier `429`, `Retry-After` et l’absence d’appel Traccar ;
+- vérifier que faux, malformé, expiré et révoqué ont la même réponse publique générique.
 
 ## Test F — reprise
 

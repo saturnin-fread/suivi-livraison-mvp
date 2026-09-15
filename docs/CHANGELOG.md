@@ -2,6 +2,13 @@
 
 ## 2026-09-15
 
+- Ajout d’une durée de sept jours par défaut, de la révocation et du renouvellement des liens de suivi.
+- Ajout d’une version attendue, d’un verrou PostgreSQL et d’un ledger append-only pour rendre les opérations concurrentes et les rejeux sûrs.
+- Retrait des chemins de suivi des listes entreprise ; l’affichage devient unitaire, explicite, autorisé et audité.
+- Ajout d’une migration en deux phases : compatibilité `dual`, puis suppression du clair avec `encrypted_only` après validation.
+- Ajout d’une limitation mémoire IP + jeton avant Traccar, avec réponses `429` et `Retry-After` ; une seule réplique reste imposée avant Redis.
+- Désactivation du lien de démonstration par défaut et interdiction explicite de son activation sur Railway production.
+- Ajout de tests de concurrence, idempotence tardive, isolation inter-entreprises, migration, mobile et absence de révélation en masse.
 - Refonte mobile du suivi client avec destination propre, recentrage, vue complète et géolocalisation locale après consentement explicite.
 - Activation de la position du livreur uniquement à partir de `En tournée`, puis retrait immédiat après un état terminal.
 - Ajout des informations minimales du colis et d'états honnêtes lorsque Traccar ou les tuiles sont indisponibles, sans autre arrêt ni ETA.

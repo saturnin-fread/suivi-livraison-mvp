@@ -171,6 +171,7 @@
         let refreshInFlight = false;
         let refreshTimer = null;
         let terminalState = false;
+        let refreshPausedUntil = 0;
 
         function setStatus(text, type = '') {
           elements.status.textContent = text;
@@ -452,7 +453,7 @@
         }
 
         async function refresh() {
-          if (refreshInFlight || terminalState || document.hidden) return;
+          if (refreshInFlight || terminalState || document.hidden || Date.now() < refreshPausedUntil) return;
           refreshInFlight = true;
           const controller = new AbortController();
           const timeout = window.setTimeout(() => controller.abort(), 12000);
@@ -461,6 +462,12 @@
               cache: 'no-store', headers: { Accept: 'application/json' }, signal: controller.signal
             });
             const data = await response.json().catch(() => ({}));
+            if ([429, 503].includes(response.status)) {
+              const retryAfterSeconds = Number(response.headers.get('Retry-After'));
+              if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+                refreshPausedUntil = Date.now() + (retryAfterSeconds * 1000);
+              }
+            }
             if (!response.ok) throw new Error(data.error || 'Le suivi est temporairement indisponible.');
             elements.orderStatus.textContent = `État de la commande : ${data.orderStatus || 'Suivi en cours'}`;
             renderParcelDetails(data);

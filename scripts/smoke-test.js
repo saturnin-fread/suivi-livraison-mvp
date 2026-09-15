@@ -56,6 +56,35 @@ async function verifyPublicTrackingBrowser(path) {
   }
 }
 
+async function verifyTrackingLinkControlsBrowser(cookie, orderId) {
+  if (process.env.RUN_BROWSER_TEST !== '1') return;
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROME_EXECUTABLE || undefined,
+  });
+  try {
+    const browserContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const [name, value] = cookie.split('=');
+    await browserContext.addCookies([{ name, value, url: baseUrl }]);
+    const page = await browserContext.newPage();
+    await page.goto(`${baseUrl}/app/commandes/${encodeURIComponent(orderId)}`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: 'Lien de suivi client' }).waitFor({ state: 'visible' });
+    ensure(await page.getByRole('button', { name: 'Afficher et copier' }).isVisible(),
+      'La révélation unitaire du lien doit être disponible dans la commande.');
+    await page.getByRole('button', { name: 'Afficher et copier' }).click();
+    await page.locator('#trackingLinkResult .notice.success').waitFor({ state: 'visible' });
+    ensure(await page.locator('#trackingLinkResult a[href*="/suivi/"]').count() === 1,
+      'Le lien ne doit apparaître qu’après l’action explicite de l’utilisateur.');
+    ensure(!await page.locator('body').evaluate((body) => body.textContent.includes('token_ciphertext')),
+      'Aucun détail de stockage du jeton ne doit apparaître dans l’interface.');
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    ensure(!overflow, 'La gestion du lien de suivi déborde horizontalement sur mobile.');
+  } finally {
+    await browser.close();
+  }
+}
+
 async function run() {
   ensure(email && password, 'ADMIN_USER et ADMIN_PASSWORD sont requis.');
   const health = await json(await fetch(`${baseUrl}/health`));
@@ -67,6 +96,9 @@ async function run() {
   let operatorUserId;
   let operatorSessionHash;
   let operatorCookie;
+  let foreignCompanyId;
+  let foreignSessionHash;
+  let foreignCookie;
 
   try {
     const login = await fetch(`${baseUrl}/app/login`, {
@@ -119,6 +151,23 @@ async function run() {
         operatorContext.response.ok && operatorContext.payload.user?.role === 'operator',
         `Session opérateur invalide (statut ${operatorContext.response.status}, réponse ${JSON.stringify(operatorContext.payload)}).`
       );
+      const foreignCompany = await pool.query(
+        `INSERT INTO companies (name, slug) VALUES ('Entreprise cloisonnement test', $1) RETURNING id`,
+        [`smoke-foreign-${requestToken}`]
+      );
+      foreignCompanyId = foreignCompany.rows[0].id;
+      await pool.query(
+        `INSERT INTO company_memberships (company_id, user_id, role) VALUES ($1, $2, 'owner')`,
+        [foreignCompanyId, context.payload.user.id]
+      );
+      const foreignSessionToken = crypto.randomBytes(32).toString('base64url');
+      foreignSessionHash = crypto.createHash('sha256').update(foreignSessionToken).digest('hex');
+      await pool.query(
+        `INSERT INTO app_sessions (token_hash, user_id, company_id, scope, expires_at)
+         VALUES ($1, $2, $3, 'company', NOW() + INTERVAL '15 minutes')`,
+        [foreignSessionHash, context.payload.user.id, foreignCompanyId]
+      );
+      foreignCookie = `delivery_session=${foreignSessionToken}`;
     }
 
     const submitted = await json(await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, {
@@ -181,7 +230,7 @@ async function run() {
     ensure(converted.response.status === 201 && converted.payload.orderId && converted.payload.path, 'Conversion en commande impossible.');
     orderId = converted.payload.orderId;
 
-    const publicTrackingPath = converted.payload.path.replace('/suivi/', '/api/tracking/');
+    let publicTrackingPath = converted.payload.path.replace('/suivi/', '/api/tracking/');
     const publicTracking = await json(await fetch(`${baseUrl}${publicTrackingPath}`));
     ensure(publicTracking.response.ok, 'Le suivi public actif doit rester disponible même si le GPS est momentanément indisponible.');
     ensure(publicTracking.payload.orderStatus === 'Confirmée'
@@ -211,6 +260,131 @@ async function run() {
 
     const orders = await json(await fetch(`${baseUrl}/api/app/orders`, { headers: { Cookie: cookie } }));
     ensure(orders.response.ok && orders.payload.some((item) => item.id === orderId), 'Commande absente de la liste entreprise.');
+    const listedOrder = orders.payload.find((item) => item.id === orderId);
+    ensure(listedOrder.trackingLink?.state === 'active' && !listedOrder.trackingLink.path
+      && !JSON.stringify(listedOrder).includes('tracking_token'),
+    'La liste entreprise doit exposer uniquement l’état du lien, jamais le secret ou son chemin.');
+    if (foreignCookie) {
+      const foreignReveal = await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/reveal`, {
+        method: 'POST', headers: { Cookie: foreignCookie },
+      });
+      const foreignRotate = await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+        method: 'POST', headers: { Cookie: foreignCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expiresInDays: 7, expectedVersion: listedOrder.trackingLink.version,
+          idempotencyKey: `smoke-foreign-rotate-${requestToken}`,
+        }),
+      });
+      const foreignRevoke = await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/revoke`, {
+        method: 'POST', headers: { Cookie: foreignCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason: 'Tentative entreprise etrangere', expectedVersion: listedOrder.trackingLink.version,
+          idempotencyKey: `smoke-foreign-revoke-${requestToken}`,
+        }),
+      });
+      ensure([foreignReveal.status, foreignRotate.status, foreignRevoke.status].every((status) => status === 404),
+        'Une autre entreprise ne doit ni révéler, ni renouveler, ni révoquer ce lien.');
+    }
+    const revealed = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/reveal`, {
+      method: 'POST', headers: { Cookie: cookie },
+    }));
+    ensure(revealed.response.ok && revealed.payload.trackingLink?.path === converted.payload.path,
+      'La révélation unitaire et auditée du lien a échoué.');
+
+    const originalTrackingPath = publicTrackingPath;
+    const rotationKey = `smoke-tracking-rotate-${requestToken}`;
+    const rotated = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresInDays: 3, expectedVersion: listedOrder.trackingLink.version, idempotencyKey: rotationKey }),
+    }));
+    ensure(rotated.response.ok && rotated.payload.trackingLink?.path,
+      'Le renouvellement du lien de suivi a échoué.');
+    publicTrackingPath = rotated.payload.trackingLink.path.replace('/suivi/', '/api/tracking/');
+    ensure(publicTrackingPath !== originalTrackingPath, 'La rotation doit produire un nouveau lien.');
+    const invalidatedOriginal = await fetch(`${baseUrl}${originalTrackingPath}`);
+    ensure(invalidatedOriginal.status === 404, 'L’ancien lien doit être invalidé immédiatement après rotation.');
+    const repeatedRotation = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresInDays: 3, expectedVersion: listedOrder.trackingLink.version, idempotencyKey: rotationKey }),
+    }));
+    ensure(repeatedRotation.response.ok && repeatedRotation.payload.alreadyApplied
+      && repeatedRotation.payload.trackingLink.path === rotated.payload.trackingLink.path,
+    'La rotation répétée doit rester idempotente.');
+    const conflictingRotation = await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresInDays: 7, expectedVersion: listedOrder.trackingLink.version, idempotencyKey: rotationKey }),
+    });
+    ensure(conflictingRotation.status === 409, 'Une clé de rotation réutilisée avec une autre durée doit être refusée.');
+    const staleRotation = await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expiresInDays: 7, expectedVersion: listedOrder.trackingLink.version,
+        idempotencyKey: `smoke-tracking-stale-${requestToken}`,
+      }),
+    });
+    ensure(staleRotation.status === 409, 'Une seconde rotation fondée sur une version ancienne doit être refusée.');
+
+    const revocationKey = `smoke-tracking-revoke-${requestToken}`;
+    const revoked = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/revoke`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Lien volontairement révoqué pendant le test', expectedVersion: rotated.payload.trackingLink.version, idempotencyKey: revocationKey }),
+    }));
+    ensure(revoked.response.ok && revoked.payload.trackingLink?.state === 'revoked', 'La révocation du lien a échoué.');
+    const invalidatedRotated = await fetch(`${baseUrl}${publicTrackingPath}`);
+    ensure(invalidatedRotated.status === 404, 'Un lien révoqué doit être refusé publiquement.');
+    const repeatedRevocation = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/revoke`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Lien volontairement révoqué pendant le test', expectedVersion: rotated.payload.trackingLink.version, idempotencyKey: revocationKey }),
+    }));
+    ensure(repeatedRevocation.response.ok && repeatedRevocation.payload.alreadyApplied,
+      'La révocation répétée doit rester idempotente.');
+
+    const reissued = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresInDays: 7, expectedVersion: revoked.payload.trackingLink.version, idempotencyKey: `smoke-tracking-reissue-${requestToken}` }),
+    }));
+    ensure(reissued.response.ok && reissued.payload.trackingLink?.state === 'active',
+      'La réémission après révocation a échoué.');
+    publicTrackingPath = reissued.payload.trackingLink.path.replace('/suivi/', '/api/tracking/');
+    const reissuedPublicTracking = await fetch(`${baseUrl}${publicTrackingPath}`);
+    ensure(reissuedPublicTracking.ok, 'Le nouveau lien réémis doit être utilisable.');
+    const replayedOldRevocation = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/revoke`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'Lien volontairement révoqué pendant le test',
+        expectedVersion: rotated.payload.trackingLink.version,
+        idempotencyKey: revocationKey,
+      }),
+    }));
+    ensure(replayedOldRevocation.response.ok && replayedOldRevocation.payload.alreadyApplied,
+      'Le rejeu tardif de l’ancienne révocation doit être reconnu.');
+    ensure((await fetch(`${baseUrl}${publicTrackingPath}`)).ok,
+      'Le rejeu d’une ancienne révocation ne doit pas désactiver le nouveau lien.');
+
+    const pathBeforeConcurrentRotation = publicTrackingPath;
+    const concurrentRotationPayloads = await Promise.all([
+      `smoke-tracking-concurrent-a-${requestToken}`,
+      `smoke-tracking-concurrent-b-${requestToken}`,
+    ].map((idempotencyKey) => fetch(`${baseUrl}/api/app/orders/${orderId}/tracking-link/rotate`, {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expiresInDays: 7,
+        expectedVersion: reissued.payload.trackingLink.version,
+        idempotencyKey,
+      }),
+    }).then(json)));
+    const concurrentWinners = concurrentRotationPayloads.filter(({ response }) => response.ok);
+    const concurrentLosers = concurrentRotationPayloads.filter(({ response }) => response.status === 409);
+    const concurrentWinner = concurrentWinners[0];
+    ensure(concurrentWinners.length === 1 && concurrentLosers.length === 1
+      && concurrentWinner?.payload.trackingLink?.path,
+      'Deux rotations concurrentes doivent produire exactement un succès et un conflit 409.');
+    publicTrackingPath = concurrentWinner.payload.trackingLink.path.replace('/suivi/', '/api/tracking/');
+    ensure((await fetch(`${baseUrl}${pathBeforeConcurrentRotation}`)).status === 404,
+      'Le lien remplacé par la rotation concurrente doit être refusé.');
+    ensure((await fetch(`${baseUrl}${publicTrackingPath}`)).ok,
+      'Le seul lien issu de la rotation concurrente gagnante doit fonctionner.');
+    await verifyTrackingLinkControlsBrowser(cookie, orderId);
 
     const paymentConfigurationKey = `smoke-payment-configure-${requestToken}`;
     const configuredPayment = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/payment/configure`, {
@@ -522,6 +696,10 @@ async function run() {
           const order = await client.query('SELECT id FROM orders WHERE customer_request_id = $1', [requestId]);
           orderId = order.rows[0]?.id || orderId;
           if (orderId) {
+            const trackingLink = await client.query('SELECT id FROM tracking_links WHERE order_id = $1', [orderId]);
+            if (trackingLink.rows[0]) {
+              await client.query("DELETE FROM audit_logs WHERE entity_type = 'tracking_link' AND entity_id = $1", [trackingLink.rows[0].id]);
+            }
             await client.query("DELETE FROM audit_logs WHERE entity_type = 'order' AND entity_id = $1", [orderId]);
             await client.query('DELETE FROM orders WHERE id = $1', [orderId]);
           }
@@ -532,6 +710,11 @@ async function run() {
           if (operatorSessionHash) await client.query('DELETE FROM app_sessions WHERE token_hash = $1', [operatorSessionHash]);
           await client.query('DELETE FROM app_sessions WHERE user_id = $1', [operatorUserId]);
           await client.query('DELETE FROM users WHERE id = $1', [operatorUserId]);
+        }
+        if (foreignCompanyId) {
+          if (foreignSessionHash) await client.query('DELETE FROM app_sessions WHERE token_hash = $1', [foreignSessionHash]);
+          await client.query('DELETE FROM company_memberships WHERE company_id = $1', [foreignCompanyId]);
+          await client.query('DELETE FROM companies WHERE id = $1', [foreignCompanyId]);
         }
         await client.query('COMMIT');
       } catch (error) {

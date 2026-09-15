@@ -255,13 +255,16 @@ La carte d'exploitation restitue désormais la flotte de l'entreprise, les posit
 
 Le suivi client mobile montre désormais sa propre destination, les informations minimales du colis et la position autorisée du livreur uniquement pendant la fenêtre d'exécution. La position locale du client reste dans son navigateur. Le socle de routage accepte un fournisseur OSRM privé, valide ses réponses et conserve leur provenance, mais reste désactivé tant que le profil moto n'a pas passé le banc terrain Bénin. Aucune ETA publique n'est encore autorisée.
 
+Les liens de suivi disposent désormais d’un cycle expirant, d’un renouvellement et d’une révocation avec concurrence maîtrisée, idempotence durable, affichage unitaire audité et migration progressive hors du stockage en clair. La limitation d’abus est suffisante pour le pilote à une seule réplique ; Redis reste un prérequis à la réplication.
+
 Le prochain lot poursuit le produit dans cet ordre :
 
-1. déployer un moteur privé de qualification et comparer OSRM/Valhalla sur des routes moto sentinelles du Bénin ;
-2. structurer les créneaux et temps de service avant toute optimisation automatique ;
-3. renforcer les conflits de capacité pendant une tournée active ;
-4. ajouter révocation/rotation des liens de suivi et limitation de débit ;
-5. démarrer le CRM opérationnel et les indicateurs vérifiables.
+1. structurer les créneaux, temps de service et contraintes terrain sans produire de fausse ETA ;
+2. renforcer les conflits de capacité et les changements d’affectation pendant une tournée active ;
+3. démarrer le CRM opérationnel, les vues filtrées, les indicateurs vérifiables et l’export Excel ;
+4. qualifier OSRM/Valhalla sur des routes moto sentinelles du Bénin avant toute activation publique ;
+5. migrer la limitation vers Redis avant d’autoriser plusieurs répliques ;
+6. préparer ensuite les notifications WAHA sans en faire une source de vérité.
 
 ## Règles transversales
 

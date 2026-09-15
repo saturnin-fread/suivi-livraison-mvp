@@ -62,6 +62,8 @@ delivery-app          → filtrage par entreprise et par lien public
 
 La carte client reçoit un sous-ensemble strict concernant une seule commande. La carte entreprise agrège uniquement les données de l'organisation connectée.
 
+La première carte entreprise utilise `GET /api/app/operations-map`. Le serveur charge les appareils et positions courantes depuis Traccar, les croise avec les seuls livreurs de `req.auth.company_id`, puis ajoute commandes, incidents et tournées issus de `delivery`. En cas d'échec Traccar, l'API renvoie un état GPS indisponible mais conserve les données métier. Le navigateur ne reçoit pas `traccar_unique_id`.
+
 ## Sources de vérité
 
 - Base `delivery` : organisations, comptes, demandes, commandes, tournées, CRM, preuves, facturation et audit.
@@ -93,6 +95,12 @@ DATABASE_URL
 ADMIN_USER
 ADMIN_PASSWORD
 OTP_PEPPER
+MAP_TILE_URL (facultatif)
+MAP_TILE_ATTRIBUTION (facultatif)
+MAP_TILE_MAX_ZOOM (facultatif)
+MAP_SATELLITE_TILE_URL (facultatif)
+MAP_SATELLITE_ATTRIBUTION (facultatif)
+MAP_SATELLITE_MAX_ZOOM (facultatif)
 ```
 
 Les valeurs ne sont pas documentées ici volontairement.

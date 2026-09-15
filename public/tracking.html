@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Suivi de votre livraison</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <style>
       :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
       * { box-sizing: border-box; }
@@ -37,7 +37,7 @@
         <footer id="updated">Dernière mise à jour : —</footer>
       </section>
     </main>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="/vendor/leaflet/leaflet.js"></script>
     <script>
       const token = window.location.pathname.split('/').pop();
       const map = L.map('map').setView([6.37, 2.43], 12);

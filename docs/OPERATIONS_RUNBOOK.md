@@ -39,6 +39,7 @@ La file hors connexion du livreur se trouve sur son téléphone, pas dans Postgr
 /app/login   espace de connexion d'une entreprise
 /app         opérations quotidiennes de l'entreprise
 /app/tournees préparation et suivi des tournées multi-colis
+/app/carte   flotte, destinations et ordre opérationnel restant
 /driver      espace mobile d'un livreur invité et lié à son profil
 /admin/login administration de la plateforme uniquement
 ```
@@ -59,6 +60,7 @@ railway up --service delivery-app --environment production
 npm run test:syntax
 npm run test:payments
 npm run test:runs
+npm run test:map
 npm run test:smoke
 npm run test:driver
 ```
@@ -79,6 +81,8 @@ $env:CHROME_EXECUTABLE='C:\Program Files\Google\Chrome\Application\chrome.exe'
 npm run test:runs
 ```
 
+Le contrôle de la carte d'exploitation utilise les mêmes variables Playwright avec `npm run test:map`. Les fonds de carte facultatifs sont décrits dans `docs/OPERATIONS_MAP.md`. En l'absence de fournisseur satellite autorisé, ne pas ajouter d'URL de tuiles récupérée dans une application tierce.
+
 Exécuter les scénarios fonctionnels l'un après l'autre. Ils créent des données temporaires identifiables dans la base `delivery` et les suppriment dans un bloc de nettoyage final.
 
 ## Restaurer la compréhension du système
@@ -90,10 +94,11 @@ Lire dans cet ordre :
 3. `docs/ARCHITECTURE.md`
 4. `docs/DATA_MODEL.md`
 5. `docs/DELIVERY_RUNS.md`
-6. `docs/OFFLINE_OPERATIONS.md`
-7. `server.js`
-8. `public/app.js`
-9. `public/request.html`
+6. `docs/OPERATIONS_MAP.md`
+7. `docs/OFFLINE_OPERATIONS.md`
+8. `server.js`
+9. `public/app.js`
+10. `public/request.html`
 
 ## Secrets
 

@@ -91,3 +91,11 @@ L'encaissement finalisé ne peut plus être annulé ni réécrit. Un rembourseme
 ## 2026-09-15 — Manifeste livreur ordonné mais non coercitif
 
 Le livreur voit exactement l'ordre confirmé par l'exploitation, sa progression et le prochain arrêt. L'ordre guide le travail mais ne bloque pas un détour terrain : client absent, route coupée ou urgence peuvent imposer une adaptation. Tant qu'un moteur routier fiable n'est pas intégré, aucune durée ni ETA n'est déduite de cet ordre. Les autres arrêts restent strictement absents de l'API publique du client.
+
+## 2026-09-15 — Carte d'exploitation dégradée sans faux routage
+
+La carte entreprise assemble côté serveur les positions Traccar et les objets de la base `delivery`, puis filtre la réponse par entreprise. Une indisponibilité GPS ne rend pas les commandes invisibles. La première ligne entre arrêts est volontairement pointillée et décrite comme un ordre opérationnel, jamais comme une route. Les distances routières et ETA attendront un moteur dédié dont la provenance et l'heure de calcul seront conservées.
+
+## 2026-09-15 — Leaflet local et fonds cartographiques configurables
+
+Leaflet est installé avec l'application et non chargé depuis un CDN au moment de la visite. Le fond OpenStreetMap standard reste un secours de pilote sans garantie commerciale. L'URL, l'attribution et le zoom sont configurables. Le satellite n'est affiché qu'avec un fournisseur autorisé ; aucune tuile d'un service tiers n'est extraite hors de ses conditions.

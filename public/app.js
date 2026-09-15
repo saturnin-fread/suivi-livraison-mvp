@@ -8,6 +8,16 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 
 const formatDate = (value) => value ? new Date(value).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 const formatDateOnly = (value) => value ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(`${String(value).slice(0, 10)}T00:00:00Z`)) : '—';
+const formatAge = (value) => {
+  const elapsed = value ? Date.now() - new Date(value).getTime() : NaN;
+  if (!Number.isFinite(elapsed) || elapsed < 0) return 'inconnue';
+  const minutes = Math.floor(elapsed / 60000);
+  if (minutes < 1) return 'moins d’une minute';
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ${minutes % 60} min`;
+  return `${Math.floor(hours / 24)} j`;
+};
 const formatMoney = (value, currency = 'XOF') => value == null ? '—' : new Intl.NumberFormat('fr-FR', {
   style: 'currency', currency, maximumFractionDigits: 0,
 }).format(Number(value));
@@ -766,6 +776,262 @@ async function renderIncidentDetail(id) {
   bindForm('releaseHold', `/api/app/incidents/${encodeURIComponent(id)}/retention-hold/release`, 'retention-release');
 }
 
+async function renderOperationsMap() {
+  setHeader('Carte d’exploitation', 'Flotte, destinations et ordre des arrêts');
+  page.innerHTML = `<div class="page-header"><div><h1>Carte d’exploitation</h1><p class="subtitle">Suivez les opérations de votre entreprise sans exposer les autres comptes ni les autres clients.</p></div></div>
+    <section class="grid stats map-stats" id="mapStats" aria-live="polite"></section>
+    <section class="card operations-toolbar" aria-label="Commandes de la carte">
+      <div class="field map-driver-field"><label for="mapDriverSelect">Livreur à examiner</label><select id="mapDriverSelect"><option value="">Vue de toute la flotte</option></select></div>
+      <div class="actions map-actions"><button class="secondary" id="fitMap" type="button">Tout afficher</button><button class="secondary" id="locateOperator" type="button">Ma position</button><button class="secondary" id="centerDriver" type="button" disabled>Centrer sur le livreur</button><button class="secondary" id="refreshMap" type="button">Actualiser</button></div>
+      <div class="map-options"><label><input id="showDestinations" type="checkbox" checked /> Destinations</label><label><input id="autoRefreshMap" type="checkbox" checked /> Actualisation automatique</label></div>
+      <p class="map-update" id="mapUpdate" role="status">Chargement des opérations…</p>
+    </section>
+    <div id="mapServiceNotice"></div>
+    <section class="operations-layout">
+      <div class="card operations-map-card"><div id="operationsMap" aria-label="Carte des livreurs et destinations"></div></div>
+      <aside class="card operations-panel" id="operationsPanel"><div class="empty">Sélectionnez un livreur pour voir ses colis et l’ordre restant.</div></aside>
+    </section>`;
+
+  if (typeof L === 'undefined') throw new Error('La carte n’a pas pu être chargée. Rechargez la page.');
+  const map = L.map('operationsMap', { zoomControl: true }).setView([6.37, 2.43], 10);
+  const fleetLayer = L.featureGroup().addTo(map);
+  const destinationLayer = L.featureGroup().addTo(map);
+  const sequenceLayer = L.layerGroup().addTo(map);
+  const operatorLayer = L.layerGroup().addTo(map);
+  let layersConfigured = false;
+  let snapshot = null;
+  let selectedDriverId = '';
+  let refreshTimer = null;
+  let refreshing = false;
+
+  const driverSelect = document.getElementById('mapDriverSelect');
+  const showDestinations = document.getElementById('showDestinations');
+  const autoRefresh = document.getElementById('autoRefreshMap');
+  const mapUpdate = document.getElementById('mapUpdate');
+
+  const ordersForDriver = (driver) => {
+    const seen = new Set();
+    const result = [];
+    for (const run of driver.runs || []) {
+      for (const stop of run.stops || []) {
+        if (seen.has(String(stop.id))) continue;
+        seen.add(String(stop.id));
+        result.push({ ...stop, run });
+      }
+    }
+    for (const order of driver.unplannedOrders || []) {
+      if (seen.has(String(order.id))) continue;
+      seen.add(String(order.id));
+      result.push({ ...order, run: null });
+    }
+    return result;
+  };
+
+  const selectedDriver = () => snapshot?.drivers.find((driver) => String(driver.id) === String(selectedDriverId));
+
+  function renderStats() {
+    const summary = snapshot.summary;
+    document.getElementById('mapStats').innerHTML = `
+      <article class="stat"><span>Livreurs</span><strong>${escapeHtml(summary.drivers)}</strong></article>
+      <article class="stat"><span>Positions reçues</span><strong>${escapeHtml(summary.locatedDrivers)}</strong></article>
+      <article class="stat"><span>Commandes actives</span><strong>${escapeHtml(summary.activeOrders)}</strong></article>
+      <article class="stat"><span>Tournées ouvertes</span><strong>${escapeHtml(summary.openRuns)}</strong></article>
+      <article class="stat"><span>GPS à vérifier</span><strong>${escapeHtml(summary.staleDrivers)}</strong></article>
+      <article class="stat"><span>Incidents ouverts</span><strong>${escapeHtml(summary.openIncidents)}</strong></article>`;
+  }
+
+  function configureLayers() {
+    if (layersConfigured) return;
+    const baseConfig = snapshot.mapConfig.base;
+    const street = L.tileLayer(baseConfig.url, {
+      maxZoom: baseConfig.maxZoom,
+      attribution: baseConfig.attribution,
+    }).addTo(map);
+    const baseLayers = { Plan: street };
+    if (snapshot.mapConfig.satellite) {
+      const satellite = snapshot.mapConfig.satellite;
+      baseLayers.Satellite = L.tileLayer(satellite.url, {
+        maxZoom: satellite.maxZoom,
+        attribution: satellite.attribution,
+      });
+    }
+    L.control.layers(baseLayers, { Livreurs: fleetLayer, Destinations: destinationLayer }, { collapsed: true }).addTo(map);
+    L.control.scale({ imperial: false }).addTo(map);
+    layersConfigured = true;
+  }
+
+  function populateDriverSelect() {
+    const previous = selectedDriverId;
+    driverSelect.innerHTML = `<option value="">Vue de toute la flotte</option>${snapshot.drivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)} · ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)}</option>`).join('')}`;
+    if (snapshot.drivers.some((driver) => String(driver.id) === String(previous))) driverSelect.value = previous;
+    else selectedDriverId = '';
+  }
+
+  function renderPanel() {
+    const panel = document.getElementById('operationsPanel');
+    const driver = selectedDriver();
+    document.getElementById('centerDriver').disabled = !driver?.position;
+    if (!driver) {
+      panel.innerHTML = `<h2>Vue d’ensemble</h2><p class="subtitle">Cliquez sur un livreur ou choisissez-le dans la liste pour examiner sa charge.</p>
+        <div class="detail-grid compact"><div class="detail"><span>Destinations positionnées</span><strong>${escapeHtml(snapshot.summary.locatedDestinations)} / ${escapeHtml(snapshot.summary.activeOrders)}</strong></div><div class="detail"><span>Actualisation</span><strong>${escapeHtml(formatDate(snapshot.generatedAt))}</strong></div></div>
+        <div class="notice">La ligne entre les arrêts représente uniquement l’ordre opérationnel confirmé. Ce n’est pas encore un itinéraire routier et aucune heure d’arrivée n’est inventée.</div>`;
+      return;
+    }
+    const speedKmh = driver.position?.speedKnots != null && Number.isFinite(Number(driver.position.speedKnots))
+      ? Number(driver.position.speedKnots) * 1.852 : null;
+    const phone = String(driver.phone || '').replace(/[^+\d]/g, '');
+    const runCards = (driver.runs || []).map((run) => `<section class="run-map-card"><div class="run-map-heading"><div><strong>${escapeHtml(run.name)}</strong><small>${escapeHtml(formatDateOnly(run.serviceDate))}</small></div>${badge(runStatusLabels[run.status] || run.status)}</div>
+      <p class="subtitle">${escapeHtml(run.completedStops)} arrêt(s) terminé(s) sur ${escapeHtml(run.totalStops)}</p>
+      ${run.stops.length ? `<ol class="map-stop-list">${run.stops.map((stop) => `<li><span class="stop-number">${escapeHtml(stop.sequence)}</span><div><strong>${escapeHtml(stop.customerName || `Commande n° ${stop.id}`)}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(stop.status)}</small>${stop.openIncidents ? `<span class="map-incident">${escapeHtml(stop.openIncidents)} incident(s) ouvert(s)</span>` : ''}</div><a href="/app/commandes/${escapeHtml(stop.id)}" aria-label="Ouvrir la commande ${escapeHtml(stop.id)}">Voir</a></li>`).join('')}</ol>` : '<p class="empty">Aucun arrêt restant dans cette tournée.</p>'}
+      <a class="button secondary" href="/app/tournees/${escapeHtml(run.id)}">Ouvrir la tournée</a></section>`).join('');
+    const unplanned = (driver.unplannedOrders || []).length ? `<section class="run-map-card"><h3>Hors tournée</h3><ul class="map-stop-list unplanned">${driver.unplannedOrders.map((order) => `<li><span class="stop-number">•</span><div><strong>${escapeHtml(order.customerName || `Commande n° ${order.id}`)}</strong><small>${escapeHtml(order.neighborhood || order.landmark || order.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(order.status)}</small></div><a href="/app/commandes/${escapeHtml(order.id)}">Voir</a></li>`).join('')}</ul></section>` : '';
+    panel.innerHTML = `<div class="panel-heading"><div><h2>${escapeHtml(driver.name)}</h2><p class="subtitle">${escapeHtml(driver.vehicleType)} · ${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)} colis actifs</p></div>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}</div>
+      <div class="detail-grid compact"><div class="detail"><span>Dernière position</span><strong>${driver.position ? escapeHtml(formatAge(driver.position.timestamp)) : 'Indisponible'}</strong></div><div class="detail"><span>Précision</span><strong>${driver.position?.accuracy != null && Number.isFinite(Number(driver.position.accuracy)) ? `${Math.round(Number(driver.position.accuracy))} m` : '—'}</strong></div><div class="detail"><span>Vitesse reçue</span><strong>${speedKmh == null ? '—' : `${speedKmh.toFixed(1)} km/h`}</strong></div><div class="detail"><span>Incidents</span><strong>${escapeHtml(driver.openIncidents)}</strong></div></div>
+      <div class="actions panel-actions">${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler le livreur</a>` : ''}<a class="button secondary" href="/app/livreurs">Gérer les livreurs</a></div>
+      ${driver.position?.stale ? '<div class="notice warning">Cette position a plus de 10 minutes : ne la présentez pas comme une position en direct.</div>' : !driver.position ? '<div class="notice warning">Aucune coordonnée GPS exploitable n’est disponible pour ce livreur.</div>' : ''}
+      ${runCards || '<div class="empty">Aucune tournée ouverte pour ce livreur.</div>'}${unplanned}
+      <div class="notice">Les arrêts sont affichés dans l’ordre enregistré par l’exploitation. Le temps routier et le trafic ne sont pas encore calculés.</div>`;
+  }
+
+  function redrawMap({ fit = false } = {}) {
+    fleetLayer.clearLayers();
+    destinationLayer.clearLayers();
+    sequenceLayer.clearLayers();
+    const allBounds = [];
+    const driver = selectedDriver();
+    for (const item of snapshot.drivers) {
+      if (!item.position) continue;
+      const point = [item.position.latitude, item.position.longitude];
+      const selected = driver && String(driver.id) === String(item.id);
+      const icon = L.divIcon({
+        className: 'operations-div-icon',
+        html: `<span class="driver-map-marker state-${escapeHtml(item.operationalState)} ${selected ? 'selected' : ''}">🏍</span>`,
+        iconSize: [36, 36], iconAnchor: [18, 18],
+      });
+      const marker = L.marker(point, { icon, title: item.name }).addTo(fleetLayer)
+        .bindTooltip(escapeHtml(item.name), { direction: 'top', offset: [0, -14] });
+      marker.on('click', () => {
+        selectedDriverId = String(item.id);
+        driverSelect.value = selectedDriverId;
+        redrawMap();
+        renderPanel();
+      });
+      allBounds.push(point);
+    }
+
+    const destinationEntries = [];
+    for (const item of snapshot.drivers) {
+      for (const order of ordersForDriver(item)) {
+        if (order.destination) destinationEntries.push({ driver: item, order });
+      }
+    }
+    if (showDestinations.checked) {
+      const selectedOrders = driver ? ordersForDriver(driver).filter((order) => order.destination) : [];
+      for (const entry of destinationEntries) {
+        const isSelected = driver && String(entry.driver.id) === String(driver.id);
+        const label = isSelected && entry.order.sequence != null ? String(entry.order.sequence) : '•';
+        const point = [entry.order.destination.latitude, entry.order.destination.longitude];
+        const icon = L.divIcon({
+          className: 'operations-div-icon',
+          html: `<span class="destination-map-marker ${isSelected ? 'selected' : ''}">${escapeHtml(label)}</span>`,
+          iconSize: [30, 30], iconAnchor: [15, 15],
+        });
+        L.marker(point, { icon, title: entry.order.customerName || `Commande ${entry.order.id}` }).addTo(destinationLayer)
+          .bindPopup(`<strong>${escapeHtml(entry.order.customerName || `Commande n° ${entry.order.id}`)}</strong><br>${escapeHtml(entry.order.neighborhood || entry.order.landmark || entry.order.deliveryAddress || '')}<br><small>${escapeHtml(entry.driver.name)} · ${escapeHtml(entry.order.status)}</small>`);
+        allBounds.push(point);
+      }
+      if (driver) {
+        (driver.runs || []).forEach((run, runIndex) => {
+          const runPoints = (run.stops || []).filter((stop) => stop.destination)
+            .map((stop) => [stop.destination.latitude, stop.destination.longitude]);
+          if (runIndex === 0 && driver.position) runPoints.unshift([driver.position.latitude, driver.position.longitude]);
+          if (runPoints.length > 1) L.polyline(runPoints, {
+            color: run.status === 'active' ? '#185fa7' : '#6b7280',
+            weight: 3, dashArray: '7 9', opacity: run.status === 'active' ? 0.8 : 0.6,
+          }).addTo(sequenceLayer);
+        });
+      }
+    }
+    renderPanel();
+    if (fit && allBounds.length) map.fitBounds(allBounds, { padding: [32, 32], maxZoom: 15 });
+  }
+
+  function scheduleRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (!autoRefresh.checked || !snapshot || document.hidden) return;
+    refreshTimer = setTimeout(async () => {
+      await loadSnapshot(false);
+      scheduleRefresh();
+    }, Math.max(10, Number(snapshot.refreshAfterSeconds || 15)) * 1000);
+  }
+
+  async function loadSnapshot(fit = false) {
+    if (refreshing) return;
+    refreshing = true;
+    document.getElementById('refreshMap').disabled = true;
+    mapUpdate.textContent = 'Actualisation en cours…';
+    try {
+      snapshot = await api('/api/app/operations-map');
+      configureLayers();
+      renderStats();
+      populateDriverSelect();
+      const serviceNotice = document.getElementById('mapServiceNotice');
+      serviceNotice.innerHTML = snapshot.locationService.status === 'online' ? '' : `<div class="notice warning">${escapeHtml(snapshot.locationService.message)}</div>`;
+      if (!snapshot.mapConfig.satellite) serviceNotice.insertAdjacentHTML('beforeend', '<div class="notice">Le mode satellite apparaîtra ici dès qu’un fournisseur d’imagerie autorisé aura été configuré.</div>');
+      if (snapshot.summary.ordersTruncated) serviceNotice.insertAdjacentHTML('beforeend', '<div class="notice warning">Plus de 500 commandes sont actives. Utilisez les vues de commandes et tournées pour les éléments non affichés ici.</div>');
+      redrawMap({ fit });
+      mapUpdate.textContent = `Données actualisées à ${new Date(snapshot.generatedAt).toLocaleTimeString('fr-FR')} · prochaine actualisation dans ${snapshot.refreshAfterSeconds} s`;
+      scheduleRefresh();
+    } catch (error) {
+      mapUpdate.textContent = `Échec de l’actualisation : ${error.message}`;
+      document.getElementById('mapServiceNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    } finally {
+      refreshing = false;
+      document.getElementById('refreshMap').disabled = false;
+    }
+  }
+
+  driverSelect.addEventListener('change', () => {
+    selectedDriverId = driverSelect.value;
+    redrawMap();
+    const driver = selectedDriver();
+    if (driver?.position) map.setView([driver.position.latitude, driver.position.longitude], Math.max(map.getZoom(), 14));
+  });
+  showDestinations.addEventListener('change', () => redrawMap());
+  autoRefresh.addEventListener('change', scheduleRefresh);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = null;
+      mapUpdate.textContent = 'Actualisation suspendue pendant que cet onglet est en arrière-plan.';
+    } else if (autoRefresh.checked) {
+      loadSnapshot(false);
+    }
+  });
+  document.getElementById('fitMap').addEventListener('click', () => redrawMap({ fit: true }));
+  document.getElementById('centerDriver').addEventListener('click', () => {
+    const driver = selectedDriver();
+    if (driver?.position) map.setView([driver.position.latitude, driver.position.longitude], 15);
+  });
+  document.getElementById('refreshMap').addEventListener('click', () => loadSnapshot(false));
+  document.getElementById('locateOperator').addEventListener('click', () => {
+    mapUpdate.textContent = 'Recherche de votre position…';
+    map.locate({ setView: false, enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+  });
+  map.on('locationfound', (event) => {
+    operatorLayer.clearLayers();
+    L.circleMarker(event.latlng, { radius: 8, color: '#1d4ed8', fillColor: '#60a5fa', fillOpacity: 0.9 }).addTo(operatorLayer).bindTooltip('Votre position');
+    L.circle(event.latlng, { radius: event.accuracy, color: '#60a5fa', weight: 1, fillOpacity: 0.08 }).addTo(operatorLayer);
+    map.setView(event.latlng, Math.max(map.getZoom(), 15));
+    mapUpdate.textContent = `Votre position est affichée avec une précision d’environ ${Math.round(event.accuracy)} m.`;
+  });
+  map.on('locationerror', (event) => {
+    mapUpdate.textContent = event.code === 1 ? 'Autorisez la localisation dans le navigateur pour utiliser ce bouton.' : 'Votre position n’a pas pu être obtenue.';
+  });
+  await loadSnapshot(true);
+  setTimeout(() => map.invalidateSize(), 0);
+}
+
 async function renderDrivers() {
   setHeader('Livreurs', 'Disponibilité, charge et état GPS');
   const drivers = await api('/api/app/drivers');
@@ -906,7 +1172,7 @@ async function start() {
     if (path === '/app/commandes') return await renderOrders();
     if (path === '/app/tournees') return await renderRuns();
     if (path === '/app/incidents') return await renderIncidents();
-    if (path === '/app/carte') return renderPlaceholder('Carte d’exploitation', 'Flotte, destinations et tournées', ['Tous les livreurs autorisés', 'Arrêts et parcours restant', 'Filtres et incidents']);
+    if (path === '/app/carte') return await renderOperationsMap();
     if (path === '/app/livreurs') return await renderDrivers();
     if (path === '/app/equipe') return await renderTeam();
     if (path === '/app/clients') return renderPlaceholder('Clients', 'CRM opérationnel', ['Historique des commandes', 'Lieux et repères', 'Interactions et incidents']);

@@ -10,6 +10,11 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Encaissement et rapprochement](PAYMENT_RECONCILIATION.md)
 - [Espace livreur et contrôle d'accès](DRIVER_PORTAL_ACCESS.md)
 - [Tournées multi-colis](DELIVERY_RUNS.md)
+- [Carte d'exploitation](OPERATIONS_MAP.md)
+- [Plan cartes, routage et estimations](MAPS_AND_ROUTING_PLAN.md)
+- [Plan CRM, analyses et exports](CRM_ANALYTICS_PLAN.md)
+- [Plan de plateforme SaaS](SAAS_PLATFORM_PLAN.md)
+- [Barrières qualité et confidentialité](QUALITY_AND_PRIVACY_GATES.md)
 - [Fonctionnement hors connexion du livreur](OFFLINE_OPERATIONS.md)
 - [Architecture technique](ARCHITECTURE.md)
 - [Modèle de données](DATA_MODEL.md)
@@ -36,7 +41,9 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - Les actions terrain sensibles, les preuves complémentaires, les dossiers d'incident et les tournées multi-colis disposent d'une première version testée.
 - La page `/app/tournees` permet de créer, corriger, ordonner, planifier, démarrer, annuler et terminer une tournée avec historique.
 - Les transitions et incidents peuvent attendre une reprise réseau contrôlée sur le téléphone du livreur ; les actions sensibles restent en ligne.
-- Le prochain lot traite les ajustements financiers postérieurs à une commande terminée.
+- Les ajustements financiers après clôture et le manifeste ordonné du livreur sont disponibles et testés.
+- La carte d'exploitation affiche la flotte, les destinations, les tournées, les incidents et l'ordre restant sans inventer de route ni d'ETA.
+- Les prochaines phases cartes/routage, CRM/exports, plateforme SaaS et qualité disposent de plans spécialisés relus avant implémentation.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

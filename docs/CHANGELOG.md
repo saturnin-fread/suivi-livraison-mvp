@@ -2,6 +2,14 @@
 
 ## 2026-09-15
 
+- Remplacement de la page réservée `/app/carte` par une carte d'exploitation fonctionnelle et cloisonnée par entreprise.
+- Ajout de la flotte, des destinations, des tournées ouvertes, de l'ordre restant, des commandes hors tournée et des incidents.
+- Ajout des boutons vue complète, localisation de l'opérateur, centrage livreur et actualisation manuelle ou automatique.
+- Distinction visible entre position récente, position ancienne et GPS indisponible, sans masquer les données métier lorsque Traccar échoue.
+- Ajout d'une ligne pointillée représentant uniquement l'ordre opérationnel, sans faux itinéraire ni fausse ETA.
+- Préparation d'un calque satellite configurable, désactivé tant qu'aucun fournisseur autorisé n'est défini.
+- Installation locale de Leaflet pour les cartes entreprise, client et formulaire, sans dépendance au CDN à l'ouverture.
+- Ajout d'un test API et navigateur mobile couvrant isolation, destination absente, tournées, incidents, ressources locales et débordement.
 - Ajout du manifeste de tournée dans le portail livreur avec ordre confirmé, progression et prochain arrêt.
 - Séparation visible entre arrêts planifiés et commandes encore hors tournée.
 - Ajout du contexte de tournée et du rang dans chaque fiche de livraison du livreur.

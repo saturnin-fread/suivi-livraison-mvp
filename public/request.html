@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Préparer ma livraison</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <style>
       body { margin: 0; background: #f4f7fb; color: #162033; font-family: Inter, system-ui, sans-serif; }
       main { max-width: 680px; margin: 0 auto; padding: 18px; }
@@ -31,7 +31,7 @@
       <div id="map"></div><p id="message"></p>
     </form>
   </section></main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="/vendor/leaflet/leaflet.js"></script>
   <script>
     const token = location.pathname.split('/').pop();
     const form = document.getElementById('form'); const message = document.getElementById('message'); const mapEl = document.getElementById('map');

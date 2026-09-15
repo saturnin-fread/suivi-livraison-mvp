@@ -134,7 +134,7 @@ Afficher seulement la livraison du client, avec une expérience claire et respec
 - une position ancienne n'est jamais présentée comme actuelle ;
 - l'estimation est affichée comme une fourchette et se recalcule.
 
-## Phase 6 — Carte d'exploitation et tournées multi-colis
+## Phase 6 — Carte d'exploitation et tournées multi-colis — lot 1 livré
 
 ### Objectif
 
@@ -251,11 +251,15 @@ Les corrections financières postérieures à la clôture sont désormais immuab
 
 Le portail livreur restitue désormais les tournées planifiées ou en cours, l'ordre confirmé des arrêts, le prochain arrêt et la progression. Les commandes hors tournée restent visibles séparément et le lien client ne reçoit aucun autre arrêt.
 
-Le prochain lot poursuit la phase 4 dans cet ordre :
+La carte d'exploitation restitue désormais la flotte de l'entreprise, les positions disponibles ou anciennes, les destinations, les incidents, les tournées ouvertes et l'ordre restant. Elle permet de localiser l'opérateur, de recentrer la carte, de filtrer les destinations et de couper l'actualisation automatique. La ligne pointillée matérialise uniquement l'ordre confirmé : aucune route ni ETA n'est inventée. Leaflet est servi localement et le mode satellite reste désactivé jusqu'à la configuration d'un fournisseur autorisé.
 
-1. préparer la carte d'exploitation routière et les estimations explicables ;
-2. renforcer les conflits de capacité pendant une tournée active ;
-3. structurer les créneaux et temps de service avant toute optimisation automatique.
+Le prochain lot poursuit le produit dans cet ordre :
+
+1. choisir et intégrer un moteur routier avec distances, durées et provenance explicites ;
+2. améliorer la carte publique du client sans révéler les autres arrêts ;
+3. structurer les créneaux et temps de service avant toute optimisation automatique ;
+4. renforcer les conflits de capacité pendant une tournée active ;
+5. démarrer le CRM opérationnel et les indicateurs vérifiables.
 
 ## Règles transversales
 

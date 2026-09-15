@@ -158,6 +158,13 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 
 ## Test I — cartes
 
+- vérifier que `GET /api/app/operations-map` exige une session d'exploitation et filtre simultanément par `company_id` ;
+- vérifier qu'aucun identifiant technique Traccar n'est envoyé au navigateur ;
+- vérifier la charge active, les incidents, les tournées ouvertes et l'ordre des arrêts ;
+- vérifier qu'une commande livrée est exclue et qu'une commande sans latitude/longitude reste sans marqueur ;
+- simuler une panne Traccar et conserver commandes, destinations et tournées avec un avertissement ;
+- tester la carte d'exploitation à 390 px sans débordement horizontal ;
+- tester le filtre des destinations et la sélection d'un livreur ;
 - tester ma position, recentrage, vue complète et suivi automatique ;
 - tester carte et satellite avec les attributions obligatoires ;
 - simuler position ancienne, point aberrant et coupure réseau ;

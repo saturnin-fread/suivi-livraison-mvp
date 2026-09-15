@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Demande reçue — Livraison</title>
     <link rel="stylesheet" href="/app.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <style>
       body{background:#f3f6fa}.public-page{max-width:720px;margin:0 auto;padding:24px 16px 60px}.success-mark{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;background:#e8f6ee;color:#157347;font-size:28px;font-weight:800}.summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}.summary div{padding:13px;border:1px solid var(--line);border-radius:9px}.summary span{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}#map{height:260px;border-radius:11px;margin-top:16px}.edit-form{margin-top:22px;border-top:1px solid var(--line);padding-top:22px}@media(max-width:600px){.summary,.form-grid{grid-template-columns:1fr}}
     </style>
@@ -16,7 +16,7 @@
     <p class="subtitle" id="intro">L’entreprise va vérifier vos informations avant de confirmer la livraison.</p>
     <div id="content">Chargement…</div>
   </section></main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="/vendor/leaflet/leaflet.js"></script>
   <script>
     const parts = location.pathname.split('/').filter(Boolean);
     const token = parts[1];

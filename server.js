@@ -53,9 +53,57 @@ const pool = process.env.DATABASE_URL
   : null;
 if (pool) pool.on('error', (error) => console.error('Unexpected PostgreSQL pool error:', error.message));
 
+const traccarFleetCache = { value: null, expiresAt: 0, pending: null };
+
+function traccarConfigured() {
+  return Boolean(process.env.TRACCAR_URL && process.env.TRACCAR_USER && process.env.TRACCAR_PASSWORD);
+}
+
+async function loadTraccarFleetSnapshot() {
+  if (!traccarConfigured()) {
+    return { status: 'not_configured', devices: [], positions: [], message: 'Le service GPS n’est pas configuré.' };
+  }
+  if (traccarFleetCache.value && Date.now() < traccarFleetCache.expiresAt) return traccarFleetCache.value;
+  if (traccarFleetCache.pending) return traccarFleetCache.pending;
+  traccarFleetCache.pending = (async () => {
+    try {
+      const auth = { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD };
+      const [devicesResponse, positionsResponse] = await Promise.all([
+        axios.get(`${process.env.TRACCAR_URL}/api/devices`, { auth, timeout: 10000 }),
+        axios.get(`${process.env.TRACCAR_URL}/api/positions`, { auth, timeout: 10000 }),
+      ]);
+      const value = {
+        status: 'online',
+        devices: Array.isArray(devicesResponse.data) ? devicesResponse.data : [],
+        positions: Array.isArray(positionsResponse.data) ? positionsResponse.data : [],
+        message: 'Positions GPS chargées.',
+      };
+      traccarFleetCache.value = value;
+      traccarFleetCache.expiresAt = Date.now() + 5000;
+      return value;
+    } catch (error) {
+      console.error('Traccar fleet snapshot error:', error.response?.status || error.message);
+      const value = {
+        status: 'unavailable', devices: [], positions: [],
+        message: 'Les opérations restent visibles, mais les positions GPS sont temporairement indisponibles.',
+      };
+      traccarFleetCache.value = value;
+      traccarFleetCache.expiresAt = Date.now() + 3000;
+      return value;
+    } finally {
+      traccarFleetCache.pending = null;
+    }
+  })();
+  return traccarFleetCache.pending;
+}
+
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: false }));
+app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules', 'leaflet', 'dist'), {
+  immutable: true,
+  maxAge: '30d',
+}));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
@@ -1940,22 +1988,212 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
       category: device?.category || null, activeOrders: driver.active_orders, operationalState,
     };
   };
-  if (!process.env.TRACCAR_URL || !process.env.TRACCAR_USER || !process.env.TRACCAR_PASSWORD) {
+  if (!traccarConfigured()) {
     return res.json(localDrivers.rows.map((driver) => enrich(driver, null)));
   }
-  try {
-    const response = await axios.get(`${process.env.TRACCAR_URL}/api/devices`, {
-      auth: { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD }, timeout: 10000,
-    });
-    const byUniqueId = new Map(response.data.map((device) => [device.uniqueId, device]));
-    const ranking = { available: 0, busy: 1, full: 2, pause: 3, stale: 4, offline: 5, off_duty: 6, incident: 7, inactive: 8 };
-    return res.json(localDrivers.rows
-      .map((driver) => enrich(driver, byUniqueId.get(driver.traccar_unique_id)))
-      .sort((a, b) => (ranking[a.operationalState] ?? 9) - (ranking[b.operationalState] ?? 9) || a.activeOrders - b.activeOrders || a.name.localeCompare(b.name)));
-  } catch (error) {
-    console.error('Drivers API error:', error.response?.status || error.message);
+  const fleetSnapshot = await loadTraccarFleetSnapshot();
+  if (fleetSnapshot.status !== 'online') {
     return res.json(localDrivers.rows.map((driver) => enrich(driver, null)));
   }
+  const byUniqueId = new Map(fleetSnapshot.devices.map((device) => [device.uniqueId, device]));
+  const ranking = { available: 0, busy: 1, full: 2, pause: 3, stale: 4, offline: 5, off_duty: 6, incident: 7, inactive: 8 };
+  return res.json(localDrivers.rows
+    .map((driver) => enrich(driver, byUniqueId.get(driver.traccar_unique_id)))
+    .sort((a, b) => (ranking[a.operationalState] ?? 9) - (ranking[b.operationalState] ?? 9) || a.activeOrders - b.activeOrders || a.name.localeCompare(b.name)));
+}));
+
+app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res) => {
+  const [driversResult, runsResult, ordersResult] = await Promise.all([
+    pool.query(
+      `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
+              d.active, d.traccar_unique_id,
+              COUNT(DISTINCT o.id) FILTER (WHERE o.status <> ALL($2::text[]))::int AS active_orders,
+              COUNT(DISTINCT i.id) FILTER (WHERE i.status = 'open')::int AS open_incidents
+       FROM drivers d
+       LEFT JOIN orders o ON o.driver_id = d.id AND o.company_id = d.company_id
+       LEFT JOIN delivery_incidents i ON i.order_id = o.id AND i.company_id = d.company_id
+       WHERE d.company_id = $1
+       GROUP BY d.id
+       ORDER BY d.name`,
+      [req.auth.company_id, terminalOrderStatuses]
+    ),
+    pool.query(
+      `SELECT r.id, r.driver_id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date,
+              r.status, r.started_at, r.updated_at,
+              COUNT(s.id) FILTER (WHERE s.removed_at IS NULL)::int AS total_stops,
+              COUNT(s.id) FILTER (WHERE s.removed_at IS NULL AND o.status = ANY($2::text[]))::int AS completed_stops
+       FROM delivery_runs r
+       LEFT JOIN delivery_stops s ON s.run_id = r.id AND s.company_id = r.company_id
+       LEFT JOIN orders o ON o.id = s.order_id AND o.company_id = r.company_id
+       WHERE r.company_id = $1 AND r.status IN ('draft', 'planned', 'active')
+       GROUP BY r.id
+       ORDER BY CASE r.status WHEN 'active' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END,
+                r.service_date ASC, r.created_at ASC
+       LIMIT 100`,
+      [req.auth.company_id, terminalOrderStatuses]
+    ),
+    pool.query(
+      `SELECT o.id, o.driver_id, o.customer_name, o.status, o.requested_time,
+              o.neighborhood, o.landmark, o.delivery_address,
+              o.destination_lat, o.destination_lng, o.destination_accuracy,
+              o.updated_at, s.sequence, r.id AS run_id, r.name AS run_name,
+              TO_CHAR(r.service_date, 'YYYY-MM-DD') AS run_service_date, r.status AS run_status,
+              COUNT(i.id) FILTER (WHERE i.status = 'open')::int AS open_incidents
+       FROM orders o
+       JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+       LEFT JOIN delivery_stops s ON s.order_id = o.id AND s.company_id = o.company_id
+         AND s.assignment_active = TRUE AND s.removed_at IS NULL
+       LEFT JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = o.company_id
+         AND r.status IN ('draft', 'planned', 'active')
+       LEFT JOIN delivery_incidents i ON i.order_id = o.id AND i.company_id = o.company_id
+       WHERE o.company_id = $1 AND o.status <> ALL($2::text[])
+       GROUP BY o.id, s.id, r.id
+       ORDER BY o.driver_id,
+                CASE r.status WHEN 'active' THEN 0 WHEN 'planned' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
+                s.sequence NULLS LAST, o.created_at ASC
+       LIMIT 501`,
+      [req.auth.company_id, terminalOrderStatuses]
+    ),
+  ]);
+
+  const ordersTruncated = ordersResult.rows.length > 500;
+  const orders = ordersResult.rows.slice(0, 500).map((order) => ({
+    id: order.id,
+    driverId: order.driver_id,
+    customerName: order.customer_name,
+    status: order.status,
+    requestedTime: order.requested_time,
+    neighborhood: order.neighborhood,
+    landmark: order.landmark,
+    deliveryAddress: order.delivery_address,
+    destination: order.destination_lat != null && order.destination_lng != null
+      && Number.isFinite(Number(order.destination_lat)) && Number.isFinite(Number(order.destination_lng))
+      ? {
+          latitude: Number(order.destination_lat),
+          longitude: Number(order.destination_lng),
+          accuracy: order.destination_accuracy != null && Number.isFinite(Number(order.destination_accuracy))
+            ? Number(order.destination_accuracy) : null,
+        }
+      : null,
+    updatedAt: order.updated_at,
+    sequence: order.sequence == null ? null : Number(order.sequence),
+    runId: order.run_id,
+    runName: order.run_name,
+    runServiceDate: order.run_service_date,
+    runStatus: order.run_status,
+    openIncidents: Number(order.open_incidents || 0),
+  }));
+
+  const runsByDriver = new Map();
+  for (const run of runsResult.rows) {
+    const value = {
+      id: run.id,
+      name: run.name,
+      serviceDate: run.service_date,
+      status: run.status,
+      startedAt: run.started_at,
+      updatedAt: run.updated_at,
+      totalStops: Number(run.total_stops || 0),
+      completedStops: Number(run.completed_stops || 0),
+      stops: [],
+    };
+    if (!runsByDriver.has(String(run.driver_id))) runsByDriver.set(String(run.driver_id), []);
+    runsByDriver.get(String(run.driver_id)).push(value);
+  }
+  for (const order of orders) {
+    if (!order.runId) continue;
+    const run = (runsByDriver.get(String(order.driverId)) || []).find((item) => String(item.id) === String(order.runId));
+    if (run) run.stops.push(order);
+  }
+  const ordersByDriver = new Map();
+  for (const order of orders) {
+    const key = String(order.driverId);
+    if (!ordersByDriver.has(key)) ordersByDriver.set(key, []);
+    ordersByDriver.get(key).push(order);
+  }
+
+  const devicesByUniqueId = new Map();
+  const positionsByDeviceId = new Map();
+  const fleetSnapshot = await loadTraccarFleetSnapshot();
+  for (const device of fleetSnapshot.devices) devicesByUniqueId.set(String(device.uniqueId), device);
+  for (const position of fleetSnapshot.positions) positionsByDeviceId.set(String(position.deviceId), position);
+  const locationService = { status: fleetSnapshot.status, message: fleetSnapshot.message };
+
+  const ranking = { available: 0, busy: 1, full: 2, pause: 3, stale: 4, offline: 5, off_duty: 6, incident: 7, inactive: 8 };
+  const drivers = driversResult.rows.map((driver) => {
+    const device = devicesByUniqueId.get(String(driver.traccar_unique_id));
+    const rawPosition = device ? positionsByDeviceId.get(String(device.id)) : null;
+    const timestamp = rawPosition?.fixTime || rawPosition?.deviceTime || rawPosition?.serverTime || device?.lastUpdate || null;
+    const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
+    const stale = !Number.isFinite(timestampMs) || Date.now() - timestampMs > 10 * 60 * 1000;
+    const hasCoordinates = Number.isFinite(Number(rawPosition?.latitude))
+      && Number.isFinite(Number(rawPosition?.longitude))
+      && Number(rawPosition.latitude) >= -90 && Number(rawPosition.latitude) <= 90
+      && Number(rawPosition.longitude) >= -180 && Number(rawPosition.longitude) <= 180;
+    let operationalState = 'available';
+    if (!driver.active) operationalState = 'inactive';
+    else if (driver.availability_status !== 'available') operationalState = driver.availability_status;
+    else if (!device || device.status === 'offline') operationalState = 'offline';
+    else if (stale) operationalState = 'stale';
+    else if (Number(driver.active_orders) >= Number(driver.capacity)) operationalState = 'full';
+    else if (Number(driver.active_orders) > 0) operationalState = 'busy';
+    return {
+      id: driver.id,
+      name: driver.name,
+      phone: driver.phone,
+      vehicleType: driver.vehicle_type,
+      capacity: Number(driver.capacity),
+      availabilityStatus: driver.availability_status,
+      active: driver.active,
+      trackerStatus: device?.status || 'unknown',
+      lastUpdate: timestamp,
+      operationalState,
+      activeOrders: Number(driver.active_orders || 0),
+      openIncidents: Number(driver.open_incidents || 0),
+      position: hasCoordinates ? {
+        latitude: Number(rawPosition.latitude),
+        longitude: Number(rawPosition.longitude),
+        accuracy: rawPosition.accuracy != null && Number.isFinite(Number(rawPosition.accuracy)) ? Number(rawPosition.accuracy) : null,
+        speedKnots: rawPosition.speed != null && Number.isFinite(Number(rawPosition.speed)) ? Number(rawPosition.speed) : null,
+        course: rawPosition.course != null && Number.isFinite(Number(rawPosition.course)) ? Number(rawPosition.course) : null,
+        timestamp,
+        stale,
+      } : null,
+      runs: runsByDriver.get(String(driver.id)) || [],
+      unplannedOrders: (ordersByDriver.get(String(driver.id)) || []).filter((order) => !order.runId),
+    };
+  }).sort((a, b) => (ranking[a.operationalState] ?? 9) - (ranking[b.operationalState] ?? 9)
+    || b.openIncidents - a.openIncidents || a.name.localeCompare(b.name));
+
+  const satelliteUrl = String(process.env.MAP_SATELLITE_TILE_URL || '').trim();
+  return res.json({
+    generatedAt: new Date().toISOString(),
+    refreshAfterSeconds: 15,
+    locationService,
+    mapConfig: {
+      base: {
+        url: String(process.env.MAP_TILE_URL || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'),
+        attribution: String(process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors'),
+        maxZoom: Number(process.env.MAP_TILE_MAX_ZOOM || 19),
+      },
+      satellite: satelliteUrl ? {
+        url: satelliteUrl,
+        attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION || 'Imagerie satellite'),
+        maxZoom: Number(process.env.MAP_SATELLITE_MAX_ZOOM || 19),
+      } : null,
+    },
+    summary: {
+      drivers: drivers.length,
+      locatedDrivers: drivers.filter((driver) => driver.position).length,
+      staleDrivers: drivers.filter((driver) => driver.position?.stale || ['stale', 'offline'].includes(driver.operationalState)).length,
+      openRuns: runsResult.rows.length,
+      activeOrders: orders.length,
+      locatedDestinations: orders.filter((order) => order.destination).length,
+      openIncidents: drivers.reduce((sum, driver) => sum + driver.openIncidents, 0),
+      ordersTruncated,
+    },
+    drivers,
+  });
 }));
 
 app.patch('/api/app/drivers/:id/availability', requireCompanyApi, asyncRoute(async (req, res) => {

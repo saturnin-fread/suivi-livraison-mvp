@@ -112,12 +112,52 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .adjustment-panel h3 { margin: 0; }
 .adjustment-timeline { margin-top: 20px; }
 .adjustment-timeline .reverse-adjustment { margin-top: 10px; }
+.map-stats { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 18px; gap: 12px; }
+.map-stats .stat { padding: 15px; }
+.map-stats .stat strong { font-size: 24px; }
+.operations-toolbar { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 14px 20px; margin-bottom: 18px; }
+.map-driver-field label { margin-bottom: 5px; }
+.map-actions { align-self: end; }
+.map-options { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.map-options label { display: inline-flex; align-items: center; gap: 7px; margin: 0; font-weight: 650; }
+.map-options input { width: auto; }
+.map-update { margin: 0; align-self: center; color: var(--muted); font-size: 13px; }
+.operations-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(330px, .8fr); gap: 18px; align-items: stretch; }
+.operations-map-card { min-width: 0; padding: 0; overflow: hidden; }
+#operationsMap { width: 100%; height: min(70vh, 720px); min-height: 520px; background: #e8eef5; }
+.operations-panel { max-height: min(70vh, 720px); overflow-y: auto; }
+.operations-panel h2, .operations-panel h3 { margin: 0; }
+.panel-heading, .run-map-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.panel-actions { margin: 14px 0 18px; }
+.detail-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 16px; }
+.detail-grid.compact .detail { padding: 10px; }
+.run-map-card { padding: 16px 0; border-top: 1px solid var(--line); }
+.run-map-heading small { display: block; margin-top: 4px; color: var(--muted); }
+.map-stop-list { display: grid; gap: 9px; margin: 14px 0; padding: 0; list-style: none; }
+.map-stop-list li { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; align-items: center; }
+.map-stop-list .stop-number { width: 28px; height: 28px; font-size: 12px; }
+.map-stop-list strong, .map-stop-list small, .map-incident { display: block; }
+.map-stop-list small { margin-top: 3px; color: var(--muted); }
+.map-stop-list a { color: var(--navy); font-size: 12px; font-weight: 750; }
+.map-incident { margin-top: 4px; color: var(--danger); font-size: 11px; font-weight: 750; }
+.operations-div-icon { background: transparent; border: 0; }
+.driver-map-marker, .destination-map-marker { display: grid; place-items: center; border: 3px solid #fff; border-radius: 50%; color: #fff; box-shadow: 0 3px 12px #0b234966; font-weight: 900; }
+.driver-map-marker { width: 36px; height: 36px; background: #197044; font-size: 17px; }
+.driver-map-marker.state-busy, .driver-map-marker.state-full { background: #185fa7; }
+.driver-map-marker.state-stale, .driver-map-marker.state-offline, .driver-map-marker.state-pause { background: #b66a00; }
+.driver-map-marker.state-incident, .driver-map-marker.state-inactive, .driver-map-marker.state-off_duty { background: #b42318; }
+.driver-map-marker.selected { outline: 4px solid #facc15; transform: scale(1.08); }
+.destination-map-marker { width: 30px; height: 30px; border-width: 2px; background: #5b6b80; font-size: 12px; }
+.destination-map-marker.selected { background: var(--navy); outline: 3px solid #bfdbfe; }
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; z-index: 20; width: min(280px, 86vw); transform: translateX(-105%); transition: transform .2s ease; box-shadow: 12px 0 30px #071a2f55; }
   .sidebar.open { transform: translateX(0); }
   .menu-button { display: inline-flex; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .operations-layout { grid-template-columns: 1fr; }
+  .operations-panel { max-height: none; }
+  #operationsMap { height: 58vh; min-height: 420px; }
   .topbar { justify-content: flex-start; }
   .topbar .identity { margin-left: auto; text-align: right; }
 }
@@ -128,6 +168,10 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
   .incident { flex-direction: column; }
   .stop-card { grid-template-columns: 38px minmax(0, 1fr); align-items: start; }
   .stop-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .operations-toolbar { grid-template-columns: 1fr; }
+  .map-actions { align-self: auto; }
+  .map-actions button { flex: 1 1 140px; }
+  #operationsMap { min-height: 360px; }
 }
 @media print {
   body { background: #fff; }

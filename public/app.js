@@ -1422,9 +1422,59 @@ function reportsMarkup(metrics) {
       <section class="card"><h2>Respect des créneaux</h2>${delays.status === 'available' ? `<dl class="report-breakdown"><div><dt>Livraisons en retard</dt><dd>${formatPercent(delays.lateRate)}</dd></div><div><dt>Retard médian</dt><dd>${delays.lateCount === 0 ? 'Aucun retard' : `${formatCount(delays.medianLateMinutes)} min`}</dd></div><div><dt>Échantillon fiable</dt><dd>${formatCount(delays.reliableSampleSize)}</dd></div></dl>` : `<div class="metric-unavailable"><strong>Non calculable</strong><p>Les créneaux et heures d’arrivée fiables sont insuffisants pour publier cet indicateur.</p></div>`}</section>
       <section class="card"><h2>Charge actuelle</h2><dl class="report-breakdown"><div><dt>Colis ouverts</dt><dd>${formatCount(metrics.load?.openParcelCount)}</dd></div><div><dt>Colis en cours</dt><dd>${formatCount(metrics.load?.inProgressParcelCount)}</dd></div><div><dt>Livreurs avec une charge</dt><dd>${formatCount(metrics.load?.driversWithLoad)}</dd></div></dl><p class="section-hint">Photo de la charge au moment de l’ouverture du rapport, pas une mesure de productivité.</p></section>
     </div>
-    <section class="card crm-section"><div class="section-heading"><div><h2>Encaissements par devise</h2><p class="section-hint">Les devises ne sont jamais additionnées ni converties entre elles.</p></div><button class="secondary" type="button" disabled aria-describedby="exportHint">Exporter vers Excel</button></div><p id="exportHint" class="section-hint">Export Excel prochainement disponible.</p>${currencies.length ? `<div class="collection-grid">${currencies.map((entry) => `<article class="crm-subcard"><h3>${escapeHtml(entry.currency)}</h3><dl class="report-breakdown"><div><dt>Attendu sur les commandes clôturées</dt><dd>${escapeHtml(formatMinorMoney(entry.expectedForClosedOrdersMinor, entry.currency))}</dd></div><div><dt>Collecté brut</dt><dd>${escapeHtml(formatMinorMoney(entry.collectedGrossMinor, entry.currency))}</dd></div><div><dt>Net après corrections</dt><dd>${escapeHtml(formatMinorMoney(entry.netCollectedMinor, entry.currency))}</dd></div></dl></article>`).join('')}</div>` : '<div class="empty compact-empty">Aucun encaissement pour cette période.</div>'}</section>
+    <section class="card crm-section"><div class="section-heading"><div><h2>Encaissements par devise</h2><p class="section-hint">Les devises ne sont jamais additionnées ni converties entre elles.</p></div><button class="secondary" type="button" id="exportReportBtn" aria-describedby="exportHint">Exporter vers Excel</button></div><p id="exportHint" class="section-hint">Télécharge les commandes du mois (identifiant, statut, zone, livreur, tournée, encaissement, incidents) au format Excel. Les données personnelles des clients ne sont pas incluses.</p><p id="exportStatus" class="section-hint" role="status" aria-live="polite"></p>${currencies.length ? `<div class="collection-grid">${currencies.map((entry) => `<article class="crm-subcard"><h3>${escapeHtml(entry.currency)}</h3><dl class="report-breakdown"><div><dt>Attendu sur les commandes clôturées</dt><dd>${escapeHtml(formatMinorMoney(entry.expectedForClosedOrdersMinor, entry.currency))}</dd></div><div><dt>Collecté brut</dt><dd>${escapeHtml(formatMinorMoney(entry.collectedGrossMinor, entry.currency))}</dd></div><div><dt>Net après corrections</dt><dd>${escapeHtml(formatMinorMoney(entry.netCollectedMinor, entry.currency))}</dd></div></dl></article>`).join('')}</div>` : '<div class="empty compact-empty">Aucun encaissement pour cette période.</div>'}</section>
     ${exclusionCount ? `<div class="notice warning"><strong>Qualité des données à surveiller.</strong> ${formatInteger(exclusionCount)} élément${exclusionCount > 1 ? 's ont' : ' a'} été exclu${exclusionCount > 1 ? 's' : ''} des calculs car les informations nécessaires étaient incomplètes ou contradictoires.</div>` : '<div class="notice success">Aucune exclusion de données signalée pour les indicateurs calculés.</div>'}
     <div class="notice"><strong>Lecture responsable :</strong> ces chiffres servent à suivre les opérations. Aucun score, classement ou sanction automatique des livreurs n’est produit.</div>`;
+}
+
+async function downloadOperationsExport(monthValue, button) {
+  const status = document.getElementById('exportStatus');
+  let period;
+  try {
+    period = monthPeriod(monthValue);
+  } catch (error) {
+    if (status) { status.textContent = error.message; status.classList.add('error-text'); }
+    return;
+  }
+  // The export contract uses an exclusive upper bound: pass the first day of the
+  // next month so the whole selected month is covered.
+  const [year, month] = monthValue.split('-').map(Number);
+  const exclusiveTo = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Export en cours…';
+  if (status) { status.textContent = ''; status.classList.remove('error-text'); }
+  try {
+    const response = await fetch('/api/app/crm/exports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dataset: 'operations',
+        purpose: 'Export mensuel des opérations',
+        period: { from: period.from, to: exclusiveTo },
+      }),
+    });
+    if (response.status === 401) { location.href = '/app/login'; return; }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'Export impossible pour le moment.');
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `operations-${monthValue}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    if (status) { status.textContent = 'Export téléchargé.'; status.classList.remove('error-text'); }
+  } catch (error) {
+    if (status) { status.textContent = error.message; status.classList.add('error-text'); }
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 async function renderReports() {
@@ -1446,6 +1496,8 @@ async function renderReports() {
       const period = monthPeriod(document.getElementById('reportMonth').value);
       const metrics = await api(`/api/app/crm/metrics?from=${encodeURIComponent(period.from)}&to=${encodeURIComponent(period.to)}`);
       target.innerHTML = reportsMarkup(metrics);
+      const exportBtn = document.getElementById('exportReportBtn');
+      exportBtn?.addEventListener('click', () => downloadOperationsExport(document.getElementById('reportMonth').value, exportBtn));
     } catch (error) {
       target.innerHTML = `<div class="notice error" role="alert"><strong>Impossible de calculer ce rapport.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryReport" type="button">Réessayer</button></div>`;
       document.getElementById('retryReport')?.addEventListener('click', loadReport);

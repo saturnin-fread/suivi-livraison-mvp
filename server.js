@@ -6,6 +6,7 @@ const express = require('express');
 const axios = require('axios');
 const multer = require('multer');
 const { Pool } = require('pg');
+const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -13,6 +14,7 @@ const demoToken = process.env.DEMO_TRACKING_TOKEN || 'demo-ccg-2026';
 const sessionDurationMs = 8 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
 const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
+const publicTrackingPositionStatuses = ['En tournée', 'En livraison', 'Arrivée'];
 const orderTransitions = {
   'En préparation': ['Confirmée', 'Annulée'],
   'Confirmée': ['Récupérée', 'Annulée'],
@@ -55,6 +57,36 @@ if (pool) pool.on('error', (error) => console.error('Unexpected PostgreSQL pool 
 
 const traccarFleetCache = { value: null, expiresAt: 0, pending: null };
 
+function routingEnvironmentInteger(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) throw new RoutingInputError('invalid_environment_option', { name });
+  return parsed;
+}
+
+function buildRoutingAdapter() {
+  try {
+    return createRoutingAdapter({
+      provider: process.env.ROUTING_PROVIDER || 'disabled',
+      baseUrl: process.env.ROUTING_OSRM_URL,
+      profiles: { motorcycle: process.env.ROUTING_OSRM_PROFILE || 'driving' },
+      defaultProfile: 'motorcycle',
+      timeoutMs: routingEnvironmentInteger('ROUTING_TIMEOUT_MS', 5000),
+      cacheTtlMs: routingEnvironmentInteger('ROUTING_CACHE_TTL_MS', 300000),
+      maxRouteCoordinates: routingEnvironmentInteger('ROUTING_MAX_ROUTE_COORDINATES', 50),
+      maxMatrixCoordinates: routingEnvironmentInteger('ROUTING_MAX_MATRIX_COORDINATES', 25),
+      mapDataVersion: process.env.ROUTING_MAP_DATA_VERSION,
+      providerVersion: process.env.ROUTING_PROVIDER_VERSION,
+    });
+  } catch (error) {
+    console.error('[routing] configuration disabled:', error instanceof RoutingInputError ? error.code : 'invalid_configuration');
+    return createRoutingAdapter({ provider: 'disabled', profiles: { motorcycle: 'driving' }, defaultProfile: 'motorcycle' });
+  }
+}
+
+const routingAdapter = buildRoutingAdapter();
+
 function traccarConfigured() {
   return Boolean(process.env.TRACCAR_URL && process.env.TRACCAR_USER && process.env.TRACCAR_PASSWORD);
 }
@@ -95,6 +127,40 @@ async function loadTraccarFleetSnapshot() {
     }
   })();
   return traccarFleetCache.pending;
+}
+
+function mapConfiguration() {
+  const maxZoom = (value, fallback = 19) => {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 24 ? parsed : fallback;
+  };
+  const satelliteUrl = String(process.env.MAP_SATELLITE_TILE_URL || '').trim();
+  return {
+    base: {
+      url: String(process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
+      attribution: String(process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors'),
+      maxZoom: maxZoom(process.env.MAP_TILE_MAX_ZOOM),
+    },
+    satellite: satelliteUrl ? {
+      url: satelliteUrl,
+      attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION || 'Imagerie satellite'),
+      maxZoom: maxZoom(process.env.MAP_SATELLITE_MAX_ZOOM),
+    } : null,
+  };
+}
+
+function publicDestination(row) {
+  const latitude = Number(row?.destination_lat);
+  const longitude = Number(row?.destination_lng);
+  if (row?.destination_lat == null || row?.destination_lng == null
+    || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+    || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  const accuracy = Number(row.destination_accuracy);
+  return {
+    latitude,
+    longitude,
+    accuracy: row.destination_accuracy != null && Number.isFinite(accuracy) && accuracy >= 0 ? accuracy : null,
+  };
 }
 
 app.set('trust proxy', 1);
@@ -1136,6 +1202,11 @@ app.get(['/driver', '/driver/commandes/:id'], requireDriverPage, (_req, res) => 
 
 app.get('/suivi/:token', (req, res) => {
   if (req.params.token !== demoToken && !pool) return res.status(404).send('Lien de suivi introuvable ou expiré.');
+  res.set({
+    'Cache-Control': 'private, no-store',
+    'Referrer-Policy': 'origin',
+    'X-Robots-Tag': 'noindex, nofollow',
+  });
   return res.sendFile(path.join(__dirname, 'public', 'tracking.html'));
 });
 
@@ -2165,23 +2236,11 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
   }).sort((a, b) => (ranking[a.operationalState] ?? 9) - (ranking[b.operationalState] ?? 9)
     || b.openIncidents - a.openIncidents || a.name.localeCompare(b.name));
 
-  const satelliteUrl = String(process.env.MAP_SATELLITE_TILE_URL || '').trim();
   return res.json({
     generatedAt: new Date().toISOString(),
     refreshAfterSeconds: 15,
     locationService,
-    mapConfig: {
-      base: {
-        url: String(process.env.MAP_TILE_URL || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'),
-        attribution: String(process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors'),
-        maxZoom: Number(process.env.MAP_TILE_MAX_ZOOM || 19),
-      },
-      satellite: satelliteUrl ? {
-        url: satelliteUrl,
-        attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION || 'Imagerie satellite'),
-        maxZoom: Number(process.env.MAP_SATELLITE_MAX_ZOOM || 19),
-      } : null,
-    },
+    mapConfig: mapConfiguration(),
     summary: {
       drivers: drivers.length,
       locatedDrivers: drivers.filter((driver) => driver.position).length,
@@ -2193,6 +2252,119 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
       ordersTruncated,
     },
     drivers,
+  });
+}));
+
+function unavailableRunRoute(code, retryable = false) {
+  const health = routingAdapter.health();
+  return {
+    status: 'unavailable',
+    distanceMeters: null,
+    durationSeconds: null,
+    geometry: null,
+    legs: [],
+    snappedPoints: [],
+    quality: { fallbackUsed: false, warnings: [code, 'eta_not_computed'] },
+    failure: { code, retryable },
+    source: {
+      provider: health.source.provider,
+      profile: 'motorcycle',
+      mapDataVersion: health.source.mapDataVersion,
+      providerVersion: health.source.providerVersion,
+      calculatedAt: new Date().toISOString(),
+      cache: 'disabled',
+    },
+  };
+}
+
+app.get('/api/app/routing/health', requireCompanyApi, (_req, res) => {
+  res.json(routingAdapter.health());
+});
+
+app.get('/api/app/runs/:id/route', requireCompanyApi, asyncRoute(async (req, res) => {
+  const runResult = await pool.query(
+    `SELECT r.id, r.name, r.status, r.version, r.driver_id, d.traccar_unique_id
+     FROM delivery_runs r
+     JOIN drivers d ON d.id = r.driver_id AND d.company_id = r.company_id
+     WHERE r.id = $1 AND r.company_id = $2`,
+    [req.params.id, req.auth.company_id]
+  );
+  const run = runResult.rows[0];
+  if (!run) return res.status(404).json({ error: 'Tournée introuvable.' });
+
+  const stopsResult = await pool.query(
+    `SELECT s.id, s.sequence, o.id AS order_id, o.status,
+            o.destination_lat, o.destination_lng, o.destination_accuracy
+     FROM delivery_stops s
+     JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
+     WHERE s.run_id = $1 AND s.company_id = $2 AND s.removed_at IS NULL
+       AND o.status <> ALL($3::text[])
+     ORDER BY s.sequence
+     LIMIT 51`,
+    [run.id, req.auth.company_id, terminalOrderStatuses]
+  );
+  const stops = stopsResult.rows;
+  const maximumStops = run.status === 'active' ? 49 : 50;
+  if (stops.length > maximumStops) {
+    return res.status(409).json({ error: `Cette tournée dépasse la limite de ${maximumStops} arrêts routables.`, code: 'too_many_stops' });
+  }
+  const missingDestination = stops.find((stop) => !publicDestination(stop));
+  if (missingDestination) {
+    return res.status(409).json({
+      error: 'Au moins un arrêt restant ne possède pas de destination GPS valide.',
+      code: 'missing_destination',
+      sequence: Number(missingDestination.sequence),
+    });
+  }
+
+  const coordinates = [];
+  let origin = 'first_stop';
+  if (run.status === 'active' && routingAdapter.health().status !== 'disabled') {
+    const fleetSnapshot = await loadTraccarFleetSnapshot();
+    const device = fleetSnapshot.devices.find((item) => String(item.uniqueId) === String(run.traccar_unique_id));
+    const position = device
+      ? fleetSnapshot.positions.find((item) => String(item.deviceId) === String(device.id))
+      : null;
+    const latitude = Number(position?.latitude);
+    const longitude = Number(position?.longitude);
+    const timestamp = position?.fixTime || position?.deviceTime || position?.serverTime || device?.lastUpdate || null;
+    const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
+    const usable = fleetSnapshot.status === 'online'
+      && Number.isFinite(latitude) && latitude >= -90 && latitude <= 90
+      && Number.isFinite(longitude) && longitude >= -180 && longitude <= 180
+      && Number.isFinite(timestampMs) && Date.now() - timestampMs <= 10 * 60 * 1000;
+    if (!usable) {
+      return res.json({
+        run: { id: run.id, name: run.name, status: run.status, version: Number(run.version), origin, stopCount: stops.length },
+        route: unavailableRunRoute('driver_position_unavailable', true),
+      });
+    }
+    coordinates.push({ lat: latitude, lng: longitude });
+    origin = 'driver_position';
+  }
+  coordinates.push(...stops.map((stop) => ({
+    lat: Number(stop.destination_lat),
+    lng: Number(stop.destination_lng),
+  })));
+
+  if (coordinates.length < 2) {
+    return res.json({
+      run: { id: run.id, name: run.name, status: run.status, version: Number(run.version), origin, stopCount: stops.length },
+      route: unavailableRunRoute('not_enough_points'),
+    });
+  }
+  const route = await routingAdapter.route({ profile: 'motorcycle', coordinates });
+  return res.json({
+    run: {
+      id: run.id,
+      name: run.name,
+      status: run.status,
+      version: Number(run.version),
+      origin,
+      stopCount: stops.length,
+      stopSequences: stops.map((stop) => Number(stop.sequence)),
+    },
+    route,
   });
 }));
 
@@ -4060,57 +4232,98 @@ app.put('/api/public/requests/:token', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/tracking/:token', asyncRoute(async (req, res) => {
-  const traccarUrl = process.env.TRACCAR_URL;
   let deviceId = process.env.TRACCAR_DEVICE_ID;
-  let orderStatus = null;
-  let statusChangedAt = null;
+  let tracking = {
+    orderStatus: null,
+    statusChangedAt: null,
+    requestedTime: null,
+    neighborhood: null,
+    landmark: null,
+    destination: null,
+    driverName: null,
+    driverVehicleType: null,
+  };
   if (pool && req.params.token !== demoToken) {
     const link = await pool.query(
-      `SELECT d.traccar_unique_id, o.status, o.status_changed_at FROM tracking_links t
-       JOIN orders o ON o.id = t.order_id JOIN drivers d ON d.id = o.driver_id
+      `SELECT d.traccar_unique_id, d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
+              o.status, o.status_changed_at, o.requested_time, o.neighborhood, o.landmark,
+              o.destination_lat, o.destination_lng, o.destination_accuracy
+       FROM tracking_links t
+       JOIN orders o ON o.id = t.order_id
+       JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
        WHERE t.token = $1 AND (t.expires_at IS NULL OR t.expires_at > NOW())`,
       [req.params.token]
     );
     if (!link.rows[0]) return res.status(404).json({ error: 'Lien de suivi introuvable ou expiré.' });
-    deviceId = link.rows[0].traccar_unique_id;
-    orderStatus = link.rows[0].status;
-    statusChangedAt = link.rows[0].status_changed_at;
+    const row = link.rows[0];
+    deviceId = row.traccar_unique_id;
+    tracking = {
+      orderStatus: row.status,
+      statusChangedAt: row.status_changed_at,
+      requestedTime: row.requested_time,
+      neighborhood: row.neighborhood,
+      landmark: row.landmark,
+      destination: publicDestination(row),
+      driverName: row.driver_name,
+      driverVehicleType: row.driver_vehicle_type,
+    };
   } else if (req.params.token !== demoToken && !pool) {
     return res.status(404).json({ error: 'Lien de suivi introuvable ou expiré.' });
   }
-  if (terminalOrderStatuses.includes(orderStatus)) {
-    const message = orderStatus === 'Livrée' ? 'Votre livraison a été remise.'
-      : orderStatus === 'Retournée' ? 'La livraison a été retournée à l’entreprise.'
+  const publicDetails = {
+    orderStatus: tracking.orderStatus,
+    requestedTime: tracking.requestedTime,
+    neighborhood: tracking.neighborhood,
+    landmark: tracking.landmark,
+    driver: tracking.driverName ? { name: tracking.driverName, vehicleType: tracking.driverVehicleType } : null,
+    mapConfig: mapConfiguration(),
+  };
+  if (terminalOrderStatuses.includes(tracking.orderStatus)) {
+    const message = tracking.orderStatus === 'Livrée' ? 'Votre livraison a été remise.'
+      : tracking.orderStatus === 'Retournée' ? 'La livraison a été retournée à l’entreprise.'
         : 'Cette livraison a été annulée.';
-    return res.json({ status: 'completed', orderStatus, message, timestamp: statusChangedAt });
+    return res.json({ status: 'completed', positionVisible: false, ...publicDetails, message, timestamp: tracking.statusChangedAt });
   }
-  if (!traccarUrl || !deviceId || !process.env.TRACCAR_USER || !process.env.TRACCAR_PASSWORD) {
-    return res.status(503).json({ error: 'Le suivi n’est pas encore configuré.' });
-  }
-  try {
-    const devicesResponse = await axios.get(`${traccarUrl}/api/devices`, {
-      params: { uniqueId: deviceId },
-      auth: { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD }, timeout: 10000,
-    });
-    const device = devicesResponse.data?.[0];
-    if (!device) return res.status(404).json({ error: 'Livreur introuvable dans Traccar.' });
-    const response = await axios.get(`${traccarUrl}/api/positions`, {
-      params: device.positionId ? { id: device.positionId } : { deviceId: device.id },
-      auth: { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD }, timeout: 10000,
-    });
-    const position = response.data?.[0];
-    if (!position) return res.json({ status: 'waiting', message: 'Position momentanément indisponible.' });
-    const timestamp = position.fixTime || position.deviceTime || position.serverTime;
-    const isStale = timestamp && (Date.now() - new Date(timestamp).getTime()) > 10 * 60 * 1000;
+  const activeDetails = { ...publicDetails, destination: tracking.destination };
+  if (tracking.orderStatus && !publicTrackingPositionStatuses.includes(tracking.orderStatus)) {
     return res.json({
-      status: isStale ? 'stale' : 'online', orderStatus,
-      latitude: position.latitude, longitude: position.longitude,
-      speed: position.speed, course: position.course, accuracy: position.accuracy, timestamp,
+      status: 'waiting',
+      positionVisible: false,
+      ...activeDetails,
+      message: 'Le suivi en direct commencera lorsque le livreur prendra la route.',
     });
-  } catch (error) {
-    console.error('Traccar API error:', error.response?.status || error.message);
-    return res.status(502).json({ error: 'Le service de localisation est temporairement indisponible.' });
   }
+  activeDetails.positionVisible = true;
+  if (!traccarConfigured() || !deviceId) {
+    return res.json({ status: 'unavailable', ...activeDetails, message: 'La position du livreur n’est pas encore disponible.' });
+  }
+  const fleetSnapshot = await loadTraccarFleetSnapshot();
+  if (fleetSnapshot.status !== 'online') {
+    return res.json({ status: 'unavailable', ...activeDetails, message: 'Le service de localisation est temporairement indisponible.' });
+  }
+  const device = fleetSnapshot.devices.find((item) => String(item.uniqueId) === String(deviceId));
+  if (!device) return res.json({ status: 'waiting', ...activeDetails, message: 'Le livreur n’a pas encore transmis de position.' });
+  const position = fleetSnapshot.positions.find((item) => String(item.deviceId) === String(device.id));
+  const latitude = Number(position?.latitude);
+  const longitude = Number(position?.longitude);
+  if (!position || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+    || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    return res.json({ status: 'waiting', ...activeDetails, message: 'Position momentanément indisponible.' });
+  }
+  const timestamp = position.fixTime || position.deviceTime || position.serverTime || device.lastUpdate || null;
+  const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
+  const isStale = !Number.isFinite(timestampMs) || Date.now() - timestampMs > 10 * 60 * 1000;
+  const finiteOrNull = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
+  return res.json({
+    status: isStale ? 'stale' : 'online',
+    ...activeDetails,
+    latitude,
+    longitude,
+    speed: finiteOrNull(position.speed),
+    course: finiteOrNull(position.course),
+    accuracy: finiteOrNull(position.accuracy),
+    timestamp,
+  });
 }));
 
 app.use((error, _req, res, _next) => {

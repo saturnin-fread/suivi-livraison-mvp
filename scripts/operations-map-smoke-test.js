@@ -128,6 +128,18 @@ async function run() {
         [foreignCompanyId, foreignDriver.rows[0].id, `Client étranger ${marker}`]
       );
       ids.orders.push(foreignOrder.rows[0].id);
+      const foreignRun = await client.query(
+        `INSERT INTO delivery_runs (
+           company_id, driver_id, name, service_date, status, create_idempotency_key, create_fingerprint
+         ) VALUES ($1, $2, $3, $4, 'planned', $5, $6) RETURNING id`,
+        [foreignCompanyId, foreignDriver.rows[0].id, `Tournée étrangère ${marker}`, serviceDate, `foreign-map-run:${marker}`, marker]
+      );
+      ids.runs.push(foreignRun.rows[0].id);
+      await client.query(
+        `INSERT INTO delivery_stops (company_id, run_id, order_id, sequence)
+         VALUES ($1, $2, $3, 1)`,
+        [foreignCompanyId, foreignRun.rows[0].id, foreignOrder.rows[0].id]
+      );
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -158,6 +170,18 @@ async function run() {
     ensure(!JSON.stringify(response.payload).includes(`Client étranger ${marker}`),
       'Une commande d’une autre entreprise est visible.');
     ensure(response.payload.mapConfig?.base?.url, 'La configuration du fond cartographique est absente.');
+
+    const routeResponse = await json(await fetch(`${baseUrl}/api/app/runs/${ids.runs[0]}/route`, { headers: { Cookie: cookie } }));
+    ensure(routeResponse.response.ok && String(routeResponse.payload.run?.id) === String(ids.runs[0]),
+      'La route interne de la tournée autorisée est indisponible.');
+    ensure(routeResponse.payload.route?.status === 'unavailable'
+      && routeResponse.payload.route?.failure?.code === 'provider_disabled'
+      && routeResponse.payload.route?.distanceMeters == null
+      && routeResponse.payload.route?.durationSeconds == null
+      && routeResponse.payload.route?.geometry == null,
+    'Le fournisseur désactivé doit rester explicite et ne jamais inventer de route ou de durée.');
+    const foreignRoute = await fetch(`${baseUrl}/api/app/runs/${ids.runs[1]}/route`, { headers: { Cookie: cookie } });
+    ensure(foreignRoute.status === 404, 'Une tournée étrangère ne doit pas être déductible par l’endpoint routier.');
 
     const [leafletScript, leafletStyle, mapPage] = await Promise.all([
       fetch(`${baseUrl}/vendor/leaflet/leaflet.js`),

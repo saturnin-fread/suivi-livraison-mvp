@@ -170,6 +170,24 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 - simuler position ancienne, point aberrant et coupure réseau ;
 - vérifier la distinction trajet réalisé, position actuelle et route restante ;
 - vérifier que le suivi précis s'arrête après la livraison.
+- vérifier que la position du livreur reste absente avant `En tournée`, devient autorisée pendant l'exécution et se masque pendant `Échec` ou `Retour` ;
+- vérifier que la carte client ne contient que sa destination et jamais les autres arrêts ;
+- vérifier sur mobile les boutons de recentrage, vue complète et position locale après consentement ;
+- vérifier que la position locale du client n'est envoyée à aucune API ;
+- vérifier `Cache-Control: private, no-store`, `Referrer-Policy: origin`, l'absence du token dans les référents et l'arrêt du rafraîchissement en état terminal ;
+- bloquer les tuiles ou Traccar et conserver un état textuel utile sans fausse ETA.
+
+## Test I2 — adaptateur de routage
+
+- exécuter `npm run test:routing` sans réseau réel ;
+- vérifier les coordonnées invalides, les limites de points et les profils inconnus ;
+- vérifier timeout, HTTP 429/5xx, JSON invalide, corps trop grand et route absente ;
+- vérifier cache, expiration, provenance, unités et cellules de matrice inaccessibles ;
+- vérifier que le fournisseur désactivé ne renvoie ni géométrie, ni distance, ni durée ;
+- vérifier qu'une tournée d'une autre entreprise répond comme introuvable ;
+- refuser un arrêt sans destination et une tournée dépassant la limite ;
+- ne jamais présenter `durationSeconds` comme une ETA ;
+- avant activation OSRM, valider les routes sentinelles et le corpus terrain Bénin versionné.
 
 ## Test J — CRM, statistiques et exports
 

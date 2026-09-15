@@ -12,6 +12,8 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Tournées multi-colis](DELIVERY_RUNS.md)
 - [Carte d'exploitation](OPERATIONS_MAP.md)
 - [Plan cartes, routage et estimations](MAPS_AND_ROUTING_PLAN.md)
+- [Contrat de l'adaptateur de routage](ROUTING_ADAPTER.md)
+- [Revue routage et carte publique](ROUTING_AND_PUBLIC_MAP_REVIEW.md)
 - [Plan CRM, analyses et exports](CRM_ANALYTICS_PLAN.md)
 - [Plan de plateforme SaaS](SAAS_PLATFORM_PLAN.md)
 - [Barrières qualité et confidentialité](QUALITY_AND_PRIVACY_GATES.md)
@@ -43,6 +45,8 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - Les transitions et incidents peuvent attendre une reprise réseau contrôlée sur le téléphone du livreur ; les actions sensibles restent en ligne.
 - Les ajustements financiers après clôture et le manifeste ordonné du livreur sont disponibles et testés.
 - La carte d'exploitation affiche la flotte, les destinations, les tournées, les incidents et l'ordre restant sans inventer de route ni d'ETA.
+- La carte client affiche sa destination et la position autorisée du livreur, avec géolocalisation locale facultative et sans fuite des autres arrêts.
+- L'adaptateur OSRM est intégré mais reste désactivé jusqu'à la qualification terrain du profil moto au Bénin.
 - Les prochaines phases cartes/routage, CRM/exports, plateforme SaaS et qualité disposent de plans spécialisés relus avant implémentation.
 - WhatsApp/WAHA n’est pas encore intégré.
 

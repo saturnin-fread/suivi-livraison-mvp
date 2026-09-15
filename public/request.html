@@ -43,7 +43,7 @@
         locationData = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy };
         mapEl.style.display = 'block';
         if (!map) map = L.map('map').setView([locationData.latitude, locationData.longitude], 16);
-        if (!mapReady) { L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); mapReady = true; }
+        if (!mapReady) { L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); mapReady = true; }
         if (!marker) marker = L.marker([locationData.latitude, locationData.longitude], { draggable: true }).addTo(map);
         else marker.setLatLng([locationData.latitude, locationData.longitude]);
         marker.on('dragend', () => { const p = marker.getLatLng(); locationData.latitude = p.lat; locationData.longitude = p.lng; locationData.accuracy = null; message.textContent = 'Position ajustée sur la carte.'; });

@@ -61,6 +61,7 @@ npm run test:syntax
 npm run test:payments
 npm run test:runs
 npm run test:map
+npm run test:routing
 npm run test:smoke
 npm run test:driver
 ```
@@ -83,6 +84,10 @@ npm run test:runs
 
 Le contrôle de la carte d'exploitation utilise les mêmes variables Playwright avec `npm run test:map`. Les fonds de carte facultatifs sont décrits dans `docs/OPERATIONS_MAP.md`. En l'absence de fournisseur satellite autorisé, ne pas ajouter d'URL de tuiles récupérée dans une application tierce.
 
+Le contrôle navigateur du suivi client est inclus dans `npm run test:smoke` lorsque `RUN_BROWSER_TEST=1`. Il vérifie notamment le mobile, le consentement de géolocalisation locale, l'absence de fuite du token par référent et le masquage de la position avant départ.
+
+Le routage doit rester configuré avec `ROUTING_PROVIDER=disabled` jusqu'à ce qu'une instance OSRM privée, son profil moto et la version de ses données cartographiques aient passé le banc décrit dans `docs/MAPS_AND_ROUTING_PLAN.md`. Ne jamais utiliser le serveur public de démonstration OSRM comme dépendance de production. Une activation exige aussi `ROUTING_OSRM_URL`, `ROUTING_OSRM_PROFILE`, `ROUTING_MAP_DATA_VERSION` et `ROUTING_PROVIDER_VERSION`.
+
 Exécuter les scénarios fonctionnels l'un après l'autre. Ils créent des données temporaires identifiables dans la base `delivery` et les suppriment dans un bloc de nettoyage final.
 
 ## Restaurer la compréhension du système
@@ -95,10 +100,12 @@ Lire dans cet ordre :
 4. `docs/DATA_MODEL.md`
 5. `docs/DELIVERY_RUNS.md`
 6. `docs/OPERATIONS_MAP.md`
-7. `docs/OFFLINE_OPERATIONS.md`
-8. `server.js`
-9. `public/app.js`
-10. `public/request.html`
+7. `docs/ROUTING_ADAPTER.md`
+8. `docs/ROUTING_AND_PUBLIC_MAP_REVIEW.md`
+9. `docs/OFFLINE_OPERATIONS.md`
+10. `server.js`
+11. `public/app.js`
+12. `public/request.html`
 
 ## Secrets
 

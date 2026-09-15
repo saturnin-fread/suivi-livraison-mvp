@@ -2,6 +2,14 @@
 
 ## 2026-09-15
 
+- Refonte mobile du suivi client avec destination propre, recentrage, vue complète et géolocalisation locale après consentement explicite.
+- Activation de la position du livreur uniquement à partir de `En tournée`, puis retrait immédiat après un état terminal.
+- Ajout des informations minimales du colis et d'états honnêtes lorsque Traccar ou les tuiles sont indisponibles, sans autre arrêt ni ETA.
+- Ajout des en-têtes `no-store`, `Referrer-Policy: origin` et `noindex` sur le lien public : le token reste absent du référent tout en conservant l'origine requise par le fournisseur de tuiles.
+- Mutualisation de l'instantané Traccar entre carte entreprise et suivi public afin de limiter les appels concurrents.
+- Ajout d'un adaptateur de routage neutre avec modes désactivé et OSRM, validation, timeout, cache borné, provenance et tests sans réseau.
+- Ajout d'un endpoint interne de route par tournée, cloisonné par entreprise et volontairement sans ETA publique.
+- Maintien du routage désactivé en production jusqu'à la qualification d'un profil moto sur un corpus terrain béninois.
 - Remplacement de la page réservée `/app/carte` par une carte d'exploitation fonctionnelle et cloisonnée par entreprise.
 - Ajout de la flotte, des destinations, des tournées ouvertes, de l'ordre restant, des commandes hors tournée et des incidents.
 - Ajout des boutons vue complète, localisation de l'opérateur, centrage livreur et actualisation manuelle ou automatique.

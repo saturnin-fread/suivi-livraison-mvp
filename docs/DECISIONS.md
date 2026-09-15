@@ -88,6 +88,14 @@ La tournée est un objet métier versionné distinct des commandes. Une commande
 
 L'encaissement finalisé ne peut plus être annulé ni réécrit. Un remboursement ou un complément crée une écriture distincte, et une erreur crée une écriture inverse liée. Les actions sont idempotentes, sérialisées par verrou et réservées aux responsables. Ce journal sert au suivi opérationnel et au litige, mais ne se substitue pas aux obligations comptables SYSCOHADA.
 
+## 2026-09-15 — Fenêtre minimale d'exposition GPS au client
+
+Le lien client ne reçoit pas la position du livreur pendant la préparation ou la simple récupération du colis. L'exposition est autorisée uniquement pendant `En tournée`, `En livraison` et `Arrivée`, puis suspendue en cas d'échec ou de retour et supprimée en état terminal. La destination du client peut rester visible avant le départ, mais aucun autre arrêt, ordre de tournée ou identifiant Traccar n'est envoyé.
+
+## 2026-09-15 — Routage neutre et désactivé avant preuve terrain
+
+Le domaine métier dépend d'un adaptateur et non directement d'OSRM. Une durée routière brute n'est pas une ETA. Le fournisseur de production reste désactivé jusqu'à la qualification d'un profil moto sur un corpus béninois versionné ; aucune ligne droite, route ancienne ou valeur par défaut ne sert de remplacement silencieux.
+
 ## 2026-09-15 — Manifeste livreur ordonné mais non coercitif
 
 Le livreur voit exactement l'ordre confirmé par l'exploitation, sa progression et le prochain arrêt. L'ordre guide le travail mais ne bloque pas un détour terrain : client absent, route coupée ou urgence peuvent imposer une adaptation. Tant qu'un moteur routier fiable n'est pas intégré, aucune durée ni ETA n'est déduite de cet ordre. Les autres arrêts restent strictement absents de l'API publique du client.

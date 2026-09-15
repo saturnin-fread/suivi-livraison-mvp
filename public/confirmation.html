@@ -65,7 +65,7 @@
 
     function showMap() {
       const mapElement = document.getElementById('map'); mapElement.hidden = false;
-      if (!map) { map = L.map('map').setView([locationData.latitude, locationData.longitude], 16); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); }
+      if (!map) { map = L.map('map').setView([locationData.latitude, locationData.longitude], 16); L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); }
       else { map.invalidateSize(); map.setView([locationData.latitude, locationData.longitude], 16); }
       if (!marker) { marker = L.marker([locationData.latitude, locationData.longitude], { draggable: true }).addTo(map); marker.on('dragend', () => { const point = marker.getLatLng(); locationData = { latitude: point.lat, longitude: point.lng, accuracy: null }; document.getElementById('message').innerHTML = '<div class="notice">Position ajustée sur la carte.</div>'; }); }
       else marker.setLatLng([locationData.latitude, locationData.longitude]);

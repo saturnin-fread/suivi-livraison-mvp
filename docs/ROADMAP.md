@@ -134,7 +134,7 @@ Afficher seulement la livraison du client, avec une expérience claire et respec
 - une position ancienne n'est jamais présentée comme actuelle ;
 - l'estimation est affichée comme une fourchette et se recalcule.
 
-## Phase 6 — Carte d'exploitation et tournées multi-colis — lot 1 livré
+## Phase 6 — Carte d'exploitation et tournées multi-colis — lot 1 livré, socle du lot 2 en place
 
 ### Objectif
 
@@ -253,12 +253,14 @@ Le portail livreur restitue désormais les tournées planifiées ou en cours, l'
 
 La carte d'exploitation restitue désormais la flotte de l'entreprise, les positions disponibles ou anciennes, les destinations, les incidents, les tournées ouvertes et l'ordre restant. Elle permet de localiser l'opérateur, de recentrer la carte, de filtrer les destinations et de couper l'actualisation automatique. La ligne pointillée matérialise uniquement l'ordre confirmé : aucune route ni ETA n'est inventée. Leaflet est servi localement et le mode satellite reste désactivé jusqu'à la configuration d'un fournisseur autorisé.
 
+Le suivi client mobile montre désormais sa propre destination, les informations minimales du colis et la position autorisée du livreur uniquement pendant la fenêtre d'exécution. La position locale du client reste dans son navigateur. Le socle de routage accepte un fournisseur OSRM privé, valide ses réponses et conserve leur provenance, mais reste désactivé tant que le profil moto n'a pas passé le banc terrain Bénin. Aucune ETA publique n'est encore autorisée.
+
 Le prochain lot poursuit le produit dans cet ordre :
 
-1. choisir et intégrer un moteur routier avec distances, durées et provenance explicites ;
-2. améliorer la carte publique du client sans révéler les autres arrêts ;
-3. structurer les créneaux et temps de service avant toute optimisation automatique ;
-4. renforcer les conflits de capacité pendant une tournée active ;
+1. déployer un moteur privé de qualification et comparer OSRM/Valhalla sur des routes moto sentinelles du Bénin ;
+2. structurer les créneaux et temps de service avant toute optimisation automatique ;
+3. renforcer les conflits de capacité pendant une tournée active ;
+4. ajouter révocation/rotation des liens de suivi et limitation de débit ;
 5. démarrer le CRM opérationnel et les indicateurs vérifiables.
 
 ## Règles transversales

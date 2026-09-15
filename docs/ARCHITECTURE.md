@@ -56,13 +56,17 @@ delivery-app crée un token de formulaire
 Traccar API/WebSocket → positions et événements GPS
 Base delivery         → colis, destinations, affectations et statuts
 Suggestion actuelle  → ordre géométrique à confirmer, sans durée routière
-Moteur d'itinéraire futur → matrice routière, contraintes, distances et durées
+Adaptateur de routage → fournisseur désactivé ou OSRM qualifié, distances et durées brutes avec provenance
 delivery-app          → filtrage par entreprise et par lien public
 ```
 
 La carte client reçoit un sous-ensemble strict concernant une seule commande. La carte entreprise agrège uniquement les données de l'organisation connectée.
 
 La première carte entreprise utilise `GET /api/app/operations-map`. Le serveur charge les appareils et positions courantes depuis Traccar, les croise avec les seuls livreurs de `req.auth.company_id`, puis ajoute commandes, incidents et tournées issus de `delivery`. En cas d'échec Traccar, l'API renvoie un état GPS indisponible mais conserve les données métier. Le navigateur ne reçoit pas `traccar_unique_id`.
+
+Le suivi public utilise un DTO distinct. Il ne reçoit que l'état de sa commande, sa propre destination, des informations minimales sur le livreur et la position courante autorisée. La position est masquée avant `En tournée` et supprimée après livraison, retour ou annulation. La politique de référent envoie uniquement l'origine du site aux tuiles, jamais le chemin contenant le token. Le token ne doit apparaître dans aucun cache partagé ou journal.
+
+`lib/routing.js` encapsule le fournisseur. `GET /api/app/runs/:id/route` est une lecture réservée à l'entreprise propriétaire de la tournée. Une réponse porte fournisseur, profil, date, versions et avertissement ; la durée routière brute n'est jamais appelée ETA. Le fournisseur reste `disabled` tant que le profil moto et le graphe Bénin ne sont pas qualifiés.
 
 ## Sources de vérité
 
@@ -101,6 +105,11 @@ MAP_TILE_MAX_ZOOM (facultatif)
 MAP_SATELLITE_TILE_URL (facultatif)
 MAP_SATELLITE_ATTRIBUTION (facultatif)
 MAP_SATELLITE_MAX_ZOOM (facultatif)
+ROUTING_PROVIDER (`disabled` ou `osrm`)
+ROUTING_OSRM_URL (requis uniquement pour OSRM)
+ROUTING_OSRM_PROFILE (profil préparé côté OSRM)
+ROUTING_TIMEOUT_MS, ROUTING_CACHE_TTL_MS (facultatifs)
+ROUTING_MAP_DATA_VERSION, ROUTING_PROVIDER_VERSION (provenance)
 ```
 
 Les valeurs ne sont pas documentées ici volontairement.

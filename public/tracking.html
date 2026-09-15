@@ -2,87 +2,543 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="origin" />
     <title>Suivi de votre livraison</title>
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <style>
-      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
+      :root {
+        color-scheme: light;
+        font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --primary: #123b70;
+        --primary-hover: #0d2f5b;
+        --text: #162033;
+        --muted: #65738a;
+        --border: #dce4ee;
+        --surface: #ffffff;
+        --background: #f4f7fb;
+        --success: #15803d;
+        --warning: #d97706;
+        --danger: #b91c1c;
+      }
       * { box-sizing: border-box; }
-      body { margin: 0; background: #f4f7fb; color: #162033; }
-      header { padding: 18px 22px; background: #123b70; color: white; }
-      header h1 { margin: 0; font-size: 20px; }
-      header p { margin: 5px 0 0; opacity: .82; font-size: 13px; }
-      main { max-width: 1100px; margin: 0 auto; padding: 18px; }
-      .card { background: white; border-radius: 16px; box-shadow: 0 8px 28px #193b6514; overflow: hidden; }
-      #map { height: min(68vh, 620px); min-height: 420px; }
-      .status { display: flex; align-items: center; gap: 9px; padding: 14px 16px; font-size: 14px; }
-      .order-status { padding: 0 16px 14px; color: #123b70; font-weight: 750; }
-      .dot { width: 10px; height: 10px; border-radius: 999px; background: #f59e0b; }
-      .dot.online { background: #16a34a; }
-      .dot.error { background: #dc2626; }
-      .muted { color: #65738a; }
-      footer { padding: 12px 16px; font-size: 12px; color: #65738a; border-top: 1px solid #e6ebf2; }
+      [hidden] { display: none !important; }
+      body { margin: 0; min-width: 280px; background: var(--background); color: var(--text); }
+      button { font: inherit; }
+      .skip-link {
+        position: fixed; top: 8px; left: 8px; z-index: 1000; padding: 10px 14px;
+        border-radius: 8px; background: white; color: var(--primary); transform: translateY(-160%);
+      }
+      .skip-link:focus { transform: translateY(0); }
+      header {
+        padding: calc(18px + env(safe-area-inset-top)) max(22px, env(safe-area-inset-right)) 18px max(22px, env(safe-area-inset-left));
+        background: var(--primary); color: white;
+      }
+      header h1 { margin: 0; font-size: clamp(20px, 4vw, 26px); line-height: 1.25; }
+      header p { max-width: 720px; margin: 6px 0 0; opacity: .86; font-size: 14px; line-height: 1.45; }
+      main {
+        max-width: 1100px; margin: 0 auto;
+        padding: 18px max(18px, env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+      }
+      .card { overflow: hidden; border: 1px solid #e8edf4; border-radius: 16px; background: var(--surface); box-shadow: 0 8px 28px #193b6514; }
+      .summary { padding: 14px 16px; border-bottom: 1px solid #e6ebf2; }
+      .status { display: flex; align-items: flex-start; gap: 9px; min-height: 24px; font-size: 15px; line-height: 1.45; }
+      .dot { flex: 0 0 auto; width: 10px; height: 10px; margin-top: 6px; border-radius: 999px; background: #f59e0b; }
+      .dot.online { background: var(--success); }
+      .dot.error { background: var(--danger); }
+      .order-status { margin-top: 8px; color: var(--primary); font-weight: 700; }
+      .freshness { margin: 5px 0 0 19px; color: var(--muted); font-size: 13px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+      .parcel-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0 0; }
+      .parcel-detail { min-width: 0; padding: 9px 10px; border-radius: 9px; background: #f4f7fb; }
+      .parcel-detail span { display: block; color: var(--muted); font-size: 11px; }
+      .parcel-detail strong { display: block; margin-top: 3px; overflow-wrap: anywhere; font-size: 13px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 9px; padding: 12px 16px; border-bottom: 1px solid #e6ebf2; }
+      .button {
+        min-height: 44px; padding: 10px 14px; border: 1px solid var(--primary); border-radius: 10px;
+        background: var(--primary); color: white; font-weight: 700; cursor: pointer;
+      }
+      .button:hover { background: var(--primary-hover); }
+      .button.secondary { background: white; color: var(--primary); }
+      .button.secondary:hover { background: #eef4fb; }
+      .button:disabled { border-color: #b9c4d2; background: #e8edf3; color: #68778c; cursor: not-allowed; }
+      .button:focus-visible, .skip-link:focus-visible { outline: 3px solid #fbbf24; outline-offset: 2px; }
+      .action-message { margin: 0; padding: 10px 16px; border-bottom: 1px solid #f3c7c7; background: #fff1f2; color: #991b1b; font-size: 14px; line-height: 1.45; }
+      .privacy { margin: 0; padding: 10px 16px; border-bottom: 1px solid #e6ebf2; background: #f8fafc; color: var(--muted); font-size: 13px; line-height: 1.45; }
+      #map { height: min(62svh, 620px); min-height: 380px; background: #e8eef5; }
+      .map-fallback { padding: 22px 16px; color: var(--danger); }
+      footer { padding: 12px 16px; border-top: 1px solid #e6ebf2; color: var(--muted); font-size: 12px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+      .leaflet-control-zoom a { min-width: 36px; min-height: 36px; line-height: 36px; }
+      @media (max-width: 640px) {
+        header { padding-bottom: 15px; }
+        main { padding-top: 10px; }
+        .card { border-radius: 12px; }
+        .actions { display: grid; grid-template-columns: 1fr 1fr; }
+        .button { width: 100%; }
+        #locateViewer { grid-column: 1 / -1; }
+        #map { height: 52svh; min-height: 320px; }
+        .parcel-details { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 370px) {
+        .actions { grid-template-columns: 1fr; }
+        #locateViewer { grid-column: auto; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+      }
     </style>
   </head>
   <body>
+    <a class="skip-link" href="#trackingContent">Aller au suivi</a>
     <header>
       <h1>Suivi de votre livraison</h1>
-      <p>La position est actualisée automatiquement.</p>
+      <p>Seules votre destination et la position autorisée de votre livreur sont affichées. Aucune autre livraison n’est visible.</p>
     </header>
-    <main>
-      <section class="card">
-        <div class="status"><span id="dot" class="dot"></span><span id="status">Connexion au suivi…</span></div>
-        <div class="order-status" id="orderStatus">État de la commande : chargement…</div>
-        <div id="map"></div>
-        <footer id="updated">Dernière mise à jour : —</footer>
+    <main id="trackingContent">
+      <section class="card" aria-labelledby="orderStatus">
+        <div class="summary">
+          <div class="status" role="status" aria-live="polite" aria-atomic="true">
+            <span id="dot" class="dot" aria-hidden="true"></span>
+            <span id="status">Connexion au suivi…</span>
+          </div>
+          <div class="order-status" id="orderStatus">État de la commande : chargement…</div>
+          <p class="freshness" id="freshness">Fraîcheur de la position : en attente…</p>
+          <div class="parcel-details" id="parcelDetails" hidden>
+            <div class="parcel-detail" id="driverDetail" hidden><span>Livreur</span><strong id="driverName">—</strong></div>
+            <div class="parcel-detail" id="timeDetail" hidden><span>Créneau souhaité</span><strong id="requestedTime">—</strong></div>
+            <div class="parcel-detail" id="placeDetail" hidden><span>Point de livraison</span><strong id="deliveryPlace">—</strong></div>
+          </div>
+        </div>
+
+        <div class="actions" id="mapActions" aria-label="Actions de la carte">
+          <button class="button" id="centerDriver" type="button" disabled>Recentrer sur le livreur</button>
+          <button class="button secondary" id="locateViewer" type="button" aria-describedby="locationPrivacy">Afficher ma position</button>
+          <button class="button secondary" id="fitAll" type="button" disabled>Tout afficher</button>
+          <button class="button secondary" id="hideViewer" type="button" hidden>Masquer ma position</button>
+        </div>
+        <p class="privacy" id="locationPrivacy">
+          Votre position n’est demandée qu’après votre action. Elle reste dans ce navigateur et n’est pas envoyée à l’entreprise.
+        </p>
+        <p class="action-message" id="actionError" role="alert" hidden></p>
+
+        <div id="map" role="region" aria-label="Carte montrant la position du livreur et, si vous l’autorisez, votre position"></div>
+        <p class="map-fallback" id="mapFallback" role="alert" hidden>La carte ne peut pas être chargée pour le moment.</p>
+        <footer id="updated">Dernière position reçue : —</footer>
       </section>
     </main>
     <script src="/vendor/leaflet/leaflet.js"></script>
     <script>
-      const token = window.location.pathname.split('/').pop();
-      const map = L.map('map').setView([6.37, 2.43], 12);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
-      let marker;
-      let firstPosition = true;
+      (() => {
+        const REFRESH_INTERVAL_MS = 10000;
+        const STALE_AFTER_MS = 10 * 60 * 1000;
+        const token = window.location.pathname.split('/').filter(Boolean).pop() || '';
+        const elements = {
+          actionError: document.getElementById('actionError'),
+          centerDriver: document.getElementById('centerDriver'),
+          deliveryPlace: document.getElementById('deliveryPlace'),
+          dot: document.getElementById('dot'),
+          driverDetail: document.getElementById('driverDetail'),
+          driverName: document.getElementById('driverName'),
+          fitAll: document.getElementById('fitAll'),
+          freshness: document.getElementById('freshness'),
+          hideViewer: document.getElementById('hideViewer'),
+          locateViewer: document.getElementById('locateViewer'),
+          map: document.getElementById('map'),
+          mapActions: document.getElementById('mapActions'),
+          mapFallback: document.getElementById('mapFallback'),
+          orderStatus: document.getElementById('orderStatus'),
+          parcelDetails: document.getElementById('parcelDetails'),
+          placeDetail: document.getElementById('placeDetail'),
+          privacy: document.getElementById('locationPrivacy'),
+          requestedTime: document.getElementById('requestedTime'),
+          status: document.getElementById('status'),
+          timeDetail: document.getElementById('timeDetail'),
+          updated: document.getElementById('updated')
+        };
 
-      function setStatus(text, type) {
-        document.getElementById('status').textContent = text;
-        document.getElementById('dot').className = `dot ${type || ''}`;
-      }
+        let map = null;
+        let driverMarker = null;
+        let destinationMarker = null;
+        let viewerMarker = null;
+        let viewerAccuracyCircle = null;
+        let driverPosition = null;
+        let destinationPosition = null;
+        let viewerPosition = null;
+        let tileLayer = null;
+        let layersControl = null;
+        let mapConfigSignature = '';
+        let lastPositionTimestamp = null;
+        let firstDriverPosition = true;
+        let refreshInFlight = false;
+        let refreshTimer = null;
+        let terminalState = false;
 
-      async function refresh() {
-        try {
-          const response = await fetch(`/api/tracking/${encodeURIComponent(token)}`);
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.error || 'Erreur de suivi');
-          document.getElementById('orderStatus').textContent = `État de la commande : ${data.orderStatus || 'Suivi en cours'}`;
-          if (data.status === 'completed') {
-            if (marker) { map.removeLayer(marker); marker = null; }
-            document.getElementById('map').style.display = 'none';
-            setStatus(data.message, data.orderStatus === 'Livrée' ? 'online' : '');
-            document.getElementById('updated').textContent = `Dernière mise à jour : ${data.timestamp ? new Date(data.timestamp).toLocaleString('fr-FR') : '—'}`;
-            return;
-          }
-          document.getElementById('map').style.display = 'block';
-          if (data.status !== 'online' && !data.latitude) {
-            setStatus(data.message || 'Position momentanément indisponible.', '');
-            return;
-          }
-          const point = [data.latitude, data.longitude];
-          if (!marker) marker = L.marker(point).addTo(map).bindPopup('Livreur');
-          else marker.setLatLng(point);
-          if (firstPosition) { map.setView(point, 15); firstPosition = false; }
-          setStatus(data.status === 'online' ? 'Livreur en ligne' : 'Dernière position connue', data.status === 'online' ? 'online' : '');
-          document.getElementById('updated').textContent = `Dernière mise à jour : ${new Date(data.timestamp).toLocaleString('fr-FR')}`;
-        } catch (error) {
-          setStatus(error.message, 'error');
+        function setStatus(text, type = '') {
+          elements.status.textContent = text;
+          elements.dot.className = `dot ${type}`.trim();
         }
-      }
-      refresh();
-      setInterval(refresh, 10000);
+
+        function showActionError(message) {
+          elements.actionError.textContent = message;
+          elements.actionError.hidden = !message;
+        }
+
+        function validCoordinate(latitude, longitude) {
+          return Number.isFinite(latitude) && Number.isFinite(longitude)
+            && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
+        }
+
+        function numberOrNaN(value) {
+          if (value === null || value === undefined || value === '') return Number.NaN;
+          return Number(value);
+        }
+
+        function parseTimestamp(value) {
+          if (!value) return null;
+          const date = new Date(value);
+          return Number.isNaN(date.getTime()) ? null : date;
+        }
+
+        function formatAge(milliseconds) {
+          if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'à l’instant';
+          if (milliseconds < 60000) return 'il y a moins d’une minute';
+          const minutes = Math.floor(milliseconds / 60000);
+          if (minutes < 60) return `il y a ${minutes} minute${minutes > 1 ? 's' : ''}`;
+          const hours = Math.floor(minutes / 60);
+          if (hours < 24) return `il y a ${hours} heure${hours > 1 ? 's' : ''}`;
+          const days = Math.floor(hours / 24);
+          return `il y a ${days} jour${days > 1 ? 's' : ''}`;
+        }
+
+        function updateFreshness() {
+          if (!lastPositionTimestamp) {
+            elements.freshness.textContent = driverPosition
+              ? 'Fraîcheur de la position : heure inconnue.'
+              : 'Fraîcheur de la position : en attente…';
+            return;
+          }
+          const age = Math.max(0, Date.now() - lastPositionTimestamp.getTime());
+          const staleText = age > STALE_AFTER_MS ? ' — cette position est ancienne' : '';
+          elements.freshness.textContent = `Fraîcheur de la position : ${formatAge(age)}${staleText}.`;
+        }
+
+        function updateActionAvailability() {
+          elements.centerDriver.disabled = !driverPosition || terminalState;
+          elements.fitAll.disabled = (!driverPosition && !destinationPosition && !viewerPosition) || terminalState;
+        }
+
+        function centerOnDriver() {
+          showActionError('');
+          if (!map || !driverPosition) {
+            showActionError('La position du livreur n’est pas encore disponible.');
+            return;
+          }
+          map.setView(driverPosition, 16);
+          if (driverMarker) driverMarker.openPopup();
+        }
+
+        function fitVisiblePoints() {
+          showActionError('');
+          if (!map) return;
+          const points = [driverPosition, destinationPosition, viewerPosition].filter(Boolean);
+          if (!points.length) {
+            showActionError('Aucune position n’est disponible pour le moment.');
+            return;
+          }
+          if (points.length === 1) {
+            map.setView(points[0], 15);
+            return;
+          }
+          map.fitBounds(L.latLngBounds(points), { padding: [36, 36], maxZoom: 16 });
+        }
+
+        function hideViewerPosition() {
+          showActionError('');
+          if (map && viewerMarker) map.removeLayer(viewerMarker);
+          if (map && viewerAccuracyCircle) map.removeLayer(viewerAccuracyCircle);
+          viewerMarker = null;
+          viewerAccuracyCircle = null;
+          viewerPosition = null;
+          elements.hideViewer.hidden = true;
+          elements.locateViewer.textContent = 'Afficher ma position';
+          updateActionAvailability();
+        }
+
+        function locationErrorMessage(error) {
+          if (!error) return 'Votre position n’a pas pu être déterminée.';
+          if (error.code === 1) return 'Vous n’avez pas autorisé l’accès à votre position. Vous pouvez réessayer depuis les réglages du navigateur.';
+          if (error.code === 2) return 'Votre position est actuellement indisponible. Vérifiez que la localisation du téléphone est activée.';
+          if (error.code === 3) return 'La recherche de votre position a pris trop de temps. Réessayez dans un endroit plus dégagé.';
+          return 'Votre position n’a pas pu être déterminée.';
+        }
+
+        function locateViewer() {
+          showActionError('');
+          if (!navigator.geolocation) {
+            showActionError('Ce navigateur ne permet pas d’afficher votre position.');
+            return;
+          }
+          elements.locateViewer.disabled = true;
+          elements.locateViewer.textContent = 'Recherche de votre position…';
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const latitude = Number(position.coords.latitude);
+              const longitude = Number(position.coords.longitude);
+              const accuracy = Number(position.coords.accuracy);
+              if (!validCoordinate(latitude, longitude)) {
+                showActionError('Le navigateur a retourné une position invalide. Réessayez.');
+                elements.locateViewer.disabled = false;
+                elements.locateViewer.textContent = viewerPosition ? 'Actualiser ma position' : 'Afficher ma position';
+                return;
+              }
+              viewerPosition = [latitude, longitude];
+              if (!viewerMarker) {
+                viewerMarker = L.circleMarker(viewerPosition, {
+                  radius: 8, color: '#123b70', weight: 3, fillColor: '#ffffff', fillOpacity: 1
+                }).addTo(map).bindPopup('Votre position — non partagée');
+              } else {
+                viewerMarker.setLatLng(viewerPosition);
+              }
+              if (viewerAccuracyCircle) map.removeLayer(viewerAccuracyCircle);
+              if (Number.isFinite(accuracy) && accuracy > 0) {
+                viewerAccuracyCircle = L.circle(viewerPosition, {
+                  radius: accuracy, color: '#2563eb', weight: 1, fillColor: '#60a5fa', fillOpacity: .12
+                }).addTo(map);
+              }
+              elements.locateViewer.disabled = false;
+              elements.locateViewer.textContent = 'Actualiser ma position';
+              elements.hideViewer.hidden = false;
+              updateActionAvailability();
+              fitVisiblePoints();
+              viewerMarker.openPopup();
+            },
+            (error) => {
+              showActionError(locationErrorMessage(error));
+              elements.locateViewer.disabled = false;
+              elements.locateViewer.textContent = viewerPosition ? 'Actualiser ma position' : 'Afficher ma position';
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+          );
+        }
+
+        function renderParcelDetails(data) {
+          const driverLabel = [data.driver?.name, data.driver?.vehicleType].filter(Boolean).join(' — ');
+          const placeLabel = [data.neighborhood, data.landmark].filter(Boolean).join(' — ');
+          const values = [
+            [elements.driverDetail, elements.driverName, driverLabel],
+            [elements.timeDetail, elements.requestedTime, data.requestedTime],
+            [elements.placeDetail, elements.deliveryPlace, placeLabel],
+          ];
+          let visible = false;
+          for (const [container, target, value] of values) {
+            const text = String(value || '').trim();
+            container.hidden = !text;
+            if (text) {
+              target.textContent = text;
+              visible = true;
+            }
+          }
+          elements.parcelDetails.hidden = !visible;
+        }
+
+        function clearDriverPosition() {
+          if (map && driverMarker) map.removeLayer(driverMarker);
+          driverMarker = null;
+          driverPosition = null;
+          lastPositionTimestamp = null;
+          updateActionAvailability();
+        }
+
+        function renderDestination(destination) {
+          const latitude = numberOrNaN(destination?.latitude);
+          const longitude = numberOrNaN(destination?.longitude);
+          if (!validCoordinate(latitude, longitude)) {
+            if (map && destinationMarker) map.removeLayer(destinationMarker);
+            destinationMarker = null;
+            destinationPosition = null;
+            updateActionAvailability();
+            return;
+          }
+          destinationPosition = [latitude, longitude];
+          if (!destinationMarker) {
+            destinationMarker = L.circleMarker(destinationPosition, {
+              radius: 9, color: '#123b70', weight: 3, fillColor: '#fbbf24', fillOpacity: .95
+            }).addTo(map).bindPopup('Votre point de livraison');
+          } else {
+            destinationMarker.setLatLng(destinationPosition);
+          }
+          updateActionAvailability();
+        }
+
+        function validTileConfig(config) {
+          return config && typeof config.url === 'string' && /^https:\/\//i.test(config.url)
+            && Number.isInteger(Number(config.maxZoom)) && Number(config.maxZoom) >= 1 && Number(config.maxZoom) <= 24;
+        }
+
+        function applyMapConfig(config) {
+          if (!map || !validTileConfig(config?.base)) return;
+          const signature = JSON.stringify(config);
+          if (signature === mapConfigSignature) return;
+          mapConfigSignature = signature;
+          if (layersControl) map.removeControl(layersControl);
+          if (tileLayer) map.removeLayer(tileLayer);
+          const createLayer = (layerConfig) => {
+            const layer = L.tileLayer(layerConfig.url, {
+              maxZoom: Number(layerConfig.maxZoom),
+              attribution: String(layerConfig.attribution || '')
+            });
+            let tileErrors = 0;
+            layer.on('tileerror', () => {
+              tileErrors += 1;
+              if (tileErrors === 3) showActionError('Le fond de carte charge difficilement. Les informations de livraison restent disponibles.');
+            });
+            return layer;
+          };
+          tileLayer = createLayer(config.base).addTo(map);
+          if (validTileConfig(config.satellite)) {
+            const satellite = createLayer(config.satellite);
+            layersControl = L.control.layers({ Rues: tileLayer, Satellite: satellite }, null, { collapsed: true }).addTo(map);
+          } else {
+            layersControl = null;
+          }
+        }
+
+        function renderDriverPosition(data) {
+          const latitude = numberOrNaN(data.latitude);
+          const longitude = numberOrNaN(data.longitude);
+          if (!validCoordinate(latitude, longitude)) {
+            setStatus(data.message || 'Position momentanément indisponible.', '');
+            updateFreshness();
+            return;
+          }
+          driverPosition = [latitude, longitude];
+          lastPositionTimestamp = parseTimestamp(data.timestamp);
+          if (!driverMarker) driverMarker = L.marker(driverPosition).addTo(map).bindPopup(data.driver?.name || 'Livreur');
+          else driverMarker.setLatLng(driverPosition);
+          if (firstDriverPosition) {
+            map.setView(driverPosition, 15);
+            firstDriverPosition = false;
+          }
+          const age = lastPositionTimestamp ? Date.now() - lastPositionTimestamp.getTime() : null;
+          const isStale = data.status === 'stale' || (Number.isFinite(age) && age > STALE_AFTER_MS);
+          if (isStale) setStatus('Dernière position connue du livreur', '');
+          else if (data.status === 'online') setStatus('Position récente du livreur', 'online');
+          else setStatus(data.message || 'Dernière position connue du livreur', '');
+          elements.updated.textContent = lastPositionTimestamp
+            ? `Dernière position reçue : ${lastPositionTimestamp.toLocaleString('fr-FR')}`
+            : 'Dernière position reçue : heure inconnue';
+          updateFreshness();
+          updateActionAvailability();
+        }
+
+        function renderCompleted(data) {
+          terminalState = true;
+          if (refreshTimer) window.clearInterval(refreshTimer);
+          refreshTimer = null;
+          clearDriverPosition();
+          destinationPosition = null;
+          viewerPosition = null;
+          destinationMarker = null;
+          viewerMarker = null;
+          viewerAccuracyCircle = null;
+          if (map) map.remove();
+          map = null;
+          elements.map.hidden = true;
+          elements.mapActions.hidden = true;
+          elements.privacy.hidden = true;
+          elements.freshness.hidden = true;
+          elements.updated.textContent = `Dernière mise à jour : ${parseTimestamp(data.timestamp)?.toLocaleString('fr-FR') || '—'}`;
+          setStatus(data.message || 'Le suivi de cette livraison est terminé.', data.orderStatus === 'Livrée' ? 'online' : '');
+          updateActionAvailability();
+        }
+
+        async function refresh() {
+          if (refreshInFlight || terminalState || document.hidden) return;
+          refreshInFlight = true;
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 12000);
+          try {
+            const response = await fetch(`/api/tracking/${encodeURIComponent(token)}`, {
+              cache: 'no-store', headers: { Accept: 'application/json' }, signal: controller.signal
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Le suivi est temporairement indisponible.');
+            elements.orderStatus.textContent = `État de la commande : ${data.orderStatus || 'Suivi en cours'}`;
+            renderParcelDetails(data);
+            if (data.status === 'completed') {
+              renderCompleted(data);
+              return;
+            }
+            applyMapConfig(data.mapConfig);
+            renderDestination(data.destination);
+            if (data.positionVisible === false) {
+              clearDriverPosition();
+              setStatus(data.message || 'Le suivi en direct n’a pas encore commencé.', '');
+              elements.freshness.textContent = 'Fraîcheur de la position : suivi non démarré.';
+              elements.updated.textContent = 'Dernière position reçue : —';
+              if (firstDriverPosition && destinationPosition) map.setView(destinationPosition, 15);
+              return;
+            }
+            renderDriverPosition(data);
+          } catch (error) {
+            const message = error.name === 'AbortError'
+              ? 'La mise à jour prend trop de temps. Une nouvelle tentative sera faite automatiquement.'
+              : error.message;
+            if (!driverPosition) elements.orderStatus.textContent = 'État de la commande : indisponible';
+            setStatus(driverPosition ? `${message} Dernière position conservée.` : message, 'error');
+            updateFreshness();
+          } finally {
+            window.clearTimeout(timeout);
+            refreshInFlight = false;
+          }
+        }
+
+        function initializeMap() {
+          if (typeof window.L === 'undefined') {
+            elements.map.hidden = true;
+            elements.mapFallback.hidden = false;
+            elements.mapActions.hidden = true;
+            elements.privacy.hidden = true;
+            setStatus('La carte ne peut pas être chargée pour le moment.', 'error');
+            return false;
+          }
+          map = L.map('map', { zoomControl: true, keyboard: true }).setView([6.37, 2.43], 12);
+          applyMapConfig({
+            base: {
+              url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              maxZoom: 19,
+              attribution: '&copy; OpenStreetMap contributors'
+            },
+            satellite: null
+          });
+          map.attributionControl.setPrefix('<a href="https://leafletjs.com/" title="Une bibliothèque JavaScript pour cartes interactives">Leaflet</a>');
+          const mapContainer = map.getContainer();
+          mapContainer.setAttribute('aria-label', 'Carte interactive du suivi de livraison');
+          const zoomIn = mapContainer.querySelector('.leaflet-control-zoom-in');
+          const zoomOut = mapContainer.querySelector('.leaflet-control-zoom-out');
+          if (zoomIn) zoomIn.setAttribute('aria-label', 'Zoomer sur la carte');
+          if (zoomOut) zoomOut.setAttribute('aria-label', 'Dézoomer sur la carte');
+          return true;
+        }
+
+        elements.centerDriver.addEventListener('click', centerOnDriver);
+        elements.fitAll.addEventListener('click', fitVisiblePoints);
+        elements.locateViewer.addEventListener('click', locateViewer);
+        elements.hideViewer.addEventListener('click', hideViewerPosition);
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) refresh();
+        });
+        window.setInterval(updateFreshness, 30000);
+
+        if (!token) {
+          setStatus('Lien de suivi invalide.', 'error');
+          elements.mapActions.hidden = true;
+          elements.privacy.hidden = true;
+        } else if (initializeMap()) {
+          refresh();
+          refreshTimer = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+          window.addEventListener('pagehide', () => window.clearInterval(refreshTimer), { once: true });
+        }
+      })();
     </script>
   </body>
 </html>

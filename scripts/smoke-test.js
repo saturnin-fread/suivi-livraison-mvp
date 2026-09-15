@@ -20,6 +20,42 @@ async function json(response) {
   return { response, payload };
 }
 
+async function verifyPublicTrackingBrowser(path) {
+  if (process.env.RUN_BROWSER_TEST !== '1') return;
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROME_EXECUTABLE || undefined,
+  });
+  try {
+    const browserContext = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      geolocation: { latitude: 6.381, longitude: 2.441 },
+      permissions: ['geolocation'],
+    });
+    const page = await browserContext.newPage();
+    const outgoing = [];
+    page.on('request', (request) => outgoing.push({ method: request.method(), url: request.url() }));
+    const response = await page.goto(`${baseUrl}${path}`, { waitUntil: 'domcontentloaded' });
+    ensure(response?.headers()['referrer-policy'] === 'origin', 'La page publique doit limiter le référent à l’origine sans exposer le token.');
+    await page.locator('#orderStatus').getByText('Confirmée', { exact: false }).waitFor({ state: 'visible' });
+    await page.locator('#map .leaflet-control-zoom').waitFor({ state: 'visible' });
+    ensure(await page.locator('#centerDriver').isDisabled(), 'Le recentrage livreur doit rester désactivé avant le départ.');
+    const pathsBefore = await page.locator('#map .leaflet-overlay-pane path').count();
+    ensure(pathsBefore >= 1, 'La destination du client doit être visible sur sa propre carte.');
+    await page.locator('#locateViewer').click();
+    await page.locator('#hideViewer').waitFor({ state: 'visible' });
+    ensure(await page.locator('#map .leaflet-overlay-pane path').count() > pathsBefore,
+      'La position locale du client ne s’affiche pas après son consentement.');
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    ensure(!overflow, 'Le suivi public déborde horizontalement sur mobile.');
+    ensure(!outgoing.some((request) => request.method !== 'GET' && request.url.includes('/api/tracking/')),
+      'La position locale du client ne doit jamais être envoyée à l’API de suivi.');
+  } finally {
+    await browser.close();
+  }
+}
+
 async function run() {
   ensure(email && password, 'ADMIN_USER et ADMIN_PASSWORD sont requis.');
   const health = await json(await fetch(`${baseUrl}/health`));
@@ -145,6 +181,27 @@ async function run() {
     ensure(converted.response.status === 201 && converted.payload.orderId && converted.payload.path, 'Conversion en commande impossible.');
     orderId = converted.payload.orderId;
 
+    const publicTrackingPath = converted.payload.path.replace('/suivi/', '/api/tracking/');
+    const publicTracking = await json(await fetch(`${baseUrl}${publicTrackingPath}`));
+    ensure(publicTracking.response.ok, 'Le suivi public actif doit rester disponible même si le GPS est momentanément indisponible.');
+    ensure(publicTracking.payload.orderStatus === 'Confirmée'
+      && publicTracking.payload.destination?.latitude === 6.38
+      && publicTracking.payload.destination?.longitude === 2.44,
+    'Le suivi public ne restitue pas correctement l’état et la destination du colis concerné.');
+    ensure(publicTracking.payload.positionVisible === false
+      && publicTracking.payload.latitude == null && publicTracking.payload.longitude == null,
+    'La position du livreur ne doit pas être exposée avant son départ effectif.');
+    ensure(publicTracking.payload.driver?.name === converted.payload.driverName
+      && publicTracking.payload.mapConfig?.base?.url,
+    'Les informations publiques utiles ou la configuration cartographique sont absentes.');
+    const serializedTracking = JSON.stringify(publicTracking.payload);
+    ensure(!serializedTracking.includes('traccar_unique_id')
+      && !serializedTracking.includes('customerPhone')
+      && !serializedTracking.includes('runs')
+      && !serializedTracking.includes('stops'),
+    'Le suivi public expose des données internes ou d’autres arrêts de tournée.');
+    await verifyPublicTrackingBrowser(converted.payload.path);
+
     const repeated = await json(await fetch(`${baseUrl}/api/app/requests/${requestId}/convert`, {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
@@ -200,6 +257,22 @@ async function run() {
       const progressed = await transition(status, `step-${index}`);
       ensure(progressed.response.ok && progressed.payload.status === status, `Transition vers ${status} impossible.`);
     }
+
+    const activePublicTracking = await json(await fetch(`${baseUrl}${publicTrackingPath}`));
+    ensure(activePublicTracking.response.ok && activePublicTracking.payload.orderStatus === 'En livraison'
+      && activePublicTracking.payload.positionVisible === true,
+    'Le suivi GPS public ne s’active pas au départ effectif de la livraison.');
+    ensure(!JSON.stringify(activePublicTracking.payload).includes('traccar_unique_id'),
+      'Le suivi GPS actif expose un identifiant technique interne.');
+
+    const failedDelivery = await transition('Échec', 'public-tracking-failure', 'Client momentanément injoignable');
+    ensure(failedDelivery.response.ok && failedDelivery.payload.status === 'Échec', 'Transition de contrôle vers Échec impossible.');
+    const hiddenDuringFailure = await json(await fetch(`${baseUrl}${publicTrackingPath}`));
+    ensure(hiddenDuringFailure.response.ok && hiddenDuringFailure.payload.positionVisible === false
+      && hiddenDuringFailure.payload.latitude == null && hiddenDuringFailure.payload.longitude == null,
+    'La position du livreur doit être masquée pendant un échec de livraison.');
+    const resumedDelivery = await transition('En livraison', 'public-tracking-resume');
+    ensure(resumedDelivery.response.ok && resumedDelivery.payload.status === 'En livraison', 'Reprise après échec impossible.');
 
     const collectionKey = `smoke-payment-collect-${requestToken}`;
     const collected = await json(await fetch(`${baseUrl}/api/app/orders/${orderId}/payment/collect`, {
@@ -410,9 +483,11 @@ async function run() {
     ensure(orderDetail.payload.payment_status === 'reconciled' && orderDetail.payload.paymentEvents.length >= 6, 'L’historique financier ou son rapprochement est incomplet.');
     ensure(orderDetail.payload.events.length >= 5 && orderDetail.payload.incidents[0]?.status === 'resolved', 'Chronologie ou incident incomplet.');
 
-    const privateAfterDelivery = await json(await fetch(`${baseUrl}${converted.payload.path.replace('/suivi/', '/api/tracking/')}`));
+    const privateAfterDelivery = await json(await fetch(`${baseUrl}${publicTrackingPath}`));
     ensure(privateAfterDelivery.response.ok && privateAfterDelivery.payload.status === 'completed', 'Le suivi public doit signaler la fin de livraison.');
+    ensure(privateAfterDelivery.payload.positionVisible === false, 'Le suivi GPS doit être désactivé après livraison.');
     ensure(privateAfterDelivery.payload.latitude == null && privateAfterDelivery.payload.longitude == null, 'La position du livreur ne doit plus être exposée après livraison.');
+    ensure(privateAfterDelivery.payload.destination == null, 'La destination ne doit plus être exposée après la clôture de la livraison.');
 
     const locked = await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, {
       method: 'PUT',

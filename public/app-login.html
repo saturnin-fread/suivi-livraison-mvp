@@ -2,19 +2,220 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Connexion entreprise — Livraisons</title>
-    <link rel="stylesheet" href="/app.css" />
-    <style>.login-page{min-height:100vh;display:grid;place-items:center;padding:18px}.login-card{width:min(430px,100%)}.login-card h1{font-size:27px}.login-card button{width:100%;margin-top:20px}</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>TRAXO — Connexion</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --black: #111111;
+        --red: #e11d2a;
+        --red-dark: #b3141f;
+        --muted: #6a7382;
+        --line: #e2e7ef;
+        --bg: #f4f6fa;
+        --field: #eef1f6;
+        font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--black); overflow-x: hidden; }
+      .wrap { min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px max(16px, env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+      .auth { width: min(940px, 100%); min-width: 0; background: #fff; border-radius: 22px; overflow: hidden; box-shadow: 0 24px 60px #10203a1f; display: grid; grid-template-columns: 1fr 1fr; }
+      .brand, .panel { min-width: 0; }
+
+      /* Brand panel */
+      .brand { position: relative; color: #fff; background: linear-gradient(150deg, var(--red) 0%, var(--red-dark) 100%); padding: 40px 34px; display: flex; flex-direction: column; gap: 18px; justify-content: center; }
+      .brand .logo { color: #fff; }
+      .brand h2 { margin: 6px 0 0; font-size: clamp(22px, 3vw, 30px); line-height: 1.2; }
+      .brand p { margin: 0; opacity: .92; font-size: 15px; line-height: 1.5; max-width: 34ch; }
+      .brand ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+      .brand li { display: flex; align-items: center; gap: 10px; font-size: 14px; opacity: .95; }
+      .brand li svg { flex: 0 0 auto; }
+
+      /* Logo lockup */
+      .logo { display: inline-flex; align-items: center; gap: 10px; }
+      .logo .mark { width: 34px; height: 34px; }
+      .logo .word { font-weight: 900; letter-spacing: .06em; font-size: 24px; }
+      .logo .dot { fill: var(--red); }
+
+      /* Form panel */
+      .panel { padding: 34px 32px; }
+      .panel > .logo { display: none; color: var(--black); margin-bottom: 18px; }
+      .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--field); border-radius: 12px; margin-bottom: 22px; }
+      .tabs button { border: 0; background: transparent; padding: 10px; border-radius: 9px; font: inherit; font-weight: 700; color: var(--muted); cursor: pointer; }
+      .tabs button[aria-selected="true"] { background: #fff; color: var(--black); box-shadow: 0 2px 8px #10203a14; }
+      h1 { margin: 0 0 4px; font-size: 23px; }
+      .sub { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+      label { display: block; margin: 14px 0 6px; font-size: 13px; font-weight: 700; }
+      .req { color: var(--red); }
+      input { width: 100%; min-height: 46px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 11px; font: inherit; background: #fff; }
+      input:focus { outline: 2px solid var(--red); outline-offset: 1px; border-color: transparent; }
+      .pw { position: relative; }
+      .pw input { padding-right: 46px; }
+      .pw button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; width: 36px; height: 36px; border-radius: 8px; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
+      .hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+      .check { display: flex; align-items: flex-start; gap: 9px; margin-top: 14px; font-size: 13px; color: var(--muted); }
+      .check input { width: 18px; min-height: 18px; margin-top: 1px; accent-color: var(--red); }
+      .link { color: var(--red); text-decoration: none; font-size: 13px; font-weight: 700; }
+      .link:hover { text-decoration: underline; }
+      .submit { width: 100%; min-height: 50px; margin-top: 20px; border: 0; border-radius: 12px; background: var(--black); color: #fff; font: inherit; font-weight: 800; letter-spacing: .02em; cursor: pointer; }
+      .submit:hover { background: #000; }
+      .banner { margin-bottom: 16px; padding: 11px 13px; border-radius: 11px; font-size: 13.5px; line-height: 1.45; }
+      .banner.error { background: #fdecec; color: #99101a; border: 1px solid #f6c9cc; }
+      .foot { margin-top: 20px; text-align: center; font-size: 12px; color: var(--muted); }
+
+      @media (max-width: 760px) {
+        .wrap { padding: 0; align-items: stretch; }
+        .auth { width: 100%; grid-template-columns: 1fr; border-radius: 0; min-height: 100vh; box-shadow: none; }
+        .brand { padding: 26px 22px calc(22px + env(safe-area-inset-top)); padding-top: calc(24px + env(safe-area-inset-top)); gap: 12px; }
+        .brand h2 { font-size: 20px; }
+        .brand p, .brand ul { display: none; }
+        .panel { padding: 24px 20px calc(28px + env(safe-area-inset-bottom)); }
+      }
+      @media (min-width: 761px) { .brand-compact { display: none; } }
+    </style>
   </head>
-  <body><main class="login-page"><section class="card login-card">
-    <h1>Espace entreprise</h1>
-    <p class="subtitle">Connectez-vous pour gérer les demandes et les livraisons.</p>
-    <div class="notice error" id="error" hidden>Adresse e-mail ou mot de passe incorrect.</div>
-    <form method="post" action="/app/login">
-      <div class="field" style="margin-top:20px"><label>Adresse e-mail</label><input type="email" name="user" required autocomplete="username" /></div>
-      <div class="field" style="margin-top:15px"><label>Mot de passe</label><input type="password" name="password" required autocomplete="current-password" /></div>
-      <button class="primary">Se connecter</button>
-    </form>
-  </section></main><script>document.getElementById('error').hidden=!new URLSearchParams(location.search).has('error');</script></body>
+  <body>
+    <div class="wrap">
+      <main class="auth">
+        <!-- Brand side -->
+        <aside class="brand">
+          <span class="logo" aria-label="TRAXO">
+            <svg class="mark" viewBox="0 0 64 64" role="img" aria-hidden="true">
+              <path d="M32 5c-11 0-20 8.7-20 19.6 0 13.8 20 34.4 20 34.4s20-20.6 20-34.4C52 13.7 43 5 32 5Z" fill="currentColor"/>
+              <circle cx="32" cy="24" r="10.5" fill="#fff"/>
+              <circle cx="32" cy="24" r="5.6" class="dot"/>
+              <rect x="1.5" y="41" width="15" height="4.4" rx="2.2" fill="currentColor"/>
+              <rect x="5.5" y="49.5" width="15" height="4.4" rx="2.2" fill="currentColor"/>
+              <path d="M19 42.5l10.5 6.4L19 55.3" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="word">TRAXO</span>
+          </span>
+          <h2>Le suivi de vos colis et livreurs, en temps réel.</h2>
+          <p>La plateforme qui aide les entreprises de livraison à préparer, affecter et suivre chaque course — sur le terrain comme au bureau.</p>
+          <ul>
+            <li><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Suivi carte en direct</li>
+            <li><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Preuve de livraison et encaissement</li>
+            <li><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Rapports et exports Excel</li>
+          </ul>
+        </aside>
+
+        <!-- Form side -->
+        <section class="panel">
+          <span class="logo brand-compact">
+            <svg class="mark" viewBox="0 0 64 64" role="img" aria-hidden="true" style="color:var(--black)">
+              <path d="M32 5c-11 0-20 8.7-20 19.6 0 13.8 20 34.4 20 34.4s20-20.6 20-34.4C52 13.7 43 5 32 5Z" fill="currentColor"/>
+              <circle cx="32" cy="24" r="10.5" fill="#fff"/>
+              <circle cx="32" cy="24" r="5.6" class="dot"/>
+              <rect x="1.5" y="41" width="15" height="4.4" rx="2.2" fill="currentColor"/>
+              <rect x="5.5" y="49.5" width="15" height="4.4" rx="2.2" fill="currentColor"/>
+              <path d="M19 42.5l10.5 6.4L19 55.3" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="word" style="color:var(--black)">TRAXO</span>
+          </span>
+
+          <div class="tabs" role="tablist">
+            <button type="button" id="tabLogin" role="tab" aria-selected="true" aria-controls="loginForm">Se connecter</button>
+            <button type="button" id="tabRegister" role="tab" aria-selected="false" aria-controls="registerForm">Créer un compte</button>
+          </div>
+
+          <div class="banner error" id="banner" hidden></div>
+
+          <!-- Login -->
+          <form id="loginForm" method="post" action="/app/login">
+            <h1>Bon retour 👋</h1>
+            <p class="sub">Connectez-vous pour piloter vos livraisons.</p>
+            <label for="loginEmail">Adresse e-mail</label>
+            <input id="loginEmail" name="user" type="email" inputmode="email" autocomplete="username" required />
+            <label for="loginPassword">Mot de passe</label>
+            <div class="pw">
+              <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+              <button type="button" class="toggle" data-target="loginPassword" aria-label="Afficher le mot de passe">Voir</button>
+            </div>
+            <div class="row">
+              <span></span>
+              <a class="link" href="mailto:support@traxo.app?subject=Mot%20de%20passe%20oubli%C3%A9">Mot de passe oublié ?</a>
+            </div>
+            <button class="submit" type="submit">Se connecter</button>
+          </form>
+
+          <!-- Register -->
+          <form id="registerForm" method="post" action="/app/register" hidden>
+            <h1>Créer votre espace</h1>
+            <p class="sub">Quelques informations et vous découvrez TRAXO en aperçu.</p>
+            <label for="regCompany">Nom de l'entreprise <span class="req">*</span></label>
+            <input id="regCompany" name="companyName" type="text" autocomplete="organization" maxlength="120" required />
+            <label for="regName">Votre nom complet <span class="req">*</span></label>
+            <input id="regName" name="ownerName" type="text" autocomplete="name" maxlength="120" required />
+            <label for="regEmail">E-mail professionnel <span class="req">*</span></label>
+            <input id="regEmail" name="email" type="email" inputmode="email" autocomplete="email" maxlength="200" required />
+            <label for="regPhone">Téléphone / WhatsApp <span class="req">*</span></label>
+            <input id="regPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" required />
+            <label for="regPassword">Mot de passe <span class="req">*</span></label>
+            <div class="pw">
+              <input id="regPassword" name="password" type="password" autocomplete="new-password" minlength="8" required />
+              <button type="button" class="toggle" data-target="regPassword" aria-label="Afficher le mot de passe">Voir</button>
+            </div>
+            <p class="hint">Au moins 8 caractères.</p>
+            <label class="check"><input type="checkbox" required /> <span>J'accepte les conditions d'utilisation et la politique de confidentialité de TRAXO.</span></label>
+            <button class="submit" type="submit">Créer mon compte</button>
+            <p class="foot">Votre compte démarre en mode aperçu. Les fonctionnalités s'activent après paiement.</p>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var tabLogin = document.getElementById('tabLogin');
+        var tabRegister = document.getElementById('tabRegister');
+        var loginForm = document.getElementById('loginForm');
+        var registerForm = document.getElementById('registerForm');
+        var banner = document.getElementById('banner');
+
+        var messages = {
+          company: "Indiquez le nom de votre entreprise.",
+          name: "Indiquez votre nom complet.",
+          email: "Vérifiez votre adresse e-mail.",
+          email_taken: "Un compte existe déjà avec cet e-mail. Connectez-vous.",
+          phone: "Indiquez un numéro de téléphone valide.",
+          password: "Le mot de passe doit contenir au moins 8 caractères.",
+          server: "Impossible de créer le compte pour le moment. Réessayez.",
+        };
+
+        function show(tab) {
+          var isRegister = tab === 'register';
+          tabRegister.setAttribute('aria-selected', String(isRegister));
+          tabLogin.setAttribute('aria-selected', String(!isRegister));
+          registerForm.hidden = !isRegister;
+          loginForm.hidden = isRegister;
+        }
+        tabLogin.addEventListener('click', function () { show('login'); banner.hidden = true; });
+        tabRegister.addEventListener('click', function () { show('register'); banner.hidden = true; });
+
+        // Password visibility toggles
+        document.querySelectorAll('.toggle').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var input = document.getElementById(btn.dataset.target);
+            var showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            btn.textContent = showing ? 'Voir' : 'Cacher';
+          });
+        });
+
+        // Error / tab from URL
+        var tab = params.get('tab');
+        var error = params.get('error');
+        if (tab === 'register') {
+          show('register');
+          if (error && messages[error]) { banner.textContent = messages[error]; banner.hidden = false; }
+        } else if (error === '1') {
+          banner.textContent = 'Adresse e-mail ou mot de passe incorrect.';
+          banner.hidden = false;
+        }
+      })();
+    </script>
+  </body>
 </html>

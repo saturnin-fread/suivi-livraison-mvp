@@ -627,6 +627,7 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS photo_proof_mode TEXT NOT NULL DEFAULT 'off';
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS signature_proof_mode TEXT NOT NULL DEFAULT 'off';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS activation_status TEXT NOT NULL DEFAULT 'active';
 
       UPDATE companies
       SET slug = 'chicago-consulting-group', updated_at = NOW()
@@ -647,6 +648,7 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
 
       CREATE TABLE IF NOT EXISTS company_memberships (
         id BIGSERIAL PRIMARY KEY,
@@ -1251,7 +1253,7 @@ async function readSession(req, scope) {
   const result = await pool.query(
     `SELECT s.user_id, s.company_id, s.scope, s.expires_at,
             u.email, u.display_name, u.is_platform_admin, u.disabled,
-            c.name AS company_name, c.slug AS company_slug, m.role, m.driver_id,
+            c.name AS company_name, c.slug AS company_slug, c.activation_status, m.role, m.driver_id,
             d.active AS driver_active
      FROM app_sessions s
      JOIN users u ON u.id = s.user_id
@@ -1299,6 +1301,16 @@ function requireCompanyApi(req, res, next) {
     if (!session) return res.status(401).json({ error: 'Session entreprise requise.' });
     if (session.role === 'driver') return res.status(403).json({ error: 'Cette fonction est réservée à l’équipe d’exploitation.' });
     req.auth = session;
+    // Preview accounts (self-signed-up, not yet activated/paid) may browse and read
+    // everything but cannot perform any write until the account is activated. This
+    // single gate backs the paywall: the UI blurs the same actions.
+    const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    if (isWrite && session.activation_status === 'preview') {
+      return res.status(402).json({
+        error: 'Votre compte est en mode aperçu. Activez-le pour utiliser cette fonctionnalité.',
+        code: 'ACCOUNT_PREVIEW',
+      });
+    }
     return next();
   }).catch(next);
 }
@@ -1490,6 +1502,95 @@ app.post('/app/logout', asyncRoute(async (req, res) => {
   if (pool && token) await pool.query('DELETE FROM app_sessions WHERE token_hash = $1', [digest(token)]);
   clearSessionCookie(req, res);
   return res.redirect('/app/login');
+}));
+
+function slugifyCompany(name) {
+  const base = String(name)
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return base || 'entreprise';
+}
+
+// Self-service company registration. New accounts start in "preview": the owner
+// can sign in and browse, but requireCompanyApi blocks every write until the
+// account is activated (paid). IP-rate-limited to blunt abuse of a public write.
+const registerRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({
+      limiter: trackingLimiter('register', { capacity: 20, refillTokens: 20, refillIntervalMs: 3_600_000, maxEntries: 10_000 }),
+    }),
+  ],
+});
+
+app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).send('Base métier non configurée.');
+  const body = req.body || {};
+  const companyName = String(body.companyName || '').trim();
+  const ownerName = String(body.ownerName || '').trim();
+  const email = normalizeEmail(body.email);
+  const phone = String(body.phone || '').trim();
+  const password = String(body.password || '');
+
+  let fieldError = null;
+  if (companyName.length < 2 || companyName.length > 120) fieldError = 'company';
+  else if (ownerName.length < 2 || ownerName.length > 120) fieldError = 'name';
+  else if (!email || email.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fieldError = 'email';
+  else if (phone.length < 6 || phone.length > 30) fieldError = 'phone';
+  else if (password.length < 8 || password.length > 200) fieldError = 'password';
+  if (fieldError) return res.redirect(`/app/login?tab=register&error=${fieldError}`);
+
+  const client = await pool.connect();
+  let userId;
+  let companyId;
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing.rows[0]) throw Object.assign(new Error('email_taken'), { code: 'email_taken' });
+
+    let slug = slugifyCompany(companyName);
+    const slugTaken = await client.query('SELECT 1 FROM companies WHERE slug = $1', [slug]);
+    if (slugTaken.rows[0]) slug = `${slug}-${crypto.randomBytes(3).toString('hex')}`;
+
+    const company = await client.query(
+      `INSERT INTO companies (name, slug, activation_status) VALUES ($1, $2, 'preview') RETURNING id`,
+      [companyName, slug]
+    );
+    companyId = company.rows[0].id;
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const createdUser = await client.query(
+      `INSERT INTO users (email, display_name, phone, password_salt, password_hash)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [email, ownerName, phone, salt, hashPassword(password, salt)]
+    );
+    userId = createdUser.rows[0].id;
+
+    await client.query(
+      `INSERT INTO company_memberships (company_id, user_id, role) VALUES ($1, $2, 'owner')`,
+      [companyId, userId]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'company', $3, 'company_registered', jsonb_build_object('activation_status', 'preview'))`,
+      [companyId, userId, companyId]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.code === 'email_taken') return res.redirect('/app/login?tab=register&error=email_taken');
+    console.error('Registration error:', error.message);
+    return res.redirect('/app/login?tab=register&error=server');
+  } finally {
+    client.release();
+  }
+
+  await createSession(req, res, userId, companyId, 'company');
+  return res.redirect('/app');
 }));
 
 app.get('/admin/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'platform-login.html')));

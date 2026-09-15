@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test:syntax": "node --check server.js && node --check lib/routing.js && node --check lib/rate-limit.js && node --check lib/tracking-link-policy.js && node --check lib/dispatch-policy.js && node --check lib/crm-metrics.js && node --check lib/crm-export-contract.js && node --check lib/crm-repository.js && node --check public/app.js && node --check public/driver.js && node --check public/driver-queue.js && node --check public/driver-sw.js && node --check scripts/smoke-test.js && node --check scripts/driver-smoke-test.js && node --check scripts/driver-offline-browser-test.js && node --check scripts/payment-adjustment-smoke-test.js && node --check scripts/run-smoke-test.js && node --check scripts/operations-map-smoke-test.js && node --check scripts/routing-adapter-test.js && node --check scripts/rate-limit-test.js && node --check scripts/tracking-link-policy-test.js && node --check scripts/tracking-link-storage-check.js && node --check scripts/dispatch-policy-test.js && node --check scripts/crm-metrics-test.js && node --check scripts/crm-export-contract-test.js && node --check scripts/crm-smoke-test.js",
+    "test:syntax": "node --check server.js && node --check lib/routing.js && node --check lib/rate-limit.js && node --check lib/redis-rate-limit.js && node --check lib/tracking-link-policy.js && node --check lib/dispatch-policy.js && node --check lib/crm-metrics.js && node --check lib/crm-export-contract.js && node --check lib/crm-repository.js && node --check public/app.js && node --check public/driver.js && node --check public/driver-queue.js && node --check public/driver-sw.js && node --check scripts/smoke-test.js && node --check scripts/driver-smoke-test.js && node --check scripts/driver-offline-browser-test.js && node --check scripts/payment-adjustment-smoke-test.js && node --check scripts/run-smoke-test.js && node --check scripts/operations-map-smoke-test.js && node --check scripts/routing-adapter-test.js && node --check scripts/rate-limit-test.js && node --check scripts/redis-rate-limit-test.js && node --check scripts/tracking-link-policy-test.js && node --check scripts/tracking-link-storage-check.js && node --check scripts/dispatch-policy-test.js && node --check scripts/crm-metrics-test.js && node --check scripts/crm-export-contract-test.js && node --check scripts/crm-smoke-test.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:driver": "node scripts/driver-smoke-test.js",
     "test:runs": "node scripts/run-smoke-test.js",
@@ -14,6 +14,7 @@
     "test:map": "node scripts/operations-map-smoke-test.js",
     "test:routing": "node scripts/routing-adapter-test.js",
     "test:rate-limit": "node scripts/rate-limit-test.js",
+    "test:redis-rate-limit": "node scripts/redis-rate-limit-test.js",
     "test:tracking-links": "node scripts/tracking-link-policy-test.js",
     "test:dispatch": "node scripts/dispatch-policy-test.js",
     "test:crm-metrics": "node scripts/crm-metrics-test.js",
@@ -28,6 +29,7 @@
     "axios": "^1.8.4",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
+    "ioredis": "^5.11.1",
     "leaflet": "^1.9.4",
     "multer": "^2.4.0",
     "pg": "^8.13.3"

@@ -6,7 +6,7 @@
 
 Ce module ne remplace ni un pare-feu applicatif, ni les protections de Railway, ni une limitation distribuée. Il doit être activé route par route avec des quotas adaptés au risque et à l’expérience utilisateur.
 
-État d’intégration au 15 septembre 2026 : `GET /api/tracking/:token` utilise le limiteur avant toute lecture Traccar, avec une politique IP et une politique jeton. Le navigateur respecte `Retry-After`. Cette configuration impose une seule réplique `delivery-app` jusqu’à la migration Redis.
+État d’intégration au 15 septembre 2026 : `GET /api/tracking/:token` utilise le limiteur avant toute lecture Traccar, avec une politique IP et une politique jeton. Le navigateur respecte `Retry-After`. Le bucket mémoire impose une seule réplique `delivery-app` ; un backend Redis partagé existe désormais (`lib/redis-rate-limit.js`) et lève cette contrainte une fois `REDIS_URL` câblé (voir la section « Backend Redis partagé »).
 
 ## Garanties du pilote
 
@@ -90,26 +90,56 @@ Ne pas sanctionner automatiquement une personne à partir d’un dépassement. U
 
 Chaque processus possède ses propres buckets. Avec deux réplicas, un client peut approximativement bénéficier de deux quotas et les redémarrages remettent les compteurs à zéro. Ce pilote est donc acceptable pour une seule réplique et une première protection applicative, mais **pas comme garantie distribuée**.
 
-## Migration future vers Redis
+## Backend Redis partagé (`lib/redis-rate-limit.js`)
 
-Avant d’augmenter le nombre de réplicas :
+Le backend Redis est disponible pour lever la limite « une seule réplique ». Il
+est **activé uniquement si `REDIS_URL` est défini** sur `delivery-app` ; sinon le
+bucket mémoire reste utilisé (pilote mono-réplique et développement local). Le
+sélecteur est dans `server.js` (`trackingLimiter`), donc déployer ce code sans
+`REDIS_URL` ne change strictement rien au comportement.
 
-1. conserver le contrat de politique et les clés HMAC opaques ;
-2. remplacer le bucket mémoire par un magasin Redis partagé ;
-3. exécuter consommation + recharge atomiquement, idéalement par script Lua ;
-4. ajouter une expiration à chaque clé et un préfixe versionné ;
-5. conserver les mêmes réponses génériques et `Retry-After` ;
-6. définir explicitement la stratégie en cas de panne Redis, route par route ;
-7. tester concurrence, expiration, bascule, latence et absence de fuite de clé.
+Choix d’implémentation :
 
-Le secret HMAC doit alors être partagé par tous les réplicas. Redis ne doit toujours recevoir que les empreintes opaques, jamais les IP ou jetons bruts.
+1. même contrat de politique et mêmes clés HMAC opaques `rl_…` (aucune IP ni
+   jeton brut n’atteint Redis) ;
+2. `createRedisTokenBucket` expose la même interface (`inspect`/`consume`,
+   asynchrones) et la même forme de décision que le bucket mémoire ; le
+   middleware `await` désormais ces appels ;
+3. recharge + consommation exécutées **atomiquement dans un script Lua** unique,
+   pour que des réplicas concurrents ne dépassent pas le quota ;
+4. chaque clé porte une **expiration** (`PEXPIRE`, dérivée de l’horizon de
+   recharge) et un **préfixe versionné** `rl:<namespace>:` ;
+5. réponses génériques et `Retry-After` inchangées ;
+6. **panne Redis = `failMode` fermé** : une erreur d’`eval` remonte comme
+   `redis_unavailable` et le middleware renvoie `503 rate_limit_unavailable`
+   (comportement protecteur actuel préservé) ; la seule route protégée reste
+   `GET /api/tracking/:token`, en amont de Traccar ;
+7. le client (`ioredis`) est **injecté**, donc la librairie n’a aucune
+   dépendance dure et se teste sans Redis réel.
+
+Le secret HMAC (`RATE_LIMIT_KEY_SECRET`) doit être **partagé par tous les
+réplicas** et rester stable entre redéploiements, sinon les quotas repartent de
+zéro à chaque réplique.
+
+Câblage attendu (à faire au moment de passer à plusieurs réplicas) :
+
+```
+REDIS_URL = ${{Redis-sPlS.REDIS_URL}}   # Redis dédié, séparé de n8n
+```
+
+Voir `docs/INFRA_ISOLATION_RUNBOOK.md` pour le service Redis dédié.
 
 ## Vérification
 
-Le test autonome n’utilise aucun réseau :
+Les deux tests autonomes n’utilisent aucun réseau (le test Redis emploie un faux
+serveur fidèle exécutant le même algorithme que le script Lua) :
 
 ```powershell
 node scripts/rate-limit-test.js
+node scripts/redis-rate-limit-test.js
 ```
 
-Il couvre l’opacité des clés, la recharge, le calcul de `Retry-After`, le plafond mémoire, le nettoyage, la composition IP + jeton, l’absence de double consommation et les modes de dégradation.
+Ils couvrent l’opacité des clés, la recharge, le calcul de `Retry-After`, le
+plafond mémoire, le nettoyage, la composition IP + jeton, l’absence de double
+consommation, l’isolement par préfixe et les modes de dégradation (dont la
+panne Redis fermée).

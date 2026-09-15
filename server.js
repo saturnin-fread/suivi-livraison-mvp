@@ -20,6 +20,7 @@ const {
   createTokenBucket,
   createTokenPolicy,
 } = require('./lib/rate-limit');
+const { createRedisTokenBucket } = require('./lib/redis-rate-limit');
 const {
   TrackingLinkPolicyError,
   createTrackingLinkExpiration,
@@ -192,14 +193,55 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: false }));
 
+// Shared abuse budget backend. With REDIS_URL the token buckets live in a
+// dedicated Redis so delivery-app can run several replicas without each one
+// keeping a private, bypassable counter. Without it, the process-local bucket is
+// used (single-replica pilot and local development). Redis is required before
+// scaling horizontally — see docs/RATE_LIMITING.md and docs/DECISIONS.md.
+const rateLimitRedisClient = createRateLimitRedisClient();
+
+function createRateLimitRedisClient() {
+  const url = process.env.REDIS_URL;
+  if (!url) return null;
+  let IORedis;
+  try {
+    IORedis = require('ioredis');
+  } catch (error) {
+    console.warn('REDIS_URL est défini mais ioredis est absent : repli sur la limitation en mémoire.', error.message);
+    return null;
+  }
+  const client = new IORedis(url, {
+    maxRetriesPerRequest: 2,
+    connectTimeout: 5_000,
+    keyPrefix: '',
+  });
+  client.on('error', (error) => {
+    console.warn('Redis de limitation indisponible :', error.message);
+  });
+  return client;
+}
+
+function trackingLimiter(namespace, config) {
+  if (rateLimitRedisClient) {
+    return createRedisTokenBucket({
+      client: rateLimitRedisClient,
+      keyPrefix: `rl:${namespace}:`,
+      capacity: config.capacity,
+      refillTokens: config.refillTokens,
+      refillIntervalMs: config.refillIntervalMs,
+    });
+  }
+  return createTokenBucket(config);
+}
+
 const publicTrackingRateLimit = createRateLimitMiddleware({
   keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
   policies: [
     createIpPolicy({
-      limiter: createTokenBucket({ capacity: 240, refillTokens: 240, refillIntervalMs: 60_000, maxEntries: 10_000 }),
+      limiter: trackingLimiter('ip', { capacity: 240, refillTokens: 240, refillIntervalMs: 60_000, maxEntries: 10_000 }),
     }),
     createTokenPolicy({
-      limiter: createTokenBucket({ capacity: 60, refillTokens: 60, refillIntervalMs: 60_000, maxEntries: 20_000 }),
+      limiter: trackingLimiter('token', { capacity: 60, refillTokens: 60, refillIntervalMs: 60_000, maxEntries: 20_000 }),
       key: (req) => req.params.token,
     }),
   ],

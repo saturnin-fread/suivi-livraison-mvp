@@ -37,7 +37,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - Le TCP Proxy GPS utilisé est `thomas.proxy.rlwy.net:14240` vers le port interne `5055`.
 - PostgreSQL contient une base `traccar` pour Traccar et une base `delivery` pour l’application métier.
 - `delivery-app` est déployé sur Railway.
-- Le suivi public fonctionne avec un lien de démonstration.
+- Le suivi public fonctionne avec des liens de commande expirants ; le lien de démonstration est désactivé en production.
 - Le formulaire client avec position GPS, repères et créneau fonctionne en version prototype.
 - `/app` est l'espace entreprise et `/admin` reste réservé à l'administration de la plateforme.
 - La fondation multi-entreprises, la navigation `/app`, la séparation `/admin` et la confirmation modifiable sont déployées en première version.

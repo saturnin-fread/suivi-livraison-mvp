@@ -9,6 +9,7 @@
 - Ajout d’une limitation mémoire IP + jeton avant Traccar, avec réponses `429` et `Retry-After` ; une seule réplique reste imposée avant Redis.
 - Désactivation du lien de démonstration par défaut et interdiction explicite de son activation sur Railway production.
 - Ajout de tests de concurrence, idempotence tardive, isolation inter-entreprises, migration, mobile et absence de révélation en masse.
+- Migration Railway terminée en `encrypted_only` avec zéro token en clair et validation publique du quota `429` + `Retry-After`.
 - Refonte mobile du suivi client avec destination propre, recentrage, vue complète et géolocalisation locale après consentement explicite.
 - Activation de la position du livreur uniquement à partir de `En tournée`, puis retrait immédiat après un état terminal.
 - Ajout des informations minimales du colis et d'états honnêtes lorsque Traccar ou les tuiles sont indisponibles, sans autre arrêt ni ETA.

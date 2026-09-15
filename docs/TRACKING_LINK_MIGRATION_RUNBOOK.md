@@ -61,3 +61,7 @@ Conserver les preuves de contrôle sous forme de statuts et de compteurs uniquem
 ## Passage à plusieurs répliques
 
 Interdit avec le limiteur mémoire. Migrer d’abord les quotas IP et lien vers Redis avec des clés opaques et une opération atomique, puis exécuter un test de rafale réparti entre répliques.
+
+## Dernière exécution production
+
+Le 15 septembre 2026, les deux phases ont été appliquées sur Railway. État final contrôlé : un lien total, zéro token en clair, un lien protégé, aucune ligne incomplète, sans expiration ou sans entreprise. Le déploiement `b1956f93-778e-4c96-9f88-a5c6f73750cc` est passé en succès avec `TRACKING_TOKEN_STORAGE_MODE=encrypted_only`. Le smoke test public et mobile a réussi ; une rafale synthétique a produit 60 réponses génériques puis 15 réponses `429` munies de `Retry-After`.

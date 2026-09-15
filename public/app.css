@@ -73,6 +73,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .notice.success { background: #eaf7ef; color: #175e3c; }
 .notice.warning { background: #fff2da; color: #7a4700; }
 .notice.error { background: #fdeceb; color: #8f2018; }
+.error-text { color: #8f2018; }
 .empty { padding: 42px 22px; text-align: center; color: var(--muted); }
 .detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .detail { padding: 14px; border: 1px solid var(--line); border-radius: 10px; }

@@ -7,6 +7,13 @@ const axios = require('axios');
 const multer = require('multer');
 const { Pool } = require('pg');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
+const { calculateCrmMetrics } = require('./lib/crm-metrics');
+const {
+  applyCrmSchema,
+  ensureOrderCrmSnapshot,
+  synchronizeExistingOrders,
+  withCompanyTransaction,
+} = require('./lib/crm-repository');
 const {
   createIpPolicy,
   createRateLimitMiddleware,
@@ -1247,6 +1254,49 @@ async function writeAudit(auth, entityType, entityId, action, details = {}) {
   return result.rows[0]?.id;
 }
 
+function addUtcDays(dateOnly, days) {
+  const [year, month, day] = dateOnly.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day + days));
+  return parsed.toISOString().slice(0, 10);
+}
+
+function portoNovoToday() {
+  return new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function crmReportingPeriod(query) {
+  const today = portoNovoToday();
+  const defaultFrom = `${today.slice(0, 7)}-01`;
+  const from = query.from || defaultFrom;
+  const to = query.to || today;
+  if (!validDateOnly(from) || !validDateOnly(to)) {
+    throw Object.assign(new Error('Utilisez des dates valides au format AAAA-MM-JJ.'), { statusCode: 400 });
+  }
+  const fromUtc = Date.parse(`${from}T00:00:00Z`);
+  const toUtc = Date.parse(`${to}T00:00:00Z`);
+  const dayCount = Math.round((toUtc - fromUtc) / 86400000) + 1;
+  if (dayCount < 1) throw Object.assign(new Error('La date de fin doit suivre la date de début.'), { statusCode: 400 });
+  if (dayCount > 366) throw Object.assign(new Error('La période ne peut pas dépasser 366 jours.'), { statusCode: 400 });
+  const endExclusiveDate = addUtcDays(to, 1);
+  const startInclusive = `${from}T00:00:00+01:00`;
+  const endExclusive = `${endExclusiveDate}T00:00:00+01:00`;
+  const reportEnd = Date.parse(endExclusive) - 1;
+  return {
+    from,
+    to,
+    startInclusive,
+    endExclusive,
+    asOf: new Date(Math.min(Date.now(), reportEnd)).toISOString(),
+  };
+}
+
+function serializeMetricRows(rows) {
+  return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [
+    key,
+    value instanceof Date ? value.toISOString() : value,
+  ])));
+}
+
 async function repeatedRunEvent(client, auth, runId, idempotencyKey, fingerprint) {
   const repeated = await client.query(
     `SELECT id, run_id, event_type, request_fingerprint, details, created_at
@@ -2093,6 +2143,216 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
   return res.json(result.rows[0]);
 }));
 
+app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
+  const pageNumber = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+  const query = String(req.query.q || '').trim().slice(0, 120);
+  const allowedStatuses = ['active', 'do_not_contact', 'archived', 'merged', 'anonymized'];
+  const status = req.query.status ? String(req.query.status) : null;
+  if (status && !allowedStatuses.includes(status)) {
+    return res.status(400).json({ error: 'État client invalide.' });
+  }
+  const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    const values = [req.auth.company_id, query ? `%${query}%` : null, status];
+    const filters = `c.company_id = $1
+      AND ($2::text IS NULL OR c.display_name ILIKE $2 OR EXISTS (
+        SELECT 1 FROM customer_contacts search_contact
+        WHERE search_contact.company_id = c.company_id
+          AND search_contact.customer_id = c.id
+          AND search_contact.is_active = TRUE
+          AND search_contact.value_display ILIKE $2
+      ))
+      AND ($3::text IS NULL OR c.status = $3)`;
+    const [countResult, customersResult] = await Promise.all([
+      client.query(`SELECT COUNT(*)::int AS total FROM customers c WHERE ${filters}`, values),
+      client.query(
+        `SELECT c.id, c.customer_code, c.display_name, c.status, c.updated_at,
+                primary_contact.value_display AS primary_phone,
+                COUNT(DISTINCT o.id)::int AS order_count,
+                COUNT(DISTINCT l.id) FILTER (WHERE l.is_active = TRUE)::int AS location_count,
+                MAX(o.created_at) AS last_order_at,
+                COUNT(DISTINCT i.id) FILTER (WHERE i.status = 'open')::int AS open_incident_count
+         FROM customers c
+         LEFT JOIN LATERAL (
+           SELECT cc.value_display FROM customer_contacts cc
+           WHERE cc.company_id = c.company_id AND cc.customer_id = c.id
+             AND cc.kind = 'phone' AND cc.is_active = TRUE
+           ORDER BY cc.is_primary DESC, cc.id ASC LIMIT 1
+         ) primary_contact ON TRUE
+         LEFT JOIN orders o ON o.company_id = c.company_id AND o.customer_id = c.id
+         LEFT JOIN customer_locations l ON l.company_id = c.company_id AND l.customer_id = c.id
+         LEFT JOIN delivery_incidents i ON i.company_id = c.company_id AND i.order_id = o.id
+         WHERE ${filters}
+         GROUP BY c.id, primary_contact.value_display
+         ORDER BY MAX(o.created_at) DESC NULLS LAST, c.updated_at DESC, c.id DESC
+         LIMIT $4 OFFSET $5`,
+        [...values, limit, (pageNumber - 1) * limit]
+      ),
+    ]);
+    return { total: countResult.rows[0].total, customers: customersResult.rows };
+  });
+  const totalPages = Math.max(1, Math.ceil(result.total / limit));
+  return res.json({
+    customers: result.customers,
+    pagination: {
+      page: pageNumber,
+      limit,
+      total: result.total,
+      totalPages,
+      hasPrevious: pageNumber > 1,
+      hasNext: pageNumber < totalPages,
+    },
+  });
+}));
+
+app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const customerId = Number(req.params.id);
+  if (!Number.isInteger(customerId) || customerId < 1) return res.status(404).json({ error: 'Client introuvable.' });
+  const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    const customer = await client.query(
+      `SELECT id, customer_code, customer_type, display_name, status,
+              preferred_language, service_notes, created_at, updated_at
+       FROM customers WHERE id = $1 AND company_id = $2`,
+      [customerId, req.auth.company_id]
+    );
+    if (!customer.rows[0]) return null;
+    const interactionVisibility = ['owner', 'manager'].includes(req.auth.role)
+      ? ['operations', 'manager', 'dispute']
+      : ['operations'];
+    const [contacts, locations, orders, interactions] = await Promise.all([
+      client.query(
+        `SELECT id, kind, label, contact_name, value_display, is_primary,
+                is_active, verified_at, created_at, updated_at
+         FROM customer_contacts
+         WHERE company_id = $1 AND customer_id = $2 AND anonymized_at IS NULL
+         ORDER BY is_primary DESC, is_active DESC, id ASC`,
+        [req.auth.company_id, customerId]
+      ),
+      client.query(
+        `SELECT id, label, neighborhood, locality, address_text, landmark,
+                delivery_instructions, verified_at, last_used_at, is_active,
+                archived_at, created_at, updated_at
+         FROM customer_locations
+         WHERE company_id = $1 AND customer_id = $2 AND anonymized_at IS NULL
+         ORDER BY is_active DESC, last_used_at DESC NULLS LAST, id DESC`,
+        [req.auth.company_id, customerId]
+      ),
+      client.query(
+        `SELECT o.id, o.status, o.neighborhood, o.landmark, o.created_at,
+                o.updated_at, d.name AS driver_name
+         FROM orders o JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+         WHERE o.company_id = $1 AND o.customer_id = $2
+         ORDER BY o.created_at DESC, o.id DESC LIMIT 100`,
+        [req.auth.company_id, customerId]
+      ),
+      client.query(
+        `SELECT id, channel, direction, purpose, outcome, summary,
+                occurred_at, next_action_at, visibility
+         FROM customer_interactions
+         WHERE company_id = $1 AND customer_id = $2 AND anonymized_at IS NULL
+           AND visibility = ANY($3::text[])
+         ORDER BY occurred_at DESC, id DESC LIMIT 100`,
+        [req.auth.company_id, customerId, interactionVisibility]
+      ),
+    ]);
+    return {
+      customer: customer.rows[0],
+      contacts: contacts.rows,
+      locations: locations.rows,
+      orders: orders.rows,
+      interactions: interactions.rows,
+    };
+  });
+  if (!result) return res.status(404).json({ error: 'Client introuvable.' });
+  return res.json(result);
+}));
+
+app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) => {
+  let period;
+  try {
+    period = crmReportingPeriod(req.query);
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message });
+  }
+  const companyId = req.auth.company_id;
+  const arrays = await withCompanyTransaction(pool, companyId, async (client) => {
+    const [orders, statusEvents, paymentAccounts, paymentEvents, paymentAdjustments, incidents, drivers, runs, stops] = await Promise.all([
+      client.query(
+        `SELECT id, company_id, driver_id, status, created_at, updated_at
+         FROM orders WHERE company_id = $1 AND created_at < $2::timestamptz`,
+        [companyId, period.endExclusive]
+      ),
+      client.query(
+        `SELECT id, company_id, order_id, from_status, to_status, created_at
+         FROM order_status_events WHERE company_id = $1 AND created_at < $2::timestamptz`,
+        [companyId, period.endExclusive]
+      ),
+      client.query(
+        `SELECT id, company_id, order_id, expected_amount_minor, currency, status, created_at
+         FROM order_payment_accounts WHERE company_id = $1`,
+        [companyId]
+      ),
+      client.query(
+        `SELECT id, company_id, order_id, event_type, amount_minor, currency, created_at
+         FROM payment_events
+         WHERE company_id = $1 AND created_at >= $2::timestamptz AND created_at < $3::timestamptz`,
+        [companyId, period.startInclusive, period.endExclusive]
+      ),
+      client.query(
+        `SELECT id, company_id, order_id, adjustment_type, direction, amount_minor,
+                currency, effective_date, created_at
+         FROM payment_adjustments
+         WHERE company_id = $1 AND effective_date >= $2::date AND effective_date <= $3::date`,
+        [companyId, period.from, period.to]
+      ),
+      client.query(
+        `SELECT id, company_id, order_id, category, status, created_at, resolved_at
+         FROM delivery_incidents WHERE company_id = $1 AND created_at <= $2::timestamptz`,
+        [companyId, period.asOf]
+      ),
+      client.query(
+        `SELECT id, company_id, active, availability_status, created_at, updated_at
+         FROM drivers WHERE company_id = $1`,
+        [companyId]
+      ),
+      client.query(
+        `SELECT id, company_id, driver_id, status, service_date, started_at,
+                completed_at, cancelled_at, created_at, updated_at
+         FROM delivery_runs WHERE company_id = $1 AND created_at <= $2::timestamptz`,
+        [companyId, period.asOf]
+      ),
+      client.query(
+        `SELECT id, company_id, run_id, order_id, assignment_active, removed_at,
+                created_at, updated_at
+         FROM delivery_stops WHERE company_id = $1 AND created_at <= $2::timestamptz`,
+        [companyId, period.asOf]
+      ),
+    ]);
+    return {
+      orders: serializeMetricRows(orders.rows),
+      statusEvents: serializeMetricRows(statusEvents.rows),
+      paymentAccounts: serializeMetricRows(paymentAccounts.rows),
+      paymentEvents: serializeMetricRows(paymentEvents.rows),
+      paymentAdjustments: serializeMetricRows(paymentAdjustments.rows),
+      incidents: serializeMetricRows(incidents.rows),
+      drivers: serializeMetricRows(drivers.rows),
+      runs: serializeMetricRows(runs.rows),
+      stops: serializeMetricRows(stops.rows),
+    };
+  });
+  try {
+    return res.json(calculateCrmMetrics({
+      companyId,
+      period: { startInclusive: period.startInclusive, endExclusive: period.endExclusive },
+      asOf: period.asOf,
+      ...arrays,
+    }));
+  } catch (error) {
+    console.error('CRM metrics calculation failed:', error.message);
+    return res.status(500).json({ error: 'Impossible de calculer ce rapport avec les données disponibles.' });
+  }
+}));
+
 app.post('/api/app/request-links', requireCompanyApi, asyncRoute(async (req, res) => {
   const token = randomToken(24);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -2246,6 +2506,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
        WHERE id = $1`,
       [request.id]
     );
+    await ensureOrderCrmSnapshot(client, order.rows[0].id, req.auth.user_id);
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
        VALUES
@@ -4645,6 +4906,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
        ) VALUES ($1, $2, NULL, 'Confirmée', $3, $4, $5, '{"source":"direct"}'::jsonb)`,
       [req.auth.company_id, order.rows[0].id, req.auth.user_id, `system:direct-order:${order.rows[0].id}`, digest(`direct-order:${order.rows[0].id}`)]
     );
+    await ensureOrderCrmSnapshot(client, order.rows[0].id, req.auth.user_id);
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action)
        VALUES ($1, $2, 'order', $3, 'created')`,
@@ -4863,6 +5125,8 @@ app.use((error, _req, res, _next) => {
 });
 
 initDatabase()
+  .then(() => applyCrmSchema(pool, path.join(__dirname, 'db', 'crm-schema.sql')))
+  .then(() => synchronizeExistingOrders(pool))
   .then(() => app.listen(port, () => console.log(`Delivery SaaS listening on port ${port}`)))
   .catch((error) => {
     console.error('Database initialization failed:', error.message);

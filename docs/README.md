@@ -19,6 +19,12 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Revue de sécurité des liens](TRACKING_LINK_SECURITY_REVIEW.md)
 - [Migration et retour arrière des liens](TRACKING_LINK_MIGRATION_RUNBOOK.md)
 - [Plan CRM, analyses et exports](CRM_ANALYTICS_PLAN.md)
+- [Spécification d'implémentation CRM](CRM_IMPLEMENTATION_SPEC.md)
+- [Politique de créneaux, capacité et affectation](DISPATCH_POLICY.md)
+- [Contrat des indicateurs CRM](CRM_METRICS_CONTRACT.md)
+- [Sécurité des exports CRM](CRM_EXPORT_SECURITY_SPEC.md)
+- [Déploiement et retour arrière du CRM](CRM_ROLLOUT_RUNBOOK.md)
+- [Organisation des lots entre équipes IA](AI_TEAM_WORKSTREAMS.md)
 - [Plan de plateforme SaaS](SAAS_PLATFORM_PLAN.md)
 - [Barrières qualité et confidentialité](QUALITY_AND_PRIVACY_GATES.md)
 - [Fonctionnement hors connexion du livreur](OFFLINE_OPERATIONS.md)
@@ -53,7 +59,11 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - L'adaptateur OSRM est intégré mais reste désactivé jusqu'à la qualification terrain du profil moto au Bénin.
 - Les liens de suivi sont expirants, renouvelables et révocables, avec verrou concurrent, idempotence durable et limitation d'abus pour une seule réplique.
 - Les listes entreprise ne révèlent plus les liens : un affichage unitaire explicite, autorisé et audité est requis.
-- Les prochaines phases cartes/routage, CRM/exports, plateforme SaaS et qualité disposent de plans spécialisés relus avant implémentation.
+- Le CRM en lecture est intégré : fiches clients issues des commandes, contacts, lieux sans coordonnées GPS exposées et historique opérationnel par entreprise.
+- La page Rapports calcule les volumes, issues, incidents et encaissements par devise ; elle affiche « non calculable » lorsque les données sont insuffisantes.
+- Le contrat de sécurité de l'export Excel est testé, mais le générateur XLSX n'est pas encore implémenté et aucun faux export n'est proposé.
+- La migration CRM est additive et réexécutable. Les filtres applicatifs `company_id` restent obligatoires ; la défense RLS exigera un rôle PostgreSQL applicatif non-superutilisateur.
+- Les futurs lots sont répartis entre équipes IA avec fichiers disjoints, puis relus, testés et déployés uniquement par l'intégrateur central.
 - WhatsApp/WAHA n’est pas encore intégré.
 
 ## Règle de confidentialité

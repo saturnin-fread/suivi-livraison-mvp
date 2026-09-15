@@ -78,6 +78,14 @@ La limitation publique combine un quota IP et un quota par jeton avant tout appe
 - Traccar : appareils, positions et événements GPS.
 - n8n/WAHA : automatisation et communication, jamais stockage métier principal.
 
+## Couche CRM intégrée
+
+Le schéma `db/crm-schema.sql` est appliqué après la fondation métier puis peut être rejoué sans suppression. `orders` et `customer_requests` conservent leurs champs historiques comme instantanés et reçoivent seulement des références CRM nullables.
+
+`lib/crm-repository.js` applique trois règles : contexte d'entreprise dans chaque transaction CRM, synchronisation idempotente et absence de fusion automatique. Les API `/api/app/crm/*` ajoutent systématiquement leur filtre `company_id`, même lorsque RLS est configuré. RLS est une défense supplémentaire et ne devient réellement efficace que lorsque la connexion HTTP utilisera un rôle PostgreSQL non-superutilisateur, sans `BYPASSRLS`.
+
+Le navigateur ne reçoit jamais les coordonnées stockées dans `customer_locations`. Les rapports sont calculés côté serveur par `lib/crm-metrics.js` à partir des événements métier ; ils ne sont ni une table de vérité séparée ni un système d'évaluation automatique des livreurs.
+
 L'application ne modifie pas directement les tables internes de Traccar. Elle utilise ses API.
 
 ## Reprise réseau du portail livreur

@@ -65,6 +65,40 @@ const runEventLabels = {
   stops_reordered: 'Ordre des arrêts modifié', status_changed: 'État de la tournée modifié',
 };
 
+const customerStatusLabels = {
+  active: 'Actif', do_not_contact: 'Ne pas contacter', archived: 'Archivé',
+  merged: 'Fusionné', anonymized: 'Anonymisé',
+};
+const contactKindLabels = { phone: 'Téléphone', email: 'E-mail', whatsapp: 'WhatsApp', other: 'Autre' };
+const interactionChannelLabels = {
+  call: 'Appel', whatsapp: 'WhatsApp', sms: 'SMS', email: 'E-mail',
+  in_person: 'En personne', internal: 'Interne', other: 'Autre',
+};
+const interactionPurposeLabels = {
+  delivery_confirmation: 'Confirmation de livraison', location_clarification: 'Précision du lieu',
+  arrival: 'Arrivée', complaint: 'Réclamation', payment: 'Paiement', follow_up: 'Suivi', other: 'Autre',
+};
+const interactionOutcomeLabels = {
+  reached: 'Contact établi', no_answer: 'Sans réponse', callback_requested: 'Rappel demandé',
+  information_received: 'Information reçue', technical_failure: 'Échec technique', other: 'Autre',
+};
+
+const formatInteger = (value) => new Intl.NumberFormat('fr-FR').format(Number(value) || 0);
+const formatCount = (value) => Number.isFinite(Number(value)) ? formatInteger(value) : 'Non calculable';
+const formatPercent = (value) => Number.isFinite(Number(value))
+  ? new Intl.NumberFormat('fr-FR', { style: 'percent', maximumFractionDigits: 1 }).format(Number(value))
+  : 'Non calculable';
+const formatMinorMoney = (value, currency) => {
+  if (!Number.isFinite(Number(value)) || !currency) return 'Non calculable';
+  try {
+    const formatter = new Intl.NumberFormat('fr-FR', { style: 'currency', currency });
+    const fractionDigits = formatter.resolvedOptions().maximumFractionDigits;
+    return formatter.format(Number(value) / (10 ** fractionDigits));
+  } catch {
+    return `${formatInteger(value)} ${String(currency)}`;
+  }
+};
+
 function renderPaymentSection(order) {
   const configured = Boolean(order.payment_account_id);
   const canConfigure = !order.isTerminal && (!configured || ['pending', 'not_required'].includes(order.payment_status));
@@ -1201,9 +1235,227 @@ async function renderSettings() {
   });
 }
 
-function renderPlaceholder(title, description, items) {
-  setHeader(title, description);
-  page.innerHTML = `<div class="page-header"><div><h1>${escapeHtml(title)}</h1><p class="subtitle">${escapeHtml(description)}</p></div></div><section class="card placeholder"><h2>Prévu dans la feuille de route</h2><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul><p>Cette page est séparée dès maintenant afin d’éviter d’empiler toutes les fonctions dans un seul écran.</p></section>`;
+function customerStatusBadge(status) {
+  const type = status === 'active' ? 'success' : status === 'do_not_contact' ? 'warning' : '';
+  return `<span class="badge ${type}">${escapeHtml(customerStatusLabels[status] || status || '—')}</span>`;
+}
+
+function loadingState(label) {
+  return `<div class="loading-state" role="status" aria-live="polite">
+    <span>${escapeHtml(label)}</span><div class="loading-lines" aria-hidden="true"><i></i><i></i><i></i></div>
+  </div>`;
+}
+
+function paginationState(raw, itemCount) {
+  const currentPage = Math.max(1, Number(raw?.page) || 1);
+  const limit = Math.max(1, Number(raw?.limit) || Math.max(itemCount, 1));
+  const total = Number(raw?.total ?? raw?.total_count);
+  const declaredPages = Number(raw?.total_pages ?? raw?.totalPages);
+  const totalPages = Number.isFinite(declaredPages) && declaredPages > 0
+    ? declaredPages
+    : Number.isFinite(total) ? Math.max(1, Math.ceil(total / limit)) : currentPage;
+  return {
+    currentPage,
+    totalPages,
+    total: Number.isFinite(total) ? total : null,
+    hasPrevious: raw?.has_previous ?? raw?.hasPrevious ?? currentPage > 1,
+    hasNext: raw?.has_next ?? raw?.hasNext ?? currentPage < totalPages,
+  };
+}
+
+function customerListMarkup(customers, pagination, hasFilters) {
+  if (!customers.length) {
+    return `<div class="empty crm-empty"><strong>${hasFilters ? 'Aucun client ne correspond à cette recherche.' : 'Aucun client enregistré pour le moment.'}</strong>
+      <p>${hasFilters ? 'Modifiez les critères ou affichez tous les clients.' : 'Les fiches apparaîtront ici à partir des commandes.'}</p>
+      ${hasFilters ? '<button class="secondary" id="clearCustomerFilters" type="button">Effacer les filtres</button>' : '<a class="button primary" href="/app/nouvelle-commande">Créer une commande</a>'}
+    </div>`;
+  }
+  const state = paginationState(pagination, customers.length);
+  const totalLabel = state.total == null ? `${customers.length} client${customers.length > 1 ? 's' : ''} affiché${customers.length > 1 ? 's' : ''}` : `${formatInteger(state.total)} client${state.total > 1 ? 's' : ''}`;
+  return `<div class="crm-list-meta"><p>${escapeHtml(totalLabel)}</p><p>Page ${escapeHtml(state.currentPage)} sur ${escapeHtml(state.totalPages)}</p></div>
+    <div class="customer-list">${customers.map((customer) => `<article class="customer-card">
+      <div class="customer-card-heading"><div><h2><a href="/app/clients/${encodeURIComponent(customer.id)}">${escapeHtml(customer.display_name || 'Client sans nom')}</a></h2><p>${escapeHtml(customer.primary_phone || 'Téléphone non renseigné')}</p></div>${customerStatusBadge(customer.status)}</div>
+      <dl class="customer-summary">
+        <div><dt>Commandes</dt><dd>${formatInteger(customer.order_count)}</dd></div>
+        <div><dt>Lieux connus</dt><dd>${formatInteger(customer.location_count)}</dd></div>
+        <div><dt>Incidents ouverts</dt><dd>${formatInteger(customer.open_incident_count)}</dd></div>
+        <div><dt>Dernière commande</dt><dd>${escapeHtml(formatDate(customer.last_order_at))}</dd></div>
+      </dl>
+      <a class="customer-open" href="/app/clients/${encodeURIComponent(customer.id)}" aria-label="Ouvrir la fiche de ${escapeHtml(customer.display_name || 'ce client')}">Ouvrir la fiche <span aria-hidden="true">→</span></a>
+    </article>`).join('')}</div>
+    <nav class="pagination" aria-label="Pages de clients">
+      <button class="secondary" id="customerPrevious" type="button" ${state.hasPrevious ? '' : 'disabled'}>Page précédente</button>
+      <span>Page ${escapeHtml(state.currentPage)} sur ${escapeHtml(state.totalPages)}</span>
+      <button class="secondary" id="customerNext" type="button" ${state.hasNext ? '' : 'disabled'}>Page suivante</button>
+    </nav>`;
+}
+
+async function renderCustomers() {
+  setHeader('Clients', 'Historique, contacts et lieux de livraison');
+  const initial = new URLSearchParams(location.search);
+  const initialStatus = ['active', 'do_not_contact', 'archived'].includes(initial.get('status')) ? initial.get('status') : '';
+  page.innerHTML = `<div class="page-header"><div><h1>Clients</h1><p class="subtitle">Retrouvez les informations utiles issues des commandes, sans afficher les coordonnées GPS.</p></div></div>
+    <section class="card crm-filter-card"><form id="customerSearch" class="crm-search" role="search">
+      <div class="field"><label for="customerQuery">Nom ou téléphone</label><input id="customerQuery" name="q" type="search" value="${escapeHtml(initial.get('q') || '')}" maxlength="120" autocomplete="off" placeholder="Ex. Afi ou 97 00 00 00" /></div>
+      <div class="field"><label for="customerStatus">État du client</label><select id="customerStatus" name="status"><option value="">Tous les états</option><option value="active" ${initialStatus === 'active' ? 'selected' : ''}>Actif</option><option value="do_not_contact" ${initialStatus === 'do_not_contact' ? 'selected' : ''}>Ne pas contacter</option><option value="archived" ${initialStatus === 'archived' ? 'selected' : ''}>Archivé</option></select></div>
+      <div class="actions crm-search-actions"><button class="primary" type="submit">Rechercher</button><button class="secondary" id="resetCustomerSearch" type="button">Réinitialiser</button></div>
+    </form></section>
+    <section class="card crm-results" aria-labelledby="customerResultsTitle"><h2 id="customerResultsTitle">Résultats</h2><div id="customerResults" aria-live="polite"></div></section>`;
+
+  const form = document.getElementById('customerSearch');
+  const target = document.getElementById('customerResults');
+  let currentPage = Math.max(1, Number(initial.get('page')) || 1);
+  let loading = false;
+
+  const clearFilters = () => {
+    form.reset();
+    document.getElementById('customerQuery').value = '';
+    document.getElementById('customerStatus').value = '';
+    currentPage = 1;
+    loadCustomers();
+  };
+  const loadCustomers = async () => {
+    if (loading) return;
+    loading = true;
+    target.setAttribute('aria-busy', 'true');
+    target.innerHTML = loadingState('Chargement des clients…');
+    const values = new FormData(form);
+    const parameters = new URLSearchParams({ page: String(currentPage), limit: '20' });
+    const query = String(values.get('q') || '').trim();
+    const status = String(values.get('status') || '');
+    if (query) parameters.set('q', query);
+    if (status) parameters.set('status', status);
+    try {
+      const result = await api(`/api/app/crm/customers?${parameters}`);
+      const customers = Array.isArray(result.customers) ? result.customers : [];
+      target.innerHTML = customerListMarkup(customers, result.pagination || {}, Boolean(query || status));
+      document.getElementById('clearCustomerFilters')?.addEventListener('click', clearFilters);
+      document.getElementById('customerPrevious')?.addEventListener('click', () => { currentPage -= 1; loadCustomers(); });
+      document.getElementById('customerNext')?.addEventListener('click', () => { currentPage += 1; loadCustomers(); });
+    } catch (error) {
+      target.innerHTML = `<div class="notice error" role="alert"><strong>Impossible de charger les clients.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryCustomers" type="button">Réessayer</button></div>`;
+      document.getElementById('retryCustomers')?.addEventListener('click', loadCustomers);
+    } finally {
+      target.removeAttribute('aria-busy');
+      loading = false;
+    }
+  };
+
+  form.addEventListener('submit', (event) => { event.preventDefault(); currentPage = 1; loadCustomers(); });
+  document.getElementById('resetCustomerSearch').addEventListener('click', clearFilters);
+  await loadCustomers();
+}
+
+function contactMarkup(contact) {
+  return `<li><div><strong>${escapeHtml(contactKindLabels[contact.kind] || contact.kind || 'Contact')}</strong>${contact.is_primary ? ' <span class="badge success">Principal</span>' : ''}
+    <p>${escapeHtml(contact.value_display || 'Non renseigné')}</p><small>${escapeHtml(contact.label || contact.contact_name || '')}${contact.is_active === false ? ' · Inactif' : ''}</small></div></li>`;
+}
+
+function locationMarkup(place) {
+  const description = [place.neighborhood, place.locality].filter(Boolean).join(' · ');
+  return `<article class="crm-subcard"><div class="customer-card-heading"><h3>${escapeHtml(place.label || 'Lieu de livraison')}</h3>${place.is_active === false ? '<span class="badge">Archivé</span>' : ''}</div>
+    ${description ? `<p><strong>${escapeHtml(description)}</strong></p>` : ''}${place.address_text ? `<p>${escapeHtml(place.address_text)}</p>` : ''}
+    ${place.landmark ? `<p><strong>Repère :</strong> ${escapeHtml(place.landmark)}</p>` : ''}${place.delivery_instructions ? `<p><strong>Instructions :</strong> ${escapeHtml(place.delivery_instructions)}</p>` : ''}
+    <small>Dernière utilisation : ${escapeHtml(formatDate(place.last_used_at))}</small></article>`;
+}
+
+async function renderCustomerDetail(id) {
+  setHeader('Fiche client', 'Contacts, lieux et historique opérationnel');
+  page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">Fiche client</h1></div></div><section class="card">${loadingState('Chargement de la fiche client…')}</section>`;
+  try {
+    const result = await api(`/api/app/crm/customers/${encodeURIComponent(id)}`);
+    const customer = result.customer || {};
+    const contacts = Array.isArray(result.contacts) ? result.contacts : [];
+    const locations = Array.isArray(result.locations) ? result.locations : [];
+    const orders = Array.isArray(result.orders) ? result.orders : [];
+    const interactions = Array.isArray(result.interactions) ? result.interactions : [];
+    setHeader(customer.display_name || 'Fiche client', 'Contacts, lieux et historique opérationnel');
+    page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">${escapeHtml(customer.display_name || 'Client sans nom')}</h1><p class="subtitle">Référence ${escapeHtml(customer.customer_code || customer.id || id)}</p></div>${customerStatusBadge(customer.status)}</div>
+      <section class="card"><h2>Informations principales</h2><div class="detail-grid"><div class="detail"><span>Nom</span><strong>${escapeHtml(customer.display_name || '—')}</strong></div><div class="detail"><span>Langue préférée</span><strong>${escapeHtml(customer.preferred_language || 'Non renseignée')}</strong></div><div class="detail"><span>Création de la fiche</span><strong>${escapeHtml(formatDate(customer.created_at))}</strong></div></div>${customer.service_notes ? `<div class="notice"><strong>Note de service</strong><p>${escapeHtml(customer.service_notes)}</p></div>` : ''}</section>
+      <div class="crm-detail-columns">
+        <section class="card"><h2>Contacts (${formatInteger(contacts.length)})</h2>${contacts.length ? `<ul class="crm-contact-list">${contacts.map(contactMarkup).join('')}</ul>` : '<div class="empty compact-empty">Aucun contact enregistré.</div>'}</section>
+        <section class="card"><h2>Lieux de livraison (${formatInteger(locations.length)})</h2><p class="section-hint">Les coordonnées GPS restent protégées et ne sont pas affichées ici.</p>${locations.length ? `<div class="crm-subcard-list">${locations.map(locationMarkup).join('')}</div>` : '<div class="empty compact-empty">Aucun lieu enregistré.</div>'}</section>
+      </div>
+      <section class="card crm-section"><h2>Commandes (${formatInteger(orders.length)})</h2>${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Créée le</th><th>Destination</th><th>Livreur</th><th>État</th></tr></thead><tbody>${orders.map((order) => `<tr><td><a href="/app/commandes/${encodeURIComponent(order.id)}"><strong>N° ${escapeHtml(order.id)}</strong></a></td><td>${escapeHtml(formatDate(order.created_at))}</td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name || '—')}</td><td>${badge(order.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty compact-empty">Aucune commande liée.</div>'}</section>
+      <section class="card crm-section"><h2>Interactions récentes (${formatInteger(interactions.length)})</h2>${interactions.length ? `<ol class="timeline">${interactions.map((interaction) => `<li><strong>${escapeHtml(interactionPurposeLabels[interaction.purpose] || interaction.purpose || 'Échange')}</strong><span>${escapeHtml(interactionChannelLabels[interaction.channel] || interaction.channel || 'Canal non précisé')}${interaction.outcome ? ` · ${escapeHtml(interactionOutcomeLabels[interaction.outcome] || interaction.outcome)}` : ''}</span><small>${escapeHtml(formatDate(interaction.occurred_at))}</small>${interaction.summary ? `<p>${escapeHtml(interaction.summary)}</p>` : ''}</li>`).join('')}</ol>` : '<div class="empty compact-empty">Aucune interaction enregistrée.</div>'}</section>`;
+  } catch (error) {
+    page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">Fiche client</h1></div></div><div class="notice error" role="alert"><strong>Impossible de charger cette fiche.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryCustomerDetail" type="button">Réessayer</button></div>`;
+    document.getElementById('retryCustomerDetail')?.addEventListener('click', () => renderCustomerDetail(id));
+  }
+}
+
+function currentPortoNovoMonth() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en', {
+    timeZone: 'Africa/Porto-Novo', year: 'numeric', month: '2-digit',
+  }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}`;
+}
+
+function monthPeriod(value) {
+  if (!/^\d{4}-\d{2}$/.test(value)) throw new Error('Sélectionnez un mois valide.');
+  const [year, month] = value.split('-').map(Number);
+  if (month < 1 || month > 12) throw new Error('Sélectionnez un mois valide.');
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return { from: `${value}-01`, to: `${value}-${String(lastDay).padStart(2, '0')}` };
+}
+
+function metricNumber(metric) {
+  return metric?.status === 'available' && Number.isFinite(Number(metric.value)) ? formatInteger(metric.value) : 'Non calculable';
+}
+
+function reportsMarkup(metrics) {
+  const outcomes = metrics.volumes?.outcomes || {};
+  const deliveryRate = metrics.delivery?.deliveryRate;
+  const incidents = metrics.incidents || {};
+  const delays = metrics.delays || {};
+  const currencies = Array.isArray(metrics.collections?.currencies) ? metrics.collections.currencies : [];
+  const exclusionCount = Object.values(metrics.dataQuality?.exclusions || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  return `<section class="grid report-stats" aria-label="Indicateurs du mois">
+      <article class="stat"><span>Commandes créées</span><strong>${metricNumber(metrics.volumes?.ordersCreated)}</strong></article>
+      <article class="stat"><span>Commandes prises en charge</span><strong>${metricNumber(metrics.volumes?.ordersPickedUp)}</strong></article>
+      <article class="stat"><span>Commandes clôturées</span><strong>${metricNumber(metrics.volumes?.closed)}</strong></article>
+      <article class="stat"><span>Taux de livraison</span><strong>${deliveryRate?.status === 'available' ? formatPercent(deliveryRate.value) : 'Non calculable'}</strong><small>Livrées ÷ (livrées + retournées)</small></article>
+    </section>
+    <div class="report-grid">
+      <section class="card"><h2>Issue des commandes clôturées</h2><dl class="report-breakdown"><div><dt>Livrées</dt><dd>${formatCount(outcomes.delivered)}</dd></div><div><dt>Retournées</dt><dd>${formatCount(outcomes.returned)}</dd></div><div><dt>Annulées</dt><dd>${formatCount(outcomes.cancelled)}</dd></div></dl><p class="section-hint">Les commandes annulées ne sont pas utilisées pour calculer le taux de livraison.</p></section>
+      <section class="card"><h2>Incidents</h2><dl class="report-breakdown"><div><dt>Ouverts pendant le mois</dt><dd>${metricNumber(incidents.opened)}</dd></div><div><dt>Résolus pendant le mois</dt><dd>${metricNumber(incidents.resolved)}</dd></div><div><dt>Encore ouverts à la date du rapport</dt><dd>${metricNumber(incidents.openAtAsOf)}</dd></div></dl><p class="section-hint">Un incident décrit un contexte opérationnel. Il ne prouve pas une faute du livreur.</p></section>
+      <section class="card"><h2>Respect des créneaux</h2>${delays.status === 'available' ? `<dl class="report-breakdown"><div><dt>Livraisons en retard</dt><dd>${formatPercent(delays.lateRate)}</dd></div><div><dt>Retard médian</dt><dd>${delays.lateCount === 0 ? 'Aucun retard' : `${formatCount(delays.medianLateMinutes)} min`}</dd></div><div><dt>Échantillon fiable</dt><dd>${formatCount(delays.reliableSampleSize)}</dd></div></dl>` : `<div class="metric-unavailable"><strong>Non calculable</strong><p>Les créneaux et heures d’arrivée fiables sont insuffisants pour publier cet indicateur.</p></div>`}</section>
+      <section class="card"><h2>Charge actuelle</h2><dl class="report-breakdown"><div><dt>Colis ouverts</dt><dd>${formatCount(metrics.load?.openParcelCount)}</dd></div><div><dt>Colis en cours</dt><dd>${formatCount(metrics.load?.inProgressParcelCount)}</dd></div><div><dt>Livreurs avec une charge</dt><dd>${formatCount(metrics.load?.driversWithLoad)}</dd></div></dl><p class="section-hint">Photo de la charge au moment de l’ouverture du rapport, pas une mesure de productivité.</p></section>
+    </div>
+    <section class="card crm-section"><div class="section-heading"><div><h2>Encaissements par devise</h2><p class="section-hint">Les devises ne sont jamais additionnées ni converties entre elles.</p></div><button class="secondary" type="button" disabled aria-describedby="exportHint">Exporter vers Excel</button></div><p id="exportHint" class="section-hint">Export Excel prochainement disponible.</p>${currencies.length ? `<div class="collection-grid">${currencies.map((entry) => `<article class="crm-subcard"><h3>${escapeHtml(entry.currency)}</h3><dl class="report-breakdown"><div><dt>Attendu sur les commandes clôturées</dt><dd>${escapeHtml(formatMinorMoney(entry.expectedForClosedOrdersMinor, entry.currency))}</dd></div><div><dt>Collecté brut</dt><dd>${escapeHtml(formatMinorMoney(entry.collectedGrossMinor, entry.currency))}</dd></div><div><dt>Net après corrections</dt><dd>${escapeHtml(formatMinorMoney(entry.netCollectedMinor, entry.currency))}</dd></div></dl></article>`).join('')}</div>` : '<div class="empty compact-empty">Aucun encaissement pour cette période.</div>'}</section>
+    ${exclusionCount ? `<div class="notice warning"><strong>Qualité des données à surveiller.</strong> ${formatInteger(exclusionCount)} élément${exclusionCount > 1 ? 's ont' : ' a'} été exclu${exclusionCount > 1 ? 's' : ''} des calculs car les informations nécessaires étaient incomplètes ou contradictoires.</div>` : '<div class="notice success">Aucune exclusion de données signalée pour les indicateurs calculés.</div>'}
+    <div class="notice"><strong>Lecture responsable :</strong> ces chiffres servent à suivre les opérations. Aucun score, classement ou sanction automatique des livreurs n’est produit.</div>`;
+}
+
+async function renderReports() {
+  setHeader('Rapports', 'Indicateurs mensuels vérifiables');
+  const requestedMonth = new URLSearchParams(location.search).get('month');
+  const selectedMonth = /^\d{4}-\d{2}$/.test(requestedMonth || '') ? requestedMonth : currentPortoNovoMonth();
+  page.innerHTML = `<div class="page-header"><div><h1>Rapports mensuels</h1><p class="subtitle">Analysez les opérations avec des indicateurs transparents et séparés par devise.</p></div></div>
+    <section class="card report-filter-card"><form id="reportFilter" class="report-filter"><div class="field"><label for="reportMonth">Mois à analyser</label><input id="reportMonth" name="month" type="month" value="${escapeHtml(selectedMonth)}" required /></div><button class="primary" type="submit">Afficher le rapport</button></form></section>
+    <div id="reportResults" aria-live="polite"></div>`;
+  const form = document.getElementById('reportFilter');
+  const target = document.getElementById('reportResults');
+  let loading = false;
+  const loadReport = async () => {
+    if (loading) return;
+    loading = true;
+    target.setAttribute('aria-busy', 'true');
+    target.innerHTML = `<section class="card">${loadingState('Calcul du rapport…')}</section>`;
+    try {
+      const period = monthPeriod(document.getElementById('reportMonth').value);
+      const metrics = await api(`/api/app/crm/metrics?from=${encodeURIComponent(period.from)}&to=${encodeURIComponent(period.to)}`);
+      target.innerHTML = reportsMarkup(metrics);
+    } catch (error) {
+      target.innerHTML = `<div class="notice error" role="alert"><strong>Impossible de calculer ce rapport.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryReport" type="button">Réessayer</button></div>`;
+      document.getElementById('retryReport')?.addEventListener('click', loadReport);
+    } finally {
+      target.removeAttribute('aria-busy');
+      loading = false;
+    }
+  };
+  form.addEventListener('submit', (event) => { event.preventDefault(); loadReport(); });
+  await loadReport();
 }
 
 async function start() {
@@ -1226,6 +1478,8 @@ async function start() {
     if (incidentDetail) return await renderIncidentDetail(incidentDetail[1]);
     const runDetail = path.match(/^\/app\/tournees\/(\d+)$/);
     if (runDetail) return await renderRunDetail(runDetail[1]);
+    const customerDetail = path.match(/^\/app\/clients\/(\d+)$/);
+    if (customerDetail) return await renderCustomerDetail(customerDetail[1]);
     if (path === '/app') return await renderDashboard();
     if (path === '/app/demandes') return await renderRequests();
     if (path === '/app/nouvelle-commande') return await renderNewOrder();
@@ -1235,8 +1489,8 @@ async function start() {
     if (path === '/app/carte') return await renderOperationsMap();
     if (path === '/app/livreurs') return await renderDrivers();
     if (path === '/app/equipe') return await renderTeam();
-    if (path === '/app/clients') return renderPlaceholder('Clients', 'CRM opérationnel', ['Historique des commandes', 'Lieux et repères', 'Interactions et incidents']);
-    if (path === '/app/rapports') return renderPlaceholder('Rapports', 'Analyses et exports', ['Suivi mensuel', 'Indicateurs vérifiables', 'Exports Excel']);
+    if (path === '/app/clients') return await renderCustomers();
+    if (path === '/app/rapports') return await renderReports();
     if (path === '/app/parametres') return await renderSettings();
   } catch (error) {
     renderError(error);

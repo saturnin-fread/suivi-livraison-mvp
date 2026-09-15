@@ -48,6 +48,21 @@
 - Ajout d'un test navigateur couvrant coupure, reprise unique, conflit, cache et refus financier hors ligne.
 - Correction de la référence aux formulaires après une attente asynchrone afin de préserver les messages d'erreur réseau.
 
+## 2026-09-15 — CRM opérationnel en lecture et rapports honnêtes
+
+- Ajout du schéma CRM multi-entreprises, additif et réexécutable.
+- Synchronisation prudente des anciennes commandes : une fiche distincte par commande, sans fusion automatique par nom ou téléphone.
+- Création immédiate des liens client/contact/lieu CRM lors d'une nouvelle commande directe ou issue d'une demande.
+- Protection de la reprise contre les textes historiques trop longs et les coordonnées invalides, sans modifier l'instantané de commande d'origine.
+- Ajout des API de liste et de détail client, filtrées par entreprise et sans latitude/longitude.
+- Ajout de la page Clients avec recherche, états vides/erreurs, pagination et fiche opérationnelle.
+- Ajout d'indicateurs mensuels versionnés : volumes, issues, incidents, charge et encaissements séparés par devise.
+- Refus des périodes invalides ou supérieures à 366 jours et maintien explicite de l'état « non calculable ».
+- Ajout de la page Rapports responsive sans classement ni sanction automatique des livreurs.
+- Ajout du contrat de sécurité du futur export Excel ; la génération XLSX reste volontairement hors de ce lot.
+- Ajout d'un smoke test CRM local couvrant authentification, création depuis commande, cloisonnement, confidentialité GPS, périodes et mobile.
+- Formalisation des futurs lots parallèles IA et de leur validation/déploiement centralisés.
+
 ## 2026-09-14
 
 - Ajout de la documentation de reprise et d’exploitation.

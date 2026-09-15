@@ -162,6 +162,10 @@ Donner à l'entreprise une tour de contrôle interactive.
 
 ## Phase 7 — CRM opérationnel, analyses et exports
 
+### État au 15 septembre 2026
+
+La fondation est intégrée : schéma relationnel, reprise prudente des commandes, liste et fiche client, rapports mensuels explicables, cloisonnement et confidentialité GPS testés. Restent à réaliser les modifications CRM, rapprochements de doublons confirmés, tags/vues enregistrées, comparaisons de périodes et le vrai générateur XLSX sécurisé.
+
 ### Objectif
 
 Relier clients, commandes, livreurs, communications, paiements et incidents dans une interface inspirée d'Airtable.
@@ -261,7 +265,7 @@ Le prochain lot poursuit le produit dans cet ordre :
 
 1. structurer les créneaux, temps de service et contraintes terrain sans produire de fausse ETA ;
 2. renforcer les conflits de capacité et les changements d’affectation pendant une tournée active ;
-3. démarrer le CRM opérationnel, les vues filtrées, les indicateurs vérifiables et l’export Excel ;
+3. enrichir le CRM en écriture et implémenter le vrai export Excel à partir du contrat de sécurité déjà testé ;
 4. qualifier OSRM/Valhalla sur des routes moto sentinelles du Bénin avant toute activation publique ;
 5. migrer la limitation vers Redis avant d’autoriser plusieurs répliques ;
 6. préparer ensuite les notifications WAHA sans en faire une source de vérité.

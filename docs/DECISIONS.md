@@ -119,3 +119,15 @@ La carte entreprise assemble côté serveur les positions Traccar et les objets 
 ## 2026-09-15 — Leaflet local et fonds cartographiques configurables
 
 Leaflet est installé avec l'application et non chargé depuis un CDN au moment de la visite. Le fond OpenStreetMap standard reste un secours de pilote sans garantie commerciale. L'URL, l'attribution et le zoom sont configurables. Le satellite n'est affiché qu'avec un fournisseur autorisé ; aucune tuile d'un service tiers n'est extraite hors de ses conditions.
+
+## 2026-09-15 — Reprise CRM sans fusion automatique
+
+Chaque commande historique reçoit d'abord une fiche CRM distincte et idempotente. Un nom ou un téléphone similaire peut devenir une suggestion de doublon, mais jamais une fusion automatique. Cette prudence évite d'associer deux personnes différentes et permet de conserver les instantanés de commande comme preuve.
+
+## 2026-09-15 — Double barrière d'isolation CRM
+
+Toutes les routes CRM filtrent explicitement par l'entreprise de la session et définissent aussi `app.company_id` dans leur transaction PostgreSQL. RLS reste une défense future tant que la connexion applicative utilise un superutilisateur, car PostgreSQL autorise ce dernier à contourner les politiques. Le passage à un rôle HTTP non-superutilisateur fera l'objet d'un lot de migration séparé et réversible.
+
+## 2026-09-15 — Indicateurs explicables, jamais disciplinaires
+
+Les rapports indiquent leur période, population, formule et exclusions. Un dénominateur nul reste « non calculable ». Les incidents sont un contexte et ne prouvent pas une faute ; aucun score, classement, sanction ou affectation automatique de livreur n'est produit.

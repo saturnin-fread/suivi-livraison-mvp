@@ -64,12 +64,20 @@ npm run test:map
 npm run test:routing
 npm run test:tracking-links
 npm run test:rate-limit
+npm run test:dispatch
+npm run test:crm-metrics
+npm run test:crm-export
+npm run test:crm
 npm run check:tracking-storage
 npm run test:smoke
 npm run test:driver
 ```
 
 Avant de modifier le stockage des liens de suivi, suivre `docs/TRACKING_LINK_MIGRATION_RUNBOOK.md`. Ne jamais revenir à une version applicative qui ignore les états de révocation après le passage à `encrypted_only`. Conserver une seule réplique tant que la limitation de débit n’utilise pas Redis.
+
+Avant le premier déploiement CRM, suivre `docs/CRM_ROLLOUT_RUNBOOK.md`. Le démarrage applique `db/crm-schema.sql`, puis reprend uniquement les commandes dont `customer_id` est encore vide. Une seconde exécution ne doit créer aucun doublon. Le rollback applicatif Railway ne supprime pas les tables ni les lignes CRM ; ne jamais tenter un rollback destructif automatique.
+
+`npm run test:crm` refuse volontairement une URL d'application ou de base non locale. Il ne doit pas être contourné pour tester la production : utiliser un contrôle public en lecture et des données déjà autorisées après déploiement.
 
 Le test navigateur hors connexion requiert Playwright et Chrome. Dans l'environnement Codex local :
 
@@ -108,11 +116,14 @@ Lire dans cet ordre :
 7. `docs/ROUTING_ADAPTER.md`
 8. `docs/ROUTING_AND_PUBLIC_MAP_REVIEW.md`
 9. `docs/TRACKING_LINK_MIGRATION_RUNBOOK.md`
-10. `docs/TRACKING_LINK_SECURITY_REVIEW.md`
-11. `docs/OFFLINE_OPERATIONS.md`
-12. `server.js`
-13. `public/app.js`
-14. `public/request.html`
+10. `docs/CRM_IMPLEMENTATION_SPEC.md`
+11. `docs/CRM_ROLLOUT_RUNBOOK.md`
+12. `docs/AI_TEAM_WORKSTREAMS.md`
+13. `docs/TRACKING_LINK_SECURITY_REVIEW.md`
+14. `docs/OFFLINE_OPERATIONS.md`
+15. `server.js`
+16. `public/app.js`
+17. `public/request.html`
 
 ## Secrets
 

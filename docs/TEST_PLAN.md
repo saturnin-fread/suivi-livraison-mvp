@@ -198,8 +198,14 @@ Vérifier les états en ligne, position ancienne, hors ligne et plusieurs livrai
 
 ## Test J — CRM, statistiques et exports
 
-- vérifier les vues filtrées et les relations client/livraison/livreur ;
-- recalculer manuellement un échantillon d'indicateurs ;
-- vérifier les feuilles et filtres d'un export Excel ;
-- vérifier qu'un rôle non autorisé ne peut pas exporter ;
-- vérifier la journalisation de chaque export.
+- exécuter `npm run test:crm` uniquement contre un serveur et une base locaux ; le script refuse une cible distante ;
+- vérifier qu'une commande crée atomiquement ses références client, contact et lieu ;
+- vérifier qu'une ancienne commande est synchronisée une seule fois après deux démarrages ;
+- vérifier les vues filtrées et qu'un identifiant client d'une autre entreprise répond comme introuvable ;
+- vérifier l'absence de latitude, longitude et valeurs GPS dans la liste et la fiche client ;
+- refuser les dates civiles invalides et les périodes supérieures à 366 jours ;
+- conserver une valeur nulle et l'état `not_calculable` lorsque le dénominateur est nul ;
+- recalculer manuellement un échantillon d'indicateurs et séparer toutes les devises ;
+- tester Clients et Rapports sur écran 390 × 844 sans débordement ;
+- exécuter `npm run test:crm-metrics` et `npm run test:crm-export` ;
+- ne tester les feuilles, autorisations et journaux du fichier Excel qu'après implémentation du vrai générateur XLSX.

@@ -78,18 +78,37 @@ Arrêts ordonnés d'une tournée. Chaque arrêt référence une commande, conser
 
 Journal append-only des créations, ajouts, retraits, réorganisations et changements d'état d'une tournée, avec acteur, clé d'idempotence, empreinte de requête et détails.
 
+## Tables CRM ajoutées
+
+### `customers`, `customer_contacts`, `customer_locations`
+
+Référentiel client propre à chaque entreprise. Les contacts et lieux sont séparés ; les coordonnées précises restent côté serveur. Une commande conserve son instantané original et référence facultativement une fiche, un contact et un lieu.
+
+### `customer_interactions`, `customer_consents`, `customer_contact_preferences`
+
+Historique des échanges, bases/préférences de contact et prochaines actions. La visibilité des interactions est filtrée par rôle.
+
+### `crm_tags` et tables de liaison
+
+Étiquettes d'organisation applicables aux clients, lieux, commandes, incidents et comptes d'encaissement, toujours dans la même entreprise.
+
+### `customer_duplicate_candidates`, `customer_merge_events`
+
+Suggestions de doublons et journal des arbitrages. Une ressemblance ne déclenche jamais une fusion automatique.
+
+### `crm_retention_policies`, `crm_retention_holds`, `crm_privacy_actions`, `crm_audit_events`
+
+Fondation de conservation, gel, demandes de confidentialité et audit CRM. Les traitements automatiques correspondants restent à implémenter avant activation.
+
 ## Tables à ajouter ensuite
 
 ```text
 roles
 customer_request_links
 customer_request_revisions
-customers
-customer_locations
 driver_shifts
 driver_status_events
 packages
-customer_interactions
 notifications_log
 audit_logs
 export_logs

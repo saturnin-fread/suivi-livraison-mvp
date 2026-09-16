@@ -172,7 +172,12 @@ function mapConfiguration() {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed >= 1 && parsed <= 24 ? parsed : fallback;
   };
-  const satelliteUrl = String(process.env.MAP_SATELLITE_TILE_URL || '').trim();
+  // Satellite et libellés : par défaut sur Esri World Imagery (gratuit, sans clé),
+  // surchargeable par variables d'environnement si un autre fournisseur est retenu.
+  const satelliteUrl = String(process.env.MAP_SATELLITE_TILE_URL
+    || 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').trim();
+  const labelsUrl = String(process.env.MAP_LABELS_TILE_URL
+    || 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}').trim();
   return {
     base: {
       url: String(process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
@@ -181,8 +186,14 @@ function mapConfiguration() {
     },
     satellite: satelliteUrl ? {
       url: satelliteUrl,
-      attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION || 'Imagerie satellite'),
+      attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION
+        || 'Imagerie &copy; Esri, Maxar, Earthstar Geographics'),
       maxZoom: maxZoom(process.env.MAP_SATELLITE_MAX_ZOOM),
+    } : null,
+    labels: labelsUrl ? {
+      url: labelsUrl,
+      attribution: String(process.env.MAP_LABELS_ATTRIBUTION || '&copy; Esri'),
+      maxZoom: maxZoom(process.env.MAP_LABELS_MAX_ZOOM),
     } : null,
   };
 }

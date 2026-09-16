@@ -1386,93 +1386,352 @@ async function renderOperationsMap() {
 }
 
 const driverVehicleOptions = ['Moto', 'Tricycle', 'Voiture', 'Vélo', 'Camionnette'];
-async function renderDrivers() {
-  setHeader('Livreurs', 'Ajout, accès, disponibilité et état GPS');
-  const drivers = await api('/api/app/drivers');
-  const canManage = ['owner', 'manager'].includes(context.user.role);
-  const addForm = canManage ? `<section class="card" style="margin-bottom:18px">
-      <h2>Ajouter un livreur</h2>
-      <p class="subtitle">Créez la fiche du livreur. Renseignez son e-mail pour générer aussitôt un lien d’accès à son espace : un compte limité, rattaché à votre entreprise, sans accès à votre interface d’exploitation.</p>
-      <form id="addDriver" class="form-grid">
-        <div class="field"><label>Nom du livreur</label><input name="name" required maxlength="80" autocomplete="off"/></div>
-        <div class="field"><label>Téléphone / WhatsApp</label><input name="phone" inputmode="tel" maxlength="40" autocomplete="off"/></div>
-        <div class="field"><label>E-mail (accès livreur, optionnel)</label><input name="email" type="email" autocomplete="off"/></div>
-        <div class="field"><label>Véhicule</label><select name="vehicleType">${driverVehicleOptions.map((option) => `<option value="${option}">${option}</option>`).join('')}</select></div>
-        <div class="field"><label>Capacité (colis)</label><input name="capacity" type="number" min="1" max="50" value="3"/></div>
-        <div class="field"><label>Identifiant GPS (optionnel)</label><input name="trackerId" maxlength="64" placeholder="Vide = généré automatiquement" autocomplete="off"/></div>
-        <div class="field full"><div class="actions"><button class="primary" type="submit">Créer le livreur</button></div></div>
-      </form>
-      <div id="addDriverResult"></div>
-    </section>` : '';
-  page.innerHTML = `<div class="page-header"><div><h1>Livreurs</h1><p class="subtitle">${canManage ? 'Ajoutez vos livreurs et générez leur accès. ' : ''}Les livreurs disponibles sont placés en premier.</p></div></div>
-    ${addForm}
-    <section class="card">${drivers.length ? `<div class="table-wrap"><table><thead><tr><th>Livreur</th><th>État</th><th>Charge</th><th>Identifiant GPS</th><th>Dernière position</th><th>Disponibilité</th>${canManage ? '<th>Compte</th>' : ''}</tr></thead><tbody>${drivers.map((driver) => `<tr><td><strong>${escapeHtml(driver.name)}</strong><br><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></td><td>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'}</td><td>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</td><td><code>${escapeHtml(driver.uniqueId)}</code></td><td>${escapeHtml(formatDate(driver.lastUpdate))}</td><td><select class="availability" data-driver-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'}><option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option><option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option><option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option><option value="incident" ${driver.availabilityStatus === 'incident' ? 'selected' : ''}>Incident</option></select></td>${canManage ? `<td><button class="secondary toggle-driver" data-driver-id="${escapeHtml(driver.id)}" data-active="${driver.active ? '1' : '0'}">${driver.active ? 'Désactiver' : 'Réactiver'}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun livreur enregistré.</div>'}<div id="driverResult"></div></section>`;
+const fleetIcons = {
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>',
+  offline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h.01"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="m2 2 20 20"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7L12 19"/></svg>',
+  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>',
+  dots: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  table: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18v14H3z"/><path d="M3 10h18"/><path d="M3 15h18"/><path d="M9 5v14"/></svg>',
+  grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  userx: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m17 8 5 5"/><path d="m22 8-5 5"/></svg>',
+};
 
-  document.querySelectorAll('.availability').forEach((select) => select.addEventListener('change', async () => {
+function openModal(title, bodyHtml, footHtml = '') {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head"><h2>${escapeHtml(title)}</h2><button class="modal-close" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div>
+    <div class="modal-body">${bodyHtml}</div>
+    ${footHtml ? `<div class="modal-foot">${footHtml}</div>` : ''}
+  </div>`;
+  const onKey = (event) => { if (event.key === 'Escape') close(); };
+  function close() { backdrop.remove(); document.removeEventListener('keydown', onKey); }
+  backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close(); });
+  backdrop.querySelector('.modal-close').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(backdrop);
+  return { backdrop, close };
+}
+
+async function renderDrivers() {
+  setHeader('Livreurs', 'Flotte, accès et disponibilité');
+  const canManage = ['owner', 'manager'].includes(context.user.role);
+  let drivers = await api('/api/app/drivers');
+  let filter = 'all';
+  let query = '';
+  let view = (() => { try { return localStorage.getItem('traxo.fleetView'); } catch { return null; } })() || (window.innerWidth < 720 ? 'cards' : 'table');
+  let openMenu = null;
+
+  const vehicleOptions = (selected) => driverVehicleOptions.map((option) => `<option value="${option}" ${option === selected ? 'selected' : ''}>${option}</option>`).join('');
+  const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
+  const bucketOf = (driver) => {
+    if (!driver.active) return 'inactive';
+    if (['incident', 'off_duty', 'inactive'].includes(driver.operationalState)) return 'inactive';
+    if (['offline', 'stale', 'pause'].includes(driver.operationalState)) return 'offline';
+    if (['busy', 'full'].includes(driver.operationalState)) return 'busy';
+    return 'available';
+  };
+  const tabs = [
+    { key: 'all', label: 'Tous' },
+    { key: 'available', label: 'Disponibles' },
+    { key: 'busy', label: 'En course' },
+    { key: 'offline', label: 'Hors ligne' },
+    { key: 'inactive', label: 'Désactivés' },
+  ];
+  const countFor = (key) => key === 'all' ? drivers.length : drivers.filter((driver) => bucketOf(driver) === key).length;
+  const matches = (driver) => (filter === 'all' || bucketOf(driver) === filter)
+    && (!query || `${driver.name} ${driver.vehicleType} ${driver.phone || ''} ${driver.uniqueId}`.toLowerCase().includes(query));
+  const accountChip = (driver) => driver.hasAccount
+    ? `<span class="account-chip ok">${fleetIcons.check} Compte actif</span>`
+    : driver.invitePending
+      ? `<span class="account-chip pending">${fleetIcons.clock} Invitation envoyée</span>`
+      : `<span class="account-chip none">${fleetIcons.userx} Sans compte</span>`;
+  const availSelect = (driver) => `<select class="availability avail-select" data-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'} aria-label="Disponibilité">
+      <option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option>
+      <option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option>
+      <option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option>
+      <option value="incident" ${driver.availabilityStatus === 'incident' ? 'selected' : ''}>Incident</option>
+    </select>`;
+  const rowMenu = (driver) => canManage ? `<div class="row-menu"><button class="row-menu-btn" data-menu="${escapeHtml(driver.id)}" aria-label="Actions">${fleetIcons.dots}</button></div>` : '';
+
+  page.innerHTML = `<div class="page-header">
+      <div><h1>Livreurs</h1><p class="subtitle">Gérez votre flotte, les accès et la disponibilité.</p></div>
+      ${canManage ? `<button class="button primary" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
+    </div>
+    <section class="grid fleet-kpis" id="fleetKpis"></section>
+    <div class="fleet-toolbar">
+      <div class="fleet-tabs" id="fleetTabs"></div>
+      <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="fleetSearch" placeholder="Rechercher un livreur…" autocomplete="off"/></div>
+      <div class="view-toggle" id="viewToggle">
+        <button data-view="table" title="Vue tableau" aria-label="Vue tableau">${fleetIcons.table}</button>
+        <button data-view="cards" title="Vue cartes" aria-label="Vue cartes">${fleetIcons.grid}</button>
+      </div>
+    </div>
+    <div id="driverResult"></div>
+    <section class="card" id="fleetList"></section>`;
+
+  function renderKpis() {
+    const el = document.getElementById('fleetKpis');
+    const available = drivers.filter((driver) => bucketOf(driver) === 'available').length;
+    const busy = drivers.filter((driver) => bucketOf(driver) === 'busy').length;
+    const offline = drivers.filter((driver) => bucketOf(driver) === 'offline').length;
+    el.innerHTML = `
+      <article class="stat fleet-kpi"><span class="kpi-ic">${fleetIcons.users}</span><div><strong>${drivers.length}</strong><span>Livreurs</span></div></article>
+      <article class="stat fleet-kpi tone-green"><span class="kpi-ic">${fleetIcons.check}</span><div><strong>${available}</strong><span>Disponibles</span></div></article>
+      <article class="stat fleet-kpi tone-amber"><span class="kpi-ic">${fleetIcons.route}</span><div><strong>${busy}</strong><span>En course</span></div></article>
+      <article class="stat fleet-kpi tone-red"><span class="kpi-ic">${fleetIcons.offline}</span><div><strong>${offline}</strong><span>Hors ligne / GPS ancien</span></div></article>`;
+  }
+
+  function renderTabs() {
+    document.getElementById('fleetTabs').innerHTML = tabs.map((tab) => `<button class="fleet-tab ${filter === tab.key ? 'active' : ''}" data-tab="${tab.key}">${tab.label}<span class="count">${countFor(tab.key)}</span></button>`).join('');
+  }
+
+  function renderList() {
+    const list = drivers.filter(matches);
+    const container = document.getElementById('fleetList');
+    if (!list.length) {
+      container.className = 'card';
+      container.innerHTML = `<div class="fleet-empty">${drivers.length ? 'Aucun livreur ne correspond à ce filtre.' : 'Aucun livreur enregistré. Cliquez sur « Ajouter un livreur ».'}</div>`;
+      return;
+    }
+    if (view === 'cards') {
+      container.className = '';
+      container.innerHTML = `<div class="fleet-cards">${list.map((driver) => `<div class="fleet-card">
+        <div class="fleet-card-top">
+          <span class="avatar">${escapeHtml(initials(driver.name))}</span>
+          <div class="fleet-name"><div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div>
+          ${rowMenu(driver)}
+        </div>
+        <div>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'} &nbsp; ${accountChip(driver)}</div>
+        <div class="fleet-card-stats">
+          <div class="fleet-card-stat"><span>Charge</span><strong>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</strong></div>
+          <div class="fleet-card-stat"><span>Identifiant GPS</span><strong class="mono">${escapeHtml(driver.uniqueId)}</strong></div>
+          <div class="fleet-card-stat"><span>Dernière position</span><strong>${escapeHtml(formatAge(driver.lastUpdate))}</strong></div>
+          <div class="fleet-card-stat"><span>GPS</span><strong>${escapeHtml(driver.trackerStatus)}</strong></div>
+        </div>
+        <div class="fleet-card-foot">${availSelect(driver)}</div>
+      </div>`).join('')}</div>`;
+      return;
+    }
+    container.className = 'card';
+    container.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Livreur</th><th>État</th><th>Charge</th><th>Identifiant GPS</th><th>Dernière position</th><th>Compte</th><th>Disponibilité</th>${canManage ? '<th></th>' : ''}</tr></thead><tbody>${list.map((driver) => `<tr>
+      <td><div class="fleet-name"><span class="avatar">${escapeHtml(initials(driver.name))}</span><div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div></td>
+      <td>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'}</td>
+      <td>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</td>
+      <td><span class="mono">${escapeHtml(driver.uniqueId)}</span></td>
+      <td>${escapeHtml(formatAge(driver.lastUpdate))}</td>
+      <td>${accountChip(driver)}</td>
+      <td>${availSelect(driver)}</td>
+      ${canManage ? `<td>${rowMenu(driver)}</td>` : ''}
+    </tr>`).join('')}</tbody></table></div>`;
+  }
+
+  function refreshView() { renderKpis(); renderTabs(); renderList(); }
+
+  async function reload() {
+    drivers = await api('/api/app/drivers');
+    refreshView();
+  }
+
+  function notify(html) { document.getElementById('driverResult').innerHTML = html; }
+
+  function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+
+  function openRowMenu(driver, anchor) {
+    closeMenu();
+    const menu = document.createElement('div');
+    menu.className = 'menu-pop';
+    menu.innerHTML = `
+      <button data-act="edit">${fleetIcons.edit} Modifier</button>
+      ${driver.hasAccount ? '' : `<button data-act="access">${fleetIcons.link} ${driver.invitePending ? 'Régénérer l’accès' : 'Créer l’accès livreur'}</button>`}
+      <button data-act="toggle">${fleetIcons.power} ${driver.active ? 'Désactiver' : 'Réactiver'}</button>
+      <hr/>
+      <button data-act="delete" class="danger">${fleetIcons.trash} Supprimer</button>`;
+    anchor.parentElement.appendChild(menu);
+    openMenu = menu;
+    menu.addEventListener('click', async (event) => {
+      const action = event.target.closest('[data-act]')?.dataset.act;
+      if (!action) return;
+      closeMenu();
+      if (action === 'edit') openEditModal(driver);
+      else if (action === 'access') openAccessModal(driver);
+      else if (action === 'toggle') await toggleActive(driver);
+      else if (action === 'delete') openDeleteModal(driver);
+    });
+  }
+
+  async function toggleActive(driver) {
+    try {
+      await api(`/api/app/drivers/${encodeURIComponent(driver.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !driver.active }) });
+      notify(`<div class="notice success">${escapeHtml(driver.name)} ${driver.active ? 'désactivé' : 'réactivé'}.</div>`);
+      await reload();
+    } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); }
+  }
+
+  function driverFormFields(driver = {}) {
+    return `<div class="form-grid">
+      <div class="field"><label>Nom du livreur</label><input name="name" required maxlength="80" value="${escapeHtml(driver.name || '')}" autocomplete="off"/></div>
+      <div class="field"><label>Téléphone / WhatsApp</label><input name="phone" inputmode="tel" maxlength="40" value="${escapeHtml(driver.phone || '')}" autocomplete="off"/></div>
+      <div class="field"><label>Véhicule</label><select name="vehicleType">${vehicleOptions(driver.vehicleType)}</select></div>
+      <div class="field"><label>Capacité (colis)</label><input name="capacity" type="number" min="1" max="50" value="${escapeHtml(driver.capacity || 3)}"/></div>
+      <div class="field full"><label>Identifiant GPS ${driver.id ? '' : '(optionnel)'}</label><input name="trackerId" maxlength="64" value="${escapeHtml(driver.uniqueId || '')}" placeholder="Vide = généré automatiquement" autocomplete="off"/></div>
+    </div>`;
+  }
+
+  function openAddModal() {
+    const modal = openModal('Ajouter un livreur',
+      `<p class="subtitle" style="margin-top:0">Créez la fiche. Renseignez un e-mail pour générer aussitôt un lien d’accès à son espace (compte limité, rattaché à votre entreprise).</p>
+       <form id="driverForm">${driverFormFields()}<div class="field full"><label>E-mail (accès livreur, optionnel)</label><input name="email" type="email" autocomplete="off"/></div></form>
+       <div id="modalResult"></div>`,
+      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="driverSubmit" type="submit" form="driverForm">Créer le livreur</button>`);
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#driverForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget));
+      const submit = modal.backdrop.querySelector('#driverSubmit');
+      submit.disabled = true;
+      try {
+        const driver = await api('/api/app/drivers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: data.name, phone: data.phone, vehicleType: data.vehicleType, capacity: Number(data.capacity), trackerId: data.trackerId }) });
+        const email = String(data.email || '').trim();
+        if (email) {
+          try {
+            const invite = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, displayName: data.name, role: 'driver', driverId: driver.id }) });
+            showInviteLink(`${location.origin}${invite.path}`);
+          } catch (inviteError) {
+            notify(`<div class="notice warning">Livreur créé, mais l’accès n’a pas pu être généré : ${escapeHtml(inviteError.message)}.</div>`);
+          }
+        } else {
+          notify(`<div class="notice success">Livreur « ${escapeHtml(driver.name)} » créé.</div>`);
+        }
+        modal.close();
+        await reload();
+      } catch (error) {
+        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        submit.disabled = false;
+      }
+    });
+  }
+
+  function openEditModal(driver) {
+    const modal = openModal('Modifier le livreur',
+      `<form id="driverForm">${driverFormFields(driver)}</form><div id="modalResult"></div>`,
+      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="driverSubmit" type="submit" form="driverForm">Enregistrer</button>`);
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#driverForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget));
+      const submit = modal.backdrop.querySelector('#driverSubmit');
+      submit.disabled = true;
+      try {
+        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: data.name, phone: data.phone, vehicleType: data.vehicleType, capacity: Number(data.capacity), trackerId: data.trackerId }) });
+        notify(`<div class="notice success">Livreur mis à jour.</div>`);
+        modal.close();
+        await reload();
+      } catch (error) {
+        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        submit.disabled = false;
+      }
+    });
+  }
+
+  function openAccessModal(driver) {
+    const modal = openModal('Créer l’accès livreur',
+      `<p class="subtitle" style="margin-top:0">Un lien d’accès (valable 48 h, à usage unique) sera généré pour <strong>${escapeHtml(driver.name)}</strong>. Le livreur choisira son mot de passe et n’aura accès qu’à ses commandes.</p>
+       <form id="accessForm"><div class="field"><label>E-mail du livreur</label><input name="email" type="email" required autocomplete="off"/></div></form>
+       <div id="modalResult"></div>`,
+      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="accessSubmit" type="submit" form="accessForm">Générer le lien</button>`);
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#accessForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const email = String(new FormData(event.currentTarget).get('email') || '').trim();
+      const submit = modal.backdrop.querySelector('#accessSubmit');
+      submit.disabled = true;
+      try {
+        const invite = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, displayName: driver.name, role: 'driver', driverId: driver.id }) });
+        modal.close();
+        showInviteLink(`${location.origin}${invite.path}`);
+        await reload();
+      } catch (error) {
+        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        submit.disabled = false;
+      }
+    });
+  }
+
+  function openDeleteModal(driver) {
+    const modal = openModal('Supprimer le livreur',
+      `<p>Voulez-vous supprimer <strong>${escapeHtml(driver.name)}</strong> de la liste ? Son historique de commandes est conservé et l’opération reste réversible (archive).</p>`,
+      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button accent" id="confirmDelete" type="button">Supprimer</button>`);
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#confirmDelete').addEventListener('click', async (event) => {
+      event.currentTarget.disabled = true;
+      try {
+        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}`, { method: 'DELETE' });
+        notify(`<div class="notice success">${escapeHtml(driver.name)} supprimé de la liste.</div>`);
+        modal.close();
+        await reload();
+      } catch (error) {
+        notify(`<div class="notice error">${escapeHtml(error.message)}</div>`);
+        modal.close();
+      }
+    });
+  }
+
+  function showInviteLink(url) {
+    const modal = openModal('Lien d’accès du livreur',
+      `<p class="subtitle" style="margin-top:0">À envoyer au livreur (par WhatsApp par exemple). Valable 48 h, à usage unique.</p>
+       <input readonly value="${escapeHtml(url)}" id="inviteLinkField" style="text-align:center"/>`,
+      `<button class="button secondary" data-modal-close type="button">Fermer</button><button class="button primary" id="copyInviteBtn" type="button">Copier le lien</button>`);
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#copyInviteBtn').addEventListener('click', (event) => {
+      const field = modal.backdrop.querySelector('#inviteLinkField');
+      field.select(); navigator.clipboard?.writeText(field.value); event.currentTarget.textContent = 'Lien copié';
+    });
+  }
+
+  // Interactions globales (délégation).
+  page.addEventListener('change', async (event) => {
+    const select = event.target.closest('.availability');
+    if (!select) return;
     select.disabled = true;
     try {
-      await api(`/api/app/drivers/${encodeURIComponent(select.dataset.driverId)}/availability`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: select.value }),
-      });
-      document.getElementById('driverResult').innerHTML = '<div class="notice success">Disponibilité mise à jour.</div>';
-    } catch (error) {
-      document.getElementById('driverResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      select.disabled = false;
-    }
-  }));
-
-  document.querySelectorAll('.toggle-driver').forEach((button) => button.addEventListener('click', async () => {
-    button.disabled = true;
-    try {
-      await api(`/api/app/drivers/${encodeURIComponent(button.dataset.driverId)}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: button.dataset.active === '0' }),
-      });
-      renderDrivers();
-    } catch (error) {
-      document.getElementById('driverResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      button.disabled = false;
-    }
-  }));
-
-  const form = document.getElementById('addDriver');
-  if (form) form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const result = document.getElementById('addDriverResult');
-    const data = Object.fromEntries(new FormData(form));
-    const submit = form.querySelector('button[type="submit"]');
-    submit.disabled = true;
-    result.innerHTML = '';
-    try {
-      const driver = await api('/api/app/drivers', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: data.name, phone: data.phone, vehicleType: data.vehicleType, capacity: Number(data.capacity), trackerId: data.trackerId }),
-      });
-      let inviteBlock = '';
-      const email = String(data.email || '').trim();
-      if (email) {
-        try {
-          const invite = await api('/api/app/invitations', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, displayName: data.name, role: 'driver', driverId: driver.id }),
-          });
-          const url = `${location.origin}${invite.path}`;
-          inviteBlock = `<div class="otp-code"><span>Lien d’accès à envoyer au livreur (valable 48 h, à usage unique)</span><input readonly value="${escapeHtml(url)}" id="inviteLink" style="text-align:center;margin-top:8px"/><div class="actions" style="justify-content:center;margin-top:10px"><button class="secondary" id="copyInvite" type="button">Copier le lien</button></div></div>`;
-        } catch (inviteError) {
-          inviteBlock = `<div class="notice warning">Livreur créé, mais l’accès n’a pas pu être généré : ${escapeHtml(inviteError.message)}. Vous pouvez réessayer depuis « Équipe et accès ».</div>`;
-        }
-      }
-      result.innerHTML = `<div class="notice success">Livreur « ${escapeHtml(driver.name)} » créé. Identifiant GPS : <code>${escapeHtml(driver.traccar_unique_id)}</code>.</div>${inviteBlock}`;
-      const copy = document.getElementById('copyInvite');
-      if (copy) copy.addEventListener('click', () => { const field = document.getElementById('inviteLink'); field.select(); navigator.clipboard?.writeText(field.value); copy.textContent = 'Lien copié'; });
-      form.reset();
-      // On ne rafraîchit pas si un lien d'accès est affiché, pour ne pas l'effacer.
-      if (!inviteBlock) setTimeout(() => renderDrivers(), 600);
-    } catch (error) {
-      result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    } finally {
-      submit.disabled = false;
-    }
+      await api(`/api/app/drivers/${encodeURIComponent(select.dataset.id)}/availability`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: select.value }) });
+      notify('<div class="notice success">Disponibilité mise à jour.</div>');
+      const driver = drivers.find((item) => String(item.id) === String(select.dataset.id));
+      if (driver) driver.availabilityStatus = select.value;
+    } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); select.disabled = false; }
   });
+  page.addEventListener('click', (event) => {
+    const menuBtn = event.target.closest('[data-menu]');
+    if (menuBtn) {
+      event.stopPropagation();
+      if (openMenu && openMenu.previousElementSibling === menuBtn) { closeMenu(); return; }
+      const driver = drivers.find((item) => String(item.id) === String(menuBtn.dataset.menu));
+      if (driver) openRowMenu(driver, menuBtn);
+      return;
+    }
+    if (!event.target.closest('.menu-pop')) closeMenu();
+    const tab = event.target.closest('[data-tab]');
+    if (tab) { filter = tab.dataset.tab; renderTabs(); renderList(); }
+    const viewBtn = event.target.closest('[data-view]');
+    if (viewBtn) { view = viewBtn.dataset.view; try { localStorage.setItem('traxo.fleetView', view); } catch { /* ignore */ } syncViewToggle(); renderList(); }
+    if (event.target.closest('#addDriverBtn')) openAddModal();
+  });
+  const search = document.getElementById('fleetSearch');
+  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
+
+  function syncViewToggle() { document.querySelectorAll('#viewToggle button').forEach((button) => button.classList.toggle('active', button.dataset.view === view)); }
+
+  syncViewToggle();
+  refreshView();
 }
 
 async function renderTeam() {

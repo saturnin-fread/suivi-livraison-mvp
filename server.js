@@ -3224,6 +3224,67 @@ app.patch('/api/app/drivers/:id/availability', requireCompanyApi, asyncRoute(asy
   return res.json(result.rows[0]);
 }));
 
+// Historique GPS d'un livreur (rejeu). Interroge l'historique Traccar, borné et
+// isolé par entreprise : seul un livreur de la session peut être consulté.
+app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, res) => {
+  const driverResult = await pool.query(
+    `SELECT id, name, traccar_unique_id FROM drivers WHERE id = $1 AND company_id = $2`,
+    [req.params.id, req.auth.company_id]
+  );
+  const driver = driverResult.rows[0];
+  if (!driver) return res.status(404).json({ error: 'Livreur introuvable.' });
+
+  const now = Date.now();
+  const MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
+  let to = req.query.to ? Date.parse(req.query.to) : now;
+  let from = req.query.from ? Date.parse(req.query.from) : now - 3 * 60 * 60 * 1000;
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return res.status(400).json({ error: 'Fenêtre temporelle invalide.' });
+  if (to > now) to = now;
+  if (from >= to) return res.status(400).json({ error: 'La date de début doit précéder la date de fin.' });
+  if (to - from > MAX_WINDOW_MS) from = to - MAX_WINDOW_MS;
+
+  if (!traccarConfigured()) return res.json({ status: 'not_configured', positions: [], message: 'Le service GPS n’est pas configuré.' });
+
+  const snapshot = await loadTraccarFleetSnapshot();
+  const device = snapshot.devices.find((item) => String(item.uniqueId) === String(driver.traccar_unique_id));
+  if (!device) return res.json({ status: 'no_device', positions: [], message: 'Aucun appareil GPS n’est associé à ce livreur.' });
+
+  try {
+    const auth = { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD };
+    const response = await axios.get(`${process.env.TRACCAR_URL}/api/positions`, {
+      auth, timeout: 15000,
+      params: { deviceId: device.id, from: new Date(from).toISOString(), to: new Date(to).toISOString() },
+    });
+    const raw = Array.isArray(response.data) ? response.data : [];
+    const positions = raw
+      .map((point) => ({
+        latitude: Number(point.latitude),
+        longitude: Number(point.longitude),
+        timestamp: point.fixTime || point.deviceTime || point.serverTime || null,
+        speedKnots: point.speed != null && Number.isFinite(Number(point.speed)) ? Number(point.speed) : null,
+        course: point.course != null && Number.isFinite(Number(point.course)) ? Number(point.course) : null,
+        accuracy: point.accuracy != null && Number.isFinite(Number(point.accuracy)) ? Number(point.accuracy) : null,
+      }))
+      .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
+        && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const MAX_POINTS = 5000;
+    const truncated = positions.length > MAX_POINTS;
+    return res.json({
+      status: 'online',
+      driverId: driver.id,
+      from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(),
+      count: truncated ? MAX_POINTS : positions.length,
+      truncated,
+      positions: truncated ? positions.slice(positions.length - MAX_POINTS) : positions,
+    });
+  } catch (error) {
+    console.error('Traccar track error:', error.response?.status || error.message);
+    return res.status(502).json({ error: 'Historique GPS temporairement indisponible.' });
+  }
+}));
+
 app.get('/api/app/runs', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT r.id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date, r.status, r.version, r.created_at, r.updated_at,

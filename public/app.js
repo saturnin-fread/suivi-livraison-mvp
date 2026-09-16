@@ -874,11 +874,28 @@ async function renderOperationsMap() {
   setHeader('Carte d’exploitation', 'Tour de contrôle de la flotte en direct');
   page.classList.add('page-map');
   const bikeSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';
+  const playIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  const pauseIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
   page.innerHTML = `<div class="ops">
     <div id="operationsMap" aria-label="Carte des livreurs et destinations"></div>
 
-    <aside class="ops-panel" id="opsPanel" aria-label="Panneau des opérations">
+    <aside class="ops-panel ops-float" id="opsPanel" aria-label="Panneau des opérations">
+      <div class="ops-bar" data-drag="opsPanel">
+        <span class="ops-grip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+        <span class="ops-bar-title">Flotte</span>
+        <button type="button" class="ops-mini" data-collapse="opsPanel" title="Replier / déplier"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+      </div>
       <div id="opsPanelBody"><div class="ops-loading">Chargement des opérations…</div></div>
+    </aside>
+
+    <aside class="ops-panel ops-float ops-kpis-panel" id="opsKpisPanel" aria-label="Résumé des opérations" hidden>
+      <div class="ops-bar" data-drag="opsKpisPanel">
+        <span class="ops-grip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+        <span class="ops-bar-title">Résumé</span>
+        <button type="button" class="ops-mini" data-collapse="opsKpisPanel" title="Replier / déplier"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+        <button type="button" class="ops-mini" data-close="opsKpisPanel" title="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div class="ops-kpis" id="opsKpis"></div>
     </aside>
 
     <div class="ops-cluster ops-cluster-top">
@@ -887,10 +904,7 @@ async function renderOperationsMap() {
         <button type="button" class="ops-layer-btn" data-layer="satellite">Satellite</button>
         <button type="button" class="ops-layer-btn" data-layer="hybrid">Hybride</button>
       </div>
-      <div class="ops-kpi-wrap">
-        <button type="button" class="ops-icon-btn ops-kpi-toggle" id="kpiToggle" aria-expanded="false" title="Résumé des opérations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg><span>Résumé</span></button>
-        <div class="ops-kpis" id="opsKpis" hidden></div>
-      </div>
+      <button type="button" class="ops-icon-btn ops-kpi-toggle" id="kpiToggle" aria-expanded="false" title="Résumé des opérations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg><span>Résumé</span></button>
     </div>
 
     <div class="ops-cluster ops-cluster-actions" role="group" aria-label="Contrôles de la carte">
@@ -921,6 +935,8 @@ async function renderOperationsMap() {
   const destinationLayer = L.featureGroup().addTo(map);
   const sequenceLayer = L.layerGroup().addTo(map);
   const operatorLayer = L.layerGroup().addTo(map);
+  const replayLayer = L.layerGroup().addTo(map);
+  const replay = { active: false, driverId: null, positions: [], index: 0, playing: false, timer: null, marker: null, prevAuto: true };
 
   let baseStreet = null;
   let baseSatellite = null;
@@ -1039,10 +1055,10 @@ async function renderOperationsMap() {
         <button type="button" class="button secondary" data-action="center" ${driver.position ? '' : 'disabled'}>Centrer</button>
         <button type="button" class="button ${isolate ? 'accent' : 'secondary'}" data-action="isolate">${isolate ? 'Voir toute la flotte' : 'Isoler ce livreur'}</button>
         ${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler</a>` : ''}
-        <button type="button" class="button secondary" data-action="replay" disabled title="Disponible une fois le GPS Traccar connecté et l’historique activé">Rejouer le trajet</button>
+        <button type="button" class="button ${replay.active && String(replay.driverId) === String(driver.id) ? 'accent' : 'secondary'}" data-action="replay">Rejouer le trajet</button>
       </div>
+      <div id="opsReplay" class="ops-replay-slot"></div>
       ${driver.position?.stale ? '<div class="ops-note warning">Position de plus de 10 minutes : ne pas présenter comme du direct.</div>' : !driver.position ? '<div class="ops-note warning">Aucune coordonnée GPS exploitable pour ce livreur.</div>' : ''}
-      <div class="ops-note">Le trajet passé (replay par durée) s’activera dès que le GPS Traccar enregistrera l’historique des positions.</div>
       ${runCards || '<div class="ops-empty">Aucune tournée ouverte.</div>'}${unplanned}`;
   }
 
@@ -1060,7 +1076,130 @@ async function renderOperationsMap() {
       });
       document.getElementById('toggleDest')?.addEventListener('change', (event) => { showDestinations = event.target.checked; redrawMap(); });
       document.getElementById('toggleAuto')?.addEventListener('change', (event) => { autoRefresh = event.target.checked; scheduleRefresh(); });
+    } else if (replay.active && String(replay.driverId) === String(driver.id)) {
+      renderReplayUI();
     }
+  }
+
+  function suspendAutoForReplay() {
+    if (!replay.suspended) { replay.prevAuto = autoRefresh; replay.suspended = true; }
+    autoRefresh = false;
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  }
+
+  function replayWindow(key) {
+    const now = Date.now();
+    if (key === 'today') { const start = new Date(); start.setHours(0, 0, 0, 0); return { from: start.toISOString(), to: new Date(now).toISOString() }; }
+    const minutes = { 30: 30, 60: 60, 180: 180 }[key] || 60;
+    return { from: new Date(now - minutes * 60000).toISOString(), to: new Date(now).toISOString() };
+  }
+
+  const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h', today: 'Aujourd’hui' };
+  function renderReplayUI() {
+    const slot = document.getElementById('opsReplay');
+    if (!slot) return;
+    const hasTrack = replay.positions.length > 0;
+    slot.innerHTML = `<div class="ops-replay">
+      <div class="ops-replay-windows">
+        ${['30', '60', '180', 'today'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
+        <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
+      </div>
+      <div class="ops-replay-status">${escapeHtml(replay.statusText || 'Choisissez une période pour rejouer le trajet.')}</div>
+      ${hasTrack ? `<div class="ops-replay-controls">
+        <button type="button" class="ops-replay-play" id="opsReplayPlay">${replay.playing ? pauseIcon : playIcon}</button>
+        <input type="range" id="opsReplayRange" min="0" max="${replay.positions.length - 1}" value="${replay.index}" aria-label="Position dans le trajet"/>
+      </div>
+      <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
+    </div>`;
+    slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
+    slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
+    if (hasTrack) {
+      slot.querySelector('#opsReplayPlay').addEventListener('click', togglePlay);
+      slot.querySelector('#opsReplayRange').addEventListener('input', (event) => { stopPlay(); replay.index = Number(event.target.value); drawReplayFrame(); });
+      drawReplayFrame();
+    }
+  }
+
+  async function startReplay(windowKey) {
+    const driver = selectedDriver();
+    if (!driver) return;
+    stopPlay();
+    replay.active = true; replay.driverId = driver.id; replay.windowKey = windowKey;
+    replay.positions = []; replay.index = 0; replay.statusText = 'Chargement de l’historique…';
+    suspendAutoForReplay();
+    renderReplayUI();
+    try {
+      const { from, to } = replayWindow(windowKey);
+      const data = await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/track?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      if (data.status === 'not_configured') { replay.statusText = 'Le service GPS n’est pas configuré.'; replay.positions = []; }
+      else if (data.status === 'no_device') { replay.statusText = 'Aucun appareil GPS n’est associé à ce livreur.'; replay.positions = []; }
+      else {
+        replay.positions = data.positions || [];
+        replay.statusText = replay.positions.length
+          ? `${replay.positions.length} point(s) · ${new Date(data.from).toLocaleTimeString('fr-FR')} → ${new Date(data.to).toLocaleTimeString('fr-FR')}${data.truncated ? ' (tronqué)' : ''}`
+          : 'Aucune position enregistrée sur cette période.';
+      }
+      replay.index = Math.max(0, replay.positions.length - 1);
+      drawReplayTrail();
+      renderReplayUI();
+    } catch (error) {
+      replay.positions = []; replay.statusText = `Échec : ${error.message}`;
+      replayLayer.clearLayers();
+      renderReplayUI();
+    }
+  }
+
+  function drawReplayTrail() {
+    replayLayer.clearLayers();
+    const pts = replay.positions.map((position) => [position.latitude, position.longitude]);
+    if (pts.length > 1) L.polyline(pts, { color: '#111', weight: 3, opacity: 0.45 }).addTo(replayLayer);
+    if (pts.length) {
+      L.circleMarker(pts[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#197044', fillOpacity: 1 }).addTo(replayLayer).bindTooltip('Départ');
+      L.circleMarker(pts[pts.length - 1], { radius: 6, color: '#fff', weight: 2, fillColor: '#e11d2a', fillOpacity: 1 }).addTo(replayLayer).bindTooltip('Fin');
+      replay.marker = L.circleMarker(pts[replay.index] || pts[0], { radius: 8, color: '#111', weight: 3, fillColor: '#facc15', fillOpacity: 1 }).addTo(replayLayer);
+      map.fitBounds(pts, { padding: [60, 60], maxZoom: 16 });
+    } else {
+      replay.marker = null;
+    }
+  }
+
+  function drawReplayFrame() {
+    const position = replay.positions[replay.index];
+    if (!position || !replay.marker) return;
+    replay.marker.setLatLng([position.latitude, position.longitude]);
+    const read = document.getElementById('opsReplayRead');
+    if (read) {
+      const kmh = position.speedKnots != null ? `${(position.speedKnots * 1.852).toFixed(0)} km/h` : '—';
+      read.textContent = `${position.timestamp ? new Date(position.timestamp).toLocaleString('fr-FR') : '—'} · ${kmh}`;
+    }
+    const range = document.getElementById('opsReplayRange');
+    if (range && Number(range.value) !== replay.index) range.value = replay.index;
+  }
+
+  function stopPlay() {
+    replay.playing = false;
+    if (replay.timer) { clearInterval(replay.timer); replay.timer = null; }
+    const btn = document.getElementById('opsReplayPlay');
+    if (btn) btn.innerHTML = playIcon;
+  }
+  function togglePlay() {
+    if (replay.playing) { stopPlay(); return; }
+    if (replay.index >= replay.positions.length - 1) replay.index = 0;
+    replay.playing = true;
+    const btn = document.getElementById('opsReplayPlay');
+    if (btn) btn.innerHTML = pauseIcon;
+    replay.timer = setInterval(() => {
+      if (replay.index >= replay.positions.length - 1) { stopPlay(); return; }
+      replay.index += 1; drawReplayFrame();
+    }, 220);
+  }
+  function closeReplay() {
+    stopPlay();
+    replay.active = false; replay.driverId = null; replay.positions = []; replay.marker = null; replay.windowKey = null; replay.statusText = null;
+    replayLayer.clearLayers();
+    if (replay.suspended) { autoRefresh = replay.prevAuto; replay.suspended = false; }
+    renderPanel();
+    scheduleRefresh();
   }
 
   function markerHtml(driver, selected) {
@@ -1150,19 +1289,78 @@ async function renderOperationsMap() {
     const trigger = event.target.closest('[data-action]');
     if (!trigger) return;
     const action = trigger.dataset.action;
-    if (action === 'select') { selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); }
-    else if (action === 'back') { selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
+    if (action === 'select') { if (replay.active) closeReplay(); selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); }
+    else if (action === 'back') { if (replay.active) closeReplay(); selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
     else if (action === 'center') { const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], 15); }
     else if (action === 'isolate') { isolate = !isolate; redrawMap({ fit: true }); renderPanel(); }
+    else if (action === 'replay') {
+      if (replay.active && String(replay.driverId) === String(selectedDriverId)) { closeReplay(); }
+      else { replay.active = true; replay.driverId = selectedDriverId; replay.windowKey = null; replay.positions = []; replay.statusText = null; suspendAutoForReplay(); renderPanel(); }
+    }
   });
 
   document.querySelectorAll('.ops-layer-btn').forEach((btn) => btn.addEventListener('click', () => setLayer(btn.dataset.layer)));
   document.getElementById('kpiToggle').addEventListener('click', (event) => {
-    const kpis = document.getElementById('opsKpis');
-    const open = kpis.hasAttribute('hidden');
-    if (open) kpis.removeAttribute('hidden'); else kpis.setAttribute('hidden', '');
+    const panel = document.getElementById('opsKpisPanel');
+    const open = panel.hasAttribute('hidden');
+    if (open) panel.removeAttribute('hidden'); else panel.setAttribute('hidden', '');
     event.currentTarget.setAttribute('aria-expanded', String(open));
   });
+
+  // Panneaux flottants : repli + déplacement (souris/tactile), position mémorisée par appareil.
+  const opsEl = page.querySelector('.ops');
+  const readStore = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
+  const writeStore = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* stockage indisponible */ } };
+  function setupFloat(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const bar = el.querySelector('.ops-bar');
+    const storeKey = `traxo.ops.${id}`;
+    const saved = readStore(storeKey);
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      el.style.left = `${saved.left}px`; el.style.top = `${saved.top}px`; el.style.right = 'auto';
+    }
+    if (saved?.collapsed) el.classList.add('collapsed');
+    let dragging = false; let startX = 0; let startY = 0; let originLeft = 0; let originTop = 0;
+    bar.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('button')) return;
+      dragging = true;
+      const rect = el.getBoundingClientRect();
+      const parent = opsEl.getBoundingClientRect();
+      originLeft = rect.left - parent.left; originTop = rect.top - parent.top;
+      startX = event.clientX; startY = event.clientY;
+      el.style.left = `${originLeft}px`; el.style.top = `${originTop}px`; el.style.right = 'auto';
+      el.classList.add('dragging');
+      bar.setPointerCapture(event.pointerId);
+    });
+    bar.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      const maxLeft = Math.max(0, opsEl.clientWidth - el.offsetWidth);
+      const maxTop = Math.max(0, opsEl.clientHeight - el.offsetHeight);
+      const left = Math.min(maxLeft, Math.max(0, originLeft + (event.clientX - startX)));
+      const top = Math.min(maxTop, Math.max(0, originTop + (event.clientY - startY)));
+      el.style.left = `${left}px`; el.style.top = `${top}px`;
+    });
+    const endDrag = (event) => {
+      if (!dragging) return;
+      dragging = false; el.classList.remove('dragging');
+      try { bar.releasePointerCapture(event.pointerId); } catch { /* déjà relâché */ }
+      writeStore(storeKey, { left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0, collapsed: el.classList.contains('collapsed') });
+    };
+    bar.addEventListener('pointerup', endDrag);
+    bar.addEventListener('pointercancel', endDrag);
+    el.querySelector('[data-collapse]')?.addEventListener('click', () => {
+      el.classList.toggle('collapsed');
+      writeStore(storeKey, { left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0, collapsed: el.classList.contains('collapsed') });
+    });
+    el.querySelector('[data-close]')?.addEventListener('click', () => {
+      el.setAttribute('hidden', '');
+      document.getElementById('kpiToggle')?.setAttribute('aria-expanded', 'false');
+    });
+  }
+  setupFloat('opsPanel');
+  setupFloat('opsKpisPanel');
+
   document.getElementById('legendToggle').addEventListener('click', () => {
     const legend = document.getElementById('opsLegend');
     if (legend.hasAttribute('hidden')) legend.removeAttribute('hidden'); else legend.setAttribute('hidden', '');

@@ -1480,7 +1480,23 @@ app.get('/health', asyncRoute(async (_req, res) => {
 app.get('/', (_req, res) => res.redirect('/app'));
 
 app.get('/app/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'app-login.html')));
-app.post('/app/login', asyncRoute(async (req, res) => {
+// Brute-force protection on sign-in: a per-IP quota plus a per-email quota so a
+// single targeted account cannot be hammered even from many IPs.
+const loginRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({
+      limiter: trackingLimiter('login_ip', { capacity: 20, refillTokens: 20, refillIntervalMs: 600_000, maxEntries: 10_000 }),
+    }),
+    createTokenPolicy({
+      limiter: trackingLimiter('login_id', { capacity: 10, refillTokens: 10, refillIntervalMs: 600_000, maxEntries: 20_000 }),
+      key: (req) => String((req.body && req.body.user) || '').trim().toLowerCase(),
+      required: false,
+    }),
+  ],
+});
+
+app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Base métier non configurée.');
   const email = normalizeEmail(req.body.user);
   const result = await pool.query(
@@ -1589,8 +1605,8 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
     client.release();
   }
 
-  await createSession(req, res, userId, companyId, 'company');
-  return res.redirect('/app');
+  // No auto-login: the new owner confirms their credentials by signing in.
+  return res.redirect('/app/login?created=1');
 }));
 
 app.get('/admin/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'platform-login.html')));

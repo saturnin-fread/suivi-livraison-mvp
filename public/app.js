@@ -143,11 +143,16 @@ function setHeader(title, hint) {
   document.title = `${title} — Livraisons`;
 }
 
+const operationsRoutes = ['/app/operations', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/tournees', '/app/incidents'];
 function activateNavigation() {
   const pathname = location.pathname;
   document.querySelectorAll('.nav a').forEach((link) => {
     const route = link.dataset.route;
-    link.classList.toggle('active', route === '/app' ? pathname === '/app' : pathname.startsWith(route));
+    let active;
+    if (route === '/app') active = pathname === '/app';
+    else if (route === '/app/operations') active = operationsRoutes.some((base) => pathname === base || pathname.startsWith(`${base}/`));
+    else active = pathname.startsWith(route);
+    link.classList.toggle('active', active);
   });
 }
 
@@ -1090,21 +1095,33 @@ async function renderOperationsMap() {
   function replayWindow(key) {
     const now = Date.now();
     if (key === 'today') { const start = new Date(); start.setHours(0, 0, 0, 0); return { from: start.toISOString(), to: new Date(now).toISOString() }; }
+    if (key === 'day') return { from: new Date(now - 24 * 60 * 60000).toISOString(), to: new Date(now).toISOString() };
+    if (key === 'custom') {
+      const from = replay.customFrom ? new Date(replay.customFrom).toISOString() : new Date(now - 3 * 60 * 60000).toISOString();
+      const to = replay.customTo ? new Date(replay.customTo).toISOString() : new Date(now).toISOString();
+      return { from, to };
+    }
     const minutes = { 30: 30, 60: 60, 180: 180 }[key] || 60;
     return { from: new Date(now - minutes * 60000).toISOString(), to: new Date(now).toISOString() };
   }
 
-  const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h', today: 'Aujourd’hui' };
+  const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h', day: '1 jour', today: 'Aujourd’hui' };
   function renderReplayUI() {
     const slot = document.getElementById('opsReplay');
     if (!slot) return;
     const hasTrack = replay.positions.length > 0;
     slot.innerHTML = `<div class="ops-replay">
       <div class="ops-replay-windows">
-        ${['30', '60', '180', 'today'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
+        ${['30', '60', '180', 'day', 'today'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
+        <button type="button" class="ops-win ${replay.customOpen ? 'active' : ''}" data-replay-custom>Période…</button>
         <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
       </div>
-      <div class="ops-replay-status">${escapeHtml(replay.statusText || 'Choisissez une période pour rejouer le trajet.')}</div>
+      ${replay.customOpen ? `<div class="ops-replay-range">
+        <label>Du<input type="datetime-local" id="replayFrom" value="${escapeHtml(replay.customFrom || '')}"/></label>
+        <label>Au<input type="datetime-local" id="replayTo" value="${escapeHtml(replay.customTo || '')}"/></label>
+        <button type="button" class="button secondary" id="replayApply">Rejouer</button>
+      </div>` : ''}
+      <div class="ops-replay-status">${escapeHtml(replay.statusText || 'Choisissez une période pour rejouer le trajet. Astuce : le trajet complet d’une journée est destiné aux tests ; le suivi par commande arrive avec la refonte Commandes.')}</div>
       ${hasTrack ? `<div class="ops-replay-controls">
         <button type="button" class="ops-replay-play" id="opsReplayPlay">${replay.playing ? pauseIcon : playIcon}</button>
         <input type="range" id="opsReplayRange" min="0" max="${replay.positions.length - 1}" value="${replay.index}" aria-label="Position dans le trajet"/>
@@ -1113,6 +1130,13 @@ async function renderOperationsMap() {
     </div>`;
     slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
     slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
+    slot.querySelector('[data-replay-custom]')?.addEventListener('click', () => { replay.customOpen = !replay.customOpen; renderReplayUI(); });
+    slot.querySelector('#replayApply')?.addEventListener('click', () => {
+      replay.customFrom = slot.querySelector('#replayFrom').value;
+      replay.customTo = slot.querySelector('#replayTo').value;
+      if (!replay.customFrom || !replay.customTo) { replay.statusText = 'Renseignez une date de début et de fin.'; renderReplayUI(); return; }
+      startReplay('custom');
+    });
     if (hasTrack) {
       slot.querySelector('#opsReplayPlay').addEventListener('click', togglePlay);
       slot.querySelector('#opsReplayRange').addEventListener('input', (event) => { stopPlay(); replay.index = Number(event.target.value); drawReplayFrame(); });
@@ -1745,7 +1769,12 @@ async function renderDrivers() {
       notify('<div class="notice success">Disponibilité mise à jour.</div>');
       const driver = drivers.find((item) => String(item.id) === String(select.dataset.id));
       if (driver) driver.availabilityStatus = select.value;
-    } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); select.disabled = false; }
+      select.className = `availability avail-select av-${select.value}`;
+    } catch (error) {
+      notify(`<div class="notice error">${escapeHtml(error.message)}</div>`);
+    } finally {
+      select.disabled = false;
+    }
   });
   page.addEventListener('click', (event) => {
     const menuBtn = event.target.closest('[data-menu]');
@@ -1834,25 +1863,96 @@ async function renderTeam() {
   }));
 }
 
+const settingsIcons = {
+  entreprise: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01"/><path d="M9 12v.01"/><path d="M9 15v.01"/><path d="M9 18v.01"/></svg>',
+  preuves: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  carte: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" x2="9" y1="3" y2="18"/><line x1="15" x2="15" y1="6" y2="21"/></svg>',
+  securite: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  abonnement: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+};
+
 async function renderSettings() {
-  setHeader('Paramètres', 'Règles de livraison de l’entreprise');
+  setHeader('Paramètres', 'Configuration de l’espace TRAXO');
   const settings = await api('/api/app/settings/proofs');
   const canEdit = ['owner', 'manager'].includes(context.user.role);
+  const company = context.company;
+  const isActive = (company.activationStatus || 'active') === 'active';
   const modeOptions = (selected) => [
     ['off', 'Désactivée'], ['optional', 'Facultative'], ['required', 'Obligatoire'],
   ].map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
-  page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Les preuves doivent rester proportionnées au risque de vos livraisons.</p></div></div>
-    <section class="card"><h2>Preuves complémentaires de remise</h2><p>Le code client reste la preuve principale. Activez une photo ou une signature seulement si votre activité le justifie.</p><div class="notice">Une preuve « obligatoire » empêchera la validation finale tant que le livreur ne l’aura pas ajoutée. Les images restent privées.</div><form id="proofSettings"><div class="form-grid"><div class="field"><label>Photo de remise</label><select name="photoMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.photo_proof_mode)}</select><small>Privilégiez le colis ou le lieu, sans visage ni document d’identité.</small></div><div class="field"><label>Signature du destinataire</label><select name="signatureMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.signature_proof_mode)}</select><small>Ne demandez la signature que lorsqu’elle est réellement utile.</small></div></div>${canEdit ? '<div class="actions" style="margin-top:18px"><button class="primary">Enregistrer les règles</button></div>' : '<p class="notice">Seul un propriétaire ou manager peut modifier ces règles.</p>'}</form><div id="settingsResult"></div></section>`;
+  const initials = String(company.name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
+  const infoRow = (label, value) => `<div class="set-row"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`;
+
+  const sections = [
+    { key: 'entreprise', label: 'Entreprise', body: `
+      <div class="set-company"><span class="avatar">${escapeHtml(initials)}</span><div><strong>${escapeHtml(company.name)}</strong><small>${escapeHtml(company.slug || '')}</small></div></div>
+      <div class="set-list">
+        ${infoRow('Identifiant', `#${escapeHtml(company.id)}`)}
+        ${infoRow('Votre rôle', escapeHtml(roleLabels[context.user.role] || context.user.role))}
+        ${infoRow('Compte', escapeHtml(context.user.name))}
+        ${infoRow('E-mail', escapeHtml(context.user.email))}
+      </div>
+      <p class="set-hint">Le changement de nom d’entreprise et le logo personnalisé arriveront prochainement.</p>` },
+    { key: 'preuves', label: 'Preuves de remise', body: `
+      <p class="set-lead">Le code client reste la preuve principale. Activez une photo ou une signature seulement si votre activité le justifie.</p>
+      <div class="notice">Une preuve « obligatoire » empêche la validation finale tant que le livreur ne l’a pas ajoutée. Les images restent privées.</div>
+      <form id="proofSettings"><div class="form-grid">
+        <div class="field"><label>Photo de remise</label><select name="photoMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.photo_proof_mode)}</select><small>Privilégiez le colis ou le lieu, sans visage ni pièce d’identité.</small></div>
+        <div class="field"><label>Signature du destinataire</label><select name="signatureMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.signature_proof_mode)}</select><small>Ne demandez la signature que lorsqu’elle est réellement utile.</small></div>
+      </div>${canEdit ? '<div class="actions" style="margin-top:18px"><button class="primary">Enregistrer les règles</button></div>' : '<p class="notice">Seul un propriétaire ou manager peut modifier ces règles.</p>'}</form><div id="settingsResult"></div>` },
+    { key: 'carte', label: 'Carte & GPS', body: `
+      <p class="set-lead">Réglages de la carte d’exploitation et du suivi GPS.</p>
+      <div class="set-list">
+        ${infoRow('Fond par défaut', 'OpenStreetMap')}
+        ${infoRow('Satellite', '<span class="account-chip ok">'+settingsIcons.preuves+' Esri World Imagery</span>')}
+        ${infoRow('Mode hybride', 'Disponible')}
+        ${infoRow('Suivi GPS', 'Traccar')}
+      </div>
+      <p class="set-hint">L’enrôlement automatique des téléphones (QR + device) sera activé avec votre domaine GPS dédié.</p>` },
+    { key: 'securite', label: 'Sécurité', body: `
+      <p class="set-lead">Protections déjà en place sur votre espace.</p>
+      <div class="set-list">
+        ${infoRow('Mots de passe', 'scrypt + sel unique')}
+        ${infoRow('Sessions', 'cookie HttpOnly · jeton haché')}
+        ${infoRow('Connexion', 'limitée (anti-force-brute)')}
+        ${infoRow('Isolation', 'chaque entreprise est cloisonnée')}
+      </div>
+      <p class="set-hint">La vérification d’e-mail et la réinitialisation de mot de passe arriveront avec l’envoi d’e-mails.</p>` },
+    { key: 'abonnement', label: 'Abonnement', body: `
+      <div class="set-plan ${isActive ? 'ok' : 'preview'}">
+        <div><span>Statut du compte</span><strong>${isActive ? 'Compte actif' : 'Aperçu'}</strong></div>
+        <span class="badge ${isActive ? 'success' : 'warning'}">${isActive ? 'Actif' : 'Non activé'}</span>
+      </div>
+      <p class="set-lead">${isActive ? 'Toutes les fonctionnalités sont débloquées pour votre entreprise.' : 'Votre compte est en aperçu : vous pouvez naviguer, mais les fonctionnalités se débloquent après activation.'}</p>
+      <p class="set-hint">La facturation en ligne (Mobile Money) sera branchée prochainement ; l’activation est manuelle pour l’instant.</p>` },
+  ];
+
+  page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Configuration de l’espace TRAXO.</p></div></div>
+    <div class="settings-hub">
+      <nav class="settings-nav" id="settingsNav" aria-label="Sections des paramètres">
+        ${sections.map((section, index) => `<button class="settings-navitem ${index === 0 ? 'active' : ''}" data-sec="${section.key}">${settingsIcons[section.key]}<span>${section.label}</span></button>`).join('')}
+      </nav>
+      <div class="settings-panels" id="settingsPanels">
+        ${sections.map((section, index) => `<section class="card settings-sec ${index === 0 ? '' : 'is-hidden'}" data-sec="${section.key}"><h2>${section.label}</h2>${section.body}</section>`).join('')}
+      </div>
+    </div>`;
+
+  document.getElementById('settingsNav').addEventListener('click', (event) => {
+    const item = event.target.closest('[data-sec]');
+    if (!item) return;
+    const key = item.dataset.sec;
+    document.querySelectorAll('#settingsNav .settings-navitem').forEach((navItem) => navItem.classList.toggle('active', navItem.dataset.sec === key));
+    document.querySelectorAll('#settingsPanels .settings-sec').forEach((section) => section.classList.toggle('is-hidden', section.dataset.sec !== key));
+  });
+
   const form = document.getElementById('proofSettings');
-  if (canEdit) form.addEventListener('submit', async (event) => {
+  if (canEdit && form) form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector('button');
     button.disabled = true;
     try {
       const payload = Object.fromEntries(new FormData(event.currentTarget));
-      await api('/api/app/settings/proofs', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      });
+      await api('/api/app/settings/proofs', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       document.getElementById('settingsResult').innerHTML = '<div class="notice success">Règles de preuve enregistrées.</div>';
     } catch (error) {
       document.getElementById('settingsResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
@@ -1860,6 +1960,144 @@ async function renderSettings() {
       button.disabled = false;
     }
   });
+}
+
+async function renderOperations() {
+  setHeader('Opérations', 'Demandes, commandes, tournées et incidents');
+  const validSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
+  const params = new URLSearchParams(location.search);
+  let segment = params.get('vue');
+  if (!validSegments.includes(segment)) segment = 'commandes';
+  let query = '';
+  let rows = [];
+  const scopeState = { demandes: 'active', incidents: 'open' };
+  let openMenu = null;
+
+  const segMeta = {
+    commandes: { label: 'Commandes', countKey: 'orders', scopes: null,
+      endpoint: () => '/api/app/orders',
+      head: '<th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th>',
+      map: (o) => ({ href: `/app/commandes/${escapeHtml(o.id)}`, text: `${o.id} ${o.customer_name || ''} ${o.customer_phone || ''} ${o.neighborhood || ''} ${o.driver_name || ''} ${o.status || ''}`.toLowerCase(),
+        html: `<td>N° ${escapeHtml(o.id)}<br><small>${escapeHtml(formatDate(o.created_at))}</small></td><td><strong>${escapeHtml(o.customer_name || '—')}</strong><br><small>${escapeHtml(o.customer_phone || '')}</small></td><td>${escapeHtml(o.neighborhood || o.landmark || '—')}</td><td>${escapeHtml(o.driver_name)}</td><td>${badge(o.status)}</td><td>${o.trackingLink?.path ? `<a href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir</a>` : escapeHtml(o.trackingLink?.state === 'revoked' ? 'Révoqué' : '—')}</td>` }) },
+    demandes: { label: 'Demandes', countKey: 'active_requests', scopes: [['active', 'Actives'], ['archived', 'Archives']],
+      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`,
+      head: '<th>Client</th><th>Zone / repère</th><th>Créneau</th><th>Statut</th><th>Mise à jour</th>',
+      map: (r) => ({ href: `/app/demandes/${escapeHtml(r.id)}`, text: `${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.landmark || ''} ${r.status || ''}`.toLowerCase(),
+        html: `<td><strong>${escapeHtml(r.customer_name || 'En attente du client')}</strong><br><small>${escapeHtml(r.customer_phone || '')}</small></td><td>${escapeHtml(r.neighborhood || '—')}<br><small>${escapeHtml(r.landmark || '')}</small></td><td>${escapeHtml(r.requested_time || '—')}</td><td>${badge(r.status)}</td><td>${escapeHtml(formatDate(r.updated_at))}</td>` }) },
+    tournees: { label: 'Tournées', countKey: 'open_runs', scopes: null,
+      endpoint: () => '/api/app/runs',
+      head: '<th>Tournée</th><th>Date</th><th>Livreur</th><th>Progression</th><th>État</th>',
+      map: (run) => ({ href: `/app/tournees/${escapeHtml(run.id)}`, text: `${run.name || ''} ${run.id} ${run.driver_name || ''} ${run.status || ''}`.toLowerCase(),
+        html: `<td><strong>${escapeHtml(run.name)}</strong><br><small>N° ${escapeHtml(run.id)}</small></td><td>${escapeHtml(formatDateOnly(run.service_date))}</td><td>${escapeHtml(run.driver_name)}<br><small>${escapeHtml(run.vehicle_type || '')}</small></td><td>${escapeHtml(run.terminal_stop_count)} / ${escapeHtml(run.stop_count)} arrêts</td><td>${badge(runStatusLabels[run.status] || run.status)}</td>` }) },
+    incidents: { label: 'Incidents', countKey: 'open_incidents', scopes: [['open', 'Ouverts'], ['resolved', 'Résolus'], ['all', 'Tous']],
+      endpoint: () => `/api/app/incidents?scope=${encodeURIComponent(scopeState.incidents)}`,
+      head: '<th>Incident</th><th>Commande</th><th>Client</th><th>Livreur</th><th>Responsable</th><th>État</th>',
+      map: (i) => ({ href: `/app/incidents/${escapeHtml(i.id)}`, text: `${incidentCategoryLabels[i.category] || i.category} ${i.order_id} ${i.customer_name || ''} ${i.driver_name || ''} ${i.assigned_to || ''} ${i.status || ''}`.toLowerCase(),
+        html: `<td><strong>${escapeHtml(incidentCategoryLabels[i.category] || i.category)}</strong><br><small>${escapeHtml(incidentSeverityLabels[i.severity] || i.severity)} · ${escapeHtml(formatDate(i.created_at))}</small></td><td>N° ${escapeHtml(i.order_id)}<br><small>${escapeHtml(i.order_status)}</small></td><td>${escapeHtml(i.customer_name || '—')}<br><small>${escapeHtml(i.neighborhood || i.customer_phone || '—')}</small></td><td>${escapeHtml(i.driver_name)}</td><td>${escapeHtml(i.assigned_to || 'Non attribué')}</td><td>${badge(i.status === 'resolved' ? 'Résolu' : 'Ouvert')}${i.retention_hold_id ? '<br><span class="badge warning" style="margin-top:6px">Conservation gelée</span>' : ''}</td>` }) },
+  };
+
+  let counts = {};
+  try { counts = await api('/api/app/summary'); } catch { counts = {}; }
+
+  page.innerHTML = `<div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Demandes, commandes, tournées et incidents au même endroit.</p></div>
+      <div class="row-menu"><button class="button primary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
+    <div class="fleet-toolbar">
+      <div class="fleet-tabs" id="opsSegments"></div>
+      <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="opsSearch" placeholder="Rechercher dans ce segment…" autocomplete="off"/></div>
+    </div>
+    <div class="ops-scopes" id="opsScopes"></div>
+    <div id="opsResult"></div>
+    <section class="card" id="opsList"><div class="loading-state">Chargement…</div></section>`;
+
+  function renderSegments() {
+    document.getElementById('opsSegments').innerHTML = validSegments.map((key) => {
+      const meta = segMeta[key];
+      const count = counts[meta.countKey];
+      return `<button class="fleet-tab ${segment === key ? 'active' : ''}" data-segment="${key}">${meta.label}${count != null ? `<span class="count">${escapeHtml(count)}</span>` : ''}</button>`;
+    }).join('');
+  }
+
+  function renderScopes() {
+    const meta = segMeta[segment];
+    const el = document.getElementById('opsScopes');
+    if (!meta.scopes) { el.innerHTML = ''; return; }
+    const current = scopeState[segment];
+    el.innerHTML = meta.scopes.map(([value, label]) => `<button class="fleet-tab ${current === value ? 'active' : ''}" data-scope="${value}">${label}</button>`).join('');
+  }
+
+  function renderList() {
+    const meta = segMeta[segment];
+    const mapped = rows.map(meta.map).filter((entry) => !query || entry.text.includes(query));
+    const container = document.getElementById('opsList');
+    container.className = 'card';
+    if (!mapped.length) { container.innerHTML = `<div class="fleet-empty">${rows.length ? 'Aucun élément ne correspond à la recherche.' : 'Rien à afficher ici pour le moment.'}</div>`; return; }
+    container.innerHTML = `<div class="table-wrap"><table><thead><tr>${meta.head}</tr></thead><tbody>${mapped.map((entry) => `<tr data-href="${entry.href}">${entry.html}</tr>`).join('')}</tbody></table></div>`;
+    container.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', (event) => {
+      if (event.target.closest('a, button, input, select')) return;
+      location.href = row.dataset.href;
+    }));
+  }
+
+  async function loadSegment() {
+    const meta = segMeta[segment];
+    document.getElementById('opsList').innerHTML = '<div class="loading-state">Chargement…</div>';
+    try {
+      rows = await api(meta.endpoint());
+      renderList();
+    } catch (error) {
+      document.getElementById('opsList').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function switchSegment(key) {
+    if (!validSegments.includes(key) || key === segment) return;
+    segment = key; query = '';
+    const search = document.getElementById('opsSearch');
+    if (search) search.value = '';
+    try { history.replaceState(null, '', `/app/operations?vue=${key}`); } catch { /* ignore */ }
+    renderSegments(); renderScopes(); loadSegment();
+  }
+
+  document.getElementById('opsSegments').addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-segment]');
+    if (tab) switchSegment(tab.dataset.segment);
+  });
+  document.getElementById('opsScopes').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-scope]');
+    if (!chip) return;
+    scopeState[segment] = chip.dataset.scope;
+    renderScopes(); loadSegment();
+  });
+  const search = document.getElementById('opsSearch');
+  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
+
+  // Menu « + Créer ».
+  document.getElementById('opsCreate').addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (openMenu) { openMenu.remove(); openMenu = null; return; }
+    const menu = document.createElement('div');
+    menu.className = 'menu-pop';
+    menu.innerHTML = `
+      <button data-create="/app/nouvelle-commande">${fleetIcons.box || ''} Commande directe</button>
+      <button data-create="/app/demandes">Formulaire client (demande)</button>
+      <button data-create="/app/tournees">Nouvelle tournée</button>
+      <hr/>
+      <button data-goto="incidents">Voir les incidents</button>`;
+    event.currentTarget.parentElement.appendChild(menu);
+    openMenu = menu;
+    menu.addEventListener('click', (menuEvent) => {
+      const create = menuEvent.target.closest('[data-create]');
+      const goto = menuEvent.target.closest('[data-goto]');
+      if (create) location.href = create.dataset.create;
+      else if (goto) { openMenu.remove(); openMenu = null; switchSegment(goto.dataset.goto); }
+    });
+  });
+  document.addEventListener('click', (event) => {
+    if (openMenu && !event.target.closest('.row-menu')) { openMenu.remove(); openMenu = null; }
+  });
+
+  renderSegments(); renderScopes();
+  await loadSegment();
 }
 
 function customerStatusBadge(status) {
@@ -2161,6 +2399,7 @@ async function start() {
     const customerDetail = path.match(/^\/app\/clients\/(\d+)$/);
     if (customerDetail) return await renderCustomerDetail(customerDetail[1]);
     if (path === '/app') return await renderDashboard();
+    if (path === '/app/operations') return await renderOperations();
     if (path === '/app/demandes') return await renderRequests();
     if (path === '/app/nouvelle-commande') return await renderNewOrder();
     if (path === '/app/commandes') return await renderOrders();

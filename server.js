@@ -1894,7 +1894,7 @@ app.post('/api/app/invitations/:id/revoke', requireCompanyApi, requireCompanyRol
 
 app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
   user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
-  company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug },
+  company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug, activationStatus: req.auth.activation_status || 'active' },
 }));
 
 app.get('/api/driver/context', requireDriverApi, asyncRoute(async (req, res) => {
@@ -3317,7 +3317,7 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
   if (!driver) return res.status(404).json({ error: 'Livreur introuvable.' });
 
   const now = Date.now();
-  const MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
   let to = req.query.to ? Date.parse(req.query.to) : now;
   let from = req.query.from ? Date.parse(req.query.from) : now - 3 * 60 * 60 * 1000;
   if (!Number.isFinite(from) || !Number.isFinite(to)) return res.status(400).json({ error: 'Fenêtre temporelle invalide.' });

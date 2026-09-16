@@ -695,6 +695,7 @@ async function initDatabase() {
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS availability_status TEXT NOT NULL DEFAULT 'available';
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 
       ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS driver_id BIGINT;
       DO $$
@@ -2877,10 +2878,13 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
   const localDrivers = await pool.query(
     `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
             d.active, d.traccar_unique_id,
-            COUNT(o.id) FILTER (WHERE o.status NOT IN ('Livrée', 'Annulée', 'Retournée'))::int AS active_orders
+            COUNT(o.id) FILTER (WHERE o.status NOT IN ('Livrée', 'Annulée', 'Retournée'))::int AS active_orders,
+            EXISTS (SELECT 1 FROM company_memberships m WHERE m.company_id = d.company_id AND m.driver_id = d.id) AS has_account,
+            EXISTS (SELECT 1 FROM user_invitations i WHERE i.company_id = d.company_id AND i.driver_id = d.id
+                      AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()) AS invite_pending
      FROM drivers d
      LEFT JOIN orders o ON o.driver_id = d.id
-     WHERE d.company_id = $1
+     WHERE d.company_id = $1 AND d.archived_at IS NULL
      GROUP BY d.id
      ORDER BY d.name`,
     [req.auth.company_id]
@@ -2900,6 +2904,7 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
       capacity: driver.capacity, availabilityStatus: driver.availability_status, active: driver.active,
       uniqueId: driver.traccar_unique_id, trackerStatus: device?.status || 'unknown', lastUpdate,
       category: device?.category || null, activeOrders: driver.active_orders, operationalState,
+      hasAccount: Boolean(driver.has_account), invitePending: Boolean(driver.invite_pending),
     };
   };
   if (!traccarConfigured()) {
@@ -3285,6 +3290,20 @@ app.patch('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner'
     console.error('Driver update error:', error.message);
     return res.status(500).json({ error: 'Impossible de mettre à jour ce livreur.' });
   }
+}));
+
+// Suppression d'un livreur (owner/manager) : archive douce pour préserver
+// l'historique des commandes/tournées et rester réversible.
+app.delete('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE drivers SET archived_at = NOW(), active = FALSE, updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND archived_at IS NULL
+     RETURNING id, name`,
+    [req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+  await writeAudit(req.auth, 'driver', result.rows[0].id, 'archived', { name: result.rows[0].name });
+  return res.json({ id: result.rows[0].id, archived: true });
 }));
 
 // Historique GPS d'un livreur (rejeu). Interroge l'historique Traccar, borné et

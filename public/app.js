@@ -143,11 +143,16 @@ function setHeader(title, hint) {
   document.title = `${title} — Livraisons`;
 }
 
+const operationsRoutes = ['/app/operations', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/tournees', '/app/incidents'];
 function activateNavigation() {
   const pathname = location.pathname;
   document.querySelectorAll('.nav a').forEach((link) => {
     const route = link.dataset.route;
-    link.classList.toggle('active', route === '/app' ? pathname === '/app' : pathname.startsWith(route));
+    let active;
+    if (route === '/app') active = pathname === '/app';
+    else if (route === '/app/operations') active = operationsRoutes.some((base) => pathname === base || pathname.startsWith(`${base}/`));
+    else active = pathname.startsWith(route);
+    link.classList.toggle('active', active);
   });
 }
 
@@ -1957,6 +1962,144 @@ async function renderSettings() {
   });
 }
 
+async function renderOperations() {
+  setHeader('Opérations', 'Demandes, commandes, tournées et incidents');
+  const validSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
+  const params = new URLSearchParams(location.search);
+  let segment = params.get('vue');
+  if (!validSegments.includes(segment)) segment = 'commandes';
+  let query = '';
+  let rows = [];
+  const scopeState = { demandes: 'active', incidents: 'open' };
+  let openMenu = null;
+
+  const segMeta = {
+    commandes: { label: 'Commandes', countKey: 'orders', scopes: null,
+      endpoint: () => '/api/app/orders',
+      head: '<th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th>',
+      map: (o) => ({ href: `/app/commandes/${escapeHtml(o.id)}`, text: `${o.id} ${o.customer_name || ''} ${o.customer_phone || ''} ${o.neighborhood || ''} ${o.driver_name || ''} ${o.status || ''}`.toLowerCase(),
+        html: `<td>N° ${escapeHtml(o.id)}<br><small>${escapeHtml(formatDate(o.created_at))}</small></td><td><strong>${escapeHtml(o.customer_name || '—')}</strong><br><small>${escapeHtml(o.customer_phone || '')}</small></td><td>${escapeHtml(o.neighborhood || o.landmark || '—')}</td><td>${escapeHtml(o.driver_name)}</td><td>${badge(o.status)}</td><td>${o.trackingLink?.path ? `<a href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir</a>` : escapeHtml(o.trackingLink?.state === 'revoked' ? 'Révoqué' : '—')}</td>` }) },
+    demandes: { label: 'Demandes', countKey: 'active_requests', scopes: [['active', 'Actives'], ['archived', 'Archives']],
+      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`,
+      head: '<th>Client</th><th>Zone / repère</th><th>Créneau</th><th>Statut</th><th>Mise à jour</th>',
+      map: (r) => ({ href: `/app/demandes/${escapeHtml(r.id)}`, text: `${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.landmark || ''} ${r.status || ''}`.toLowerCase(),
+        html: `<td><strong>${escapeHtml(r.customer_name || 'En attente du client')}</strong><br><small>${escapeHtml(r.customer_phone || '')}</small></td><td>${escapeHtml(r.neighborhood || '—')}<br><small>${escapeHtml(r.landmark || '')}</small></td><td>${escapeHtml(r.requested_time || '—')}</td><td>${badge(r.status)}</td><td>${escapeHtml(formatDate(r.updated_at))}</td>` }) },
+    tournees: { label: 'Tournées', countKey: 'open_runs', scopes: null,
+      endpoint: () => '/api/app/runs',
+      head: '<th>Tournée</th><th>Date</th><th>Livreur</th><th>Progression</th><th>État</th>',
+      map: (run) => ({ href: `/app/tournees/${escapeHtml(run.id)}`, text: `${run.name || ''} ${run.id} ${run.driver_name || ''} ${run.status || ''}`.toLowerCase(),
+        html: `<td><strong>${escapeHtml(run.name)}</strong><br><small>N° ${escapeHtml(run.id)}</small></td><td>${escapeHtml(formatDateOnly(run.service_date))}</td><td>${escapeHtml(run.driver_name)}<br><small>${escapeHtml(run.vehicle_type || '')}</small></td><td>${escapeHtml(run.terminal_stop_count)} / ${escapeHtml(run.stop_count)} arrêts</td><td>${badge(runStatusLabels[run.status] || run.status)}</td>` }) },
+    incidents: { label: 'Incidents', countKey: 'open_incidents', scopes: [['open', 'Ouverts'], ['resolved', 'Résolus'], ['all', 'Tous']],
+      endpoint: () => `/api/app/incidents?scope=${encodeURIComponent(scopeState.incidents)}`,
+      head: '<th>Incident</th><th>Commande</th><th>Client</th><th>Livreur</th><th>Responsable</th><th>État</th>',
+      map: (i) => ({ href: `/app/incidents/${escapeHtml(i.id)}`, text: `${incidentCategoryLabels[i.category] || i.category} ${i.order_id} ${i.customer_name || ''} ${i.driver_name || ''} ${i.assigned_to || ''} ${i.status || ''}`.toLowerCase(),
+        html: `<td><strong>${escapeHtml(incidentCategoryLabels[i.category] || i.category)}</strong><br><small>${escapeHtml(incidentSeverityLabels[i.severity] || i.severity)} · ${escapeHtml(formatDate(i.created_at))}</small></td><td>N° ${escapeHtml(i.order_id)}<br><small>${escapeHtml(i.order_status)}</small></td><td>${escapeHtml(i.customer_name || '—')}<br><small>${escapeHtml(i.neighborhood || i.customer_phone || '—')}</small></td><td>${escapeHtml(i.driver_name)}</td><td>${escapeHtml(i.assigned_to || 'Non attribué')}</td><td>${badge(i.status === 'resolved' ? 'Résolu' : 'Ouvert')}${i.retention_hold_id ? '<br><span class="badge warning" style="margin-top:6px">Conservation gelée</span>' : ''}</td>` }) },
+  };
+
+  let counts = {};
+  try { counts = await api('/api/app/summary'); } catch { counts = {}; }
+
+  page.innerHTML = `<div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Demandes, commandes, tournées et incidents au même endroit.</p></div>
+      <div class="row-menu"><button class="button primary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
+    <div class="fleet-toolbar">
+      <div class="fleet-tabs" id="opsSegments"></div>
+      <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="opsSearch" placeholder="Rechercher dans ce segment…" autocomplete="off"/></div>
+    </div>
+    <div class="ops-scopes" id="opsScopes"></div>
+    <div id="opsResult"></div>
+    <section class="card" id="opsList"><div class="loading-state">Chargement…</div></section>`;
+
+  function renderSegments() {
+    document.getElementById('opsSegments').innerHTML = validSegments.map((key) => {
+      const meta = segMeta[key];
+      const count = counts[meta.countKey];
+      return `<button class="fleet-tab ${segment === key ? 'active' : ''}" data-segment="${key}">${meta.label}${count != null ? `<span class="count">${escapeHtml(count)}</span>` : ''}</button>`;
+    }).join('');
+  }
+
+  function renderScopes() {
+    const meta = segMeta[segment];
+    const el = document.getElementById('opsScopes');
+    if (!meta.scopes) { el.innerHTML = ''; return; }
+    const current = scopeState[segment];
+    el.innerHTML = meta.scopes.map(([value, label]) => `<button class="fleet-tab ${current === value ? 'active' : ''}" data-scope="${value}">${label}</button>`).join('');
+  }
+
+  function renderList() {
+    const meta = segMeta[segment];
+    const mapped = rows.map(meta.map).filter((entry) => !query || entry.text.includes(query));
+    const container = document.getElementById('opsList');
+    container.className = 'card';
+    if (!mapped.length) { container.innerHTML = `<div class="fleet-empty">${rows.length ? 'Aucun élément ne correspond à la recherche.' : 'Rien à afficher ici pour le moment.'}</div>`; return; }
+    container.innerHTML = `<div class="table-wrap"><table><thead><tr>${meta.head}</tr></thead><tbody>${mapped.map((entry) => `<tr data-href="${entry.href}">${entry.html}</tr>`).join('')}</tbody></table></div>`;
+    container.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', (event) => {
+      if (event.target.closest('a, button, input, select')) return;
+      location.href = row.dataset.href;
+    }));
+  }
+
+  async function loadSegment() {
+    const meta = segMeta[segment];
+    document.getElementById('opsList').innerHTML = '<div class="loading-state">Chargement…</div>';
+    try {
+      rows = await api(meta.endpoint());
+      renderList();
+    } catch (error) {
+      document.getElementById('opsList').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function switchSegment(key) {
+    if (!validSegments.includes(key) || key === segment) return;
+    segment = key; query = '';
+    const search = document.getElementById('opsSearch');
+    if (search) search.value = '';
+    try { history.replaceState(null, '', `/app/operations?vue=${key}`); } catch { /* ignore */ }
+    renderSegments(); renderScopes(); loadSegment();
+  }
+
+  document.getElementById('opsSegments').addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-segment]');
+    if (tab) switchSegment(tab.dataset.segment);
+  });
+  document.getElementById('opsScopes').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-scope]');
+    if (!chip) return;
+    scopeState[segment] = chip.dataset.scope;
+    renderScopes(); loadSegment();
+  });
+  const search = document.getElementById('opsSearch');
+  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
+
+  // Menu « + Créer ».
+  document.getElementById('opsCreate').addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (openMenu) { openMenu.remove(); openMenu = null; return; }
+    const menu = document.createElement('div');
+    menu.className = 'menu-pop';
+    menu.innerHTML = `
+      <button data-create="/app/nouvelle-commande">${fleetIcons.box || ''} Commande directe</button>
+      <button data-create="/app/demandes">Formulaire client (demande)</button>
+      <button data-create="/app/tournees">Nouvelle tournée</button>
+      <hr/>
+      <button data-goto="incidents">Voir les incidents</button>`;
+    event.currentTarget.parentElement.appendChild(menu);
+    openMenu = menu;
+    menu.addEventListener('click', (menuEvent) => {
+      const create = menuEvent.target.closest('[data-create]');
+      const goto = menuEvent.target.closest('[data-goto]');
+      if (create) location.href = create.dataset.create;
+      else if (goto) { openMenu.remove(); openMenu = null; switchSegment(goto.dataset.goto); }
+    });
+  });
+  document.addEventListener('click', (event) => {
+    if (openMenu && !event.target.closest('.row-menu')) { openMenu.remove(); openMenu = null; }
+  });
+
+  renderSegments(); renderScopes();
+  await loadSegment();
+}
+
 function customerStatusBadge(status) {
   const type = status === 'active' ? 'success' : status === 'do_not_contact' ? 'warning' : '';
   return `<span class="badge ${type}">${escapeHtml(customerStatusLabels[status] || status || '—')}</span>`;
@@ -2256,6 +2399,7 @@ async function start() {
     const customerDetail = path.match(/^\/app\/clients\/(\d+)$/);
     if (customerDetail) return await renderCustomerDetail(customerDetail[1]);
     if (path === '/app') return await renderDashboard();
+    if (path === '/app/operations') return await renderOperations();
     if (path === '/app/demandes') return await renderRequests();
     if (path === '/app/nouvelle-commande') return await renderNewOrder();
     if (path === '/app/commandes') return await renderOrders();

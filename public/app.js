@@ -874,6 +874,8 @@ async function renderOperationsMap() {
   setHeader('Carte d’exploitation', 'Tour de contrôle de la flotte en direct');
   page.classList.add('page-map');
   const bikeSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';
+  const playIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  const pauseIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
   page.innerHTML = `<div class="ops">
     <div id="operationsMap" aria-label="Carte des livreurs et destinations"></div>
 
@@ -933,6 +935,8 @@ async function renderOperationsMap() {
   const destinationLayer = L.featureGroup().addTo(map);
   const sequenceLayer = L.layerGroup().addTo(map);
   const operatorLayer = L.layerGroup().addTo(map);
+  const replayLayer = L.layerGroup().addTo(map);
+  const replay = { active: false, driverId: null, positions: [], index: 0, playing: false, timer: null, marker: null, prevAuto: true };
 
   let baseStreet = null;
   let baseSatellite = null;
@@ -1051,10 +1055,10 @@ async function renderOperationsMap() {
         <button type="button" class="button secondary" data-action="center" ${driver.position ? '' : 'disabled'}>Centrer</button>
         <button type="button" class="button ${isolate ? 'accent' : 'secondary'}" data-action="isolate">${isolate ? 'Voir toute la flotte' : 'Isoler ce livreur'}</button>
         ${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler</a>` : ''}
-        <button type="button" class="button secondary" data-action="replay" disabled title="Disponible une fois le GPS Traccar connecté et l’historique activé">Rejouer le trajet</button>
+        <button type="button" class="button ${replay.active && String(replay.driverId) === String(driver.id) ? 'accent' : 'secondary'}" data-action="replay">Rejouer le trajet</button>
       </div>
+      <div id="opsReplay" class="ops-replay-slot"></div>
       ${driver.position?.stale ? '<div class="ops-note warning">Position de plus de 10 minutes : ne pas présenter comme du direct.</div>' : !driver.position ? '<div class="ops-note warning">Aucune coordonnée GPS exploitable pour ce livreur.</div>' : ''}
-      <div class="ops-note">Le trajet passé (replay par durée) s’activera dès que le GPS Traccar enregistrera l’historique des positions.</div>
       ${runCards || '<div class="ops-empty">Aucune tournée ouverte.</div>'}${unplanned}`;
   }
 
@@ -1072,7 +1076,130 @@ async function renderOperationsMap() {
       });
       document.getElementById('toggleDest')?.addEventListener('change', (event) => { showDestinations = event.target.checked; redrawMap(); });
       document.getElementById('toggleAuto')?.addEventListener('change', (event) => { autoRefresh = event.target.checked; scheduleRefresh(); });
+    } else if (replay.active && String(replay.driverId) === String(driver.id)) {
+      renderReplayUI();
     }
+  }
+
+  function suspendAutoForReplay() {
+    if (!replay.suspended) { replay.prevAuto = autoRefresh; replay.suspended = true; }
+    autoRefresh = false;
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  }
+
+  function replayWindow(key) {
+    const now = Date.now();
+    if (key === 'today') { const start = new Date(); start.setHours(0, 0, 0, 0); return { from: start.toISOString(), to: new Date(now).toISOString() }; }
+    const minutes = { 30: 30, 60: 60, 180: 180 }[key] || 60;
+    return { from: new Date(now - minutes * 60000).toISOString(), to: new Date(now).toISOString() };
+  }
+
+  const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h', today: 'Aujourd’hui' };
+  function renderReplayUI() {
+    const slot = document.getElementById('opsReplay');
+    if (!slot) return;
+    const hasTrack = replay.positions.length > 0;
+    slot.innerHTML = `<div class="ops-replay">
+      <div class="ops-replay-windows">
+        ${['30', '60', '180', 'today'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
+        <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
+      </div>
+      <div class="ops-replay-status">${escapeHtml(replay.statusText || 'Choisissez une période pour rejouer le trajet.')}</div>
+      ${hasTrack ? `<div class="ops-replay-controls">
+        <button type="button" class="ops-replay-play" id="opsReplayPlay">${replay.playing ? pauseIcon : playIcon}</button>
+        <input type="range" id="opsReplayRange" min="0" max="${replay.positions.length - 1}" value="${replay.index}" aria-label="Position dans le trajet"/>
+      </div>
+      <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
+    </div>`;
+    slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
+    slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
+    if (hasTrack) {
+      slot.querySelector('#opsReplayPlay').addEventListener('click', togglePlay);
+      slot.querySelector('#opsReplayRange').addEventListener('input', (event) => { stopPlay(); replay.index = Number(event.target.value); drawReplayFrame(); });
+      drawReplayFrame();
+    }
+  }
+
+  async function startReplay(windowKey) {
+    const driver = selectedDriver();
+    if (!driver) return;
+    stopPlay();
+    replay.active = true; replay.driverId = driver.id; replay.windowKey = windowKey;
+    replay.positions = []; replay.index = 0; replay.statusText = 'Chargement de l’historique…';
+    suspendAutoForReplay();
+    renderReplayUI();
+    try {
+      const { from, to } = replayWindow(windowKey);
+      const data = await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/track?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      if (data.status === 'not_configured') { replay.statusText = 'Le service GPS n’est pas configuré.'; replay.positions = []; }
+      else if (data.status === 'no_device') { replay.statusText = 'Aucun appareil GPS n’est associé à ce livreur.'; replay.positions = []; }
+      else {
+        replay.positions = data.positions || [];
+        replay.statusText = replay.positions.length
+          ? `${replay.positions.length} point(s) · ${new Date(data.from).toLocaleTimeString('fr-FR')} → ${new Date(data.to).toLocaleTimeString('fr-FR')}${data.truncated ? ' (tronqué)' : ''}`
+          : 'Aucune position enregistrée sur cette période.';
+      }
+      replay.index = Math.max(0, replay.positions.length - 1);
+      drawReplayTrail();
+      renderReplayUI();
+    } catch (error) {
+      replay.positions = []; replay.statusText = `Échec : ${error.message}`;
+      replayLayer.clearLayers();
+      renderReplayUI();
+    }
+  }
+
+  function drawReplayTrail() {
+    replayLayer.clearLayers();
+    const pts = replay.positions.map((position) => [position.latitude, position.longitude]);
+    if (pts.length > 1) L.polyline(pts, { color: '#111', weight: 3, opacity: 0.45 }).addTo(replayLayer);
+    if (pts.length) {
+      L.circleMarker(pts[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#197044', fillOpacity: 1 }).addTo(replayLayer).bindTooltip('Départ');
+      L.circleMarker(pts[pts.length - 1], { radius: 6, color: '#fff', weight: 2, fillColor: '#e11d2a', fillOpacity: 1 }).addTo(replayLayer).bindTooltip('Fin');
+      replay.marker = L.circleMarker(pts[replay.index] || pts[0], { radius: 8, color: '#111', weight: 3, fillColor: '#facc15', fillOpacity: 1 }).addTo(replayLayer);
+      map.fitBounds(pts, { padding: [60, 60], maxZoom: 16 });
+    } else {
+      replay.marker = null;
+    }
+  }
+
+  function drawReplayFrame() {
+    const position = replay.positions[replay.index];
+    if (!position || !replay.marker) return;
+    replay.marker.setLatLng([position.latitude, position.longitude]);
+    const read = document.getElementById('opsReplayRead');
+    if (read) {
+      const kmh = position.speedKnots != null ? `${(position.speedKnots * 1.852).toFixed(0)} km/h` : '—';
+      read.textContent = `${position.timestamp ? new Date(position.timestamp).toLocaleString('fr-FR') : '—'} · ${kmh}`;
+    }
+    const range = document.getElementById('opsReplayRange');
+    if (range && Number(range.value) !== replay.index) range.value = replay.index;
+  }
+
+  function stopPlay() {
+    replay.playing = false;
+    if (replay.timer) { clearInterval(replay.timer); replay.timer = null; }
+    const btn = document.getElementById('opsReplayPlay');
+    if (btn) btn.innerHTML = playIcon;
+  }
+  function togglePlay() {
+    if (replay.playing) { stopPlay(); return; }
+    if (replay.index >= replay.positions.length - 1) replay.index = 0;
+    replay.playing = true;
+    const btn = document.getElementById('opsReplayPlay');
+    if (btn) btn.innerHTML = pauseIcon;
+    replay.timer = setInterval(() => {
+      if (replay.index >= replay.positions.length - 1) { stopPlay(); return; }
+      replay.index += 1; drawReplayFrame();
+    }, 220);
+  }
+  function closeReplay() {
+    stopPlay();
+    replay.active = false; replay.driverId = null; replay.positions = []; replay.marker = null; replay.windowKey = null; replay.statusText = null;
+    replayLayer.clearLayers();
+    if (replay.suspended) { autoRefresh = replay.prevAuto; replay.suspended = false; }
+    renderPanel();
+    scheduleRefresh();
   }
 
   function markerHtml(driver, selected) {
@@ -1162,10 +1289,14 @@ async function renderOperationsMap() {
     const trigger = event.target.closest('[data-action]');
     if (!trigger) return;
     const action = trigger.dataset.action;
-    if (action === 'select') { selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); }
-    else if (action === 'back') { selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
+    if (action === 'select') { if (replay.active) closeReplay(); selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); }
+    else if (action === 'back') { if (replay.active) closeReplay(); selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
     else if (action === 'center') { const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], 15); }
     else if (action === 'isolate') { isolate = !isolate; redrawMap({ fit: true }); renderPanel(); }
+    else if (action === 'replay') {
+      if (replay.active && String(replay.driverId) === String(selectedDriverId)) { closeReplay(); }
+      else { replay.active = true; replay.driverId = selectedDriverId; replay.windowKey = null; replay.positions = []; replay.statusText = null; suspendAutoForReplay(); renderPanel(); }
+    }
   });
 
   document.querySelectorAll('.ops-layer-btn').forEach((btn) => btn.addEventListener('click', () => setLayer(btn.dataset.layer)));

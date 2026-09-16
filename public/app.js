@@ -1454,7 +1454,7 @@ async function renderDrivers() {
     : driver.invitePending
       ? `<span class="account-chip pending">${fleetIcons.clock} Invitation envoyée</span>`
       : `<span class="account-chip none">${fleetIcons.userx} Sans compte</span>`;
-  const availSelect = (driver) => `<select class="availability avail-select" data-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'} aria-label="Disponibilité">
+  const availSelect = (driver) => `<select class="availability avail-select av-${escapeHtml(driver.availabilityStatus)}" data-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'} aria-label="Disponibilité">
       <option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option>
       <option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option>
       <option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option>
@@ -1466,7 +1466,7 @@ async function renderDrivers() {
       <div><h1>Livreurs</h1><p class="subtitle">Gérez votre flotte, les accès et la disponibilité.</p></div>
       ${canManage ? `<button class="button primary" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
     </div>
-    <section class="grid fleet-kpis" id="fleetKpis"></section>
+    <section class="fleet-overview" id="fleetKpis"></section>
     <div class="fleet-toolbar">
       <div class="fleet-tabs" id="fleetTabs"></div>
       <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="fleetSearch" placeholder="Rechercher un livreur…" autocomplete="off"/></div>
@@ -1478,16 +1478,54 @@ async function renderDrivers() {
     <div id="driverResult"></div>
     <section class="card" id="fleetList"></section>`;
 
+  function donutSvg(segments, total) {
+    const radius = 54; const center = 64; const stroke = 16; const circumference = 2 * Math.PI * radius; const gap = total > 1 ? 3 : 0;
+    let offset = 0;
+    const arcs = segments.filter((segment) => segment.value > 0).map((segment) => {
+      const fraction = total ? segment.value / total : 0;
+      const length = Math.max(0, fraction * circumference - gap);
+      const arc = `<circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="${segment.color}" stroke-width="${stroke}" stroke-dasharray="${length} ${circumference - length}" stroke-dashoffset="${-offset}" stroke-linecap="round" transform="rotate(-90 ${center} ${center})"/>`;
+      offset += fraction * circumference;
+      return arc;
+    }).join('');
+    return `<svg viewBox="0 0 128 128" role="img" aria-label="Composition de la flotte">
+      <circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="#eceef1" stroke-width="${stroke}"/>
+      ${total ? arcs : ''}
+      <text x="64" y="60" text-anchor="middle" class="donut-total">${total}</text>
+      <text x="64" y="80" text-anchor="middle" class="donut-sub">livreur${total > 1 ? 's' : ''}</text>
+    </svg>`;
+  }
+
   function renderKpis() {
     const el = document.getElementById('fleetKpis');
     const available = drivers.filter((driver) => bucketOf(driver) === 'available').length;
     const busy = drivers.filter((driver) => bucketOf(driver) === 'busy').length;
     const offline = drivers.filter((driver) => bucketOf(driver) === 'offline').length;
+    const inactive = drivers.filter((driver) => bucketOf(driver) === 'inactive').length;
+    const withAccount = drivers.filter((driver) => driver.hasAccount).length;
+    const located = drivers.filter((driver) => driver.lastUpdate).length;
+    const capacity = drivers.reduce((sum, driver) => sum + Number(driver.capacity || 0), 0);
+    const segments = [
+      { label: 'Disponibles', value: available, color: '#157347' },
+      { label: 'En course', value: busy, color: '#475569' },
+      { label: 'Hors ligne', value: offline, color: '#a15c00' },
+      { label: 'Désactivés', value: inactive, color: '#b42318' },
+    ];
+    const boxIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
     el.innerHTML = `
-      <article class="stat fleet-kpi"><span class="kpi-ic">${fleetIcons.users}</span><div><strong>${drivers.length}</strong><span>Livreurs</span></div></article>
-      <article class="stat fleet-kpi tone-green"><span class="kpi-ic">${fleetIcons.check}</span><div><strong>${available}</strong><span>Disponibles</span></div></article>
-      <article class="stat fleet-kpi tone-amber"><span class="kpi-ic">${fleetIcons.route}</span><div><strong>${busy}</strong><span>En course</span></div></article>
-      <article class="stat fleet-kpi tone-red"><span class="kpi-ic">${fleetIcons.offline}</span><div><strong>${offline}</strong><span>Hors ligne / GPS ancien</span></div></article>`;
+      <article class="card fleet-hero">
+        <div class="fleet-donut">${donutSvg(segments, drivers.length)}</div>
+        <div class="fleet-hero-legend">
+          <h2>Composition de la flotte</h2>
+          <ul>${segments.map((segment) => `<li><span class="lg-dot" style="background:${segment.color}"></span><span class="lg-label">${segment.label}</span><span class="lg-val">${segment.value}</span></li>`).join('')}</ul>
+        </div>
+      </article>
+      <div class="fleet-kpis grid">
+        <article class="stat fleet-kpi tone-green"><span class="kpi-ic">${fleetIcons.check}</span><div><strong>${withAccount}</strong><span>Comptes actifs</span></div></article>
+        <article class="stat fleet-kpi tone-amber"><span class="kpi-ic">${fleetIcons.userx}</span><div><strong>${drivers.length - withAccount}</strong><span>Sans compte</span></div></article>
+        <article class="stat fleet-kpi"><span class="kpi-ic">${fleetIcons.route}</span><div><strong>${located}</strong><span>GPS reçu</span></div></article>
+        <article class="stat fleet-kpi"><span class="kpi-ic">${boxIcon}</span><div><strong>${capacity}</strong><span>Capacité totale</span></div></article>
+      </div>`;
   }
 
   function renderTabs() {
@@ -2104,8 +2142,9 @@ async function start() {
     context = await api('/api/app/context');
     document.getElementById('companyName').textContent = context.company.name;
     document.getElementById('topCompany').textContent = context.company.name;
-    document.getElementById('topRole').textContent = context.user.role;
+    document.getElementById('topRole').textContent = roleLabels[context.user.role] || context.user.role;
     document.getElementById('userName').textContent = `${context.user.name} · ${context.user.email}`;
+    document.getElementById('userAvatar').textContent = String(context.user.name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
     if (!['owner', 'manager'].includes(context.user.role)) {
       document.querySelector('[data-route="/app/equipe"]')?.remove();
     }
@@ -2144,4 +2183,30 @@ document.addEventListener('click', (event) => {
     sidebar.classList.remove('open');
   }
 });
+
+// Repli de la sidebar (desktop), état mémorisé par appareil.
+const appShell = document.querySelector('.app-shell');
+try { if (localStorage.getItem('traxo.sidebarCollapsed') === '1') appShell.classList.add('sidebar-collapsed'); } catch { /* stockage indisponible */ }
+document.getElementById('sidebarToggle')?.addEventListener('click', () => {
+  const collapsed = appShell.classList.toggle('sidebar-collapsed');
+  try { localStorage.setItem('traxo.sidebarCollapsed', collapsed ? '1' : '0'); } catch { /* ignore */ }
+});
+
+// Menu utilisateur (topbar).
+const userMenuBtn = document.getElementById('userMenuBtn');
+const userMenu = document.getElementById('userMenu');
+userMenuBtn?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const open = userMenu.hasAttribute('hidden');
+  if (open) userMenu.removeAttribute('hidden'); else userMenu.setAttribute('hidden', '');
+  userMenuBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', (event) => {
+  if (userMenu && !userMenu.hasAttribute('hidden') && !event.target.closest('.user-menu')) {
+    userMenu.setAttribute('hidden', '');
+    userMenuBtn.setAttribute('aria-expanded', 'false');
+  }
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { userMenu?.setAttribute('hidden', ''); userMenuBtn?.setAttribute('aria-expanded', 'false'); } });
+
 start();

@@ -143,3 +143,11 @@ Toutes les routes CRM filtrent explicitement par l'entreprise de la session et d
 ## 2026-09-15 — Indicateurs explicables, jamais disciplinaires
 
 Les rapports indiquent leur période, population, formule et exclusions. Un dénominateur nul reste « non calculable ». Les incidents sont un contexte et ne prouvent pas une faute ; aucun score, classement, sanction ou affectation automatique de livreur n'est produit.
+
+## 2026-09-16 — Carte plein écran (tour de contrôle) et satellite par défaut
+
+La page Carte d'exploitation passe en composition « tour de contrôle » : la carte occupe tout l'espace, les commandes et la liste de la flotte deviennent des panneaux flottants en surimpression, et les indicateurs sont affichés à la demande (bouton « Résumé ») plutôt qu'en bandeau fixe. Le marqueur livreur est une icône SVG (aucun emoji).
+
+Le fond satellite est désormais fourni par défaut via Esri World Imagery (gratuit, sans clé, attribution affichée), avec une couche de libellés Esri pour un mode « Hybride ». Cela remplace l'attente d'un fournisseur explicitement configuré : les variables `MAP_SATELLITE_TILE_URL`, `MAP_LABELS_TILE_URL` (et attributions/zoom associés) restent surchargées si un fournisseur payant devient nécessaire au volume. Aucune tuile n'est extraite hors des conditions d'usage de son fournisseur.
+
+Le « replay » du trajet d'un livreur par durée n'est pas livré : l'application ne stocke aucun historique GPS local, les positions venant en direct de Traccar. L'emplacement UI existe (action désactivée et explicitée) et s'activera avec un endpoint dédié interrogeant l'historique Traccar, une fois Traccar branché et l'enregistrement des positions activé.

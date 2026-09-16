@@ -1385,10 +1385,29 @@ async function renderOperationsMap() {
   setTimeout(() => map.invalidateSize(), 0);
 }
 
+const driverVehicleOptions = ['Moto', 'Tricycle', 'Voiture', 'Vélo', 'Camionnette'];
 async function renderDrivers() {
-  setHeader('Livreurs', 'Disponibilité, charge et état GPS');
+  setHeader('Livreurs', 'Ajout, accès, disponibilité et état GPS');
   const drivers = await api('/api/app/drivers');
-  page.innerHTML = `<div class="page-header"><div><h1>Livreurs</h1><p class="subtitle">Les livreurs disponibles sont placés en premier.</p></div></div><section class="card">${drivers.length ? `<div class="table-wrap"><table><thead><tr><th>Livreur</th><th>État</th><th>Charge</th><th>GPS</th><th>Dernière position</th><th>Disponibilité manuelle</th></tr></thead><tbody>${drivers.map((driver) => `<tr><td><strong>${escapeHtml(driver.name)}</strong><br><small>${escapeHtml(driver.vehicleType)}</small></td><td>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}</td><td>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</td><td>${escapeHtml(driver.trackerStatus)}</td><td>${escapeHtml(formatDate(driver.lastUpdate))}</td><td><select class="availability" data-driver-id="${escapeHtml(driver.id)}"><option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option><option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option><option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option><option value="incident" ${driver.availabilityStatus === 'incident' ? 'selected' : ''}>Incident</option></select></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun livreur enregistré.</div>'}<div id="driverResult"></div></section>`;
+  const canManage = ['owner', 'manager'].includes(context.user.role);
+  const addForm = canManage ? `<section class="card" style="margin-bottom:18px">
+      <h2>Ajouter un livreur</h2>
+      <p class="subtitle">Créez la fiche du livreur. Renseignez son e-mail pour générer aussitôt un lien d’accès à son espace : un compte limité, rattaché à votre entreprise, sans accès à votre interface d’exploitation.</p>
+      <form id="addDriver" class="form-grid">
+        <div class="field"><label>Nom du livreur</label><input name="name" required maxlength="80" autocomplete="off"/></div>
+        <div class="field"><label>Téléphone / WhatsApp</label><input name="phone" inputmode="tel" maxlength="40" autocomplete="off"/></div>
+        <div class="field"><label>E-mail (accès livreur, optionnel)</label><input name="email" type="email" autocomplete="off"/></div>
+        <div class="field"><label>Véhicule</label><select name="vehicleType">${driverVehicleOptions.map((option) => `<option value="${option}">${option}</option>`).join('')}</select></div>
+        <div class="field"><label>Capacité (colis)</label><input name="capacity" type="number" min="1" max="50" value="3"/></div>
+        <div class="field"><label>Identifiant GPS (optionnel)</label><input name="trackerId" maxlength="64" placeholder="Vide = généré automatiquement" autocomplete="off"/></div>
+        <div class="field full"><div class="actions"><button class="primary" type="submit">Créer le livreur</button></div></div>
+      </form>
+      <div id="addDriverResult"></div>
+    </section>` : '';
+  page.innerHTML = `<div class="page-header"><div><h1>Livreurs</h1><p class="subtitle">${canManage ? 'Ajoutez vos livreurs et générez leur accès. ' : ''}Les livreurs disponibles sont placés en premier.</p></div></div>
+    ${addForm}
+    <section class="card">${drivers.length ? `<div class="table-wrap"><table><thead><tr><th>Livreur</th><th>État</th><th>Charge</th><th>Identifiant GPS</th><th>Dernière position</th><th>Disponibilité</th>${canManage ? '<th>Compte</th>' : ''}</tr></thead><tbody>${drivers.map((driver) => `<tr><td><strong>${escapeHtml(driver.name)}</strong><br><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></td><td>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'}</td><td>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</td><td><code>${escapeHtml(driver.uniqueId)}</code></td><td>${escapeHtml(formatDate(driver.lastUpdate))}</td><td><select class="availability" data-driver-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'}><option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option><option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option><option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option><option value="incident" ${driver.availabilityStatus === 'incident' ? 'selected' : ''}>Incident</option></select></td>${canManage ? `<td><button class="secondary toggle-driver" data-driver-id="${escapeHtml(driver.id)}" data-active="${driver.active ? '1' : '0'}">${driver.active ? 'Désactiver' : 'Réactiver'}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun livreur enregistré.</div>'}<div id="driverResult"></div></section>`;
+
   document.querySelectorAll('.availability').forEach((select) => select.addEventListener('change', async () => {
     select.disabled = true;
     try {
@@ -1396,12 +1415,64 @@ async function renderDrivers() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: select.value }),
       });
       document.getElementById('driverResult').innerHTML = '<div class="notice success">Disponibilité mise à jour.</div>';
-      setTimeout(() => renderDrivers(), 500);
     } catch (error) {
       document.getElementById('driverResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       select.disabled = false;
     }
   }));
+
+  document.querySelectorAll('.toggle-driver').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/app/drivers/${encodeURIComponent(button.dataset.driverId)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: button.dataset.active === '0' }),
+      });
+      renderDrivers();
+    } catch (error) {
+      document.getElementById('driverResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  }));
+
+  const form = document.getElementById('addDriver');
+  if (form) form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const result = document.getElementById('addDriverResult');
+    const data = Object.fromEntries(new FormData(form));
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    result.innerHTML = '';
+    try {
+      const driver = await api('/api/app/drivers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: data.name, phone: data.phone, vehicleType: data.vehicleType, capacity: Number(data.capacity), trackerId: data.trackerId }),
+      });
+      let inviteBlock = '';
+      const email = String(data.email || '').trim();
+      if (email) {
+        try {
+          const invite = await api('/api/app/invitations', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, displayName: data.name, role: 'driver', driverId: driver.id }),
+          });
+          const url = `${location.origin}${invite.path}`;
+          inviteBlock = `<div class="otp-code"><span>Lien d’accès à envoyer au livreur (valable 48 h, à usage unique)</span><input readonly value="${escapeHtml(url)}" id="inviteLink" style="text-align:center;margin-top:8px"/><div class="actions" style="justify-content:center;margin-top:10px"><button class="secondary" id="copyInvite" type="button">Copier le lien</button></div></div>`;
+        } catch (inviteError) {
+          inviteBlock = `<div class="notice warning">Livreur créé, mais l’accès n’a pas pu être généré : ${escapeHtml(inviteError.message)}. Vous pouvez réessayer depuis « Équipe et accès ».</div>`;
+        }
+      }
+      result.innerHTML = `<div class="notice success">Livreur « ${escapeHtml(driver.name)} » créé. Identifiant GPS : <code>${escapeHtml(driver.traccar_unique_id)}</code>.</div>${inviteBlock}`;
+      const copy = document.getElementById('copyInvite');
+      if (copy) copy.addEventListener('click', () => { const field = document.getElementById('inviteLink'); field.select(); navigator.clipboard?.writeText(field.value); copy.textContent = 'Lien copié'; });
+      form.reset();
+      // On ne rafraîchit pas si un lien d'accès est affiché, pour ne pas l'effacer.
+      if (!inviteBlock) setTimeout(() => renderDrivers(), 600);
+    } catch (error) {
+      result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+    } finally {
+      submit.disabled = false;
+    }
+  });
 }
 
 async function renderTeam() {

@@ -155,3 +155,11 @@ Le « replay » du trajet d'un livreur par durée n'est pas livré : l'applicati
 ## 2026-09-16 — Rejeu du trajet livreur (historique Traccar)
 
 Le rejeu par durée est livré : l'endpoint `GET /api/app/drivers/:id/track` interroge l'historique de positions de Traccar (`/api/positions?deviceId&from&to`) pour un livreur de l'entreprise de la session uniquement (isolation par `company_id` puis correspondance `traccar_unique_id` → device). La fenêtre est bornée (max 24 h, défaut 3 h) et le nombre de points plafonné. L'UI de la carte propose des fenêtres rapides, trace le trajet, et permet de le rejouer (curseur + lecture). Ceci met à jour la note du 2026-09-16 qui indiquait l'action désactivée : elle s'appuyait sur l'absence d'historique, désormais fourni par Traccar en production.
+
+## 2026-09-16 — Ajout des livreurs depuis le SaaS (compte + GPS séparés)
+
+Deux mécanismes distincts, volontairement séparés :
+- Le compte livreur reprend le flux d'invitation existant (lien unique, à usage unique, expirant 48 h, empreinte hachée) et le rôle « driver » à droits limités déjà spécifié (DRIVER_PORTAL_ACCESS.md). L'entreprise crée la fiche livreur puis génère l'accès en renseignant l'e-mail ; le livreur choisit son mot de passe et n'accède jamais à l'interface d'exploitation.
+- L'identifiant GPS (device Traccar) est stable et non devinable : généré aléatoirement par défaut (`trx-<random>`), ou saisi manuellement pour relier un appareil déjà enrôlé. Ce qui peut être éphémère, c'est le lien/QR d'enrôlement, jamais l'identifiant lui-même.
+
+Provisioning GPS automatique (création du device via l'API Traccar + QR d'enrôlement) reporté volontairement : l'URL serveur remise aux téléphones doit être un domaine stable contrôlé (sous-domaine dédié), afin de ne pas ré-enrôler tous les appareils au passage du proxy Railway au domaine définitif. Jusque-là, l'URL d'enrôlement sera une variable d'environnement.

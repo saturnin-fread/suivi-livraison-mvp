@@ -71,6 +71,7 @@ const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement'
 const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'];
 const paymentAdjustmentTypes = ['refund', 'additional_collection'];
 const invitationRoles = ['manager', 'operator', 'driver'];
+const driverVehicleTypes = ['Moto', 'Tricycle', 'Voiture', 'Vélo', 'Camionnette'];
 const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
 const evidenceTypes = ['photo', 'signature'];
 const evidenceModes = ['off', 'optional', 'required'];
@@ -3222,6 +3223,68 @@ app.patch('/api/app/drivers/:id/availability', requireCompanyApi, asyncRoute(asy
   if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
   await writeAudit(req.auth, 'driver', result.rows[0].id, 'availability_changed', { status: req.body.status });
   return res.json(result.rows[0]);
+}));
+
+// Création d'un livreur depuis le SaaS (owner/manager). Génère un identifiant GPS
+// aléatoire non devinable par défaut ; un identifiant Traccar existant peut être
+// fourni pour relier un appareil déjà enrôlé.
+app.post('/api/app/drivers', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const phone = String(req.body.phone || '').trim();
+  const vehicleType = String(req.body.vehicleType || 'Moto').trim();
+  const capacity = Number(req.body.capacity);
+  const trackerId = String(req.body.trackerId || '').trim();
+  if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Nom du livreur invalide.' });
+  if (phone.length > 40) return res.status(400).json({ error: 'Téléphone invalide.' });
+  if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Type de véhicule invalide.' });
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'Capacité invalide (1 à 50).' });
+  if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'Identifiant GPS invalide (4 à 64 caractères alphanumériques).' });
+  const uniqueId = trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    const result = await pool.query(
+      `INSERT INTO drivers (company_id, name, phone, vehicle_type, capacity, traccar_unique_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, phone, vehicle_type, capacity, traccar_unique_id, active, availability_status`,
+      [req.auth.company_id, name, phone || null, vehicleType, capacity, uniqueId]
+    );
+    await writeAudit(req.auth, 'driver', result.rows[0].id, 'created', { name });
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Cet identifiant GPS est déjà utilisé dans votre entreprise.' });
+    console.error('Driver create error:', error.message);
+    return res.status(500).json({ error: 'Impossible de créer ce livreur.' });
+  }
+}));
+
+// Modification d'un livreur (owner/manager) : coordonnées, capacité, identifiant
+// GPS, activation.
+app.patch('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const fields = [];
+  const values = [];
+  let index = 1;
+  if (req.body.name !== undefined) { const name = String(req.body.name).trim(); if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Nom invalide.' }); fields.push(`name = $${index++}`); values.push(name); }
+  if (req.body.phone !== undefined) { const phone = String(req.body.phone).trim(); if (phone.length > 40) return res.status(400).json({ error: 'Téléphone invalide.' }); fields.push(`phone = $${index++}`); values.push(phone || null); }
+  if (req.body.vehicleType !== undefined) { const vehicleType = String(req.body.vehicleType).trim(); if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Véhicule invalide.' }); fields.push(`vehicle_type = $${index++}`); values.push(vehicleType); }
+  if (req.body.capacity !== undefined) { const capacity = Number(req.body.capacity); if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'Capacité invalide.' }); fields.push(`capacity = $${index++}`); values.push(capacity); }
+  if (req.body.trackerId !== undefined) { const trackerId = String(req.body.trackerId).trim(); if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'Identifiant GPS invalide.' }); fields.push(`traccar_unique_id = $${index++}`); values.push(trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`); }
+  if (req.body.active !== undefined) { fields.push(`active = $${index++}`); values.push(Boolean(req.body.active)); }
+  if (!fields.length) return res.status(400).json({ error: 'Aucune modification fournie.' });
+  values.push(req.params.id, req.auth.company_id);
+  try {
+    const result = await pool.query(
+      `UPDATE drivers SET ${fields.join(', ')}, updated_at = NOW()
+       WHERE id = $${index++} AND company_id = $${index}
+       RETURNING id, name, phone, vehicle_type, capacity, traccar_unique_id, active, availability_status`,
+      values
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+    await writeAudit(req.auth, 'driver', result.rows[0].id, 'updated', {});
+    return res.json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Cet identifiant GPS est déjà utilisé.' });
+    console.error('Driver update error:', error.message);
+    return res.status(500).json({ error: 'Impossible de mettre à jour ce livreur.' });
+  }
 }));
 
 // Historique GPS d'un livreur (rejeu). Interroge l'historique Traccar, borné et

@@ -877,8 +877,23 @@ async function renderOperationsMap() {
   page.innerHTML = `<div class="ops">
     <div id="operationsMap" aria-label="Carte des livreurs et destinations"></div>
 
-    <aside class="ops-panel" id="opsPanel" aria-label="Panneau des opérations">
+    <aside class="ops-panel ops-float" id="opsPanel" aria-label="Panneau des opérations">
+      <div class="ops-bar" data-drag="opsPanel">
+        <span class="ops-grip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+        <span class="ops-bar-title">Flotte</span>
+        <button type="button" class="ops-mini" data-collapse="opsPanel" title="Replier / déplier"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+      </div>
       <div id="opsPanelBody"><div class="ops-loading">Chargement des opérations…</div></div>
+    </aside>
+
+    <aside class="ops-panel ops-float ops-kpis-panel" id="opsKpisPanel" aria-label="Résumé des opérations" hidden>
+      <div class="ops-bar" data-drag="opsKpisPanel">
+        <span class="ops-grip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+        <span class="ops-bar-title">Résumé</span>
+        <button type="button" class="ops-mini" data-collapse="opsKpisPanel" title="Replier / déplier"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+        <button type="button" class="ops-mini" data-close="opsKpisPanel" title="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div class="ops-kpis" id="opsKpis"></div>
     </aside>
 
     <div class="ops-cluster ops-cluster-top">
@@ -887,10 +902,7 @@ async function renderOperationsMap() {
         <button type="button" class="ops-layer-btn" data-layer="satellite">Satellite</button>
         <button type="button" class="ops-layer-btn" data-layer="hybrid">Hybride</button>
       </div>
-      <div class="ops-kpi-wrap">
-        <button type="button" class="ops-icon-btn ops-kpi-toggle" id="kpiToggle" aria-expanded="false" title="Résumé des opérations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg><span>Résumé</span></button>
-        <div class="ops-kpis" id="opsKpis" hidden></div>
-      </div>
+      <button type="button" class="ops-icon-btn ops-kpi-toggle" id="kpiToggle" aria-expanded="false" title="Résumé des opérations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg><span>Résumé</span></button>
     </div>
 
     <div class="ops-cluster ops-cluster-actions" role="group" aria-label="Contrôles de la carte">
@@ -1158,11 +1170,66 @@ async function renderOperationsMap() {
 
   document.querySelectorAll('.ops-layer-btn').forEach((btn) => btn.addEventListener('click', () => setLayer(btn.dataset.layer)));
   document.getElementById('kpiToggle').addEventListener('click', (event) => {
-    const kpis = document.getElementById('opsKpis');
-    const open = kpis.hasAttribute('hidden');
-    if (open) kpis.removeAttribute('hidden'); else kpis.setAttribute('hidden', '');
+    const panel = document.getElementById('opsKpisPanel');
+    const open = panel.hasAttribute('hidden');
+    if (open) panel.removeAttribute('hidden'); else panel.setAttribute('hidden', '');
     event.currentTarget.setAttribute('aria-expanded', String(open));
   });
+
+  // Panneaux flottants : repli + déplacement (souris/tactile), position mémorisée par appareil.
+  const opsEl = page.querySelector('.ops');
+  const readStore = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
+  const writeStore = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* stockage indisponible */ } };
+  function setupFloat(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const bar = el.querySelector('.ops-bar');
+    const storeKey = `traxo.ops.${id}`;
+    const saved = readStore(storeKey);
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      el.style.left = `${saved.left}px`; el.style.top = `${saved.top}px`; el.style.right = 'auto';
+    }
+    if (saved?.collapsed) el.classList.add('collapsed');
+    let dragging = false; let startX = 0; let startY = 0; let originLeft = 0; let originTop = 0;
+    bar.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('button')) return;
+      dragging = true;
+      const rect = el.getBoundingClientRect();
+      const parent = opsEl.getBoundingClientRect();
+      originLeft = rect.left - parent.left; originTop = rect.top - parent.top;
+      startX = event.clientX; startY = event.clientY;
+      el.style.left = `${originLeft}px`; el.style.top = `${originTop}px`; el.style.right = 'auto';
+      el.classList.add('dragging');
+      bar.setPointerCapture(event.pointerId);
+    });
+    bar.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      const maxLeft = Math.max(0, opsEl.clientWidth - el.offsetWidth);
+      const maxTop = Math.max(0, opsEl.clientHeight - el.offsetHeight);
+      const left = Math.min(maxLeft, Math.max(0, originLeft + (event.clientX - startX)));
+      const top = Math.min(maxTop, Math.max(0, originTop + (event.clientY - startY)));
+      el.style.left = `${left}px`; el.style.top = `${top}px`;
+    });
+    const endDrag = (event) => {
+      if (!dragging) return;
+      dragging = false; el.classList.remove('dragging');
+      try { bar.releasePointerCapture(event.pointerId); } catch { /* déjà relâché */ }
+      writeStore(storeKey, { left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0, collapsed: el.classList.contains('collapsed') });
+    };
+    bar.addEventListener('pointerup', endDrag);
+    bar.addEventListener('pointercancel', endDrag);
+    el.querySelector('[data-collapse]')?.addEventListener('click', () => {
+      el.classList.toggle('collapsed');
+      writeStore(storeKey, { left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0, collapsed: el.classList.contains('collapsed') });
+    });
+    el.querySelector('[data-close]')?.addEventListener('click', () => {
+      el.setAttribute('hidden', '');
+      document.getElementById('kpiToggle')?.setAttribute('aria-expanded', 'false');
+    });
+  }
+  setupFloat('opsPanel');
+  setupFloat('opsKpisPanel');
+
   document.getElementById('legendToggle').addEventListener('click', () => {
     const legend = document.getElementById('opsLegend');
     if (legend.hasAttribute('hidden')) legend.removeAttribute('hidden'); else legend.setAttribute('hidden', '');

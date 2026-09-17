@@ -319,7 +319,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .ops-breadcrumb .sep { color: #c2c9d4; }
 /* Niveau 1 : cartes d'entrée (Créer un formulaire / Commandes) */
 .ops-home { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; margin-top: 4px; }
-.ops-home-card { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: flex-start; min-height: 232px; padding: 26px; border-radius: 20px; border: 1px solid #eceff4; text-decoration: none; color: inherit; cursor: pointer; transition: transform .16s ease, box-shadow .16s ease; }
+.ops-home-card { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: flex-start; min-height: 258px; padding: 26px; border-radius: 20px; border: 1px solid #eceff4; text-decoration: none; color: inherit; cursor: pointer; transition: transform .16s ease, box-shadow .16s ease; }
 .ops-home-card:hover { transform: translateY(-4px); box-shadow: 0 22px 46px rgba(17, 18, 21, .12); }
 .ops-home-card.tint-red { background: linear-gradient(135deg, #fef1f1, #fdf8f7); }
 .ops-home-card.tint-slate { background: linear-gradient(135deg, #f1f5fb, #f8fafc); }

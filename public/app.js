@@ -939,8 +939,10 @@ async function renderOperationsMap() {
   const fleetLayer = L.featureGroup().addTo(map);
   const destinationLayer = L.featureGroup().addTo(map);
   const sequenceLayer = L.layerGroup().addTo(map);
+  const liveRouteLayer = L.layerGroup().addTo(map);
   const operatorLayer = L.layerGroup().addTo(map);
   const replayLayer = L.layerGroup().addTo(map);
+  let liveRoute = null; // { driverId, runId, distanceMeters, durationSeconds } ou { driverId, unavailable, reason }
   const replay = { active: false, driverId: null, positions: [], roadGeometry: null, index: 0, playing: false, timer: null, marker: null, dayStart: null, prevAuto: true };
 
   let baseStreet = null;
@@ -1064,6 +1066,7 @@ async function renderOperationsMap() {
       </div>
       <div id="opsReplay" class="ops-replay-slot"></div>
       ${driver.position?.stale ? '<div class="ops-note warning">Position de plus de 10 minutes : ne pas présenter comme du direct.</div>' : !driver.position ? '<div class="ops-note warning">Aucune coordonnée GPS exploitable pour ce livreur.</div>' : ''}
+      <div id="opsLiveRoute" class="ops-liveroute-slot">${liveRouteInfoHtml()}</div>
       ${runCards || '<div class="ops-empty">Aucune tournée ouverte.</div>'}${unplanned}`;
   }
 
@@ -1266,7 +1269,62 @@ async function renderOperationsMap() {
     replayLayer.clearLayers();
     if (replay.suspended) { autoRefresh = replay.prevAuto; replay.suspended = false; }
     renderPanel();
+    refreshLiveRoute();
     scheduleRefresh();
+  }
+
+  // Itinéraire live : trace calée sur route (OSRM) depuis la position actuelle
+  // du livreur sélectionné jusqu'aux arrêts de sa tournée active. Best-effort :
+  // sans position fraîche ou sans moteur, on n'affiche rien de faux.
+  function clearLiveRoute() { liveRoute = null; liveRouteLayer.clearLayers(); }
+
+  function liveRouteInfoHtml() {
+    const driver = selectedDriver();
+    if (!liveRoute || !driver || String(liveRoute.driverId) !== String(driver.id)) return '';
+    if (liveRoute.unavailable) {
+      const reasons = {
+        driver_position_unavailable: 'Position du livreur trop ancienne pour tracer l’itinéraire.',
+        route_not_found: 'Aucun itinéraire routier trouvé jusqu’à la destination.',
+        provider_disabled: 'Moteur d’itinéraire non configuré.',
+        not_enough_points: 'Pas assez de points pour tracer un itinéraire.',
+      };
+      return `<div class="ops-liveroute unavailable">${escapeHtml(reasons[liveRoute.reason] || 'Itinéraire live indisponible pour l’instant.')}</div>`;
+    }
+    const km = liveRoute.distanceMeters != null ? (liveRoute.distanceMeters / 1000).toFixed(1) : '—';
+    const min = liveRoute.durationSeconds != null ? Math.round(liveRoute.durationSeconds / 60) : null;
+    return `<div class="ops-liveroute"><span class="ops-liveroute-dot"></span><div><strong>Itinéraire live · ${escapeHtml(km)} km restants</strong><small>${min != null ? `~${min} min de route` : 'durée indisponible'} · durée routière brute, hors arrêts et remise</small></div></div>`;
+  }
+
+  function updateLiveRouteInfo() {
+    const el = document.getElementById('opsLiveRoute');
+    if (el) el.innerHTML = liveRouteInfoHtml();
+  }
+
+  async function refreshLiveRoute() {
+    const driver = selectedDriver();
+    if (!driver || replay.active) { clearLiveRoute(); updateLiveRouteInfo(); return; }
+    const activeRun = (driver.runs || []).find((run) => run.status === 'active');
+    if (!activeRun) { clearLiveRoute(); updateLiveRouteInfo(); return; }
+    try {
+      const data = await api(`/api/app/runs/${encodeURIComponent(activeRun.id)}/route`);
+      const current = selectedDriver();
+      // Le livreur a pu être désélectionné ou un rejeu lancé pendant l'appel.
+      if (!current || String(current.id) !== String(driver.id) || replay.active) return;
+      const route = data.route;
+      liveRouteLayer.clearLayers();
+      if (route && route.status === 'ok' && route.geometry?.value?.coordinates?.length >= 2) {
+        const coords = route.geometry.value.coordinates.map(([lng, lat]) => [lat, lng]);
+        L.polyline(coords, { color: '#e11d2a', weight: 5, opacity: 0.9 }).addTo(liveRouteLayer);
+        liveRoute = { driverId: driver.id, runId: activeRun.id, distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds };
+      } else {
+        liveRoute = { driverId: driver.id, runId: activeRun.id, unavailable: true, reason: route?.failure?.code || 'unavailable' };
+      }
+      updateLiveRouteInfo();
+    } catch (error) {
+      liveRouteLayer.clearLayers();
+      liveRoute = { driverId: driver.id, unavailable: true, reason: 'unavailable' };
+      updateLiveRouteInfo();
+    }
   }
 
   function markerHtml(driver, selected) {
@@ -1310,7 +1368,9 @@ async function renderOperationsMap() {
         (driver.runs || []).forEach((run, runIndex) => {
           const runPoints = (run.stops || []).filter((stop) => stop.destination).map((stop) => [stop.destination.latitude, stop.destination.longitude]);
           if (runIndex === 0 && driver.position) runPoints.unshift([driver.position.latitude, driver.position.longitude]);
-          if (runPoints.length > 1) L.polyline(runPoints, { color: run.status === 'active' ? '#e11d2a' : '#6b7280', weight: 3, dashArray: '7 9', opacity: run.status === 'active' ? 0.85 : 0.55 }).addTo(sequenceLayer);
+          // Ligne pointillée = ordre des arrêts à vol d'oiseau (repère). L'itinéraire
+          // routier réel du livreur actif est tracé en rouge plein par refreshLiveRoute().
+          if (runPoints.length > 1) L.polyline(runPoints, { color: '#8a94a6', weight: 2.5, dashArray: '6 9', opacity: 0.6 }).addTo(sequenceLayer);
         });
       }
     }
@@ -1340,6 +1400,7 @@ async function renderOperationsMap() {
       notice.innerHTML = parts.join('');
       renderPanel();
       redrawMap({ fit });
+      refreshLiveRoute();
       mapUpdate.textContent = `Actualisé à ${new Date(snapshot.generatedAt).toLocaleTimeString('fr-FR')} · dans ${snapshot.refreshAfterSeconds}s`;
       scheduleRefresh();
     } catch (error) {
@@ -1356,13 +1417,13 @@ async function renderOperationsMap() {
     const trigger = event.target.closest('[data-action]');
     if (!trigger) return;
     const action = trigger.dataset.action;
-    if (action === 'select') { if (replay.active) closeReplay(); selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); }
-    else if (action === 'back') { if (replay.active) closeReplay(); selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
+    if (action === 'select') { if (replay.active) closeReplay(); clearLiveRoute(); selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); refreshLiveRoute(); }
+    else if (action === 'back') { if (replay.active) closeReplay(); clearLiveRoute(); selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
     else if (action === 'center') { const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], 15); }
-    else if (action === 'isolate') { isolate = !isolate; redrawMap({ fit: true }); renderPanel(); }
+    else if (action === 'isolate') { isolate = !isolate; redrawMap({ fit: true }); renderPanel(); refreshLiveRoute(); }
     else if (action === 'replay') {
       if (replay.active && String(replay.driverId) === String(selectedDriverId)) { closeReplay(); }
-      else { replay.active = true; replay.driverId = selectedDriverId; replay.windowKey = null; replay.positions = []; replay.statusText = null; suspendAutoForReplay(); renderPanel(); }
+      else { clearLiveRoute(); replay.active = true; replay.driverId = selectedDriverId; replay.windowKey = null; replay.positions = []; replay.statusText = null; suspendAutoForReplay(); renderPanel(); }
     }
   });
 

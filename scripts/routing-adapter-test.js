@@ -351,6 +351,73 @@ test('le cache mémoire expire et protège ses valeurs contre les mutations', ()
   assert.equal(cache.size, 0);
 });
 
+test('le map-matching OSRM colle la trace au réseau, borne les rayons et compte les points calés', async () => {
+  let requestedUrl;
+  const adapter = createRoutingAdapter({
+    provider: 'osrm',
+    baseUrl: 'http://routing.internal',
+    profiles: { motorcycle: 'driving-benin-v1' },
+    defaultProfile: 'motorcycle',
+    fetchImpl: async (url) => {
+      requestedUrl = url;
+      return mockResponse(200, {
+        code: 'Ok',
+        matchings: [
+          {
+            confidence: 0.95,
+            distance: 640.2,
+            duration: 96.4,
+            geometry: { type: 'LineString', coordinates: [[2.3912, 6.3703], [2.3901, 6.3720], [2.3890, 6.3735]] },
+          },
+        ],
+        tracepoints: [{ location: [2.3912, 6.3703] }, null, { location: [2.3890, 6.3735] }],
+      });
+    },
+  });
+
+  const result = await adapter.match({
+    profile: 'motorcycle',
+    points: [
+      { lat: 6.3703, lng: 2.3912, accuracy: 2 },
+      { lat: 6.3719, lng: 2.3902, accuracy: 80 },
+      { lat: 6.3735, lng: 2.3890 },
+    ],
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.geometry.format, 'geojson');
+  assert.equal(result.geometry.value.coordinates.length, 3);
+  assert.equal(result.matchedPoints, 2);
+  assert.equal(result.totalPoints, 3);
+  assert.equal(result.confidence, 0.95);
+  assert.match(requestedUrl.pathname, /\/match\/v1\/driving-benin-v1\//);
+  assert.equal(requestedUrl.searchParams.get('geometries'), 'geojson');
+  assert.equal(requestedUrl.searchParams.get('tidy'), 'true');
+  // accuracy 2 → plancher 4 ; 80 → plafond 50 ; absente → défaut 15.
+  assert.equal(requestedUrl.searchParams.get('radiuses'), '4;50;15');
+});
+
+test('un NoMatch ne fabrique aucune géométrie de secours', async () => {
+  const adapter = createRoutingAdapter({
+    provider: 'osrm',
+    baseUrl: 'http://routing.internal',
+    fetchImpl: async () => mockResponse(200, { code: 'NoMatch', message: 'Could not match' }),
+  });
+  const result = await adapter.match({ points: [COTONOU, CALAVI] });
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.geometry, null);
+  assert.equal(result.failure.code, 'match_not_found');
+  assert.equal(result.failure.retryable, false);
+});
+
+test('le fournisseur désactivé refuse le map-matching sans appel réseau', async () => {
+  const adapter = createRoutingAdapter({ provider: 'disabled', profiles: { motorcycle: 'driving' }, defaultProfile: 'motorcycle' });
+  assert.equal(adapter.health().capabilities.match, false);
+  const result = await adapter.match({ points: [COTONOU, CALAVI] });
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.failure.code, 'provider_disabled');
+});
+
 async function main() {
   for (const { name, run } of tests) {
     await run();

@@ -1650,7 +1650,7 @@ app.get('/admin', requirePlatformPage, (_req, res) => {
 });
 
 const companyPages = [
-  '/app', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/carte',
+  '/app', '/app/operations', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/carte',
   '/app/livreurs', '/app/tournees', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
 ];
 app.get(companyPages, requireCompanyPage, (_req, res) => {

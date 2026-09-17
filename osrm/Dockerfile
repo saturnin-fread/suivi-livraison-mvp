@@ -8,21 +8,23 @@
 # Bénin). Testable avec « bicycle » via l'argument PROFILE (inclut plus de
 # petites voies, parfois utile là où l'OSM est pauvre — à qualifier terrain).
 
+# ---- Étape 0 : récupération de l'extrait OSM -------------------------------
+# L'image osrm-backend est basée sur Alpine (pas d'apt) ; on télécharge dans
+# une petite étape dédiée qui dispose de curl et des certificats.
+FROM alpine:3.20 AS fetch
+ARG PBF_URL=https://download.geofabrik.de/africa/benin-latest.osm.pbf
+RUN apk add --no-cache curl ca-certificates
+WORKDIR /data
+RUN curl -fSL "$PBF_URL" -o benin.osm.pbf
+
 # ---- Étape 1 : préparation du graphe ---------------------------------------
 FROM ghcr.io/project-osrm/osrm-backend:v6.0.0 AS build
 
-ARG PBF_URL=https://download.geofabrik.de/africa/benin-latest.osm.pbf
 ARG PROFILE=car
-
 WORKDIR /data
+COPY --from=fetch /data/benin.osm.pbf /data/benin.osm.pbf
 
-# curl n'est pas garanti dans l'image ; on l'installe pour récupérer l'extrait.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fSL "$PBF_URL" -o benin.osm.pbf \
-    && osrm-extract -p "/opt/${PROFILE}.lua" benin.osm.pbf \
+RUN osrm-extract -p "/opt/${PROFILE}.lua" benin.osm.pbf \
     && osrm-partition benin.osrm \
     && osrm-customize benin.osrm \
     # On ne garde que les fichiers .osrm* nécessaires au service.

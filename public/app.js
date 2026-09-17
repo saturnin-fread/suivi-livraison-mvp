@@ -1160,7 +1160,7 @@ async function renderOperationsMap() {
       else {
         replay.positions = data.positions || [];
         replay.statusText = replay.positions.length
-          ? `${replay.positions.length} point(s) · ${new Date(data.from).toLocaleTimeString('fr-FR')} → ${new Date(data.to).toLocaleTimeString('fr-FR')}${data.truncated ? ' (tronqué)' : ''}`
+          ? `${replay.positions.length} point(s)${data.cleaned ? ` · ${data.cleaned} nettoyé(s)` : ''} · ${new Date(data.from).toLocaleTimeString('fr-FR')} → ${new Date(data.to).toLocaleTimeString('fr-FR')}${data.truncated ? ' (tronqué)' : ''}`
           : 'Aucune position enregistrée sur cette période.';
       }
       replay.index = Math.max(0, replay.positions.length - 1);

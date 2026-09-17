@@ -3306,6 +3306,39 @@ app.delete('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner
   return res.json({ id: result.rows[0].id, archived: true });
 }));
 
+// Nettoyage d'une trace GPS brute : retire le jitter (points quasi immobiles),
+// les sauts physiquement impossibles (glitchs) et les points d'imprécision
+// extrême. Ne « colle » pas aux routes (map-matching) — ça reste une trace de
+// points, mais débarrassée des grands zigzags aberrants.
+function cleanGpsTrack(points) {
+  const R = 6371000;
+  const toRad = (value) => (value * Math.PI) / 180;
+  const distance = (a, b) => {
+    const dLat = toRad(b.latitude - a.latitude);
+    const dLon = toRad(b.longitude - a.longitude);
+    const lat1 = toRad(a.latitude);
+    const lat2 = toRad(b.latitude);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  };
+  const MIN_MOVE_M = 8;        // en-deçà : jitter à l'arrêt
+  const MAX_SPEED_MS = 45;     // ~162 km/h : au-delà = glitch (moto)
+  const MAX_ACCURACY_M = 500;  // imprécision extrême = point poubelle
+  const kept = [];
+  for (const point of points) {
+    if (point.accuracy != null && point.accuracy > MAX_ACCURACY_M) continue;
+    const last = kept[kept.length - 1];
+    if (!last) { kept.push(point); continue; }
+    const dt = (new Date(point.timestamp).getTime() - new Date(last.timestamp).getTime()) / 1000;
+    if (!Number.isFinite(dt) || dt <= 0) continue;
+    const step = distance(last, point);
+    if (step < MIN_MOVE_M) continue;               // immobile
+    if (step / dt > MAX_SPEED_MS) continue;         // saut impossible
+    kept.push(point);
+  }
+  return kept;
+}
+
 // Historique GPS d'un livreur (rejeu). Interroge l'historique Traccar, borné et
 // isolé par entreprise : seul un livreur de la session peut être consulté.
 app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -3350,16 +3383,21 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
       .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
         && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const rawCount = positions.length;
+    const cleaned = cleanGpsTrack(positions);
     const MAX_POINTS = 5000;
-    const truncated = positions.length > MAX_POINTS;
+    const truncated = cleaned.length > MAX_POINTS;
+    const output = truncated ? cleaned.slice(cleaned.length - MAX_POINTS) : cleaned;
     return res.json({
       status: 'online',
       driverId: driver.id,
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
-      count: truncated ? MAX_POINTS : positions.length,
+      rawCount,
+      count: output.length,
+      cleaned: rawCount - cleaned.length,
       truncated,
-      positions: truncated ? positions.slice(positions.length - MAX_POINTS) : positions,
+      positions: output,
     });
   } catch (error) {
     console.error('Traccar track error:', error.response?.status || error.message);

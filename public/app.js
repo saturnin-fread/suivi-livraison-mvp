@@ -2066,12 +2066,111 @@ async function renderSettings() {
   });
 }
 
+// Illustrations Opérations, en SVG inline : vectoriel, léger, aux couleurs TRAXO.
+const opsArt = {
+  form: '<svg viewBox="0 0 220 200" fill="none" aria-hidden="true"><path d="M40 60c0-40 118-46 138-6 18 36-6 96-56 104-52 8-90-52-82-98z" fill="#fdecec"/><g transform="rotate(-6 120 100)"><rect x="80" y="44" width="92" height="118" rx="10" fill="#fff" stroke="#dfe4ec" stroke-width="2.5"/><g stroke="#e6ebf2" stroke-width="6" stroke-linecap="round"><path d="M96 74h60"/><path d="M96 92h60"/><path d="M96 110h40"/></g><path d="M96 128h30" stroke="#e11d2a" stroke-width="6" stroke-linecap="round"/></g><circle cx="170" cy="150" r="20" fill="#e11d2a"/><g stroke="#fff" stroke-width="4" stroke-linecap="round"><path d="M170 142v16"/><path d="M162 150h16"/></g></svg>',
+  package: '<svg viewBox="0 0 240 200" fill="none" aria-hidden="true"><path d="M36 96c-10-46 52-72 104-60 44 10 76 6 84 44 8 40-40 74-96 74S46 142 36 96z" fill="#eef1f6"/><path d="M120 68l48 23-48 23-48-23z" fill="#fff" stroke="#d7dce6" stroke-width="2.5" stroke-linejoin="round"/><path d="M72 91l48 23v48l-48-23z" fill="#f4f6f9" stroke="#d7dce6" stroke-width="2.5" stroke-linejoin="round"/><path d="M168 91l-48 23v48l48-23z" fill="#eef1f6" stroke="#d7dce6" stroke-width="2.5" stroke-linejoin="round"/><path d="M120 68v94" stroke="#e11d2a" stroke-width="4" opacity=".85"/><path d="M120 114l48-23" stroke="#f6b9b9" stroke-width="3"/><g transform="translate(150 40)"><rect x="0" y="0" width="72" height="34" rx="9" fill="#fff" stroke="#e6ebf2" stroke-width="2"/><circle cx="18" cy="17" r="10" fill="#e11d2a"/><path d="M13.5 17l3 3 6-6" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><g stroke="#e6ebf2" stroke-width="4" stroke-linecap="round"><path d="M36 12h28"/><path d="M36 23h18"/></g></g></svg>',
+  phone: '<svg viewBox="0 0 260 220" fill="none" aria-hidden="true"><ellipse cx="140" cy="120" rx="98" ry="82" fill="#fdecec"/><ellipse cx="140" cy="152" rx="94" ry="30" stroke="#f6c6c6" stroke-width="2" stroke-dasharray="2 7" fill="none"/><circle cx="46" cy="152" r="3.5" fill="#e11d2a"/><circle cx="234" cy="140" r="3" fill="#f0a3a3"/><rect x="96" y="34" width="92" height="160" rx="16" fill="#fff" stroke="#c9ced8" stroke-width="2.5"/><rect x="128" y="42" width="28" height="5" rx="2.5" fill="#e0e5ec"/><rect x="106" y="52" width="72" height="118" rx="8" fill="#f4f6f9"/><g stroke="#dde3ec" stroke-width="2"><path d="M106 84h72"/><path d="M106 116h72"/><path d="M106 148h72"/><path d="M130 52v118"/><path d="M154 52v118"/></g><rect x="112" y="58" width="14" height="20" rx="2" fill="#fbe0e0"/><rect x="158" y="122" width="14" height="20" rx="2" fill="#fbe0e0"/><circle cx="142" cy="182" r="5" fill="#e7ebf1"/><path d="M142 92c-13 0-23 10-23 23 0 16 23 34 23 34s23-18 23-34c0-13-10-23-23-23z" fill="#e11d2a"/><circle cx="142" cy="115" r="8" fill="#fff"/><g stroke="#e11d2a" stroke-width="3.5" stroke-linecap="round" fill="none"><path d="M74 72a26 26 0 0 1 0 34"/><path d="M64 62a40 40 0 0 1 0 54"/></g><g stroke="#f3a9a9" stroke-width="3.5" stroke-linecap="round" fill="none"><path d="M210 72a26 26 0 0 0 0 34"/><path d="M220 62a40 40 0 0 0 0 54"/></g></svg>',
+  scooter: '<svg viewBox="0 0 280 200" fill="none" aria-hidden="true"><path d="M40 150c-14-40 20-96 70-92 44 4 40 44 92 40 40-3 60 40 40 64-24 28-180 34-202-12z" fill="#fdecec"/><path d="M70 138c40 6 62-30 98-24 30 5 40-16 46-30" stroke="#f0a3a3" stroke-width="3" stroke-dasharray="2 9" stroke-linecap="round" fill="none"/><path d="M234 44c-10 0-18 8-18 18 0 13 18 26 18 26s18-13 18-26c0-10-8-18-18-18z" fill="#e11d2a"/><circle cx="234" cy="62" r="6" fill="#fff"/><g stroke="#f3a9a9" stroke-width="2.5" stroke-linecap="round"><path d="M252 34l6-6"/><path d="M256 46l8-3"/></g><g fill="none" stroke="#e11d2a" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><circle cx="92" cy="150" r="17" fill="#fff"/><circle cx="188" cy="150" r="17" fill="#fff"/><path d="M92 150h96"/><rect x="58" y="94" width="36" height="32" rx="4" fill="#fff"/><path d="M96 126h34l16-30h18"/><path d="M164 96l24 54"/><path d="M164 96l-10-8"/><path d="M120 98h26"/></g><circle cx="92" cy="150" r="4.5" fill="#e11d2a"/><circle cx="188" cy="150" r="4.5" fill="#e11d2a"/><g stroke="#f3a9a9" stroke-width="4" stroke-linecap="round"><path d="M24 122h22"/><path d="M16 136h30"/><path d="M28 150h16"/></g></svg>',
+};
+const opsIco = {
+  arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>',
+  form: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h3"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>',
+  ride: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17" r="3"/><circle cx="18.5" cy="17" r="3"/><path d="M8.5 17h7l3-6h2"/><path d="M6 11h6l2 3"/><path d="M12 7h3l1 2"/></svg>',
+};
+
 async function renderOperations() {
-  setHeader('Opérations', 'Demandes, commandes, tournées et incidents');
-  const validSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
+  setHeader('Opérations', 'Démarrez une livraison et suivez l’activité');
   const params = new URLSearchParams(location.search);
-  let segment = params.get('vue');
-  if (!validSegments.includes(segment)) segment = 'commandes';
+  const vue = params.get('vue');
+  const workspaceSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
+  if (vue === 'creer') return renderOperationsCreate();
+  if (workspaceSegments.includes(vue)) return renderOperationsWorkspace(vue);
+  return renderOperationsHome();
+}
+
+// Niveau 1 : deux entrées d'action (façon maquette).
+function renderOperationsHome() {
+  page.innerHTML = `
+    <div class="ops-accent"></div>
+    <div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Accédez rapidement aux outils essentiels.</p></div></div>
+    <div class="ops-home">
+      <a class="ops-home-card tint-red" href="/app/operations?vue=creer">
+        <span class="ops-home-ic">${opsIco.form}</span>
+        <h3>Créer un formulaire</h3>
+        <p>Concevez et configurez la capture d’un nouveau client en quelques clics.</p>
+        <span class="ops-home-arrow">${opsIco.arrow}</span>
+        <span class="ops-home-art">${opsArt.form}</span>
+      </a>
+      <a class="ops-home-card tint-slate" href="/app/operations?vue=commandes">
+        <span class="ops-home-ic">${opsIco.box}</span>
+        <h3>Commandes</h3>
+        <p>Gérez et suivez vos commandes, demandes, tournées et incidents en toute simplicité.</p>
+        <span class="ops-home-arrow">${opsIco.arrow}</span>
+        <span class="ops-home-art">${opsArt.package}</span>
+      </a>
+    </div>`;
+}
+
+// Niveau 2 : « Créer un formulaire » — deux façons de capter un client.
+function renderOperationsCreate() {
+  page.innerHTML = `
+    <div class="ops-breadcrumb"><a href="/app/operations">Opérations</a><span class="sep">›</span><span>Créer un formulaire</span></div>
+    <div class="page-header"><div><h1>Créer un formulaire</h1><p class="subtitle">Choisissez comment récupérer les informations du client.</p></div></div>
+    <div class="ops-create">
+      <div class="ops-create-card">
+        <span class="ops-create-ic">${opsIco.pin}</span>
+        <h3>Le client partage sa position</h3>
+        <p>Envoyez un lien au client. Il remplit ses infos et partage sa position GPS exacte directement depuis son téléphone.</p>
+        <button type="button" class="button primary" id="opsGenLink">Générer ce lien ${opsIco.arrow}</button>
+        <span class="ops-create-art">${opsArt.phone}</span>
+      </div>
+      <a class="ops-create-card ops-create-link" href="/app/nouvelle-commande">
+        <span class="ops-create-ic">${opsIco.ride}</span>
+        <h3>Vous remplissez, il suit le livreur</h3>
+        <p>Vous saisissez les infos du client vous-même. Il reçoit un lien pour suivre la position du livreur assigné en temps réel, sans révéler sa propre position.</p>
+        <span class="button primary">Créer et assigner ${opsIco.arrow}</span>
+        <span class="ops-create-art">${opsArt.scooter}</span>
+      </a>
+    </div>
+    <div id="opsLinkPanel"></div>`;
+
+  document.getElementById('opsGenLink').addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    const panel = document.getElementById('opsLinkPanel');
+    panel.innerHTML = '<div class="card ops-linkpanel"><div class="loading-state">Génération du lien…</div></div>';
+    try {
+      const result = await api('/api/app/request-links', { method: 'POST', body: JSON.stringify({ idempotencyKey: actionKey('request-link') }) });
+      const fullUrl = new URL(result.path, location.origin).href;
+      const waText = encodeURIComponent(`Bonjour, pour organiser votre livraison, merci de remplir vos informations ici : ${fullUrl}`);
+      panel.innerHTML = `<div class="card ops-linkpanel">
+        <strong class="ops-linkpanel-title">Lien prêt à envoyer</strong>
+        <p class="ops-modal-note" style="margin:6px 0 14px">Le client remplit ses infos et épingle sa position. Valable 7 jours, une seule fois.</p>
+        <div class="ops-linkout"><input type="text" readonly value="${escapeHtml(fullUrl)}" id="capLink" aria-label="Lien du formulaire"/><button type="button" class="button secondary" id="capCopy">Copier</button></div>
+        <div class="ops-linkactions"><a class="button primary" target="_blank" rel="noopener" href="https://wa.me/?text=${waText}">Partager sur WhatsApp</a><a class="button secondary" target="_blank" rel="noopener" href="${escapeHtml(fullUrl)}">Ouvrir l’aperçu</a></div>
+      </div>`;
+      panel.querySelector('#capCopy').addEventListener('click', (copyEvent) => {
+        const field = panel.querySelector('#capLink');
+        field.select();
+        try { navigator.clipboard?.writeText(field.value); } catch (_error) { /* le lien reste sélectionné */ }
+        copyEvent.currentTarget.textContent = 'Copié';
+      });
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (error) {
+      panel.innerHTML = `<div class="card ops-linkpanel"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// Niveau 2 bis : le suivi de l'activité (table segmentée).
+async function renderOperationsWorkspace(initialSegment) {
+  const validSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
+  let segment = validSegments.includes(initialSegment) ? initialSegment : 'commandes';
   let query = '';
   let rows = [];
   const scopeState = { demandes: 'active', incidents: 'open' };
@@ -2103,33 +2202,10 @@ async function renderOperations() {
   let counts = {};
   try { counts = await api('/api/app/summary'); } catch { counts = {}; }
 
-  const arrowIco = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>';
-  const formIco = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h3"/></svg>';
-  const boxIco = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg>';
-
-  page.innerHTML = `<div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Démarrez une livraison, suivez commandes, tournées et incidents.</p></div>
-      <div class="row-menu"><button class="button secondary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
-    <div class="ops-hero">
-      <button type="button" class="ops-hero-card" data-hub="capture">
-        <span class="ops-hero-ic">${formIco}</span>
-        <span class="ops-hero-txt">
-          <strong>Formulaire client</strong>
-          <span>Captez le nom, le téléphone et la position exacte du client — sans ressaisie.</span>
-          <ul class="ops-hero-points"><li>Lien à envoyer au client</li><li>ou saisie directe + lien de suivi</li></ul>
-        </span>
-        <span class="ops-hero-cta">Démarrer ${arrowIco}</span>
-      </button>
-      <a class="ops-hero-card alt" href="/app/nouvelle-commande" data-hub="order">
-        <span class="ops-hero-ic">${boxIco}</span>
-        <span class="ops-hero-txt">
-          <strong>Commande</strong>
-          <span>Vous avez déjà tout ? Lancez directement la livraison et son lien de suivi.</span>
-          <ul class="ops-hero-points"><li>Affectation à un livreur</li><li>Lien de suivi client</li></ul>
-        </span>
-        <span class="ops-hero-cta">Créer ${arrowIco}</span>
-      </a>
-    </div>
-    <div class="ops-worksec-head"><h2>Suivi de l’activité</h2></div>
+  page.innerHTML = `
+    <div class="ops-breadcrumb"><a href="/app/operations">Opérations</a><span class="sep">›</span><span>Suivi de l’activité</span></div>
+    <div class="page-header"><div><h1>Suivi de l’activité</h1><p class="subtitle">Commandes, demandes, tournées et incidents au même endroit.</p></div>
+      <div class="row-menu"><button class="button primary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
     <div class="fleet-toolbar">
       <div class="fleet-tabs" id="opsSegments"></div>
       <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="opsSearch" placeholder="Rechercher dans ce segment…" autocomplete="off"/></div>
@@ -2200,61 +2276,6 @@ async function renderOperations() {
   const search = document.getElementById('opsSearch');
   search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
 
-  // Pop-up « Formulaire client » : deux façons de capter un client.
-  function openCaptureModal() {
-    const body = `
-      <p class="ops-modal-lead">Comment voulez-vous récupérer les informations du client&nbsp;?</p>
-      <div class="ops-choices">
-        <button type="button" class="ops-choice" data-choice="link">
-          <span class="ops-choice-ic">${fleetIcons.link}</span>
-          <span class="ops-choice-txt"><strong>Envoyer un lien au client <em class="ops-tag">Recommandé</em></strong>
-            <small>Le client remplit ses infos et épingle sa position depuis son téléphone. Vous recevez tout, prêt à livrer — avec le GPS le plus précis.</small></span>
-          <span class="ops-choice-go">${arrowIco}</span>
-        </button>
-        <button type="button" class="ops-choice" data-choice="self">
-          <span class="ops-choice-ic">${fleetIcons.edit}</span>
-          <span class="ops-choice-txt"><strong>Saisir les infos moi-même</strong>
-            <small>Vous avez déjà tout&nbsp;? Créez la commande et obtenez un lien de suivi à partager.</small></span>
-          <span class="ops-choice-go">${arrowIco}</span>
-        </button>
-      </div>`;
-    const modal = openModal('Formulaire client', body);
-    modal.backdrop.querySelectorAll('[data-choice]').forEach((btn) => btn.addEventListener('click', async () => {
-      if (btn.dataset.choice === 'self') { location.href = '/app/nouvelle-commande'; return; }
-      const bodyEl = modal.backdrop.querySelector('.modal-body');
-      bodyEl.innerHTML = '<div class="loading-state">Génération du lien…</div>';
-      try {
-        const result = await api('/api/app/request-links', { method: 'POST', body: JSON.stringify({ idempotencyKey: actionKey('request-link') }) });
-        const fullUrl = new URL(result.path, location.origin).href;
-        const waText = encodeURIComponent(`Bonjour, pour organiser votre livraison, merci de remplir vos informations ici : ${fullUrl}`);
-        bodyEl.innerHTML = `
-          <p class="ops-modal-lead">Lien prêt. Envoyez-le au client&nbsp;: il remplit ses infos et épingle sa position.</p>
-          <div class="ops-linkout">
-            <input type="text" readonly value="${escapeHtml(fullUrl)}" id="capLink" aria-label="Lien du formulaire"/>
-            <button type="button" class="button secondary" id="capCopy">Copier</button>
-          </div>
-          <div class="ops-linkactions">
-            <a class="button primary" target="_blank" rel="noopener" href="https://wa.me/?text=${waText}">Partager sur WhatsApp</a>
-            <a class="button secondary" target="_blank" rel="noopener" href="${escapeHtml(fullUrl)}">Ouvrir l’aperçu</a>
-          </div>
-          <p class="ops-modal-note">Lien valable 7 jours, remplissable une seule fois. La demande apparaîtra dans l’onglet «&nbsp;Demandes&nbsp;».</p>`;
-        const copyBtn = bodyEl.querySelector('#capCopy');
-        copyBtn.addEventListener('click', () => {
-          const field = bodyEl.querySelector('#capLink');
-          field.select();
-          try { navigator.clipboard?.writeText(field.value); } catch (_error) { /* le lien reste sélectionné */ }
-          copyBtn.textContent = 'Copié';
-        });
-      } catch (error) {
-        bodyEl.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      }
-    }));
-  }
-
-  document.querySelector('.ops-hero').addEventListener('click', (event) => {
-    if (event.target.closest('[data-hub="capture"]')) { event.preventDefault(); openCaptureModal(); }
-  });
-
   // Menu « + Créer ».
   document.getElementById('opsCreate').addEventListener('click', (event) => {
     event.stopPropagation();
@@ -2262,8 +2283,8 @@ async function renderOperations() {
     const menu = document.createElement('div');
     menu.className = 'menu-pop';
     menu.innerHTML = `
+      <button data-create="/app/operations?vue=creer">Créer un formulaire</button>
       <button data-create="/app/nouvelle-commande">Commande directe</button>
-      <button data-capture>Formulaire client</button>
       <button data-create="/app/tournees">Nouvelle tournée</button>
       <hr/>
       <button data-goto="incidents">Voir les incidents</button>`;
@@ -2271,10 +2292,8 @@ async function renderOperations() {
     openMenu = menu;
     menu.addEventListener('click', (menuEvent) => {
       const create = menuEvent.target.closest('[data-create]');
-      const capture = menuEvent.target.closest('[data-capture]');
       const goto = menuEvent.target.closest('[data-goto]');
-      if (capture) { openMenu.remove(); openMenu = null; openCaptureModal(); }
-      else if (create) location.href = create.dataset.create;
+      if (create) location.href = create.dataset.create;
       else if (goto) { openMenu.remove(); openMenu = null; switchSegment(goto.dataset.goto); }
     });
   });

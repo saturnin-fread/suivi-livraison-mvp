@@ -2103,8 +2103,33 @@ async function renderOperations() {
   let counts = {};
   try { counts = await api('/api/app/summary'); } catch { counts = {}; }
 
-  page.innerHTML = `<div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Demandes, commandes, tournées et incidents au même endroit.</p></div>
-      <div class="row-menu"><button class="button primary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
+  const arrowIco = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>';
+  const formIco = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h3"/></svg>';
+  const boxIco = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg>';
+
+  page.innerHTML = `<div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Démarrez une livraison, suivez commandes, tournées et incidents.</p></div>
+      <div class="row-menu"><button class="button secondary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
+    <div class="ops-hero">
+      <button type="button" class="ops-hero-card" data-hub="capture">
+        <span class="ops-hero-ic">${formIco}</span>
+        <span class="ops-hero-txt">
+          <strong>Formulaire client</strong>
+          <span>Captez le nom, le téléphone et la position exacte du client — sans ressaisie.</span>
+          <ul class="ops-hero-points"><li>Lien à envoyer au client</li><li>ou saisie directe + lien de suivi</li></ul>
+        </span>
+        <span class="ops-hero-cta">Démarrer ${arrowIco}</span>
+      </button>
+      <a class="ops-hero-card alt" href="/app/nouvelle-commande" data-hub="order">
+        <span class="ops-hero-ic">${boxIco}</span>
+        <span class="ops-hero-txt">
+          <strong>Commande</strong>
+          <span>Vous avez déjà tout ? Lancez directement la livraison et son lien de suivi.</span>
+          <ul class="ops-hero-points"><li>Affectation à un livreur</li><li>Lien de suivi client</li></ul>
+        </span>
+        <span class="ops-hero-cta">Créer ${arrowIco}</span>
+      </a>
+    </div>
+    <div class="ops-worksec-head"><h2>Suivi de l’activité</h2></div>
     <div class="fleet-toolbar">
       <div class="fleet-tabs" id="opsSegments"></div>
       <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="opsSearch" placeholder="Rechercher dans ce segment…" autocomplete="off"/></div>
@@ -2175,6 +2200,61 @@ async function renderOperations() {
   const search = document.getElementById('opsSearch');
   search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
 
+  // Pop-up « Formulaire client » : deux façons de capter un client.
+  function openCaptureModal() {
+    const body = `
+      <p class="ops-modal-lead">Comment voulez-vous récupérer les informations du client&nbsp;?</p>
+      <div class="ops-choices">
+        <button type="button" class="ops-choice" data-choice="link">
+          <span class="ops-choice-ic">${fleetIcons.link}</span>
+          <span class="ops-choice-txt"><strong>Envoyer un lien au client <em class="ops-tag">Recommandé</em></strong>
+            <small>Le client remplit ses infos et épingle sa position depuis son téléphone. Vous recevez tout, prêt à livrer — avec le GPS le plus précis.</small></span>
+          <span class="ops-choice-go">${arrowIco}</span>
+        </button>
+        <button type="button" class="ops-choice" data-choice="self">
+          <span class="ops-choice-ic">${fleetIcons.edit}</span>
+          <span class="ops-choice-txt"><strong>Saisir les infos moi-même</strong>
+            <small>Vous avez déjà tout&nbsp;? Créez la commande et obtenez un lien de suivi à partager.</small></span>
+          <span class="ops-choice-go">${arrowIco}</span>
+        </button>
+      </div>`;
+    const modal = openModal('Formulaire client', body);
+    modal.backdrop.querySelectorAll('[data-choice]').forEach((btn) => btn.addEventListener('click', async () => {
+      if (btn.dataset.choice === 'self') { location.href = '/app/nouvelle-commande'; return; }
+      const bodyEl = modal.backdrop.querySelector('.modal-body');
+      bodyEl.innerHTML = '<div class="loading-state">Génération du lien…</div>';
+      try {
+        const result = await api('/api/app/request-links', { method: 'POST', body: JSON.stringify({ idempotencyKey: actionKey('request-link') }) });
+        const fullUrl = new URL(result.path, location.origin).href;
+        const waText = encodeURIComponent(`Bonjour, pour organiser votre livraison, merci de remplir vos informations ici : ${fullUrl}`);
+        bodyEl.innerHTML = `
+          <p class="ops-modal-lead">Lien prêt. Envoyez-le au client&nbsp;: il remplit ses infos et épingle sa position.</p>
+          <div class="ops-linkout">
+            <input type="text" readonly value="${escapeHtml(fullUrl)}" id="capLink" aria-label="Lien du formulaire"/>
+            <button type="button" class="button secondary" id="capCopy">Copier</button>
+          </div>
+          <div class="ops-linkactions">
+            <a class="button primary" target="_blank" rel="noopener" href="https://wa.me/?text=${waText}">Partager sur WhatsApp</a>
+            <a class="button secondary" target="_blank" rel="noopener" href="${escapeHtml(fullUrl)}">Ouvrir l’aperçu</a>
+          </div>
+          <p class="ops-modal-note">Lien valable 7 jours, remplissable une seule fois. La demande apparaîtra dans l’onglet «&nbsp;Demandes&nbsp;».</p>`;
+        const copyBtn = bodyEl.querySelector('#capCopy');
+        copyBtn.addEventListener('click', () => {
+          const field = bodyEl.querySelector('#capLink');
+          field.select();
+          try { navigator.clipboard?.writeText(field.value); } catch (_error) { /* le lien reste sélectionné */ }
+          copyBtn.textContent = 'Copié';
+        });
+      } catch (error) {
+        bodyEl.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      }
+    }));
+  }
+
+  document.querySelector('.ops-hero').addEventListener('click', (event) => {
+    if (event.target.closest('[data-hub="capture"]')) { event.preventDefault(); openCaptureModal(); }
+  });
+
   // Menu « + Créer ».
   document.getElementById('opsCreate').addEventListener('click', (event) => {
     event.stopPropagation();
@@ -2182,8 +2262,8 @@ async function renderOperations() {
     const menu = document.createElement('div');
     menu.className = 'menu-pop';
     menu.innerHTML = `
-      <button data-create="/app/nouvelle-commande">${fleetIcons.box || ''} Commande directe</button>
-      <button data-create="/app/demandes">Formulaire client (demande)</button>
+      <button data-create="/app/nouvelle-commande">Commande directe</button>
+      <button data-capture>Formulaire client</button>
       <button data-create="/app/tournees">Nouvelle tournée</button>
       <hr/>
       <button data-goto="incidents">Voir les incidents</button>`;
@@ -2191,8 +2271,10 @@ async function renderOperations() {
     openMenu = menu;
     menu.addEventListener('click', (menuEvent) => {
       const create = menuEvent.target.closest('[data-create]');
+      const capture = menuEvent.target.closest('[data-capture]');
       const goto = menuEvent.target.closest('[data-goto]');
-      if (create) location.href = create.dataset.create;
+      if (capture) { openMenu.remove(); openMenu = null; openCaptureModal(); }
+      else if (create) location.href = create.dataset.create;
       else if (goto) { openMenu.remove(); openMenu = null; switchSegment(goto.dataset.goto); }
     });
   });

@@ -2081,6 +2081,121 @@ const opsIco = {
   ride: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17" r="3"/><circle cx="18.5" cy="17" r="3"/><path d="M8.5 17h7l3-6h2"/><path d="M6 11h6l2 3"/><path d="M12 7h3l1 2"/></svg>',
 };
 
+// ---- Espace de travail Opérations (table type ClickUp) : utilitaires ----
+const crmIcons = {
+  filter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.5V19l4 2v-8.5z"/></svg>',
+  group: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  sort: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M6 12h12M10 18h4"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+};
+
+function crmInitials(name) {
+  return String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
+}
+function crmAvatar(name) {
+  if (!name) return '<span class="crm-muted">—</span>';
+  return `<span class="crm-av"><span class="crm-av-badge">${escapeHtml(crmInitials(name))}</span>${escapeHtml(name)}</span>`;
+}
+function crmChip(label, color) {
+  if (label == null || label === '') return '<span class="crm-muted">—</span>';
+  return `<span class="crm-chip crm-${color || crmChipColor(label)}">${escapeHtml(label)}</span>`;
+}
+function crmChipColor(label) {
+  const s = String(label).toLowerCase();
+  if (/livr|résol|resolu|validé|valide|terminé|convert|complèt|complet|payé|disponible/.test(s)) return 'green';
+  if (/incident|échec|echec|ouvert|retard|haute|urgent|perdu|endommag|impossible|refus/.test(s)) return 'red';
+  if (/attente|à valider|a valider|préparation|preparation|qualifi|planifi|brouillon\b/.test(s)) return 'amber';
+  if (/cours|livraison|récupér|recuper|tournée|confirm|nouveau|projection|suivi|escalad/.test(s)) return 'blue';
+  if (/brouillon|archiv|annul|non partag/.test(s)) return 'grey';
+  return 'grey';
+}
+const crmOrderSeq = ['En préparation', 'Confirmée', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
+function crmOrderStatusColor(status) {
+  const map = { 'Livrée': 'green', 'Confirmée': 'amber', 'En préparation': 'amber', 'Récupérée': 'blue', 'En tournée': 'blue', 'En livraison': 'blue', 'Arrivée': 'blue', 'Brouillon': 'grey', 'Échec': 'red', 'Retour': 'amber', 'Retournée': 'grey', 'Annulée': 'grey' };
+  return map[status] || 'grey';
+}
+function crmOrderProgress(status) {
+  if (status === 'Livrée') return { pct: 100, tone: '' };
+  if (['Annulée', 'Retournée'].includes(status)) return { pct: 100, tone: 'grey' };
+  if (['Échec', 'Retour'].includes(status)) return { pct: 45, tone: 'red' };
+  const i = crmOrderSeq.indexOf(status);
+  return { pct: i < 0 ? 8 : Math.max(8, Math.round((i / (crmOrderSeq.length - 1)) * 100)), tone: '' };
+}
+function crmProgressBar(pct, tone) {
+  return `<span class="crm-prog"><i class="${tone || ''}" style="width:${Math.max(0, Math.min(100, pct))}%"></i></span>`;
+}
+
+// Panneau détail coulissant d'une commande (données réelles).
+async function openOrderDrawer(orderId) {
+  const existing = document.querySelector('.crm-drawer-wrap');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'crm-drawer-wrap';
+  wrap.innerHTML = '<div class="crm-drawer-backdrop"></div><aside class="crm-drawer"><div class="loading-state" style="padding:40px">Chargement…</div></aside>';
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (event) => { if (event.key === 'Escape') close(); };
+  wrap.querySelector('.crm-drawer-backdrop').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  try {
+    const o = await api(`/api/app/orders/${encodeURIComponent(orderId)}`);
+    const zone = o.neighborhood || o.landmark || '—';
+    const address = [o.neighborhood, o.landmark, o.delivery_address].filter(Boolean).join(' · ') || '—';
+    const rank = crmOrderSeq.indexOf(o.status);
+    const eventFor = (status) => (o.events || []).find((e) => e.to_status === status);
+    const steps = [
+      { label: 'Confirmée', at: eventFor('Confirmée') },
+      { label: 'Préparation', at: eventFor('Récupérée') },
+      { label: 'En livraison', at: eventFor('En livraison') },
+      { label: 'Livrée', at: eventFor('Livrée') },
+    ];
+    const stepRank = [1, 2, 4, 6];
+    const stepsHtml = steps.map((s, idx) => {
+      const done = rank >= stepRank[idx];
+      return `<div class="crm-step ${done ? 'done' : ''}"><span class="crm-step-dot">${done ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : ''}</span><strong>${escapeHtml(s.label)}</strong><small>${s.at ? escapeHtml(formatDate(s.at.created_at)) : '—'}</small></div>`;
+    }).join('');
+    const history = (o.events || []).slice().reverse().map((e) => `<li><span class="crm-hist-dot ${e.to_status === 'Livrée' ? 'ok' : ''}"></span><div><strong>${escapeHtml(formatDate(e.created_at))}</strong><span>${escapeHtml(e.to_status || '')}${e.reason ? ` — ${escapeHtml(e.reason)}` : ''}</span><small>${escapeHtml(e.actor_name || 'Système')}</small></div></li>`).join('') || '<li class="crm-muted">Aucun événement.</li>';
+    const evidence = (o.evidence || []).length ? (o.evidence || []).map((f) => `<span class="crm-file">${escapeHtml(f.evidence_type === 'signature' ? 'Signature' : 'Photo')}</span>`).join(' ') : '—';
+    const phone = String(o.customer_phone || '').replace(/[^+\d]/g, '');
+    wrap.querySelector('.crm-drawer').innerHTML = `
+      <div class="crm-drawer-head">
+        <div><div class="crm-drawer-title">CMD-${escapeHtml(o.id)} ${crmChip(o.status, crmOrderStatusColor(o.status))}</div>
+          <small>Créée le ${escapeHtml(formatDate(o.created_at))}</small></div>
+        <button class="crm-drawer-close" type="button" aria-label="Fermer">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'}</button>
+      </div>
+      <div class="crm-drawer-body">
+        <section><h4>Client</h4>
+          <div class="crm-kv"><span>Nom</span><strong>${escapeHtml(o.customer_name || '—')}</strong></div>
+          <div class="crm-kv"><span>Téléphone</span><strong>${phone ? `<a href="tel:${escapeHtml(phone)}">${escapeHtml(o.customer_phone)}</a>` : '—'}</strong></div>
+          <div class="crm-kv"><span>Adresse</span><strong>${escapeHtml(address)}</strong></div>
+        </section>
+        <section><h4>Livraison</h4>
+          <div class="crm-kv"><span>Zone</span><strong>${escapeHtml(zone)}</strong></div>
+          <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name) : '—'}</strong></div>
+          <div class="crm-kv"><span>Créneau</span><strong>${escapeHtml(o.requested_time || '—')}</strong></div>
+          ${o.trackingLink && o.trackingLink.path ? `<div class="crm-kv"><span>Suivi client</span><strong><a href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir le lien</a></strong></div>` : ''}
+        </section>
+        <section><h4>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
+        <section><h4>Détails</h4>
+          <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(o.delivery_address || '—')}</strong></div>
+          <div class="crm-kv"><span>Pièces jointes</span><strong>${evidence}</strong></div>
+          ${o.expected_amount_minor != null ? `<div class="crm-kv"><span>Paiement</span><strong>${escapeHtml((Number(o.expected_amount_minor) / 100).toLocaleString('fr-FR'))} ${escapeHtml(o.payment_currency || '')} · ${escapeHtml(o.payment_status || '')}</strong></div>` : ''}
+        </section>
+        <section><h4>Notes et historique</h4><ul class="crm-hist">${history}</ul></section>
+      </div>
+      <div class="crm-drawer-foot">
+        <a class="button secondary" href="/app/commandes/${escapeHtml(o.id)}">Ouvrir la fiche</a>
+        <a class="button primary" href="/app/commandes/${escapeHtml(o.id)}">Modifier la commande</a>
+      </div>`;
+    wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+  } catch (error) {
+    wrap.querySelector('.crm-drawer').innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
+    wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+  }
+}
+
 async function renderOperations() {
   setHeader('Opérations', 'Démarrez une livraison et suivez l’activité');
   const params = new URLSearchParams(location.search);
@@ -2169,139 +2284,252 @@ function renderOperationsCreate() {
 
 // Niveau 2 bis : le suivi de l'activité (table segmentée).
 async function renderOperationsWorkspace(initialSegment) {
-  const validSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
-  let segment = validSegments.includes(initialSegment) ? initialSegment : 'commandes';
+  const valid = ['commandes', 'incidents', 'tournees', 'demandes'];
+  let segment = valid.includes(initialSegment) ? initialSegment : 'commandes';
+  let raw = [];
   let query = '';
-  let rows = [];
+  let sort = null;
+  let group = null;
+  let filter = null;
+  let pageN = 1;
+  const pageSize = 10;
   const scopeState = { demandes: 'active', incidents: 'open' };
-  let openMenu = null;
+  let counts = {};
 
-  const segMeta = {
-    commandes: { label: 'Commandes', countKey: 'orders', scopes: null,
-      endpoint: () => '/api/app/orders',
-      head: '<th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th>',
-      map: (o) => ({ href: `/app/commandes/${escapeHtml(o.id)}`, text: `${o.id} ${o.customer_name || ''} ${o.customer_phone || ''} ${o.neighborhood || ''} ${o.driver_name || ''} ${o.status || ''}`.toLowerCase(),
-        html: `<td>N° ${escapeHtml(o.id)}<br><small>${escapeHtml(formatDate(o.created_at))}</small></td><td><strong>${escapeHtml(o.customer_name || '—')}</strong><br><small>${escapeHtml(o.customer_phone || '')}</small></td><td>${escapeHtml(o.neighborhood || o.landmark || '—')}</td><td>${escapeHtml(o.driver_name)}</td><td>${badge(o.status)}</td><td>${o.trackingLink?.path ? `<a href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir</a>` : escapeHtml(o.trackingLink?.state === 'revoked' ? 'Révoqué' : '—')}</td>` }) },
-    demandes: { label: 'Demandes', countKey: 'active_requests', scopes: [['active', 'Actives'], ['archived', 'Archives']],
-      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`,
-      head: '<th>Client</th><th>Zone / repère</th><th>Créneau</th><th>Statut</th><th>Mise à jour</th>',
-      map: (r) => ({ href: `/app/demandes/${escapeHtml(r.id)}`, text: `${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.landmark || ''} ${r.status || ''}`.toLowerCase(),
-        html: `<td><strong>${escapeHtml(r.customer_name || 'En attente du client')}</strong><br><small>${escapeHtml(r.customer_phone || '')}</small></td><td>${escapeHtml(r.neighborhood || '—')}<br><small>${escapeHtml(r.landmark || '')}</small></td><td>${escapeHtml(r.requested_time || '—')}</td><td>${badge(r.status)}</td><td>${escapeHtml(formatDate(r.updated_at))}</td>` }) },
-    tournees: { label: 'Tournées', countKey: 'open_runs', scopes: null,
-      endpoint: () => '/api/app/runs',
-      head: '<th>Tournée</th><th>Date</th><th>Livreur</th><th>Progression</th><th>État</th>',
-      map: (run) => ({ href: `/app/tournees/${escapeHtml(run.id)}`, text: `${run.name || ''} ${run.id} ${run.driver_name || ''} ${run.status || ''}`.toLowerCase(),
-        html: `<td><strong>${escapeHtml(run.name)}</strong><br><small>N° ${escapeHtml(run.id)}</small></td><td>${escapeHtml(formatDateOnly(run.service_date))}</td><td>${escapeHtml(run.driver_name)}<br><small>${escapeHtml(run.vehicle_type || '')}</small></td><td>${escapeHtml(run.terminal_stop_count)} / ${escapeHtml(run.stop_count)} arrêts</td><td>${badge(runStatusLabels[run.status] || run.status)}</td>` }) },
-    incidents: { label: 'Incidents', countKey: 'open_incidents', scopes: [['open', 'Ouverts'], ['resolved', 'Résolus'], ['all', 'Tous']],
-      endpoint: () => `/api/app/incidents?scope=${encodeURIComponent(scopeState.incidents)}`,
-      head: '<th>Incident</th><th>Commande</th><th>Client</th><th>Livreur</th><th>Responsable</th><th>État</th>',
-      map: (i) => ({ href: `/app/incidents/${escapeHtml(i.id)}`, text: `${incidentCategoryLabels[i.category] || i.category} ${i.order_id} ${i.customer_name || ''} ${i.driver_name || ''} ${i.assigned_to || ''} ${i.status || ''}`.toLowerCase(),
-        html: `<td><strong>${escapeHtml(incidentCategoryLabels[i.category] || i.category)}</strong><br><small>${escapeHtml(incidentSeverityLabels[i.severity] || i.severity)} · ${escapeHtml(formatDate(i.created_at))}</small></td><td>N° ${escapeHtml(i.order_id)}<br><small>${escapeHtml(i.order_status)}</small></td><td>${escapeHtml(i.customer_name || '—')}<br><small>${escapeHtml(i.neighborhood || i.customer_phone || '—')}</small></td><td>${escapeHtml(i.driver_name)}</td><td>${escapeHtml(i.assigned_to || 'Non attribué')}</td><td>${badge(i.status === 'resolved' ? 'Résolu' : 'Ouvert')}${i.retention_hold_id ? '<br><span class="badge warning" style="margin-top:6px">Conservation gelée</span>' : ''}</td>` }) },
+  const cfg = {
+    commandes: {
+      title: 'Commandes', newLabel: 'Nouvelle commande', newHref: '/app/nouvelle-commande',
+      placeholder: 'Rechercher une commande, un client…', countKey: 'orders',
+      endpoint: () => '/api/app/orders', drawer: true, href: (r) => `/app/commandes/${r.id}`,
+      statusValues: ['Confirmée', 'En préparation', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
+      groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['driver', 'Livreur']],
+      groupVal: (r, k) => k === 'status' ? r.status : k === 'zone' ? (r.neighborhood || r.landmark || '—') : (r.driver_name || '—'),
+      filterTest: (r, v) => r.status === v,
+      text: (r) => `${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
+      columns: [
+        { key: 'id', label: 'N° Commande', cell: (r) => `<span class="crm-code">CMD-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
+        { key: 'client', label: 'Client', cell: (r) => `<div class="crm-strong">${escapeHtml(r.customer_name || '—')}</div>${r.customer_phone ? `<div class="crm-sub">${escapeHtml(r.customer_phone)}</div>` : ''}`, sortVal: (r) => (r.customer_name || '').toLowerCase() },
+        { key: 'zone', label: 'Zone', cell: (r) => escapeHtml(r.neighborhood || r.landmark || '—'), sortVal: (r) => (r.neighborhood || '').toLowerCase() },
+        { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name), sortVal: (r) => (r.driver_name || '').toLowerCase() },
+        { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status, crmOrderStatusColor(r.status)), sortVal: (r) => r.status },
+        { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
+        { key: 'suivi', label: 'Suivi', cell: (r) => { const p = crmOrderProgress(r.status); return crmProgressBar(p.pct, p.tone); } },
+      ],
+    },
+    incidents: {
+      title: 'Incidents', newLabel: 'Nouvel incident', newHref: '/app/operations?vue=incidents', placeholder: 'Rechercher un incident, une commande…', countKey: 'open_incidents',
+      endpoint: () => `/api/app/incidents?scope=${encodeURIComponent(scopeState.incidents)}`, href: (r) => `/app/incidents/${r.id}`,
+      statusValues: ['open', 'resolved'], statusLabelMap: { open: 'Ouvert', resolved: 'Résolu' },
+      groupCols: [['status', 'Statut'], ['severity', 'Priorité'], ['assignee', 'Assigné à']],
+      groupVal: (r, k) => k === 'status' ? (r.status === 'resolved' ? 'Résolu' : 'Ouvert') : k === 'severity' ? (incidentSeverityLabels[r.severity] || r.severity) : (r.assigned_to || r.driver_name || 'Non attribué'),
+      filterTest: (r, v) => r.status === v,
+      text: (r) => `${r.id} ${incidentCategoryLabels[r.category] || r.category} ${r.order_id} ${r.customer_name || ''} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
+      columns: [
+        { key: 'id', label: 'N° Incident', cell: (r) => `<span class="crm-code">INC-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
+        { key: 'type', label: 'Type', cell: (r) => escapeHtml(incidentCategoryLabels[r.category] || r.category), sortVal: (r) => r.category },
+        { key: 'order', label: 'Commande liée', cell: (r) => `<span class="crm-code">CMD-${escapeHtml(r.order_id)}</span>`, sortVal: (r) => Number(r.order_id) },
+        { key: 'zone', label: 'Zone', cell: (r) => escapeHtml(r.neighborhood || '—') },
+        { key: 'assignee', label: 'Assigné à', cell: (r) => (r.assigned_to || r.driver_name) ? crmAvatar(r.assigned_to || r.driver_name) : '<span class="crm-muted">Non attribué</span>' },
+        { key: 'severity', label: 'Priorité', cell: (r) => { const lbl = incidentSeverityLabels[r.severity] || r.severity; return crmChip(lbl, /haut|crit|élev|eleve|urgent/i.test(lbl || '') ? 'red' : /moy/i.test(lbl || '') ? 'amber' : 'grey'); } },
+        { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status === 'resolved' ? 'Résolu' : 'Ouvert', r.status === 'resolved' ? 'green' : 'red'), sortVal: (r) => r.status },
+        { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
+      ],
+    },
+    tournees: {
+      title: 'Tournées', newLabel: 'Nouvelle tournée', newHref: '/app/tournees', placeholder: 'Rechercher une tournée, un livreur…', countKey: 'open_runs',
+      endpoint: () => '/api/app/runs', href: (r) => `/app/tournees/${r.id}`,
+      statusValues: ['draft', 'planned', 'active', 'completed', 'cancelled'],
+      groupCols: [['status', 'État'], ['driver', 'Livreur']],
+      groupVal: (r, k) => k === 'status' ? (runStatusLabels[r.status] || r.status) : (r.driver_name || '—'),
+      filterTest: (r, v) => r.status === v,
+      text: (r) => `${r.name || ''} ${r.id} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
+      columns: [
+        { key: 'name', label: 'N° Tournée', cell: (r) => `<div class="crm-strong">${escapeHtml(r.name || `TRN-${r.id}`)}</div><div class="crm-sub">N° ${escapeHtml(r.id)}</div>`, sortVal: (r) => (r.name || '').toLowerCase() },
+        { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name), sortVal: (r) => (r.driver_name || '').toLowerCase() },
+        { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDateOnly(r.service_date)), sortVal: (r) => r.service_date || '' },
+        { key: 'stops', label: 'Arrêts', cell: (r) => `${escapeHtml(r.terminal_stop_count)} / ${escapeHtml(r.stop_count)}`, sortVal: (r) => Number(r.stop_count) },
+        { key: 'prog', label: 'Progression', cell: (r) => { const total = Number(r.stop_count) || 0; const done = Number(r.terminal_stop_count) || 0; return crmProgressBar(total ? Math.round((done / total) * 100) : 0, ''); } },
+        { key: 'status', label: 'État', cell: (r) => crmChip(runStatusLabels[r.status] || r.status, r.status === 'active' ? 'blue' : r.status === 'completed' ? 'green' : r.status === 'planned' ? 'indigo' : 'grey'), sortVal: (r) => r.status },
+      ],
+    },
+    demandes: {
+      title: 'Demandes', newLabel: 'Nouvelle demande', newHref: '/app/operations?vue=creer', placeholder: 'Rechercher une demande, un client…', countKey: 'active_requests',
+      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, href: (r) => `/app/demandes/${r.id}`,
+      statusValues: [], filterTest: (r, v) => r.status === v,
+      groupCols: [['status', 'Statut'], ['zone', 'Zone']],
+      groupVal: (r, k) => k === 'status' ? (r.status || '—') : (r.neighborhood || '—'),
+      text: (r) => `${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.status || ''}`.toLowerCase(),
+      columns: [
+        { key: 'id', label: 'N° Demande', cell: (r) => `<span class="crm-code">DEM-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
+        { key: 'client', label: 'Client', cell: (r) => `<div class="crm-strong">${escapeHtml(r.customer_name || 'En attente du client')}</div>${r.customer_phone ? `<div class="crm-sub">${escapeHtml(r.customer_phone)}</div>` : ''}`, sortVal: (r) => (r.customer_name || '').toLowerCase() },
+        { key: 'zone', label: 'Zone / repère', cell: (r) => `${escapeHtml(r.neighborhood || '—')}${r.landmark ? `<div class="crm-sub">${escapeHtml(r.landmark)}</div>` : ''}` },
+        { key: 'slot', label: 'Créneau', cell: (r) => escapeHtml(r.requested_time || '—') },
+        { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status), sortVal: (r) => r.status },
+        { key: 'date', label: 'Mise à jour', cell: (r) => escapeHtml(formatDate(r.updated_at)), sortVal: (r) => +new Date(r.updated_at) },
+      ],
+    },
   };
 
-  let counts = {};
-  try { counts = await api('/api/app/summary'); } catch { counts = {}; }
+  const c = () => cfg[segment];
+  const emptyDrop = () => document.querySelectorAll('.crm-drop').forEach((d) => d.remove());
+  document.addEventListener('click', emptyDrop);
 
-  page.innerHTML = `
-    <div class="ops-breadcrumb"><a href="/app/operations">Opérations</a><span class="sep">›</span><span>Suivi de l’activité</span></div>
-    <div class="page-header"><div><h1>Suivi de l’activité</h1><p class="subtitle">Commandes, demandes, tournées et incidents au même endroit.</p></div>
-      <div class="row-menu"><button class="button primary" id="opsCreate">${fleetIcons.plus} Créer</button></div></div>
-    <div class="fleet-toolbar">
-      <div class="fleet-tabs" id="opsSegments"></div>
-      <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="opsSearch" placeholder="Rechercher dans ce segment…" autocomplete="off"/></div>
-    </div>
-    <div class="ops-scopes" id="opsScopes"></div>
-    <div id="opsResult"></div>
-    <section class="card" id="opsList"><div class="loading-state">Chargement…</div></section>`;
+  function shell() {
+    const co = c();
+    page.innerHTML = `
+      <div class="crm-tabs" id="crmTabs"></div>
+      <div class="crm-tools">
+        <label class="crm-search"><span>${fleetIcons.search}</span><input type="search" id="crmSearch" placeholder="${escapeHtml(co.placeholder)}" value="${escapeHtml(query)}" autocomplete="off"/></label>
+        <div class="crm-tool-wrap"><button class="crm-btn" id="crmFilter">${crmIcons.filter} Filtrer<span class="crm-b" id="crmFilterN" hidden></span></button></div>
+        <div class="crm-tool-wrap"><button class="crm-btn" id="crmGroup">${crmIcons.group} Grouper par</button></div>
+        <div class="crm-tool-wrap"><button class="crm-btn" id="crmSort">${crmIcons.sort} Trier</button></div>
+        <a class="crm-new" href="${escapeHtml(co.newHref)}">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</a>
+      </div>
+      <div class="crm-chips" id="crmChips"></div>
+      <div class="crm-card"><div class="crm-scroll"><table class="crm-table"><thead id="crmHead"></thead><tbody id="crmBody"></tbody></table></div></div>
+      <div class="crm-foot" id="crmFoot"></div>`;
+    renderTabs();
+    document.getElementById('crmSearch').addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); pageN = 1; renderAll(); });
+    document.getElementById('crmFilter').addEventListener('click', (e) => { e.stopPropagation(); openFilterMenu(e.currentTarget); });
+    document.getElementById('crmGroup').addEventListener('click', (e) => { e.stopPropagation(); openGroupMenu(e.currentTarget); });
+    document.getElementById('crmSort').addEventListener('click', (e) => { e.stopPropagation(); openSortMenu(e.currentTarget); });
+  }
 
-  function renderSegments() {
-    document.getElementById('opsSegments').innerHTML = validSegments.map((key) => {
-      const meta = segMeta[key];
-      const count = counts[meta.countKey];
-      return `<button class="fleet-tab ${segment === key ? 'active' : ''}" data-segment="${key}">${meta.label}${count != null ? `<span class="count">${escapeHtml(count)}</span>` : ''}</button>`;
+  function renderTabs() {
+    const el = document.getElementById('crmTabs');
+    el.innerHTML = valid.map((k) => {
+      const n = counts[cfg[k].countKey];
+      return `<button class="crm-tab ${k === segment ? 'active' : ''}" data-seg="${k}">${escapeHtml(cfg[k].title)}${n != null ? `<span class="n">${escapeHtml(n)}</span>` : ''}</button>`;
     }).join('');
+    el.querySelectorAll('[data-seg]').forEach((b) => b.addEventListener('click', () => switchSeg(b.dataset.seg)));
   }
 
-  function renderScopes() {
-    const meta = segMeta[segment];
-    const el = document.getElementById('opsScopes');
-    if (!meta.scopes) { el.innerHTML = ''; return; }
-    const current = scopeState[segment];
-    el.innerHTML = meta.scopes.map(([value, label]) => `<button class="fleet-tab ${current === value ? 'active' : ''}" data-scope="${value}">${label}</button>`).join('');
+  function switchSeg(k) {
+    if (k === segment) return;
+    segment = k; query = ''; sort = null; group = null; filter = null; pageN = 1;
+    try { history.replaceState(null, '', `/app/operations?vue=${k}`); } catch { /* ignore */ }
+    shell(); loadSegment();
   }
 
-  function renderList() {
-    const meta = segMeta[segment];
-    const mapped = rows.map(meta.map).filter((entry) => !query || entry.text.includes(query));
-    const container = document.getElementById('opsList');
-    container.className = 'card';
-    if (!mapped.length) { container.innerHTML = `<div class="fleet-empty">${rows.length ? 'Aucun élément ne correspond à la recherche.' : 'Rien à afficher ici pour le moment.'}</div>`; return; }
-    container.innerHTML = `<div class="table-wrap"><table><thead><tr>${meta.head}</tr></thead><tbody>${mapped.map((entry) => `<tr data-href="${entry.href}">${entry.html}</tr>`).join('')}</tbody></table></div>`;
-    container.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', (event) => {
-      if (event.target.closest('a, button, input, select')) return;
-      location.href = row.dataset.href;
-    }));
+  function makeDrop(anchor, items) {
+    emptyDrop();
+    const drop = document.createElement('div');
+    drop.className = 'crm-drop';
+    drop.innerHTML = items.map((it) => `<button data-v="${escapeHtml(it.value)}" class="${it.active ? 'active' : ''}">${escapeHtml(it.label)}</button>`).join('');
+    anchor.parentElement.appendChild(drop);
+    drop.addEventListener('click', (e) => { e.stopPropagation(); const b = e.target.closest('[data-v]'); if (b) { drop.remove(); const hit = items.find((i) => String(i.value) === b.dataset.v); if (hit) hit.onPick(); } });
   }
+  function openFilterMenu(anchor) {
+    const co = c();
+    const vals = co.statusValues && co.statusValues.length ? co.statusValues : [...new Set(raw.map((r) => r.status).filter(Boolean))];
+    const items = vals.map((v) => ({ value: v, label: (co.statusLabelMap && co.statusLabelMap[v]) || v, active: filter && filter.value === v, onPick: () => { filter = { value: v, label: (co.statusLabelMap && co.statusLabelMap[v]) || v, test: (r) => co.filterTest(r, v) }; pageN = 1; renderAll(); } }));
+    items.unshift({ value: '__none', label: 'Aucun filtre', active: !filter, onPick: () => { filter = null; pageN = 1; renderAll(); } });
+    makeDrop(anchor, items);
+  }
+  function openGroupMenu(anchor) {
+    const co = c();
+    const items = co.groupCols.map(([k, label]) => ({ value: k, label, active: group === k, onPick: () => { group = group === k ? null : k; renderAll(); } }));
+    items.unshift({ value: '__none', label: 'Aucun regroupement', active: !group, onPick: () => { group = null; renderAll(); } });
+    makeDrop(anchor, items);
+  }
+  function openSortMenu(anchor) {
+    const co = c();
+    const items = co.columns.filter((col) => col.sortVal).map((col) => ({ value: col.key, label: col.label + (sort && sort.key === col.key ? (sort.dir > 0 ? ' ↑' : ' ↓') : ''), active: sort && sort.key === col.key, onPick: () => { sort = (sort && sort.key === col.key) ? { key: col.key, dir: -sort.dir } : { key: col.key, dir: 1 }; renderAll(); } }));
+    makeDrop(anchor, items);
+  }
+
+  function computeRows() {
+    const co = c();
+    let out = raw.slice();
+    if (query) out = out.filter((r) => co.text(r).includes(query));
+    if (filter) out = out.filter((r) => filter.test(r));
+    if (sort) { const col = co.columns.find((k) => k.key === sort.key); if (col && col.sortVal) out.sort((a, b) => { const va = col.sortVal(a); const vb = col.sortVal(b); return (va < vb ? -1 : va > vb ? 1 : 0) * sort.dir; }); }
+    return out;
+  }
+
+  function renderChips() {
+    const el = document.getElementById('crmChips');
+    const chips = [];
+    if (filter) chips.push(`<span class="crm-fchip">Statut est ${escapeHtml(filter.label)} <button data-x="filter">✕</button></span>`);
+    if (group) { const g = c().groupCols.find(([k]) => k === group); chips.push(`<span class="crm-fchip alt">Groupé par ${escapeHtml(g ? g[1] : group)} <button data-x="group">✕</button></span>`); }
+    el.innerHTML = chips.join('');
+    const nEl = document.getElementById('crmFilterN');
+    if (nEl) { if (filter) { nEl.textContent = '1'; nEl.hidden = false; } else { nEl.hidden = true; } }
+    el.querySelectorAll('[data-x]').forEach((b) => b.addEventListener('click', () => { if (b.dataset.x === 'filter') filter = null; else group = null; pageN = 1; renderAll(); }));
+  }
+
+  function renderHead() {
+    const co = c();
+    const cells = co.columns.map((col) => `<th data-sort="${col.sortVal ? col.key : ''}">${escapeHtml(col.label)}${sort && sort.key === col.key ? `<span class="crm-sarrow">${sort.dir > 0 ? '↑' : '↓'}</span>` : ''}</th>`).join('');
+    const head = document.getElementById('crmHead');
+    head.innerHTML = `<tr><th class="crm-cbcol"><span class="crm-cb"></span></th>${cells}<th class="crm-actcol"></th></tr>`;
+    head.querySelectorAll('[data-sort]').forEach((th) => { if (th.dataset.sort) th.addEventListener('click', () => { const k = th.dataset.sort; sort = (sort && sort.key === k) ? { key: k, dir: -sort.dir } : { key: k, dir: 1 }; renderAll(); }); });
+  }
+
+  function rowHtml(r, co) {
+    const cells = co.columns.map((col) => `<td>${col.cell(r)}</td>`).join('');
+    const eye = co.drawer ? `<button data-act="view" title="Aperçu">${crmIcons.eye}</button>` : `<button data-act="open" title="Ouvrir">${crmIcons.eye}</button>`;
+    return `<tr data-id="${escapeHtml(r.id)}"><td class="crm-cbcol"><span class="crm-cb"></span></td>${cells}<td class="crm-actcol"><span class="crm-rowact">${eye}<button data-act="open" title="Ouvrir la fiche">${crmIcons.edit}</button></span></td></tr>`;
+  }
+
+  function renderBody() {
+    const co = c();
+    const all = computeRows();
+    const body = document.getElementById('crmBody');
+    const colspan = co.columns.length + 2;
+    if (!all.length) { body.innerHTML = `<tr><td colspan="${colspan}"><div class="crm-empty">${raw.length ? 'Aucun élément ne correspond.' : 'Rien à afficher ici pour le moment.'}</div></td></tr>`; renderFoot(0); return; }
+    let html = '';
+    if (group) {
+      const groups = new Map();
+      all.forEach((r) => { const key = co.groupVal(r, group); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(r); });
+      html = [...groups.entries()].map(([key, list]) => `<tr class="crm-grouprow"><td colspan="${colspan}">${escapeHtml(key)} <span class="crm-gcount">${list.length}</span></td></tr>${list.map((r) => rowHtml(r, co)).join('')}`).join('');
+      renderFoot(all.length);
+    } else {
+      const start = (pageN - 1) * pageSize;
+      html = all.slice(start, start + pageSize).map((r) => rowHtml(r, co)).join('');
+      renderFoot(all.length);
+    }
+    body.innerHTML = html;
+    body.querySelectorAll('tr[data-id]').forEach((tr) => {
+      tr.addEventListener('click', (e) => {
+        const act = e.target.closest('[data-act]');
+        const id = tr.dataset.id;
+        if (act && act.dataset.act === 'view') { openOrderDrawer(id); return; }
+        if (act && act.dataset.act === 'open') { location.href = co.href({ id }); return; }
+        if (e.target.closest('.crm-cb')) { e.target.closest('.crm-cb').classList.toggle('on'); return; }
+        if (co.drawer) openOrderDrawer(id); else location.href = co.href({ id });
+      });
+    });
+  }
+
+  function renderFoot(total) {
+    const el = document.getElementById('crmFoot');
+    if (!el) return;
+    const pages = group ? 1 : Math.max(1, Math.ceil(total / pageSize));
+    if (pageN > pages) pageN = pages;
+    let pager = '';
+    if (!group && pages > 1) {
+      const btn = (p, label, cls) => `<button class="crm-pg ${cls || ''}" data-p="${p}">${label}</button>`;
+      let nums = '';
+      for (let i = 1; i <= pages; i += 1) nums += btn(i, i, i === pageN ? 'active' : '');
+      pager = `${btn(Math.max(1, pageN - 1), '‹')}${nums}${btn(Math.min(pages, pageN + 1), '›')}`;
+    }
+    el.innerHTML = `<span>${escapeHtml(total)} résultat${total > 1 ? 's' : ''}</span><div class="crm-page"><span class="crm-per">${pageSize} par page</span>${pager}</div>`;
+    el.querySelectorAll('[data-p]').forEach((b) => b.addEventListener('click', () => { pageN = Number(b.dataset.p); renderBody(); }));
+  }
+
+  function renderAll() { renderChips(); renderHead(); renderBody(); }
 
   async function loadSegment() {
-    const meta = segMeta[segment];
-    document.getElementById('opsList').innerHTML = '<div class="loading-state">Chargement…</div>';
-    try {
-      rows = await api(meta.endpoint());
-      renderList();
-    } catch (error) {
-      document.getElementById('opsList').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    }
+    const co = c();
+    document.getElementById('crmBody').innerHTML = `<tr><td colspan="${co.columns.length + 2}"><div class="loading-state">Chargement…</div></td></tr>`;
+    renderHead();
+    try { raw = await api(co.endpoint()); pageN = 1; renderAll(); }
+    catch (error) { document.getElementById('crmBody').innerHTML = `<tr><td colspan="${co.columns.length + 2}"><div class="notice error">${escapeHtml(error.message)}</div></td></tr>`; }
   }
 
-  function switchSegment(key) {
-    if (!validSegments.includes(key) || key === segment) return;
-    segment = key; query = '';
-    const search = document.getElementById('opsSearch');
-    if (search) search.value = '';
-    try { history.replaceState(null, '', `/app/operations?vue=${key}`); } catch { /* ignore */ }
-    renderSegments(); renderScopes(); loadSegment();
-  }
-
-  document.getElementById('opsSegments').addEventListener('click', (event) => {
-    const tab = event.target.closest('[data-segment]');
-    if (tab) switchSegment(tab.dataset.segment);
-  });
-  document.getElementById('opsScopes').addEventListener('click', (event) => {
-    const chip = event.target.closest('[data-scope]');
-    if (!chip) return;
-    scopeState[segment] = chip.dataset.scope;
-    renderScopes(); loadSegment();
-  });
-  const search = document.getElementById('opsSearch');
-  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
-
-  // Menu « + Créer ».
-  document.getElementById('opsCreate').addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (openMenu) { openMenu.remove(); openMenu = null; return; }
-    const menu = document.createElement('div');
-    menu.className = 'menu-pop';
-    menu.innerHTML = `
-      <button data-create="/app/operations?vue=creer">Créer un formulaire</button>
-      <button data-create="/app/nouvelle-commande">Commande directe</button>
-      <button data-create="/app/tournees">Nouvelle tournée</button>
-      <hr/>
-      <button data-goto="incidents">Voir les incidents</button>`;
-    event.currentTarget.parentElement.appendChild(menu);
-    openMenu = menu;
-    menu.addEventListener('click', (menuEvent) => {
-      const create = menuEvent.target.closest('[data-create]');
-      const goto = menuEvent.target.closest('[data-goto]');
-      if (create) location.href = create.dataset.create;
-      else if (goto) { openMenu.remove(); openMenu = null; switchSegment(goto.dataset.goto); }
-    });
-  });
-  document.addEventListener('click', (event) => {
-    if (openMenu && !event.target.closest('.row-menu')) { openMenu.remove(); openMenu = null; }
-  });
-
-  renderSegments(); renderScopes();
+  try { counts = await api('/api/app/summary'); } catch { counts = {}; }
+  shell();
   await loadSegment();
 }
 

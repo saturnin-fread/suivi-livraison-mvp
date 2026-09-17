@@ -941,7 +941,7 @@ async function renderOperationsMap() {
   const sequenceLayer = L.layerGroup().addTo(map);
   const operatorLayer = L.layerGroup().addTo(map);
   const replayLayer = L.layerGroup().addTo(map);
-  const replay = { active: false, driverId: null, positions: [], roadGeometry: null, index: 0, playing: false, timer: null, marker: null, prevAuto: true };
+  const replay = { active: false, driverId: null, positions: [], roadGeometry: null, index: 0, playing: false, timer: null, marker: null, dayStart: null, prevAuto: true };
 
   let baseStreet = null;
   let baseSatellite = null;
@@ -1092,10 +1092,25 @@ async function renderOperationsMap() {
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
   }
 
+  function todayMidnight() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  function dayLabel(ts) {
+    const start = new Date(ts); start.setHours(0, 0, 0, 0);
+    const diff = Math.round((start.getTime() - todayMidnight()) / 86400000);
+    if (diff === 0) return 'Aujourd’hui';
+    if (diff === -1) return 'Hier';
+    return start.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+  }
+
   function replayWindow(key) {
     const now = Date.now();
-    if (key === 'today') { const start = new Date(); start.setHours(0, 0, 0, 0); return { from: start.toISOString(), to: new Date(now).toISOString() }; }
-    if (key === 'day') return { from: new Date(now - 24 * 60 * 60000).toISOString(), to: new Date(now).toISOString() };
+    // « Jour » = une journée civile précise (00:00 → 23:59 locale), jamais une
+    // fenêtre glissante de 24 h : sinon les trajets d'hier et d'aujourd'hui se
+    // mélangent à l'affichage.
+    if (key === 'day') {
+      const start = replay.dayStart != null ? replay.dayStart : todayMidnight();
+      const end = Math.min(start + 24 * 60 * 60000, now);
+      return { from: new Date(start).toISOString(), to: new Date(end).toISOString() };
+    }
     if (key === 'custom') {
       const from = replay.customFrom ? new Date(replay.customFrom).toISOString() : new Date(now - 3 * 60 * 60000).toISOString();
       const to = replay.customTo ? new Date(replay.customTo).toISOString() : new Date(now).toISOString();
@@ -1105,14 +1120,19 @@ async function renderOperationsMap() {
     return { from: new Date(now - minutes * 60000).toISOString(), to: new Date(now).toISOString() };
   }
 
-  const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h', day: '1 jour', today: 'Aujourd’hui' };
+  const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h' };
   function renderReplayUI() {
     const slot = document.getElementById('opsReplay');
     if (!slot) return;
     const hasTrack = replay.positions.length > 0;
     slot.innerHTML = `<div class="ops-replay">
       <div class="ops-replay-windows">
-        ${['30', '60', '180', 'day', 'today'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
+        ${['30', '60', '180'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
+        <div class="ops-day-nav">
+          <button type="button" class="ops-day-arrow" data-day-step="-1" title="Jour précédent" aria-label="Jour précédent">‹</button>
+          <button type="button" class="ops-win ops-day-label ${String(replay.windowKey) === 'day' ? 'active' : ''}" data-day-play title="Rejouer cette journée complète">${escapeHtml(dayLabel(replay.dayStart != null ? replay.dayStart : todayMidnight()))}</button>
+          <button type="button" class="ops-day-arrow" data-day-step="1" title="Jour suivant" aria-label="Jour suivant" ${(replay.dayStart == null || replay.dayStart >= todayMidnight()) ? 'disabled' : ''}>›</button>
+        </div>
         <button type="button" class="ops-win ${replay.customOpen ? 'active' : ''}" data-replay-custom>Période…</button>
         <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
       </div>
@@ -1129,6 +1149,17 @@ async function renderOperationsMap() {
       <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
     </div>`;
     slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
+    slot.querySelector('[data-day-play]')?.addEventListener('click', () => {
+      if (replay.dayStart == null) replay.dayStart = todayMidnight();
+      startReplay('day');
+    });
+    slot.querySelectorAll('[data-day-step]').forEach((btn) => btn.addEventListener('click', () => {
+      const base = replay.dayStart != null ? replay.dayStart : todayMidnight();
+      const next = base + Number(btn.dataset.step) * 86400000;
+      if (next > todayMidnight()) return; // pas de journée future
+      replay.dayStart = next;
+      startReplay('day');
+    }));
     slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
     slot.querySelector('[data-replay-custom]')?.addEventListener('click', () => { replay.customOpen = !replay.customOpen; renderReplayUI(); });
     slot.querySelector('#replayApply')?.addEventListener('click', () => {
@@ -1231,7 +1262,7 @@ async function renderOperationsMap() {
   }
   function closeReplay() {
     stopPlay();
-    replay.active = false; replay.driverId = null; replay.positions = []; replay.roadGeometry = null; replay.marker = null; replay.windowKey = null; replay.statusText = null;
+    replay.active = false; replay.driverId = null; replay.positions = []; replay.roadGeometry = null; replay.marker = null; replay.windowKey = null; replay.statusText = null; replay.dayStart = null;
     replayLayer.clearLayers();
     if (replay.suspended) { autoRefresh = replay.prevAuto; replay.suspended = false; }
     renderPanel();

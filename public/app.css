@@ -342,8 +342,8 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .ops-create-card h3 { position: relative; z-index: 2; margin: 0; font-size: 21px; color: var(--ink-strong); }
 .ops-create-card p { position: relative; z-index: 2; margin: 10px 0 22px; max-width: 60%; color: var(--muted); font-size: 14px; line-height: 1.55; }
 .ops-create-card .button { position: relative; z-index: 2; }
-.ops-create-art { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); height: 78%; pointer-events: none; }
-.ops-create-art svg { height: 100%; width: auto; display: block; }
+.ops-create-art { position: absolute; right: -4px; top: 50%; transform: translateY(-50%); height: 116%; pointer-events: none; }
+.ops-create-art svg, .ops-create-art img { height: 100%; width: auto; display: block; }
 .ops-linkpanel { margin-top: 22px; padding: 20px; }
 .ops-linkpanel-title { display: block; font-size: 15px; color: var(--ink-strong); }
 .ops-linkout { display: flex; gap: 8px; margin-bottom: 12px; }

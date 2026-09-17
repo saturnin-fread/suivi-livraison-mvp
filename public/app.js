@@ -2125,14 +2125,14 @@ function renderOperationsCreate() {
         <h3>Le client partage sa position</h3>
         <p>Envoyez un lien au client. Il remplit ses infos et partage sa position GPS exacte directement depuis son téléphone.</p>
         <button type="button" class="button primary" id="opsGenLink">Générer ce lien ${opsIco.arrow}</button>
-        <span class="ops-create-art">${opsArt.phone}</span>
+        <span class="ops-create-art"><img src="/img/ops-share-location.webp" alt="" loading="lazy"/></span>
       </div>
       <a class="ops-create-card ops-create-link" href="/app/nouvelle-commande">
         <span class="ops-create-ic">${opsIco.ride}</span>
         <h3>Vous remplissez, il suit le livreur</h3>
         <p>Vous saisissez les infos du client vous-même. Il reçoit un lien pour suivre la position du livreur assigné en temps réel, sans révéler sa propre position.</p>
         <span class="button primary">Créer et assigner ${opsIco.arrow}</span>
-        <span class="ops-create-art">${opsArt.scooter}</span>
+        <span class="ops-create-art"><img src="/img/ops-assign-rider.webp" alt="" loading="lazy"/></span>
       </a>
     </div>
     <div id="opsLinkPanel"></div>`;

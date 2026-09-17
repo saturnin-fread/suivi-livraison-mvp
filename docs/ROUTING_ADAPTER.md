@@ -16,6 +16,7 @@ Le module fournit :
 - un fournisseur `osrm`, appelé en HTTP ou HTTPS côté serveur;
 - `route(input)` pour un parcours passant par les points dans l’ordre fourni;
 - `matrix(input)` pour les distances et durées entre toutes les paires;
+- `match(input)` pour caler une trace GPS bruitée sur le réseau routier (service Match d’OSRM);
 - `health()` qui décrit uniquement la configuration locale, sans prétendre que le fournisseur est joignable;
 - un petit cache mémoire TTL, remplaçable par un cache injecté.
 
@@ -137,6 +138,36 @@ La géométrie OSRM est demandée en GeoJSON et contrôlée avant d’être acce
 
 Une cellule non joignable garde `status: "unreachable"`, `distanceMeters: null` et `durationSeconds: null`. Aucun calcul géométrique de secours ne la transforme en cellule valide.
 
+## Sortie d’un map-matching
+
+`match(input)` accepte une liste `points` (ou `coordinates`) où chaque point porte
+`lat`, `lng` et, si connue, une `accuracy` en mètres. La précision est convertie en
+rayon de recherche OSRM, borné entre 4 et 50 m (défaut 15 m si absente). La requête
+utilise le service Match avec `geometries=geojson`, `overview=full`, `tidy=true` et
+`gaps=split`.
+
+```json
+{
+  "status": "ok",
+  "geometry": { "format": "geojson", "value": { "type": "LineString", "coordinates": [] } },
+  "matchings": 1,
+  "matchedPoints": 42,
+  "totalPoints": 48,
+  "confidence": 0.91,
+  "distanceMeters": 3120.4,
+  "durationSeconds": 486.0,
+  "quality": { "fallbackUsed": false, "warnings": ["routing_duration_is_not_eta"] },
+  "source": {}
+}
+```
+
+`matchedPoints` compte les points effectivement calés (tracepoints non nuls),
+`totalPoints` le nombre de points fournis, et `confidence` la moyenne des
+confiances OSRM. Un échec (`NoMatch`, `NoSegment`, panne réseau) renvoie
+`status: "unavailable"` avec `geometry: null` : l’appelant retombe sur la trace
+GPS nettoyée, jamais sur une ligne inventée. La plafond applicatif par défaut est
+de 100 points (`maxMatchCoordinates`, `ROUTING_MAX_MATCH_COORDINATES`).
+
 ## Dégradation et codes sûrs
 
 Les pannes externes ne sont pas relancées vers l’appelant sous forme d’exception technique. Elles deviennent un résultat `unavailable` avec valeurs métier à `null`.
@@ -195,7 +226,7 @@ Ces plafonds applicatifs doivent rester inférieurs ou égaux à la configuratio
 - aucune ETA, fenêtre d’arrivée ou promesse client;
 - aucune optimisation automatique de l’ordre des arrêts;
 - aucun repli à vol d’oiseau;
-- aucun calcul `snap`, `match` ou `trip`;
+- aucun calcul `snap` ou `trip`;
 - aucun cache périmé servi comme résultat frais;
 - aucun coupe-circuit distribué;
 - aucun test de qualité terrain du profil moto.

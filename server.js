@@ -115,6 +115,7 @@ function buildRoutingAdapter() {
       cacheTtlMs: routingEnvironmentInteger('ROUTING_CACHE_TTL_MS', 300000),
       maxRouteCoordinates: routingEnvironmentInteger('ROUTING_MAX_ROUTE_COORDINATES', 50),
       maxMatrixCoordinates: routingEnvironmentInteger('ROUTING_MAX_MATRIX_COORDINATES', 25),
+      maxMatchCoordinates: routingEnvironmentInteger('ROUTING_MAX_MATCH_COORDINATES', 100),
       mapDataVersion: process.env.ROUTING_MAP_DATA_VERSION,
       providerVersion: process.env.ROUTING_PROVIDER_VERSION,
     });
@@ -3339,6 +3340,16 @@ function cleanGpsTrack(points) {
   return kept;
 }
 
+// Sous-échantillonne une trace à au plus `max` points, en gardant le premier et
+// le dernier, pour le map-matching (OSRM interpole la route entre les points).
+function downsampleTrack(points, max) {
+  if (points.length <= max) return points;
+  const step = (points.length - 1) / (max - 1);
+  const out = [];
+  for (let i = 0; i < max; i += 1) out.push(points[Math.round(i * step)]);
+  return out;
+}
+
 // Historique GPS d'un livreur (rejeu). Interroge l'historique Traccar, borné et
 // isolé par entreprise : seul un livreur de la session peut être consulté.
 app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -3388,6 +3399,27 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
     const MAX_POINTS = 5000;
     const truncated = cleaned.length > MAX_POINTS;
     const output = truncated ? cleaned.slice(cleaned.length - MAX_POINTS) : cleaned;
+
+    // Map-matching (snap-to-roads) : la trace collée au réseau routier, si un
+    // moteur OSRM est configuré. Best-effort — un échec renvoie simplement la
+    // trace nettoyée, jamais d'erreur.
+    let roadGeometry = null;
+    let matchInfo = null;
+    try {
+      if (routingAdapter.health().capabilities.match && output.length >= 2) {
+        const matched = await routingAdapter.match({
+          profile: 'motorcycle',
+          points: downsampleTrack(output, 100).map((point) => ({ lat: point.latitude, lng: point.longitude, accuracy: point.accuracy })),
+        });
+        if (matched.status === 'ok' && matched.geometry?.value?.coordinates?.length >= 2) {
+          roadGeometry = matched.geometry.value.coordinates.map(([lng, lat]) => [lat, lng]);
+          matchInfo = { matchedPoints: matched.matchedPoints, totalPoints: matched.totalPoints, confidence: matched.confidence };
+        }
+      }
+    } catch (matchError) {
+      console.error('Map-matching error:', matchError.message);
+    }
+
     return res.json({
       status: 'online',
       driverId: driver.id,
@@ -3398,6 +3430,8 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
       cleaned: rawCount - cleaned.length,
       truncated,
       positions: output,
+      roadGeometry,
+      match: matchInfo,
     });
   } catch (error) {
     console.error('Traccar track error:', error.response?.status || error.message);

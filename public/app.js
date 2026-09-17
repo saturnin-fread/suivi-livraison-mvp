@@ -941,7 +941,7 @@ async function renderOperationsMap() {
   const sequenceLayer = L.layerGroup().addTo(map);
   const operatorLayer = L.layerGroup().addTo(map);
   const replayLayer = L.layerGroup().addTo(map);
-  const replay = { active: false, driverId: null, positions: [], index: 0, playing: false, timer: null, marker: null, prevAuto: true };
+  const replay = { active: false, driverId: null, positions: [], roadGeometry: null, index: 0, playing: false, timer: null, marker: null, prevAuto: true };
 
   let baseStreet = null;
   let baseSatellite = null;
@@ -1149,7 +1149,7 @@ async function renderOperationsMap() {
     if (!driver) return;
     stopPlay();
     replay.active = true; replay.driverId = driver.id; replay.windowKey = windowKey;
-    replay.positions = []; replay.index = 0; replay.statusText = 'Chargement de l’historique…';
+    replay.positions = []; replay.roadGeometry = null; replay.index = 0; replay.statusText = 'Chargement de l’historique…';
     suspendAutoForReplay();
     renderReplayUI();
     try {
@@ -1159,8 +1159,12 @@ async function renderOperationsMap() {
       else if (data.status === 'no_device') { replay.statusText = 'Aucun appareil GPS n’est associé à ce livreur.'; replay.positions = []; }
       else {
         replay.positions = data.positions || [];
+        replay.roadGeometry = Array.isArray(data.roadGeometry) && data.roadGeometry.length > 1 ? data.roadGeometry : null;
+        const matchNote = replay.roadGeometry && data.match
+          ? ` · tracé routier (${data.match.matchedPoints}/${data.match.totalPoints})`
+          : '';
         replay.statusText = replay.positions.length
-          ? `${replay.positions.length} point(s)${data.cleaned ? ` · ${data.cleaned} nettoyé(s)` : ''} · ${new Date(data.from).toLocaleTimeString('fr-FR')} → ${new Date(data.to).toLocaleTimeString('fr-FR')}${data.truncated ? ' (tronqué)' : ''}`
+          ? `${replay.positions.length} point(s)${data.cleaned ? ` · ${data.cleaned} nettoyé(s)` : ''}${matchNote} · ${new Date(data.from).toLocaleTimeString('fr-FR')} → ${new Date(data.to).toLocaleTimeString('fr-FR')}${data.truncated ? ' (tronqué)' : ''}`
           : 'Aucune position enregistrée sur cette période.';
       }
       replay.index = Math.max(0, replay.positions.length - 1);
@@ -1176,12 +1180,20 @@ async function renderOperationsMap() {
   function drawReplayTrail() {
     replayLayer.clearLayers();
     const pts = replay.positions.map((position) => [position.latitude, position.longitude]);
-    if (pts.length > 1) L.polyline(pts, { color: '#111', weight: 3, opacity: 0.45 }).addTo(replayLayer);
+    const road = replay.roadGeometry;
+    if (road) {
+      // Tracé calé sur les routes (OSRM map-matching) : la ligne rouge suit la voirie réelle.
+      L.polyline(road, { color: '#e11d2a', weight: 4, opacity: 0.9 }).addTo(replayLayer);
+      // Points GPS bruts nettoyés, en gris pâle pour référence.
+      if (pts.length > 1) L.polyline(pts, { color: '#111', weight: 2, opacity: 0.18, dashArray: '4 6' }).addTo(replayLayer);
+    } else if (pts.length > 1) {
+      L.polyline(pts, { color: '#111', weight: 3, opacity: 0.45 }).addTo(replayLayer);
+    }
     if (pts.length) {
       L.circleMarker(pts[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#197044', fillOpacity: 1 }).addTo(replayLayer).bindTooltip('Départ');
       L.circleMarker(pts[pts.length - 1], { radius: 6, color: '#fff', weight: 2, fillColor: '#e11d2a', fillOpacity: 1 }).addTo(replayLayer).bindTooltip('Fin');
       replay.marker = L.circleMarker(pts[replay.index] || pts[0], { radius: 8, color: '#111', weight: 3, fillColor: '#facc15', fillOpacity: 1 }).addTo(replayLayer);
-      map.fitBounds(pts, { padding: [60, 60], maxZoom: 16 });
+      map.fitBounds(road && road.length > 1 ? road.concat(pts) : pts, { padding: [60, 60], maxZoom: 16 });
     } else {
       replay.marker = null;
     }
@@ -1219,7 +1231,7 @@ async function renderOperationsMap() {
   }
   function closeReplay() {
     stopPlay();
-    replay.active = false; replay.driverId = null; replay.positions = []; replay.marker = null; replay.windowKey = null; replay.statusText = null;
+    replay.active = false; replay.driverId = null; replay.positions = []; replay.roadGeometry = null; replay.marker = null; replay.windowKey = null; replay.statusText = null;
     replayLayer.clearLayers();
     if (replay.suspended) { autoRefresh = replay.prevAuto; replay.suspended = false; }
     renderPanel();

@@ -2125,6 +2125,18 @@ function crmOrderProgress(status) {
 function crmProgressBar(pct, tone) {
   return `<span class="crm-prog"><i class="${tone || ''}" style="width:${Math.max(0, Math.min(100, pct))}%"></i></span>`;
 }
+// Demandes : dérivations depuis les données réelles (pas de champ inventé).
+function reqShared(r) { return r.location_lat != null && r.location_lng != null && Number.isFinite(Number(r.location_lat)); }
+function reqValidated(r) { return r.status === 'Confirmée' || r.validated_at != null; }
+// Mini-stepper (suivi incident) : n segments, remplis jusqu'à `done`.
+function crmMiniSteps(done, total, tone) {
+  let html = '';
+  for (let i = 0; i < total; i += 1) {
+    const on = i < done;
+    html += `${i ? `<span class="crm-ms-line ${on ? tone || 'ok' : ''}"></span>` : ''}<span class="crm-ms-dot ${on ? tone || 'ok' : ''}"></span>`;
+  }
+  return `<span class="crm-ms">${html}</span>`;
+}
 
 // Panneau détail coulissant d'une commande (données réelles).
 async function openOrderDrawer(orderId) {
@@ -2159,34 +2171,44 @@ async function openOrderDrawer(orderId) {
     const history = (o.events || []).slice().reverse().map((e) => `<li><span class="crm-hist-dot ${e.to_status === 'Livrée' ? 'ok' : ''}"></span><div><strong>${escapeHtml(formatDate(e.created_at))}</strong><span>${escapeHtml(e.to_status || '')}${e.reason ? ` — ${escapeHtml(e.reason)}` : ''}</span><small>${escapeHtml(e.actor_name || 'Système')}</small></div></li>`).join('') || '<li class="crm-muted">Aucun événement.</li>';
     const evidence = (o.evidence || []).length ? (o.evidence || []).map((f) => `<span class="crm-file">${escapeHtml(f.evidence_type === 'signature' ? 'Signature' : 'Photo')}</span>`).join(' ') : '—';
     const phone = String(o.customer_phone || '').replace(/[^+\d]/g, '');
+    const creator = (o.events && o.events.length) ? o.events[0].actor_name : null;
+    const secIc = {
+      client: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+      truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17V5H2v12"/><path d="M14 9h4l4 4v4h-6"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
+      track: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+      doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+      note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+    };
     wrap.querySelector('.crm-drawer').innerHTML = `
       <div class="crm-drawer-head">
         <div><div class="crm-drawer-title">CMD-${escapeHtml(o.id)} ${crmChip(o.status, crmOrderStatusColor(o.status))}</div>
-          <small>Créée le ${escapeHtml(formatDate(o.created_at))}</small></div>
-        <button class="crm-drawer-close" type="button" aria-label="Fermer">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'}</button>
+          <small>Créée le ${escapeHtml(formatDate(o.created_at))}${creator ? ` par ${escapeHtml(creator)}` : ''}</small></div>
+        <div class="crm-drawer-headact">
+          ${o.trackingLink && o.trackingLink.path ? `<a class="crm-icobtn" href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener" title="Ouvrir le suivi client"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>` : ''}
+          <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
       </div>
       <div class="crm-drawer-body">
-        <section><h4>Client</h4>
+        <section><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.client}</span>Client</h4><a class="crm-seclink" href="/app/clients">Voir le client</a></div>
           <div class="crm-kv"><span>Nom</span><strong>${escapeHtml(o.customer_name || '—')}</strong></div>
           <div class="crm-kv"><span>Téléphone</span><strong>${phone ? `<a href="tel:${escapeHtml(phone)}">${escapeHtml(o.customer_phone)}</a>` : '—'}</strong></div>
           <div class="crm-kv"><span>Adresse</span><strong>${escapeHtml(address)}</strong></div>
         </section>
-        <section><h4>Livraison</h4>
+        <section><h4><span class="crm-sec-ic">${secIc.truck}</span>Livraison</h4>
           <div class="crm-kv"><span>Zone</span><strong>${escapeHtml(zone)}</strong></div>
           <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name) : '—'}</strong></div>
           <div class="crm-kv"><span>Créneau</span><strong>${escapeHtml(o.requested_time || '—')}</strong></div>
-          ${o.trackingLink && o.trackingLink.path ? `<div class="crm-kv"><span>Suivi client</span><strong><a href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir le lien</a></strong></div>` : ''}
         </section>
-        <section><h4>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
-        <section><h4>Détails</h4>
+        <section><h4><span class="crm-sec-ic">${secIc.track}</span>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
+        <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Détails de la commande</h4>
           <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(o.delivery_address || '—')}</strong></div>
           <div class="crm-kv"><span>Pièces jointes</span><strong>${evidence}</strong></div>
           ${o.expected_amount_minor != null ? `<div class="crm-kv"><span>Paiement</span><strong>${escapeHtml((Number(o.expected_amount_minor) / 100).toLocaleString('fr-FR'))} ${escapeHtml(o.payment_currency || '')} · ${escapeHtml(o.payment_status || '')}</strong></div>` : ''}
         </section>
-        <section><h4>Notes et historique</h4><ul class="crm-hist">${history}</ul></section>
+        <section><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.note}</span>Notes et historique</h4><a class="crm-seclink" href="/app/commandes/${escapeHtml(o.id)}">Voir tout</a></div><ul class="crm-hist">${history}</ul></section>
       </div>
       <div class="crm-drawer-foot">
-        <a class="button secondary" href="/app/commandes/${escapeHtml(o.id)}">Ouvrir la fiche</a>
+        <a class="button secondary" href="/app/commandes/${escapeHtml(o.id)}">Plus d'actions</a>
         <a class="button primary" href="/app/commandes/${escapeHtml(o.id)}">Modifier la commande</a>
       </div>`;
     wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
@@ -2333,6 +2355,7 @@ async function renderOperationsWorkspace(initialSegment) {
         { key: 'severity', label: 'Priorité', cell: (r) => { const lbl = incidentSeverityLabels[r.severity] || r.severity; return crmChip(lbl, /haut|crit|élev|eleve|urgent/i.test(lbl || '') ? 'red' : /moy/i.test(lbl || '') ? 'amber' : 'grey'); } },
         { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status === 'resolved' ? 'Résolu' : 'Ouvert', r.status === 'resolved' ? 'green' : 'red'), sortVal: (r) => r.status },
         { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
+        { key: 'suivi', label: 'Suivi', cell: (r) => { const s = r.status; if (s === 'resolved') return crmMiniSteps(4, 4, 'ok'); if (s === 'escalated') return crmMiniSteps(2, 4, 'amber'); if (s === 'in_progress') return crmMiniSteps(2, 4, ''); return crmMiniSteps(1, 4, 'red'); } },
       ],
     },
     tournees: {
@@ -2356,16 +2379,19 @@ async function renderOperationsWorkspace(initialSegment) {
       title: 'Demandes', newLabel: 'Nouvelle demande', newHref: '/app/operations?vue=creer', placeholder: 'Rechercher une demande, un client…', countKey: 'active_requests',
       endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, href: (r) => `/app/demandes/${r.id}`,
       statusValues: [], filterTest: (r, v) => r.status === v,
-      groupCols: [['status', 'Statut'], ['zone', 'Zone']],
-      groupVal: (r, k) => k === 'status' ? (r.status || '—') : (r.neighborhood || '—'),
+      groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['position', 'Position client']],
+      groupVal: (r, k) => k === 'status' ? (r.status || '—') : k === 'zone' ? (r.neighborhood || '—') : (reqShared(r) ? 'Partagée' : 'Non partagée'),
       text: (r) => `${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.status || ''}`.toLowerCase(),
       columns: [
         { key: 'id', label: 'N° Demande', cell: (r) => `<span class="crm-code">DEM-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
         { key: 'client', label: 'Client', cell: (r) => `<div class="crm-strong">${escapeHtml(r.customer_name || 'En attente du client')}</div>${r.customer_phone ? `<div class="crm-sub">${escapeHtml(r.customer_phone)}</div>` : ''}`, sortVal: (r) => (r.customer_name || '').toLowerCase() },
-        { key: 'zone', label: 'Zone / repère', cell: (r) => `${escapeHtml(r.neighborhood || '—')}${r.landmark ? `<div class="crm-sub">${escapeHtml(r.landmark)}</div>` : ''}` },
-        { key: 'slot', label: 'Créneau', cell: (r) => escapeHtml(r.requested_time || '—') },
+        { key: 'zone', label: 'Zone', cell: (r) => `${escapeHtml(r.neighborhood || '—')}${r.landmark ? `<div class="crm-sub">${escapeHtml(r.landmark)}</div>` : ''}`, sortVal: (r) => (r.neighborhood || '').toLowerCase() },
+        { key: 'source', label: 'Source', cell: (r) => r.submitted_at ? crmChip('Formulaire client', 'blue') : crmChip('Saisie interne', 'purple'), sortVal: (r) => r.submitted_at ? 0 : 1 },
+        { key: 'position', label: 'Position client', cell: (r) => reqShared(r) ? crmChip('Partagée', 'green') : crmChip('Non partagée', 'red'), sortVal: (r) => reqShared(r) ? 0 : 1 },
+        { key: 'validation', label: 'Validation', cell: (r) => reqValidated(r) ? crmChip('Validée', 'green') : crmChip('À valider', 'amber'), sortVal: (r) => reqValidated(r) ? 0 : 1 },
+        { key: 'acces', label: 'Accès client', cell: (r) => reqShared(r) ? crmChip('Projection + suivi', 'blue') : crmChip('Tracking livreur', 'indigo'), sortVal: (r) => reqShared(r) ? 0 : 1 },
         { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status), sortVal: (r) => r.status },
-        { key: 'date', label: 'Mise à jour', cell: (r) => escapeHtml(formatDate(r.updated_at)), sortVal: (r) => +new Date(r.updated_at) },
+        { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
       ],
     },
   };
@@ -2460,7 +2486,13 @@ async function renderOperationsWorkspace(initialSegment) {
 
   function renderHead() {
     const co = c();
-    const cells = co.columns.map((col) => `<th data-sort="${col.sortVal ? col.key : ''}">${escapeHtml(col.label)}${sort && sort.key === col.key ? `<span class="crm-sarrow">${sort.dir > 0 ? '↑' : '↓'}</span>` : ''}</th>`).join('');
+    const sortIco = (col) => {
+      if (!col.sortVal) return '';
+      const active = sort && sort.key === col.key;
+      const dir = active ? (sort.dir > 0 ? 'up' : 'down') : '';
+      return `<span class="crm-sortic ${active ? 'on ' + dir : ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9 4-4 4 4"/><path d="m16 15-4 4-4-4"/></svg></span>`;
+    };
+    const cells = co.columns.map((col) => `<th data-sort="${col.sortVal ? col.key : ''}"><span class="crm-th">${escapeHtml(col.label)}${sortIco(col)}</span></th>`).join('');
     const head = document.getElementById('crmHead');
     head.innerHTML = `<tr><th class="crm-cbcol"><span class="crm-cb"></span></th>${cells}<th class="crm-actcol"></th></tr>`;
     head.querySelectorAll('[data-sort]').forEach((th) => { if (th.dataset.sort) th.addEventListener('click', () => { const k = th.dataset.sort; sort = (sort && sort.key === k) ? { key: k, dir: -sort.dir } : { key: k, dir: 1 }; renderAll(); }); });

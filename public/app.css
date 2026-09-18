@@ -532,6 +532,17 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-table thead th[data-sort]:not([data-sort=""]) { cursor: pointer; }
 .crm-table thead th[data-sort]:not([data-sort=""]):hover { color: var(--ink); }
 .crm-sarrow { margin-left: 5px; color: var(--red); }
+.crm-th { display: inline-flex; align-items: center; gap: 5px; }
+.crm-sortic { display: inline-flex; color: #c6cdd7; }
+.crm-sortic svg { width: 13px; height: 13px; }
+.crm-sortic.on { color: var(--red); }
+.crm-sortic.on.up path:last-child { opacity: .35; }
+.crm-sortic.on.down path:first-child { opacity: .35; }
+.crm-ms { display: inline-flex; align-items: center; }
+.crm-ms-dot { width: 9px; height: 9px; border-radius: 50%; background: #d7dde6; flex: none; }
+.crm-ms-dot.ok { background: #22c55e; } .crm-ms-dot.red { background: #e11d2a; } .crm-ms-dot.amber { background: #f59e0b; }
+.crm-ms-line { width: 20px; height: 2px; background: #e3e8ef; flex: none; }
+.crm-ms-line.ok { background: #22c55e; } .crm-ms-line.red { background: #e11d2a; } .crm-ms-line.amber { background: #f59e0b; }
 .crm-table tbody td { padding: 12px 16px; font-size: 13.5px; border-bottom: 1px solid #f1f4f8; vertical-align: middle; }
 .crm-table tbody tr { position: relative; }
 .crm-table tbody tr[data-id] { cursor: pointer; }
@@ -579,6 +590,16 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-drawer-head small { display: block; margin-top: 5px; color: var(--muted); font-size: 12.5px; }
 .crm-drawer-close { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px; }
 .crm-drawer-close svg { width: 20px; height: 20px; }
+.crm-drawer-headact { display: inline-flex; align-items: center; gap: 4px; }
+.crm-icobtn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; text-decoration: none; }
+.crm-icobtn:hover { background: #f1f4f8; color: var(--ink); }
+.crm-icobtn svg { width: 18px; height: 18px; }
+.crm-sec-head { display: flex; align-items: center; justify-content: space-between; }
+.crm-sec-ic { display: inline-flex; color: var(--red); margin-right: 8px; vertical-align: middle; }
+.crm-sec-ic svg { width: 16px; height: 16px; }
+.crm-drawer-body h4 { display: inline-flex; align-items: center; }
+.crm-seclink { font-size: 12px; font-weight: 700; color: var(--red); text-decoration: none; }
+.crm-seclink:hover { text-decoration: underline; }
 .crm-drawer-body { flex: 1; overflow-y: auto; padding: 20px 22px; }
 .crm-drawer-body section { padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid #f1f4f8; }
 .crm-drawer-body section:last-child { border-bottom: 0; margin-bottom: 0; }

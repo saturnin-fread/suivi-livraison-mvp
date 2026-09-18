@@ -169,6 +169,35 @@ async function loadTraccarFleetSnapshot() {
   return traccarFleetCache.pending;
 }
 
+// Carte identifiant GPS -> état en ligne (online/stale/offline), pour les
+// pastilles des listes. Best-effort : sans GPS, tout le monde est « offline ».
+async function driverOnlineByUnique() {
+  if (!traccarConfigured()) return new Map();
+  try {
+    const snap = await loadTraccarFleetSnapshot();
+    if (snap.status !== 'online') return new Map();
+    const posByDevice = new Map(snap.positions.map((p) => [String(p.deviceId), p]));
+    const map = new Map();
+    for (const device of snap.devices) {
+      const pos = posByDevice.get(String(device.id));
+      const ts = pos?.fixTime || pos?.deviceTime || pos?.serverTime || device?.lastUpdate || null;
+      const fresh = ts && Date.now() - new Date(ts).getTime() <= 10 * 60 * 1000;
+      map.set(String(device.uniqueId), (!device || device.status === 'offline') ? 'offline' : fresh ? 'online' : 'stale');
+    }
+    return map;
+  } catch { return new Map(); }
+}
+
+// Enrichit une ligne de liste avec l'état en ligne du livreur et l'URL de sa photo.
+function decorateRowDriver(row, onlineMap) {
+  return {
+    driver_online: row.driver_unique_id ? (onlineMap.get(String(row.driver_unique_id)) || 'offline') : 'offline',
+    driver_photo: (row.driver_has_photo && row.driver_id)
+      ? `/api/app/drivers/${row.driver_id}/photo?v=${row.driver_photo_at ? new Date(row.driver_photo_at).getTime() : 0}`
+      : null,
+  };
+}
+
 function mapConfiguration() {
   const maxZoom = (value, fallback = 19) => {
     const parsed = Number(value);
@@ -697,6 +726,9 @@ async function initDatabase() {
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS photo_data BYTEA;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS photo_mime TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS photo_updated_at TIMESTAMPTZ;
 
       ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS driver_id BIGINT;
       DO $$
@@ -2879,6 +2911,7 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
   const localDrivers = await pool.query(
     `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
             d.active, d.traccar_unique_id,
+            (d.photo_updated_at IS NOT NULL) AS has_photo, d.photo_updated_at,
             COUNT(o.id) FILTER (WHERE o.status NOT IN ('Livrée', 'Annulée', 'Retournée'))::int AS active_orders,
             EXISTS (SELECT 1 FROM company_memberships m WHERE m.company_id = d.company_id AND m.driver_id = d.id) AS has_account,
             EXISTS (SELECT 1 FROM user_invitations i WHERE i.company_id = d.company_id AND i.driver_id = d.id
@@ -2906,6 +2939,8 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
       uniqueId: driver.traccar_unique_id, trackerStatus: device?.status || 'unknown', lastUpdate,
       category: device?.category || null, activeOrders: driver.active_orders, operationalState,
       hasAccount: Boolean(driver.has_account), invitePending: Boolean(driver.invite_pending),
+      hasPhoto: Boolean(driver.has_photo),
+      photoVersion: driver.photo_updated_at ? new Date(driver.photo_updated_at).getTime() : null,
     };
   };
   if (!traccarConfigured()) {
@@ -3307,6 +3342,49 @@ app.delete('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner
   return res.json({ id: result.rows[0].id, archived: true });
 }));
 
+// Photo d'un livreur : upload (owner/manager), stockée en base bornée à ~600 Ko,
+// types image/jpeg|png|webp uniquement. Le corps est un data URL base64.
+const driverPhotoMimes = { 'image/jpeg': true, 'image/png': true, 'image/webp': true };
+app.post('/api/app/drivers/:id/photo', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const dataUrl = String(req.body.dataUrl || '');
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match || !driverPhotoMimes[match[1]]) return res.status(400).json({ error: 'Image invalide (JPEG, PNG ou WebP attendu).' });
+  const buffer = Buffer.from(match[2], 'base64');
+  if (buffer.length < 64 || buffer.length > 600 * 1024) return res.status(400).json({ error: 'Image trop lourde (max 600 Ko) ou vide.' });
+  const result = await pool.query(
+    `UPDATE drivers SET photo_data = $1, photo_mime = $2, photo_updated_at = NOW(), updated_at = NOW()
+     WHERE id = $3 AND company_id = $4 AND archived_at IS NULL
+     RETURNING id, photo_updated_at`,
+    [buffer, match[1], req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+  await writeAudit(req.auth, 'driver', result.rows[0].id, 'photo_updated', {});
+  return res.json({ id: result.rows[0].id, photoUpdatedAt: result.rows[0].photo_updated_at });
+}));
+
+app.delete('/api/app/drivers/:id/photo', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE drivers SET photo_data = NULL, photo_mime = NULL, photo_updated_at = NULL, updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 RETURNING id`,
+    [req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+  return res.json({ id: result.rows[0].id, removed: true });
+}));
+
+app.get('/api/app/drivers/:id/photo', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    'SELECT photo_data, photo_mime, photo_updated_at FROM drivers WHERE id = $1 AND company_id = $2',
+    [req.params.id, req.auth.company_id]
+  );
+  const row = result.rows[0];
+  if (!row || !row.photo_data) return res.status(404).end();
+  res.setHeader('Content-Type', row.photo_mime || 'image/jpeg');
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  if (row.photo_updated_at) res.setHeader('ETag', `"${new Date(row.photo_updated_at).getTime()}"`);
+  return res.end(row.photo_data);
+}));
+
 // Nettoyage d'une trace GPS brute : retire le jitter (points quasi immobiles),
 // les sauts physiquement impossibles (glitchs) et les points d'imprécision
 // extrême. Ne « colle » pas aux routes (map-matching) — ça reste une trace de
@@ -3442,7 +3520,8 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
 app.get('/api/app/runs', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT r.id, r.name, TO_CHAR(r.service_date, 'YYYY-MM-DD') AS service_date, r.status, r.version, r.created_at, r.updated_at,
-            d.id AS driver_id, d.name AS driver_name, d.vehicle_type,
+            d.id AS driver_id, d.name AS driver_name, d.vehicle_type, d.traccar_unique_id AS driver_unique_id,
+            (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
             COUNT(s.id) FILTER (WHERE s.removed_at IS NULL)::int AS stop_count,
             COUNT(s.id) FILTER (WHERE s.removed_at IS NULL AND o.status = ANY($2::text[]))::int AS terminal_stop_count
      FROM delivery_runs r
@@ -3454,7 +3533,8 @@ app.get('/api/app/runs', requireCompanyApi, asyncRoute(async (req, res) => {
      ORDER BY r.service_date DESC, r.created_at DESC LIMIT 100`,
     [req.auth.company_id, terminalOrderStatuses]
   );
-  return res.json(result.rows);
+  const online = await driverOnlineByUnique();
+  return res.json(result.rows.map((row) => ({ ...row, ...decorateRowDriver(row, online) })));
 }));
 
 app.post('/api/app/runs', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
@@ -3874,7 +3954,9 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.requested_time,
             o.neighborhood, o.landmark, o.created_at, o.updated_at,
-            d.name AS driver_name, t.token_ciphertext AS tracking_token_ciphertext,
+            d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
+            (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
+            t.token_ciphertext AS tracking_token_ciphertext,
             t.expires_at AS tracking_expires_at, t.revoked_at AS tracking_revoked_at,
             t.created_at AS tracking_created_at, t.version AS tracking_link_version
      FROM orders o
@@ -3883,17 +3965,22 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
      WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 100`,
     [req.auth.company_id]
   );
+  const online = await driverOnlineByUnique();
   return res.json(result.rows.map((row) => {
     const trackingLink = trackingLinkBusinessView(row);
     delete row.tracking_token_ciphertext;
-    return { ...row, trackingLink };
+    return { ...row, trackingLink, ...decorateRowDriver(row, online) };
   }));
 }));
 
 app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.*, d.name AS driver_name, d.phone AS driver_phone,
-            d.vehicle_type AS driver_vehicle_type, t.token_ciphertext AS tracking_token_ciphertext,
+            d.vehicle_type AS driver_vehicle_type,
+            d.id AS driver_id, d.traccar_unique_id AS driver_unique_id,
+            (d.photo_updated_at IS NOT NULL) AS driver_has_photo,
+            d.photo_updated_at AS driver_photo_at,
+            t.token_ciphertext AS tracking_token_ciphertext,
             t.expires_at AS tracking_expires_at, t.revoked_at AS tracking_revoked_at,
             t.created_at AS tracking_created_at, t.version AS tracking_link_version,
             p.id AS proof_id, p.proof_type, p.verified_at AS proof_verified_at,
@@ -3962,8 +4049,14 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
   ]);
   const trackingLink = trackingLinkBusinessView(order);
   delete order.tracking_token_ciphertext;
+  const onlineMap = await driverOnlineByUnique();
+  const driverDeco = decorateRowDriver(order, onlineMap);
+  delete order.driver_unique_id;
+  delete order.driver_has_photo;
+  delete order.driver_photo_at;
   return res.json({
     ...order,
+    ...driverDeco,
     trackingLink,
     allowedTransitions: allowedOrderTransitions(order.status),
     requiresOtpForDelivery: order.status === 'Arrivée' && !order.proof_id,
@@ -4569,7 +4662,9 @@ app.get('/api/app/incidents', requireCompanyApi, asyncRoute(async (req, res) => 
   const result = await pool.query(
     `SELECT i.id, i.order_id, i.category, i.severity, i.description, i.status,
             i.created_at, i.resolved_at, o.customer_name, o.customer_phone,
-            o.neighborhood, o.status AS order_status, d.name AS driver_name,
+            o.neighborhood, o.status AS order_status,
+            d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
+            (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
             opener.display_name AS opened_by, assignee.display_name AS assigned_to,
             h.id AS retention_hold_id, h.review_due_at AS retention_review_due_at
      FROM delivery_incidents i
@@ -4584,7 +4679,8 @@ app.get('/api/app/incidents', requireCompanyApi, asyncRoute(async (req, res) => 
      LIMIT 300`,
     [req.auth.company_id, scope]
   );
-  return res.json(result.rows);
+  const online = await driverOnlineByUnique();
+  return res.json(result.rows.map((row) => ({ ...row, ...decorateRowDriver(row, online) })));
 }));
 
 async function loadIncidentDossier(companyId, incidentId) {

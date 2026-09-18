@@ -1513,6 +1513,148 @@ async function loadDeliveryRun(companyId, runId, queryable = pool) {
   };
 }
 
+// Date de service « du jour », au format YYYY-MM-DD.
+function todayServiceDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Trouve (ou crée) la tournée ouverte du jour pour un livreur. La tournée est
+// un objet dérivé : les commandes s'y rattachent automatiquement, l'entreprise
+// n'a jamais à la créer ni à l'alimenter à la main.
+async function ensureOpenDayRun(client, auth, driverId, serviceDate) {
+  const found = await client.query(
+    `SELECT id, version FROM delivery_runs
+     WHERE company_id = $1 AND driver_id = $2 AND service_date = $3
+       AND status IN ('draft', 'planned', 'active')
+     ORDER BY id LIMIT 1`,
+    [auth.company_id, driverId, serviceDate]
+  );
+  if (found.rows[0]) return found.rows[0];
+  const [y, m, d] = String(serviceDate).split('-');
+  const name = `Tournée du ${d}/${m}/${y}`;
+  const key = `auto-run:${driverId}:${serviceDate}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  const fingerprint = digest(canonicalJson({ driverId, serviceDate, auto: true }));
+  try {
+    const created = await client.query(
+      `INSERT INTO delivery_runs (
+         company_id, driver_id, name, service_date, create_idempotency_key,
+         create_fingerprint, created_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, version`,
+      [auth.company_id, driverId, name, serviceDate, key, fingerprint, auth.user_id]
+    );
+    await appendRunEvent(client, auth, created.rows[0].id, 'created', `${key}:evt`, fingerprint, {
+      driverId, serviceDate, name, version: created.rows[0].version, auto: true,
+    });
+    return created.rows[0];
+  } catch (error) {
+    if (error.code === '23505') {
+      const retry = await client.query(
+        `SELECT id, version FROM delivery_runs
+         WHERE company_id = $1 AND driver_id = $2 AND service_date = $3
+           AND status IN ('draft', 'planned', 'active')
+         ORDER BY id LIMIT 1`,
+        [auth.company_id, driverId, serviceDate]
+      );
+      if (retry.rows[0]) return retry.rows[0];
+    }
+    throw error;
+  }
+}
+
+// Rattache une commande à la tournée du jour de son livreur (no-op si elle y est
+// déjà). À appeler dans une SAVEPOINT : un échec ne doit jamais faire échouer la
+// création de la commande, dont la source de vérité reste orders.driver_id.
+async function attachOrderToDayRun(client, auth, orderId, driverId, serviceDate) {
+  const already = await client.query(
+    `SELECT 1 FROM delivery_stops WHERE order_id = $1 AND assignment_active = TRUE LIMIT 1`,
+    [orderId]
+  );
+  if (already.rows[0]) return;
+  const run = await ensureOpenDayRun(client, auth, driverId, serviceDate);
+  const seq = await client.query(
+    `SELECT COALESCE(MAX(sequence), 0) + 1 AS n FROM delivery_stops WHERE run_id = $1 AND removed_at IS NULL`,
+    [run.id]
+  );
+  const stop = await client.query(
+    `INSERT INTO delivery_stops (company_id, run_id, order_id, sequence)
+     VALUES ($1, $2, $3, $4) RETURNING id, sequence`,
+    [auth.company_id, run.id, orderId, seq.rows[0].n]
+  );
+  const updated = await client.query(
+    `UPDATE delivery_runs SET version = version + 1, updated_at = NOW() WHERE id = $1 RETURNING version`,
+    [run.id]
+  );
+  await appendRunEvent(client, auth, run.id, 'order_added',
+    `auto-attach:${orderId}:${Date.now()}`, digest(canonicalJson({ orderId, auto: true })), {
+      stopId: stop.rows[0].id, orderId, sequence: stop.rows[0].sequence, version: updated.rows[0].version, auto: true,
+    });
+}
+
+// Ordonne les arrêts d'après le réseau routier réel (OSRM) : plus proche voisin
+// puis 2-opt sur les durées de trajet. Renvoie null si le routage est indisponible.
+async function optimizeStopOrderByRoad(stops) {
+  const health = routingAdapter.health();
+  if (health.status === 'disabled' || !health.capabilities || !health.capabilities.matrix) return null;
+  if (stops.length < 2 || stops.length > 25) return null;
+  const coordinates = stops.map((s) => ({ lat: Number(s.lat), lng: Number(s.lng) }));
+  const table = await routingAdapter.matrix({ profile: 'motorcycle', coordinates });
+  if (table.status !== 'ok' && table.status !== 'partial') return null;
+  const dur = table.durationsSeconds;
+  const dist = table.distancesMeters;
+  if (!dur) return null;
+  const n = stops.length;
+  const visited = new Array(n).fill(false);
+  const order = [0];
+  visited[0] = true;
+  for (let k = 1; k < n; k += 1) {
+    const last = order[order.length - 1];
+    let best = -1;
+    let bestVal = Infinity;
+    for (let j = 0; j < n; j += 1) {
+      if (visited[j]) continue;
+      const v = dur[last] ? dur[last][j] : null;
+      if (v == null) continue;
+      if (v < bestVal) { bestVal = v; best = j; }
+    }
+    if (best < 0) { for (let j = 0; j < n; j += 1) { if (!visited[j]) { best = j; break; } } }
+    visited[best] = true;
+    order.push(best);
+  }
+  const seqDur = (ord) => {
+    let total = 0;
+    for (let i = 0; i < ord.length - 1; i += 1) {
+      const v = dur[ord[i]] ? dur[ord[i]][ord[i + 1]] : null;
+      if (v == null) return Infinity;
+      total += v;
+    }
+    return total;
+  };
+  let improved = true;
+  let guard = 0;
+  while (improved && guard < 50) {
+    improved = false;
+    guard += 1;
+    for (let i = 0; i < order.length - 1; i += 1) {
+      for (let j = i + 1; j < order.length; j += 1) {
+        const cand = order.slice(0, i).concat(order.slice(i, j + 1).reverse(), order.slice(j + 1));
+        if (seqDur(cand) < seqDur(order) - 1e-6) { order.splice(0, order.length, ...cand); improved = true; }
+      }
+    }
+  }
+  let durationSeconds = 0;
+  let distanceMeters = 0;
+  for (let i = 0; i < order.length - 1; i += 1) {
+    durationSeconds += (dur[order[i]] && dur[order[i]][order[i + 1]]) || 0;
+    distanceMeters += (dist && dist[order[i]] && dist[order[i]][order[i + 1]]) || 0;
+  }
+  return {
+    stopIds: order.map((i) => Number(stops[i].id)),
+    durationSeconds,
+    distanceMeters,
+    method: 'osrm_matrix_nn_2opt',
+  };
+}
+
 app.get('/health', asyncRoute(async (_req, res) => {
   if (!pool) return res.status(503).json({ status: 'unavailable', database: 'not_configured' });
   try {
@@ -2883,6 +3025,15 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       [request.id]
     );
     await ensureOrderCrmSnapshot(client, order.rows[0].id, req.auth.user_id);
+    // Rattachement automatique à la tournée du jour du livreur (best-effort).
+    try {
+      await client.query('SAVEPOINT sp_run_attach');
+      await attachOrderToDayRun(client, req.auth, order.rows[0].id, driver.id, todayServiceDate());
+      await client.query('RELEASE SAVEPOINT sp_run_attach');
+    } catch (attachError) {
+      await client.query('ROLLBACK TO SAVEPOINT sp_run_attach');
+      console.error('Auto-attach run failed (conversion):', attachError.message);
+    }
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
        VALUES
@@ -3642,9 +3793,8 @@ app.post('/api/app/runs/:id/orders', requireCompanyApi, requireCompanyRoles('own
       `SELECT COUNT(*)::int AS count FROM delivery_stops WHERE run_id = $1 AND removed_at IS NULL`,
       [run.id]
     );
-    if (count.rows[0].count >= run.capacity) {
-      throw Object.assign(new Error(`La capacité déclarée du livreur est atteinte (${run.capacity} colis).`), { statusCode: 409 });
-    }
+    // Pas de plafond de capacité : c'est l'entreprise qui décide combien de
+    // colis un livreur peut porter. La capacité reste un simple indicateur.
     const order = await client.query(
       `SELECT id, driver_id, status FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
       [orderId, req.auth.company_id]
@@ -3851,15 +4001,33 @@ app.get('/api/app/runs/:id/suggestion', requireCompanyApi, asyncRoute(async (req
       missingOrderIds,
     });
   }
-  const suggestion = suggestGeometricStopOrder(payload.stops.map((stop) => ({
+  const geoStops = payload.stops.map((stop) => ({
     id: Number(stop.id), lat: Number(stop.destination_lat), lng: Number(stop.destination_lng),
-  })));
+  }));
+  // On privilégie l'ordre sur routes réelles (OSRM). En cas d'indisponibilité,
+  // on retombe sur l'ordre géométrique à vol d'oiseau.
+  try {
+    const road = await optimizeStopOrderByRoad(geoStops);
+    if (road) {
+      return res.json({
+        available: true,
+        stopIds: road.stopIds,
+        distanceKm: Number((road.distanceMeters / 1000).toFixed(2)),
+        durationMin: Math.round(road.durationSeconds / 60),
+        method: 'osrm_road_network',
+        warning: 'Ordre calculé sur le réseau routier réel. Il ne tient pas compte du trafic en temps réel ni des créneaux clients : vérifiez avant de valider.',
+      });
+    }
+  } catch (error) {
+    console.error('Road optimization failed, falling back to geometric:', error.message);
+  }
+  const suggestion = suggestGeometricStopOrder(geoStops);
   return res.json({
     available: true,
     ...suggestion,
     distanceKm: Number(suggestion.distanceKm.toFixed(2)),
     method: 'straight_line_nearest_neighbor',
-    warning: 'Ordre indicatif à vol d’oiseau : il ne tient pas compte des routes, du trafic ni des créneaux clients.',
+    warning: 'Ordre indicatif à vol d’oiseau (routage réel indisponible) : il ne tient pas compte des routes, du trafic ni des créneaux clients.',
   });
 }));
 
@@ -5559,6 +5727,16 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
       [req.auth.company_id, order.rows[0].id, req.auth.user_id, `system:direct-order:${order.rows[0].id}`, digest(`direct-order:${order.rows[0].id}`)]
     );
     await ensureOrderCrmSnapshot(client, order.rows[0].id, req.auth.user_id);
+    // Rattachement automatique à la tournée du jour du livreur. Best-effort via
+    // SAVEPOINT : la commande doit se créer même si ce rattachement échoue.
+    try {
+      await client.query('SAVEPOINT sp_run_attach');
+      await attachOrderToDayRun(client, req.auth, order.rows[0].id, driver.rows[0].id, todayServiceDate());
+      await client.query('RELEASE SAVEPOINT sp_run_attach');
+    } catch (attachError) {
+      await client.query('ROLLBACK TO SAVEPOINT sp_run_attach');
+      console.error('Auto-attach run failed:', attachError.message);
+    }
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action)
        VALUES ($1, $2, 'order', $3, 'created')`,

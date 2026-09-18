@@ -2672,11 +2672,11 @@ async function renderOperationsWorkspace(initialSegment) {
     const pages = group ? 1 : Math.max(1, Math.ceil(total / pageSize));
     if (pageN > pages) pageN = pages;
     let pager = '';
-    if (!group && pages > 1) {
-      const btn = (p, label, cls) => `<button class="crm-pg ${cls || ''}" data-p="${p}">${label}</button>`;
+    if (!group) {
+      const btn = (p, label, cls, disabled) => `<button class="crm-pg ${cls || ''}" data-p="${p}"${disabled ? ' disabled' : ''}>${label}</button>`;
       let nums = '';
       for (let i = 1; i <= pages; i += 1) nums += btn(i, i, i === pageN ? 'active' : '');
-      pager = `${btn(Math.max(1, pageN - 1), '‹')}${nums}${btn(Math.min(pages, pageN + 1), '›')}`;
+      pager = `${btn(Math.max(1, pageN - 1), '‹', 'crm-pg-arrow', pageN <= 1)}${nums}${btn(Math.min(pages, pageN + 1), '›', 'crm-pg-arrow', pageN >= pages)}`;
     }
     const chev = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
     el.innerHTML = `<span>${escapeHtml(total)} résultat${total > 1 ? 's' : ''}</span><div class="crm-page"><span class="crm-perwrap"><button class="crm-per" id="crmPer" type="button">${pageSize} par page ${chev}</button></span>${pager}</div>`;

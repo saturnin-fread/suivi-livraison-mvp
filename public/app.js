@@ -367,7 +367,6 @@ async function renderRunDetail(id) {
   setHeader('Tournée', 'Préparation et ordre des arrêts');
   const run = await api(`/api/app/runs/${encodeURIComponent(id)}`);
   let localStops = [...run.stops];
-  const atCapacity = run.stops.length >= Number(run.capacity);
   const eventDescription = (event) => {
     if (event.event_type === 'status_changed') return `${runStatusLabels[event.details.fromStatus] || event.details.fromStatus} → ${runStatusLabels[event.details.toStatus] || event.details.toStatus}${event.details.reason ? ` · ${event.details.reason}` : ''}`;
     if (event.event_type === 'order_added') return `Commande n° ${event.details.orderId} ajoutée à l’arrêt ${event.details.sequence}`;
@@ -375,11 +374,11 @@ async function renderRunDetail(id) {
     if (event.event_type === 'stops_reordered') return `${event.details.stopIds?.length || 0} arrêts réorganisés`;
     return `${run.driver_name} · ${formatDateOnly(run.service_date)}`;
   };
-  page.innerHTML = `<div class="page-header"><div><a href="/app/tournees">← Retour aux tournées</a><h1 style="margin-top:12px">${escapeHtml(run.name)}</h1><p class="subtitle">${escapeHtml(formatDateOnly(run.service_date))} · ${escapeHtml(run.driver_name)} · capacité ${escapeHtml(run.capacity)} colis</p></div>${badge(runStatusLabels[run.status] || run.status)}</div>
-    <section class="card"><div class="actions" style="justify-content:space-between"><div><h2 style="margin:0">Arrêts de la tournée</h2><p class="subtitle">${run.canReorderStops ? 'Déplacez les arrêts, puis confirmez explicitement le nouvel ordre.' : 'L’ordre est verrouillé pendant l’exécution.'}</p></div><span>${escapeHtml(run.stops.length)} / ${escapeHtml(run.capacity)} colis</span></div><div id="runNotice"></div><div id="runStops" style="margin-top:18px"></div>
-      ${run.canReorderStops && run.stops.length > 1 ? `<div class="actions" style="margin-top:18px"><button class="secondary" id="suggestRunOrder">Proposer un ordre indicatif</button><button class="primary" id="saveRunOrder">Enregistrer cet ordre</button></div><div class="notice warning">La suggestion compare uniquement les positions GPS à vol d’oiseau. Elle ne connaît ni les routes, ni le trafic, ni les créneaux clients. L’équipe doit toujours la vérifier.</div>` : ''}
+  page.innerHTML = `<div class="page-header"><div><a href="/app/tournees">← Retour aux tournées</a><h1 style="margin-top:12px">${escapeHtml(run.name)}</h1><p class="subtitle">${escapeHtml(formatDateOnly(run.service_date))} · ${escapeHtml(run.driver_name)} · ${escapeHtml(run.stops.length)} colis</p></div>${badge(runStatusLabels[run.status] || run.status)}</div>
+    <div class="notice info" style="margin-bottom:16px">Cette tournée regroupe <strong>automatiquement</strong> les commandes du jour de ${escapeHtml(run.driver_name)}. Un colis s’y ajoute dès qu’une commande lui est affectée à la création — rien à saisir ici.</div>
+    <section class="card"><div class="actions" style="justify-content:space-between"><div><h2 style="margin:0">Ordre de passage</h2><p class="subtitle">${run.canReorderStops ? 'Optimisez l’itinéraire sur les routes réelles, ou ajustez l’ordre à la main.' : 'L’ordre est verrouillé pendant l’exécution.'}</p></div><span>${escapeHtml(run.stops.length)} colis</span></div><div id="runNotice"></div><div id="runStops" style="margin-top:18px"></div>
+      ${run.canReorderStops && run.stops.length > 1 ? `<div class="actions" style="margin-top:18px"><button class="primary" id="optimizeRun">Optimiser l’itinéraire (routes réelles)</button><button class="secondary" id="saveRunOrder">Enregistrer l’ordre manuel</button></div>` : ''}
     </section>
-    ${run.canEditStops ? `<section class="card" style="margin-top:18px"><h2>Ajouter un colis</h2>${atCapacity ? `<div class="notice warning">La capacité déclarée de ${escapeHtml(run.capacity)} colis est atteinte.</div>` : run.eligibleOrders.length ? `<form id="addRunOrder"><div class="field"><label>Commande affectée à ${escapeHtml(run.driver_name)}</label><select name="orderId" required><option value="">Sélectionner une commande</option>${run.eligibleOrders.map((order) => `<option value="${escapeHtml(order.id)}">N° ${escapeHtml(order.id)} — ${escapeHtml(order.customer_name || 'Client')} — ${escapeHtml(order.neighborhood || order.landmark || order.delivery_address || 'destination à préciser')}${order.destination_lat == null ? ' — GPS manquant' : ''}</option>`).join('')}</select></div><div class="actions" style="margin-top:14px"><button class="primary">Ajouter à la tournée</button></div></form>` : '<div class="empty">Aucune autre commande active et compatible pour ce livreur.</div>'}<div id="addRunOrderResult"></div></section>` : ''}
     ${run.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la tournée</h2><form id="runStatusForm"><div class="form-grid"><div class="field"><label>Nouvel état</label><select name="toStatus" required><option value="">Sélectionner</option>${run.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(runStatusLabels[status] || status)}</option>`).join('')}</select></div><div class="field"><label>Motif</label><textarea name="reason" maxlength="1000" placeholder="Obligatoire pour une annulation (10 caractères minimum)"></textarea></div></div><div class="actions" style="margin-top:14px"><button class="primary">Confirmer le changement</button></div></form><div id="runStatusResult"></div></section>` : ''}
     <section class="card" style="margin-top:18px"><h2>Historique</h2>${run.events.length ? `<ol class="timeline">${run.events.map((event) => `<li><strong>${escapeHtml(runEventLabels[event.event_type] || event.event_type)}</strong><span>${escapeHtml(eventDescription(event))}</span><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small></li>`).join('')}</ol>` : '<div class="empty">Aucun événement.</div>'}</section>`;
 
@@ -418,45 +417,36 @@ async function renderRunDetail(id) {
   };
   renderStopList();
 
-  const addForm = document.getElementById('addRunOrder');
-  if (addForm) addForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector('button');
-    const orderId = new FormData(form).get('orderId');
-    if (!orderId) return;
-    button.disabled = true;
-    try {
-      await api(`/api/app/runs/${encodeURIComponent(id)}/orders`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId, expectedVersion: run.version, idempotencyKey: idempotencyKeyFor(form, 'run-add', { orderId }) }),
-      });
-      location.reload();
-    } catch (error) {
-      document.getElementById('addRunOrderResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      button.disabled = false;
-    }
-  });
-
-  const suggestButton = document.getElementById('suggestRunOrder');
-  if (suggestButton) suggestButton.addEventListener('click', async () => {
-    suggestButton.disabled = true;
+  const optimizeButton = document.getElementById('optimizeRun');
+  if (optimizeButton) optimizeButton.addEventListener('click', async () => {
+    optimizeButton.disabled = true;
+    document.getElementById('runNotice').innerHTML = '<div class="notice">Calcul de l’itinéraire optimal…</div>';
     try {
       const suggestion = await api(`/api/app/runs/${encodeURIComponent(id)}/suggestion`);
       if (!suggestion.available) {
         document.getElementById('runNotice').innerHTML = `<div class="notice warning">${escapeHtml(suggestion.reason)}${suggestion.missingOrderIds?.length ? ` Commandes concernées : ${escapeHtml(suggestion.missingOrderIds.join(', '))}.` : ''}</div>`;
+        optimizeButton.disabled = false;
         return;
       }
-      const ranking = new Map(suggestion.stopIds.map((stopId, index) => [String(stopId), index]));
-      localStops.sort((a, b) => ranking.get(String(a.id)) - ranking.get(String(b.id)));
-      renderStopList();
-      document.getElementById('runNotice').innerHTML = `<div class="notice warning"><strong>Proposition non enregistrée.</strong> Environ ${escapeHtml(suggestion.distanceKm)} km à vol d’oiseau entre les arrêts. ${escapeHtml(suggestion.warning)} Vérifiez l’ordre puis cliquez sur « Enregistrer cet ordre ».</div>`;
+      await api(`/api/app/runs/${encodeURIComponent(id)}/reorder`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopIds: suggestion.stopIds, expectedVersion: run.version, idempotencyKey: actionKey('run-optimize') }),
+      });
+      const road = suggestion.method === 'osrm_road_network';
+      const detail = road
+        ? `Itinéraire optimisé sur routes réelles : ~${escapeHtml(suggestion.distanceKm)} km${suggestion.durationMin != null ? `, ~${escapeHtml(suggestion.durationMin)} min de conduite` : ''}.`
+        : `Ordre indicatif à vol d’oiseau : ~${escapeHtml(suggestion.distanceKm)} km (routage réel indisponible).`;
+      sessionStorage.setItem('traxo.runNotice', detail);
+      location.reload();
     } catch (error) {
       document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    } finally {
-      suggestButton.disabled = false;
+      optimizeButton.disabled = false;
     }
   });
+  try {
+    const carried = sessionStorage.getItem('traxo.runNotice');
+    if (carried) { sessionStorage.removeItem('traxo.runNotice'); document.getElementById('runNotice').innerHTML = `<div class="notice success">${escapeHtml(carried)}</div>`; }
+  } catch {}
 
   const saveOrderButton = document.getElementById('saveRunOrder');
   if (saveOrderButton) saveOrderButton.addEventListener('click', async () => {

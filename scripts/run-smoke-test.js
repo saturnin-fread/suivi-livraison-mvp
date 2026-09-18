@@ -243,16 +243,18 @@ async function run() {
     }));
     ensure(reclaimed.response.status === 201, 'Un colis libéré par annulation doit pouvoir être replanifié.');
 
-    const overCapacity = await fetch(`${baseUrl}/api/app/runs/${created.payload.id}/orders`, {
+    // Plus de plafond de capacité : l'entreprise décide combien de colis un
+    // livreur porte. Un cinquième colis au-delà de la capacité déclarée passe.
+    const beyondCapacity = await fetch(`${baseUrl}/api/app/runs/${created.payload.id}/orders`, {
       method: 'POST', headers,
       body: JSON.stringify({ orderId: orderIds[4], expectedVersion: reclaimed.payload.version, idempotencyKey: `run-smoke-capacity:${marker}` }),
     });
-    ensure(overCapacity.status === 409, 'La capacité déclarée du livreur doit être respectée.');
+    ensure(beyondCapacity.status === 201, 'Aucun plafond de capacité ne doit bloquer l’ajout d’un colis.');
 
     detail = (await json(await fetch(`${baseUrl}/api/app/runs/${created.payload.id}`, { headers: { Cookie: cookie } }))).payload;
     const orderBeforeSuggestion = detail.stops.map((stop) => String(stop.id));
     const suggestion = await json(await fetch(`${baseUrl}/api/app/runs/${created.payload.id}/suggestion`, { headers: { Cookie: cookie } }));
-    ensure(suggestion.response.ok && suggestion.payload.available && suggestion.payload.stopIds.length === 4, 'Suggestion géométrique indisponible.');
+    ensure(suggestion.response.ok && suggestion.payload.available && suggestion.payload.stopIds.length === 5, 'Suggestion d’itinéraire indisponible.');
     const afterSuggestion = (await json(await fetch(`${baseUrl}/api/app/runs/${created.payload.id}`, { headers: { Cookie: cookie } }))).payload;
     ensure(afterSuggestion.version === detail.version && afterSuggestion.stops.map((stop) => String(stop.id)).join(',') === orderBeforeSuggestion.join(','),
       'Une suggestion ne doit jamais modifier la tournée sans confirmation.');
@@ -308,7 +310,7 @@ async function run() {
     const driverManifest = await json(await fetch(`${baseUrl}/api/driver/runs`, { headers: { Cookie: driverCookie } }));
     ensure(driverManifest.response.ok, 'Le manifeste de tournée du livreur est indisponible.');
     const visibleRun = driverManifest.payload.find((run) => String(run.id) === String(created.payload.id));
-    ensure(visibleRun && visibleRun.status === 'planned' && visibleRun.totalStops === 4,
+    ensure(visibleRun && visibleRun.status === 'planned' && visibleRun.totalStops === 5,
       'La tournée planifiée ou sa progression est absente du portail livreur.');
     ensure(visibleRun.stops.map((stop) => String(stop.id)).join(',') === plannedOrder.map(String).join(','),
       'Le portail livreur ne respecte pas l’ordre confirmé par l’exploitation.');
@@ -339,7 +341,7 @@ async function run() {
     const progressedRun = progressedManifest.payload.find((run) => String(run.id) === String(created.payload.id));
     ensure(progressedRun?.completedStops === 1 && String(progressedRun.nextOrderId) !== String(visibleRun.nextOrderId),
       'La progression ou le prochain arrêt ne se recalcule pas après une livraison terminée.');
-    await pool.query(`UPDATE orders SET status = 'Livrée', completed_at = NOW(), updated_at = NOW() WHERE id = ANY($1::bigint[])`, [orderIds.slice(0, 4)]);
+    await pool.query(`UPDATE orders SET status = 'Livrée', completed_at = NOW(), updated_at = NOW() WHERE id = ANY($1::bigint[])`, [orderIds.slice(0, 5)]);
     const completed = await json(await fetch(`${baseUrl}/api/app/runs/${created.payload.id}/status`, {
       method: 'POST', headers,
       body: JSON.stringify({ toStatus: 'completed', expectedVersion: active.payload.version, idempotencyKey: `run-smoke-complete:${marker}` }),

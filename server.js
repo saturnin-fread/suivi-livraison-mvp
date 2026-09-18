@@ -3731,7 +3731,7 @@ app.get('/api/app/runs', requireCompanyApi, asyncRoute(async (req, res) => {
      LEFT JOIN orders o ON o.id = s.order_id AND o.company_id = r.company_id
      WHERE r.company_id = $1
      GROUP BY r.id, d.id
-     ORDER BY r.service_date DESC, r.created_at DESC LIMIT 100`,
+     ORDER BY r.service_date DESC, r.created_at DESC LIMIT 500`,
     [req.auth.company_id, terminalOrderStatuses]
   );
   const online = await driverOnlineByUnique();
@@ -4180,7 +4180,7 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
      FROM orders o
      JOIN drivers d ON d.id = o.driver_id
      LEFT JOIN tracking_links t ON t.order_id = o.id
-     WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 100`,
+     WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 500`,
     [req.auth.company_id]
   );
   const online = await driverOnlineByUnique();
@@ -6079,9 +6079,59 @@ app.use((error, _req, res, _next) => {
   return res.status(500).json({ error: 'Une erreur interne est survenue.', correlationId });
 });
 
+// Rétro-rattachement : les commandes actives créées avant l'auto-tournée
+// n'appartiennent à aucune tournée. On les regroupe dans la tournée du jour de
+// leur livreur (créée si besoin). Étape best-effort : toute erreur est
+// journalisée mais ne fait jamais échouer le démarrage.
+async function backfillOrderRuns(dbPool) {
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      INSERT INTO delivery_runs (
+        company_id, driver_id, name, service_date, status,
+        create_idempotency_key, create_fingerprint, created_by_user_id
+      )
+      SELECT DISTINCT o.company_id, o.driver_id,
+             'Tournée du ' || TO_CHAR(o.created_at, 'DD/MM/YYYY'),
+             o.created_at::date, 'draft',
+             'backfill-run:' || o.company_id || ':' || o.driver_id || ':' || o.created_at::date,
+             md5('backfill-run:' || o.company_id || ':' || o.driver_id || ':' || o.created_at::date),
+             NULL
+      FROM orders o
+      WHERE o.status NOT IN ('Livrée','Retournée','Annulée')
+        AND NOT EXISTS (SELECT 1 FROM delivery_stops s WHERE s.order_id = o.id AND s.assignment_active = TRUE)
+        AND NOT EXISTS (SELECT 1 FROM delivery_runs r
+                        WHERE r.company_id = o.company_id AND r.driver_id = o.driver_id
+                          AND r.service_date = o.created_at::date AND r.status IN ('draft','planned','active'))
+      ON CONFLICT (company_id, create_idempotency_key) DO NOTHING
+    `);
+    await client.query(`
+      INSERT INTO delivery_stops (company_id, run_id, order_id, sequence)
+      SELECT o.company_id, r.id, o.id,
+             COALESCE((SELECT MAX(s2.sequence) FROM delivery_stops s2
+                       WHERE s2.run_id = r.id AND s2.removed_at IS NULL), 0)
+             + ROW_NUMBER() OVER (PARTITION BY r.id ORDER BY o.created_at, o.id)
+      FROM orders o
+      JOIN delivery_runs r ON r.company_id = o.company_id AND r.driver_id = o.driver_id
+                          AND r.service_date = o.created_at::date AND r.status IN ('draft','planned','active')
+      WHERE o.status NOT IN ('Livrée','Retournée','Annulée')
+        AND NOT EXISTS (SELECT 1 FROM delivery_stops s WHERE s.order_id = o.id AND s.assignment_active = TRUE)
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Backfill order→run attach skipped:', error.message);
+  } finally {
+    client.release();
+  }
+}
+
 initDatabase()
   .then(() => applyCrmSchema(pool, path.join(__dirname, 'db', 'crm-schema.sql')))
   .then(() => synchronizeExistingOrders(pool))
+  .then(() => backfillOrderRuns(pool))
   .then(() => app.listen(port, () => console.log(`Delivery SaaS listening on port ${port}`)))
   .catch((error) => {
     console.error('Database initialization failed:', error.message);

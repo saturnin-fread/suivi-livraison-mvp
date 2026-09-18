@@ -605,6 +605,8 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-drop-right { left: auto; right: 0; }
 .crm-pg { min-width: 30px; height: 30px; border: 1px solid var(--line); background: #fff; border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 13px; }
 .crm-pg.active { background: var(--red); color: #fff; border-color: var(--red); font-weight: 700; }
+.crm-pg:not(:disabled):hover { border-color: #c7ced9; background: #f7f9fc; }
+.crm-pg:disabled { opacity: .4; cursor: default; }
 /* Panneau détail coulissant */
 .crm-drawer-wrap { position: fixed; inset: 0; z-index: 1500; }
 .crm-drawer-backdrop { position: absolute; inset: 0; background: rgba(12, 13, 16, .38); opacity: 0; transition: opacity .2s ease; }

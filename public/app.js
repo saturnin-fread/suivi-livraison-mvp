@@ -398,7 +398,9 @@ async function renderRunDetail(id) {
 
 async function renderOrderDetail(id) {
   setHeader('Commande', 'Exécution, preuve de remise et incidents');
+  const canManage = ['owner', 'manager', 'operator'].includes(context.user.role);
   const order = await api(`/api/app/orders/${encodeURIComponent(id)}`);
+  const reassignDrivers = (!order.isTerminal && canManage) ? await api('/api/app/drivers').catch(() => []) : [];
   const destination = [order.neighborhood, order.landmark, order.delivery_address].filter(Boolean).join(' — ') || '—';
   const incidentOptions = Object.entries(incidentCategoryLabels)
     .map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
@@ -421,6 +423,8 @@ async function renderOrderDetail(id) {
       <div class="detail"><span>Livreur</span><strong>${escapeHtml(order.driver_name)} · ${escapeHtml(order.driver_vehicle_type || '')}</strong></div>
       <div class="detail" style="grid-column:span 2"><span>Destination et instructions</span><strong>${escapeHtml(destination)}</strong></div>
     </div></section>
+
+    ${(!order.isTerminal && canManage) ? `<section class="card" style="margin-top:18px"><h2>Réassigner le livreur</h2><p class="subtitle">Change le livreur affecté ; la commande passe automatiquement dans la tournée du jour du nouveau livreur.</p><form id="reassignForm" style="margin-top:14px"><div class="form-grid"><div class="field full"><label>Livreur</label><select name="driverId" required>${reassignDrivers.map((d) => `<option value="${escapeHtml(d.id)}" ${String(d.id) === String(order.driver_id) ? 'selected' : ''} ${(!d.active || ['inactive', 'off_duty', 'incident'].includes(d.operationalState)) && String(d.id) !== String(order.driver_id) ? 'disabled' : ''}>${escapeHtml(d.name)}${d.vehicleType ? ` · ${escapeHtml(d.vehicleType)}` : ''}${String(d.id) === String(order.driver_id) ? ' (actuel)' : ''}</option>`).join('')}</select></div></div><div class="actions" style="margin-top:14px"><button class="primary">Réassigner</button></div></form><div id="reassignResult"></div></section>` : ''}
 
     <section class="card" style="margin-top:18px"><h2>Lien de suivi client</h2><p class="subtitle">Ce lien donne accès uniquement au colis concerné. Il n’est révélé qu’à votre demande et chaque affichage est enregistré.</p><div class="detail-grid"><div class="detail"><span>État du lien</span><strong>${escapeHtml(trackingStateLabels[trackingLink.state] || trackingLink.state)}</strong></div><div class="detail"><span>Expiration</span><strong>${escapeHtml(formatDate(trackingLink.expiresAt))}</strong></div></div><div class="actions" style="margin-top:18px">${trackingLinkUsable ? '<button class="secondary" type="button" id="revealTrackingLink">Afficher et copier</button>' : ''}${!order.isTerminal ? `<label class="field" style="max-width:190px"><span>Nouvelle durée</span><select id="trackingTtl"><option value="1">1 jour</option><option value="3">3 jours</option><option value="7" selected>7 jours</option><option value="14">14 jours</option><option value="30">30 jours</option></select></label><button class="primary" type="button" id="rotateTrackingLink">${trackingLinkUsable ? 'Renouveler le lien' : 'Créer un nouveau lien'}</button>` : ''}${trackingLinkUsable ? '<button class="danger" type="button" id="revokeTrackingLink">Révoquer</button>' : ''}</div><div id="trackingLinkResult"></div></section>
 
@@ -617,6 +621,23 @@ async function renderOrderDetail(id) {
       button.disabled = false;
     }
   }));
+
+  const reassignForm = document.getElementById('reassignForm');
+  if (reassignForm) reassignForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const driverId = Number(new FormData(event.currentTarget).get('driverId'));
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      await api(`/api/app/orders/${encodeURIComponent(id)}/reassign`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ driverId }),
+      });
+      location.reload();
+    } catch (error) {
+      document.getElementById('reassignResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
 
   const transitionForm = document.getElementById('transitionForm');
   if (transitionForm) transitionForm.addEventListener('submit', async (event) => {

@@ -4538,6 +4538,80 @@ app.post('/api/app/orders/:id/tracking-link/revoke', requireCompanyApi, requireC
   }
 }));
 
+// Réassignation d'une commande à un autre livreur (version simplifiée) : on
+// change le livreur, on déplace la commande de la tournée du jour de l'ancien
+// livreur vers celle du nouveau. Interdit sur une commande terminée.
+app.post('/api/app/orders/:id/reassign', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const newDriverId = Number(req.body.driverId);
+  if (!Number.isInteger(newDriverId) || newDriverId <= 0) return res.status(400).json({ error: 'Sélectionnez un livreur.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderResult = await client.query(
+      `SELECT id, driver_id, status, version FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [req.params.id, req.auth.company_id]
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw Object.assign(new Error('Commande introuvable.'), { statusCode: 404 });
+    if (terminalOrderStatuses.includes(order.status)) {
+      throw Object.assign(new Error('Une commande terminée ne peut pas être réassignée.'), { statusCode: 409 });
+    }
+    const driver = await client.query(
+      `SELECT id, name, active FROM drivers WHERE id = $1 AND company_id = $2 AND archived_at IS NULL`,
+      [newDriverId, req.auth.company_id]
+    );
+    if (!driver.rows[0]) throw Object.assign(new Error('Livreur introuvable.'), { statusCode: 404 });
+    if (!driver.rows[0].active) throw Object.assign(new Error('Ce livreur est désactivé.'), { statusCode: 409 });
+    if (String(order.driver_id) === String(newDriverId)) {
+      await client.query('COMMIT');
+      return res.json({ orderId: order.id, driverId: newDriverId, driverName: driver.rows[0].name, unchanged: true });
+    }
+    await client.query(
+      `UPDATE orders SET driver_id = $1, version = version + 1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
+      [newDriverId, order.id, req.auth.company_id]
+    );
+    const activeStop = await client.query(
+      `SELECT id, run_id FROM delivery_stops WHERE order_id = $1 AND assignment_active = TRUE FOR UPDATE`,
+      [order.id]
+    );
+    if (activeStop.rows[0]) {
+      await client.query(
+        `UPDATE delivery_stops SET assignment_active = FALSE, removed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [activeStop.rows[0].id]
+      );
+      await client.query(
+        `UPDATE delivery_runs SET version = version + 1, updated_at = NOW() WHERE id = $1`,
+        [activeStop.rows[0].run_id]
+      );
+      await appendRunEvent(client, req.auth, activeStop.rows[0].run_id, 'order_removed',
+        `reassign-out:${order.id}:${Date.now()}`, digest(canonicalJson({ orderId: order.id, reassign: true })),
+        { orderId: order.id, reason: 'reassigned' });
+    }
+    try {
+      await client.query('SAVEPOINT sp_reassign');
+      await attachOrderToDayRun(client, req.auth, order.id, newDriverId, todayServiceDate());
+      await client.query('RELEASE SAVEPOINT sp_reassign');
+    } catch (attachError) {
+      await client.query('ROLLBACK TO SAVEPOINT sp_reassign');
+      console.error('Reassign attach failed:', attachError.message);
+    }
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'order', $3, 'reassigned', jsonb_build_object('fromDriverId', $4::bigint, 'toDriverId', $5::bigint))`,
+      [req.auth.company_id, req.auth.user_id, order.id, order.driver_id, newDriverId]
+    );
+    await client.query('COMMIT');
+    return res.json({ orderId: order.id, driverId: newDriverId, driverName: driver.rows[0].name });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    console.error('Reassign error:', error.message);
+    return res.status(500).json({ error: 'Réassignation impossible.' });
+  } finally {
+    client.release();
+  }
+}));
+
 app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (req, res) => {
   const toStatus = String(req.body.toStatus || '').trim();
   const reason = String(req.body.reason || '').trim();

@@ -1560,6 +1560,13 @@ async function renderDrivers() {
 
   const vehicleOptions = (selected) => driverVehicleOptions.map((option) => `<option value="${option}" ${option === selected ? 'selected' : ''}>${option}</option>`).join('');
   const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
+  const driverPhotoUrl = (driver) => driver.hasPhoto && driver.id ? `/api/app/drivers/${encodeURIComponent(driver.id)}/photo?v=${driver.photoVersion || 0}` : null;
+  const avatarHtml = (driver) => {
+    const url = driverPhotoUrl(driver);
+    return url
+      ? `<span class="avatar has-photo"><img src="${url}" alt="" loading="lazy"></span>`
+      : `<span class="avatar">${escapeHtml(initials(driver.name))}</span>`;
+  };
   const bucketOf = (driver) => {
     if (!driver.active) return 'inactive';
     if (['incident', 'off_duty', 'inactive'].includes(driver.operationalState)) return 'inactive';
@@ -1672,7 +1679,7 @@ async function renderDrivers() {
       container.className = '';
       container.innerHTML = `<div class="fleet-cards">${list.map((driver) => `<div class="fleet-card">
         <div class="fleet-card-top">
-          <span class="avatar">${escapeHtml(initials(driver.name))}</span>
+          ${avatarHtml(driver)}
           <div class="fleet-name"><div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div>
           ${rowMenu(driver)}
         </div>
@@ -1689,7 +1696,7 @@ async function renderDrivers() {
     }
     container.className = 'card';
     container.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Livreur</th><th>État</th><th>Charge</th><th>Identifiant GPS</th><th>Dernière position</th><th>Compte</th><th>Disponibilité</th>${canManage ? '<th></th>' : ''}</tr></thead><tbody>${list.map((driver) => `<tr>
-      <td><div class="fleet-name"><span class="avatar">${escapeHtml(initials(driver.name))}</span><div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div></td>
+      <td><div class="fleet-name">${avatarHtml(driver)}<div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div></td>
       <td>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'}</td>
       <td>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</td>
       <td><span class="mono">${escapeHtml(driver.uniqueId)}</span></td>
@@ -1786,11 +1793,108 @@ async function renderDrivers() {
     });
   }
 
+  function driverPhotoSection(driver) {
+    const url = driverPhotoUrl(driver);
+    return `<div class="driver-photo-edit">
+      <div class="driver-photo-preview" id="photoPreview">${url ? `<img src="${url}" alt="">` : `<span>${escapeHtml(initials(driver.name))}</span>`}</div>
+      <div class="driver-photo-actions">
+        <div class="driver-photo-title">Photo du livreur</div>
+        <p class="subtitle" style="margin:2px 0 8px">JPEG, PNG ou WebP · 600 Ko max. La photo apparaît dans les listes et fiches.</p>
+        <div class="driver-photo-btns">
+          <button class="button secondary small" type="button" id="photoPick">${url ? 'Remplacer' : 'Importer une photo'}</button>
+          <button class="button subtle small" type="button" id="photoRemove" ${url ? '' : 'hidden'}>Retirer</button>
+        </div>
+        <input type="file" id="photoInput" accept="image/jpeg,image/png,image/webp" hidden>
+        <div id="photoMsg" class="driver-photo-msg"></div>
+      </div>
+    </div>`;
+  }
+
+  async function resizeImageToDataUrl(file, max = 320) {
+    const bitmap = await createImageBitmap(file).catch(() => null);
+    let source = bitmap;
+    if (!source) {
+      source = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = URL.createObjectURL(file);
+      });
+    }
+    const w = source.width || source.naturalWidth;
+    const h = source.height || source.naturalHeight;
+    const scale = Math.min(1, max / Math.max(w, h));
+    const cw = Math.max(1, Math.round(w * scale));
+    const ch = Math.max(1, Math.round(h * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, cw, ch);
+    if (bitmap && bitmap.close) bitmap.close();
+    let quality = 0.86;
+    let dataUrl = canvas.toDataURL('image/jpeg', quality);
+    // La limite globale du body JSON est de 256 Ko : on garde la dataUrl
+    // (base64 + enveloppe JSON) confortablement en dessous.
+    while (dataUrl.length > 230 * 1024 && quality > 0.35) {
+      quality -= 0.12;
+      dataUrl = canvas.toDataURL('image/jpeg', quality);
+    }
+    return dataUrl;
+  }
+
+  function wireDriverPhoto(root, driver) {
+    const input = root.querySelector('#photoInput');
+    const pick = root.querySelector('#photoPick');
+    const remove = root.querySelector('#photoRemove');
+    const preview = root.querySelector('#photoPreview');
+    const msg = root.querySelector('#photoMsg');
+    if (!input || !pick) return;
+    const setBusy = (busy) => { pick.disabled = busy; if (remove) remove.disabled = busy; };
+    pick.addEventListener('click', () => input.click());
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      input.value = '';
+      if (!file) return;
+      if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { msg.innerHTML = '<span class="err">Format non supporté.</span>'; return; }
+      setBusy(true);
+      msg.textContent = 'Traitement…';
+      try {
+        const dataUrl = await resizeImageToDataUrl(file);
+        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/photo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl }) });
+        preview.innerHTML = `<img src="${dataUrl}" alt="">`;
+        pick.textContent = 'Remplacer';
+        if (remove) remove.hidden = false;
+        msg.innerHTML = '<span class="ok">Photo enregistrée.</span>';
+        driver.hasPhoto = true;
+        await reload();
+      } catch (error) {
+        msg.innerHTML = `<span class="err">${escapeHtml(error.message)}</span>`;
+      } finally { setBusy(false); }
+    });
+    if (remove) remove.addEventListener('click', async () => {
+      setBusy(true);
+      msg.textContent = 'Suppression…';
+      try {
+        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/photo`, { method: 'DELETE' });
+        preview.innerHTML = `<span>${escapeHtml(initials(driver.name))}</span>`;
+        pick.textContent = 'Importer une photo';
+        remove.hidden = true;
+        msg.innerHTML = '<span class="ok">Photo retirée.</span>';
+        driver.hasPhoto = false;
+        await reload();
+      } catch (error) {
+        msg.innerHTML = `<span class="err">${escapeHtml(error.message)}</span>`;
+      } finally { setBusy(false); }
+    });
+  }
+
   function openEditModal(driver) {
     const modal = openModal('Modifier le livreur',
-      `<form id="driverForm">${driverFormFields(driver)}</form><div id="modalResult"></div>`,
+      `${driverPhotoSection(driver)}<form id="driverForm">${driverFormFields(driver)}</form><div id="modalResult"></div>`,
       `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="driverSubmit" type="submit" form="driverForm">Enregistrer</button>`);
     modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    wireDriverPhoto(modal.backdrop, driver);
     modal.backdrop.querySelector('#driverForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = Object.fromEntries(new FormData(event.currentTarget));
@@ -2093,9 +2197,17 @@ const crmIcons = {
 function crmInitials(name) {
   return String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
 }
-function crmAvatar(name) {
+function crmAvatar(name, opts) {
   if (!name) return '<span class="crm-muted">—</span>';
-  return `<span class="crm-av"><span class="crm-av-badge">${escapeHtml(crmInitials(name))}</span>${escapeHtml(name)}</span>`;
+  const o = opts || {};
+  const badge = o.photoUrl
+    ? `<span class="crm-av-badge crm-av-photo"><img src="${escapeHtml(o.photoUrl)}" alt="" loading="lazy"></span>`
+    : `<span class="crm-av-badge">${escapeHtml(crmInitials(name))}</span>`;
+  const dotState = o.online === 'online' ? 'online' : o.online === 'stale' ? 'stale' : '';
+  const dot = o.online != null
+    ? `<span class="crm-av-dot ${dotState}" title="${o.online === 'online' ? 'En ligne' : o.online === 'stale' ? 'Signal ancien' : 'Hors ligne'}"></span>`
+    : '';
+  return `<span class="crm-av"><span class="crm-av-wrap">${badge}${dot}</span>${escapeHtml(name)}</span>`;
 }
 function crmChip(label, color) {
   if (label == null || label === '') return '<span class="crm-muted">—</span>';
@@ -2196,7 +2308,7 @@ async function openOrderDrawer(orderId) {
         </section>
         <section><h4><span class="crm-sec-ic">${secIc.truck}</span>Livraison</h4>
           <div class="crm-kv"><span>Zone</span><strong>${escapeHtml(zone)}</strong></div>
-          <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name) : '—'}</strong></div>
+          <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name, { photoUrl: o.driver_photo, online: o.driver_online }) : '—'}</strong></div>
           <div class="crm-kv"><span>Créneau</span><strong>${escapeHtml(o.requested_time || '—')}</strong></div>
         </section>
         <section><h4><span class="crm-sec-ic">${secIc.track}</span>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
@@ -2332,7 +2444,7 @@ async function renderOperationsWorkspace(initialSegment) {
         { key: 'id', label: 'N° Commande', cell: (r) => `<span class="crm-code">CMD-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
         { key: 'client', label: 'Client', cell: (r) => `<div class="crm-strong">${escapeHtml(r.customer_name || '—')}</div>${r.customer_phone ? `<div class="crm-sub">${escapeHtml(r.customer_phone)}</div>` : ''}`, sortVal: (r) => (r.customer_name || '').toLowerCase() },
         { key: 'zone', label: 'Zone', cell: (r) => escapeHtml(r.neighborhood || r.landmark || '—'), sortVal: (r) => (r.neighborhood || '').toLowerCase() },
-        { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name), sortVal: (r) => (r.driver_name || '').toLowerCase() },
+        { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name, { photoUrl: r.driver_photo, online: r.driver_online }), sortVal: (r) => (r.driver_name || '').toLowerCase() },
         { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status, crmOrderStatusColor(r.status)), sortVal: (r) => r.status },
         { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
         { key: 'suivi', label: 'Suivi', cell: (r) => { const p = crmOrderProgress(r.status); return crmProgressBar(p.pct, p.tone); } },
@@ -2351,7 +2463,7 @@ async function renderOperationsWorkspace(initialSegment) {
         { key: 'type', label: 'Type', cell: (r) => escapeHtml(incidentCategoryLabels[r.category] || r.category), sortVal: (r) => r.category },
         { key: 'order', label: 'Commande liée', cell: (r) => `<span class="crm-code">CMD-${escapeHtml(r.order_id)}</span>`, sortVal: (r) => Number(r.order_id) },
         { key: 'zone', label: 'Zone', cell: (r) => escapeHtml(r.neighborhood || '—') },
-        { key: 'assignee', label: 'Assigné à', cell: (r) => (r.assigned_to || r.driver_name) ? crmAvatar(r.assigned_to || r.driver_name) : '<span class="crm-muted">Non attribué</span>' },
+        { key: 'assignee', label: 'Assigné à', cell: (r) => (r.assigned_to || r.driver_name) ? crmAvatar(r.assigned_to || r.driver_name, r.assigned_to ? {} : { photoUrl: r.driver_photo, online: r.driver_online }) : '<span class="crm-muted">Non attribué</span>' },
         { key: 'severity', label: 'Priorité', cell: (r) => { const lbl = incidentSeverityLabels[r.severity] || r.severity; return crmChip(lbl, /haut|crit|élev|eleve|urgent/i.test(lbl || '') ? 'red' : /moy/i.test(lbl || '') ? 'amber' : 'grey'); } },
         { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status === 'resolved' ? 'Résolu' : 'Ouvert', r.status === 'resolved' ? 'green' : 'red'), sortVal: (r) => r.status },
         { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
@@ -2368,7 +2480,7 @@ async function renderOperationsWorkspace(initialSegment) {
       text: (r) => `${r.name || ''} ${r.id} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
       columns: [
         { key: 'name', label: 'N° Tournée', cell: (r) => `<div class="crm-strong">${escapeHtml(r.name || `TRN-${r.id}`)}</div><div class="crm-sub">N° ${escapeHtml(r.id)}</div>`, sortVal: (r) => (r.name || '').toLowerCase() },
-        { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name), sortVal: (r) => (r.driver_name || '').toLowerCase() },
+        { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name, { photoUrl: r.driver_photo, online: r.driver_online }), sortVal: (r) => (r.driver_name || '').toLowerCase() },
         { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDateOnly(r.service_date)), sortVal: (r) => r.service_date || '' },
         { key: 'stops', label: 'Arrêts', cell: (r) => `${escapeHtml(r.terminal_stop_count)} / ${escapeHtml(r.stop_count)}`, sortVal: (r) => Number(r.stop_count) },
         { key: 'prog', label: 'Progression', cell: (r) => { const total = Number(r.stop_count) || 0; const done = Number(r.terminal_stop_count) || 0; return crmProgressBar(total ? Math.round((done / total) * 100) : 0, ''); } },

@@ -1192,11 +1192,14 @@ async function renderOperationsMap() {
         provider_disabled: 'Moteur d’itinéraire non configuré.',
         not_enough_points: 'Pas assez de points pour tracer un itinéraire.',
       };
-      return `<div class="ops-liveroute unavailable">${escapeHtml(reasons[liveRoute.reason] || 'Itinéraire live indisponible pour l’instant.')}</div>`;
+      return `<div class="ops-liveroute unavailable">${escapeHtml(reasons[liveRoute.reason] || (liveRoute.planned ? 'Itinéraire prévisionnel indisponible pour l’instant.' : 'Itinéraire live indisponible pour l’instant.'))}</div>`;
     }
     const km = liveRoute.distanceMeters != null ? (liveRoute.distanceMeters / 1000).toFixed(1) : '—';
     const min = liveRoute.durationSeconds != null ? Math.round(liveRoute.durationSeconds / 60) : null;
-    return `<div class="ops-liveroute"><span class="ops-liveroute-dot"></span><div><strong>Itinéraire live · ${escapeHtml(km)} km restants</strong><small>${min != null ? `~${min} min de route` : 'durée indisponible'} · durée routière brute, hors arrêts et remise</small></div></div>`;
+    const title = liveRoute.planned
+      ? `Itinéraire prévisionnel · ${escapeHtml(km)} km`
+      : `Itinéraire live · ${escapeHtml(km)} km restants`;
+    return `<div class="ops-liveroute ${liveRoute.planned ? 'planned' : ''}"><span class="ops-liveroute-dot"></span><div><strong>${title}</strong><small>${min != null ? `~${min} min de route` : 'durée indisponible'} · durée routière brute, hors arrêts et remise</small></div></div>`;
   }
 
   function updateLiveRouteInfo() {
@@ -1207,10 +1210,17 @@ async function renderOperationsMap() {
   async function refreshLiveRoute() {
     const driver = selectedDriver();
     if (!driver || replay.active) { clearLiveRoute(); updateLiveRouteInfo(); return; }
-    const activeRun = (driver.runs || []).find((run) => run.status === 'active');
-    if (!activeRun) { clearLiveRoute(); updateLiveRouteInfo(); return; }
+    const runs = driver.runs || [];
+    // Tournée du jour : active en priorité (itinéraire live rouge depuis la
+    // position GPS), sinon planifiée/brouillon (itinéraire prévisionnel bleu
+    // sur routes réelles à travers tous les arrêts).
+    const openRun = runs.find((run) => run.status === 'active')
+      || runs.find((run) => run.status === 'planned')
+      || runs.find((run) => run.status === 'draft');
+    if (!openRun) { clearLiveRoute(); updateLiveRouteInfo(); return; }
+    const isActive = openRun.status === 'active';
     try {
-      const data = await api(`/api/app/runs/${encodeURIComponent(activeRun.id)}/route`);
+      const data = await api(`/api/app/runs/${encodeURIComponent(openRun.id)}/route`);
       const current = selectedDriver();
       // Le livreur a pu être désélectionné ou un rejeu lancé pendant l'appel.
       if (!current || String(current.id) !== String(driver.id) || replay.active) return;
@@ -1218,15 +1228,15 @@ async function renderOperationsMap() {
       liveRouteLayer.clearLayers();
       if (route && route.status === 'ok' && route.geometry?.value?.coordinates?.length >= 2) {
         const coords = route.geometry.value.coordinates.map(([lng, lat]) => [lat, lng]);
-        L.polyline(coords, { color: '#e11d2a', weight: 5, opacity: 0.9 }).addTo(liveRouteLayer);
-        liveRoute = { driverId: driver.id, runId: activeRun.id, distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds };
+        L.polyline(coords, { color: isActive ? '#e11d2a' : '#2563eb', weight: 5, opacity: 0.9 }).addTo(liveRouteLayer);
+        liveRoute = { driverId: driver.id, runId: openRun.id, planned: !isActive, distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds };
       } else {
-        liveRoute = { driverId: driver.id, runId: activeRun.id, unavailable: true, reason: route?.failure?.code || 'unavailable' };
+        liveRoute = { driverId: driver.id, runId: openRun.id, planned: !isActive, unavailable: true, reason: route?.failure?.code || 'unavailable' };
       }
       updateLiveRouteInfo();
     } catch (error) {
       liveRouteLayer.clearLayers();
-      liveRoute = { driverId: driver.id, unavailable: true, reason: 'unavailable' };
+      liveRoute = { driverId: driver.id, planned: !isActive, unavailable: true, reason: 'unavailable' };
       updateLiveRouteInfo();
     }
   }

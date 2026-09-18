@@ -164,7 +164,7 @@ async function renderDashboard() {
   setHeader('Tableau de bord', 'Vue d’ensemble des opérations');
   const summary = await api('/api/app/summary');
   page.innerHTML = `
-    <div class="page-header"><div><h1>Bonjour ${escapeHtml(context.user.name)}</h1><p class="subtitle">Voici les éléments qui demandent votre attention.</p></div><a class="button primary" href="/app/demandes">Gérer les demandes</a></div>
+    <div class="page-header"><div><h1>Bonjour ${escapeHtml(context.user.name)}</h1><p class="subtitle">Voici les éléments qui demandent votre attention.</p></div><a class="button primary" href="/app/operations?vue=demandes">Gérer les demandes</a></div>
     <section class="grid stats">
       <article class="stat"><span>Demandes actives</span><strong>${escapeHtml(summary.active_requests)}</strong></article>
       <article class="stat"><span>À vérifier</span><strong>${escapeHtml(summary.to_review)}</strong></article>
@@ -174,7 +174,7 @@ async function renderDashboard() {
       <article class="stat"><span>Incidents ouverts</span><strong>${escapeHtml(summary.open_incidents)}</strong></article>
       <article class="stat"><span>Gels à réviser</span><strong>${escapeHtml(summary.overdue_holds)}</strong></article>
     </section>
-    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/demandes">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/tournees">Préparer une tournée</a><a class="button secondary" href="/app/incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
+    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/operations?vue=creer">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/operations?vue=tournees">Voir les tournées</a><a class="button secondary" href="/app/operations?vue=incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
 }
 
 async function renderRequests() {
@@ -234,7 +234,7 @@ async function renderRequestDetail(id) {
   const drivers = request.order_id ? [] : await api('/api/app/drivers');
   const convertible = ['À vérifier', 'Informations à compléter'].includes(request.status) && !request.order_id;
   page.innerHTML = `
-    <div class="page-header"><div><a href="/app/demandes">← Retour aux demandes</a><h1 style="margin-top:12px">${escapeHtml(request.customer_name || 'Demande en attente')}</h1><p class="subtitle">Demande n° ${escapeHtml(request.id)} · ${escapeHtml(formatDate(request.created_at))}</p></div>${badge(request.status)}</div>
+    <div class="page-header"><div><a href="/app/operations?vue=demandes">← Retour aux demandes</a><h1 style="margin-top:12px">${escapeHtml(request.customer_name || 'Demande en attente')}</h1><p class="subtitle">Demande n° ${escapeHtml(request.id)} · ${escapeHtml(formatDate(request.created_at))}</p></div>${badge(request.status)}</div>
     <section class="card"><h2>Informations du client</h2><div class="detail-grid">
       <div class="detail"><span>Téléphone</span><strong>${escapeHtml(request.customer_phone || '—')}</strong></div>
       <div class="detail"><span>Zone ou quartier</span><strong>${escapeHtml(request.neighborhood || '—')}</strong></div>
@@ -244,7 +244,7 @@ async function renderRequestDetail(id) {
       <div class="detail"><span>Précision</span><strong>${request.location_accuracy == null ? '—' : `${Math.round(request.location_accuracy)} m`}</strong></div>
       <div class="detail" style="grid-column:1/-1"><span>Instructions</span><strong>${escapeHtml(request.notes || 'Aucune')}</strong></div>
     </div></section>
-    ${request.order_id ? `<section class="card" style="margin-top:18px"><h2>Commande créée</h2><div class="detail-grid"><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(request.order_id)}</strong></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(request.driver_name)}</strong></div><div class="detail"><span>Statut</span><strong>${escapeHtml(request.order_status)}</strong></div></div><div class="actions" style="margin-top:18px">${request.trackingLink?.path ? `<a class="button primary" target="_blank" rel="noopener" href="${escapeHtml(request.trackingLink.path)}">Ouvrir le suivi</a>` : ''}<a class="button secondary" href="/app/commandes">Voir les commandes</a></div></section>` : ''}
+    ${request.order_id ? `<section class="card" style="margin-top:18px"><h2>Commande créée</h2><div class="detail-grid"><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(request.order_id)}</strong></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(request.driver_name)}</strong></div><div class="detail"><span>Statut</span><strong>${escapeHtml(request.order_status)}</strong></div></div><div class="actions" style="margin-top:18px">${request.trackingLink?.path ? `<a class="button primary" target="_blank" rel="noopener" href="${escapeHtml(request.trackingLink.path)}">Ouvrir le suivi</a>` : ''}<a class="button secondary" href="/app/operations?vue=commandes">Voir les commandes</a></div></section>` : ''}
     ${convertible ? `<section class="card" style="margin-top:18px"><h2>Valider et affecter</h2><p class="subtitle">La création de la commande verrouillera les modifications du client.</p><div class="field" style="margin-top:16px"><label>Livreur</label><select id="conversionDriver"><option value="">Sélectionner un livreur</option>${drivers.map((driver) => {
       const unavailable = ['inactive', 'off_duty', 'incident'].includes(driver.operationalState);
       const state = driverStateLabels[driver.operationalState] || driver.operationalState;
@@ -374,7 +374,7 @@ async function renderRunDetail(id) {
     if (event.event_type === 'stops_reordered') return `${event.details.stopIds?.length || 0} arrêts réorganisés`;
     return `${run.driver_name} · ${formatDateOnly(run.service_date)}`;
   };
-  page.innerHTML = `<div class="page-header"><div><a href="/app/tournees">← Retour aux tournées</a><h1 style="margin-top:12px">${escapeHtml(run.name)}</h1><p class="subtitle">${escapeHtml(formatDateOnly(run.service_date))} · ${escapeHtml(run.driver_name)} · ${escapeHtml(run.stops.length)} colis</p></div>${badge(runStatusLabels[run.status] || run.status)}</div>
+  page.innerHTML = `<div class="page-header"><div><a href="/app/operations?vue=tournees">← Retour aux tournées</a><h1 style="margin-top:12px">${escapeHtml(run.name)}</h1><p class="subtitle">${escapeHtml(formatDateOnly(run.service_date))} · ${escapeHtml(run.driver_name)} · ${escapeHtml(run.stops.length)} colis</p></div>${badge(runStatusLabels[run.status] || run.status)}</div>
     <div class="notice info" style="margin-bottom:16px">Cette tournée regroupe <strong>automatiquement</strong> les commandes du jour de ${escapeHtml(run.driver_name)}. Un colis s’y ajoute dès qu’une commande lui est affectée à la création — rien à saisir ici.</div>
     <section class="card"><div class="actions" style="justify-content:space-between"><div><h2 style="margin:0">Ordre de passage</h2><p class="subtitle">${run.canReorderStops ? 'Optimisez l’itinéraire sur les routes réelles, ou ajustez l’ordre à la main.' : 'L’ordre est verrouillé pendant l’exécution.'}</p></div><span>${escapeHtml(run.stops.length)} colis</span></div><div id="runNotice"></div><div id="runStops" style="margin-top:18px"></div>
       ${run.canReorderStops && run.stops.length > 1 ? `<div class="actions" style="margin-top:18px"><button class="primary" id="optimizeRun">Optimiser l’itinéraire (routes réelles)</button><button class="secondary" id="saveRunOrder">Enregistrer l’ordre manuel</button></div>` : ''}
@@ -507,7 +507,7 @@ async function renderOrderDetail(id) {
   };
   const trackingLinkUsable = ['active', 'terminal'].includes(trackingLink.state);
   page.innerHTML = `
-    <div class="page-header"><div><a href="/app/commandes">← Retour aux commandes</a><h1 style="margin-top:12px">Commande n° ${escapeHtml(order.id)}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
+    <div class="page-header"><div><a href="/app/operations?vue=commandes">← Retour aux commandes</a><h1 style="margin-top:12px">Commande n° ${escapeHtml(order.id)}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
     <section class="card"><h2>Livraison</h2><div class="detail-grid">
       <div class="detail"><span>Client</span><strong>${escapeHtml(order.customer_name || '—')}</strong></div>
       <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
@@ -827,7 +827,7 @@ async function renderIncidentDetail(id) {
     : dossier.eventChainValid === false
       ? '<div class="notice error">L’intégrité de la chronologie ne peut pas être confirmée. Contactez le support avant d’utiliser ce dossier.</div>'
       : '<div class="notice">Dossier antérieur au journal d’intégrité : aucune chaîne d’événements disponible.</div>';
-  page.innerHTML = `<div class="page-header print-hidden"><div><a href="/app/incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">Commande n° ${escapeHtml(incident.order_id)} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>
+  page.innerHTML = `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">Commande n° ${escapeHtml(incident.order_id)} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>
     <section class="card incident-report"><div class="page-header"><div><h2>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</h2><p class="subtitle">Gravité ${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)}</p></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</div>
       <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable du dossier</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(incident.order_id)} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
       <h3>Déclaration d’origine</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte n’est pas modifiable.</small>
@@ -2320,6 +2320,72 @@ async function openOrderDrawer(orderId) {
   }
 }
 
+// Panneau détail coulissant d'une demande client (aperçu rapide, comme la commande).
+async function openRequestDrawer(requestId) {
+  const existing = document.querySelector('.crm-drawer-wrap');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'crm-drawer-wrap';
+  wrap.innerHTML = '<div class="crm-drawer-backdrop"></div><aside class="crm-drawer"><div class="loading-state" style="padding:40px">Chargement…</div></aside>';
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (event) => { if (event.key === 'Escape') close(); };
+  wrap.querySelector('.crm-drawer-backdrop').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  try {
+    const r = await api(`/api/app/requests/${encodeURIComponent(requestId)}`);
+    const phone = String(r.customer_phone || '').replace(/[^+\d]/g, '');
+    const shared = r.location_lat != null && r.location_lng != null;
+    const validated = r.status === 'Confirmée' || r.validated_at != null;
+    const secIc = {
+      client: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+      pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>',
+      doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+      truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17V5H2v12"/><path d="M14 9h4l4 4v4h-6"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
+    };
+    const footer = r.order_id
+      ? `<a class="button secondary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a><a class="button primary" href="/app/commandes/${escapeHtml(r.order_id)}">Voir la commande</a>`
+      : `<a class="button secondary" href="/app/demandes/${escapeHtml(r.id)}">Autres actions</a><a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Valider et affecter</a>`;
+    wrap.querySelector('.crm-drawer').innerHTML = `
+      <div class="crm-drawer-head">
+        <div><div class="crm-drawer-title">DEM-${escapeHtml(r.id)} ${crmChip(r.status)}</div>
+          <small>Créée le ${escapeHtml(formatDate(r.created_at))}${r.submitted_at ? ' · via formulaire client' : ''}</small></div>
+        <div class="crm-drawer-headact">
+          <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+      </div>
+      <div class="crm-drawer-body">
+        <section><h4><span class="crm-sec-ic">${secIc.client}</span>Client</h4>
+          <div class="crm-kv"><span>Nom</span><strong>${escapeHtml(r.customer_name || 'En attente du client')}</strong></div>
+          <div class="crm-kv"><span>Téléphone</span><strong>${phone ? `<a href="tel:${escapeHtml(phone)}">${escapeHtml(r.customer_phone)}</a>` : '—'}</strong></div>
+          <div class="crm-kv"><span>Créneau souhaité</span><strong>${escapeHtml(r.requested_time || '—')}</strong></div>
+        </section>
+        <section><h4><span class="crm-sec-ic">${secIc.pin}</span>Localisation</h4>
+          <div class="crm-kv"><span>Zone / quartier</span><strong>${escapeHtml(r.neighborhood || '—')}</strong></div>
+          <div class="crm-kv"><span>Repère</span><strong>${escapeHtml(r.landmark || '—')}</strong></div>
+          <div class="crm-kv"><span>Position GPS</span><strong>${shared ? crmChip('Partagée', 'green') : crmChip('Non partagée', 'red')}</strong></div>
+          <div class="crm-kv"><span>Précision</span><strong>${r.location_accuracy != null ? `± ${escapeHtml(Math.round(r.location_accuracy))} m` : '—'}</strong></div>
+        </section>
+        <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Traitement</h4>
+          <div class="crm-kv"><span>Source</span><strong>${r.submitted_at ? crmChip('Formulaire client', 'blue') : crmChip('Saisie interne', 'purple')}</strong></div>
+          <div class="crm-kv"><span>Validation</span><strong>${validated ? crmChip('Validée', 'green') : crmChip('À valider', 'amber')}</strong></div>
+          <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(r.notes || 'Aucune')}</strong></div>
+        </section>
+        ${r.order_id ? `<section><h4><span class="crm-sec-ic">${secIc.truck}</span>Commande créée</h4>
+          <div class="crm-kv"><span>Commande</span><strong>CMD-${escapeHtml(r.order_id)}</strong></div>
+          <div class="crm-kv"><span>Livreur</span><strong>${r.driver_name ? crmAvatar(r.driver_name) : '—'}</strong></div>
+          <div class="crm-kv"><span>Statut</span><strong>${crmChip(r.order_status, crmOrderStatusColor(r.order_status))}</strong></div>
+        </section>` : ''}
+      </div>
+      <div class="crm-drawer-foot">${footer}</div>`;
+    wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+  } catch (error) {
+    wrap.querySelector('.crm-drawer').innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
+    wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+  }
+}
+
 async function renderOperations() {
   setHeader('Opérations', 'Démarrez une livraison et suivez l’activité');
   const params = new URLSearchParams(location.search);
@@ -2426,7 +2492,7 @@ async function renderOperationsWorkspace(initialSegment) {
     commandes: {
       title: 'Commandes', newLabel: 'Nouvelle commande', newHref: '/app/nouvelle-commande',
       placeholder: 'Rechercher une commande, un client…', countKey: 'orders',
-      endpoint: () => '/api/app/orders', drawer: true, href: (r) => `/app/commandes/${r.id}`,
+      endpoint: () => '/api/app/orders', drawerFn: openOrderDrawer, href: (r) => `/app/commandes/${r.id}`,
       statusValues: ['Confirmée', 'En préparation', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? r.status : k === 'zone' ? (r.neighborhood || r.landmark || '—') : (r.driver_name || '—'),
@@ -2463,7 +2529,7 @@ async function renderOperationsWorkspace(initialSegment) {
       ],
     },
     tournees: {
-      title: 'Tournées', newLabel: 'Nouvelle tournée', newHref: '/app/tournees', placeholder: 'Rechercher une tournée, un livreur…', countKey: 'open_runs',
+      title: 'Tournées', newLabel: '', newHref: null, placeholder: 'Rechercher une tournée, un livreur…', countKey: 'open_runs',
       endpoint: () => '/api/app/runs', href: (r) => `/app/tournees/${r.id}`,
       statusValues: ['draft', 'planned', 'active', 'completed', 'cancelled'],
       groupCols: [['status', 'État'], ['driver', 'Livreur']],
@@ -2481,7 +2547,7 @@ async function renderOperationsWorkspace(initialSegment) {
     },
     demandes: {
       title: 'Demandes', newLabel: 'Nouvelle demande', newHref: '/app/operations?vue=creer', placeholder: 'Rechercher une demande, un client…', countKey: 'active_requests',
-      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, href: (r) => `/app/demandes/${r.id}`,
+      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, drawerFn: openRequestDrawer, href: (r) => `/app/demandes/${r.id}`,
       statusValues: [], filterTest: (r, v) => r.status === v,
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['position', 'Position client']],
       groupVal: (r, k) => k === 'status' ? (r.status || '—') : k === 'zone' ? (r.neighborhood || '—') : (reqShared(r) ? 'Partagée' : 'Non partagée'),
@@ -2513,7 +2579,7 @@ async function renderOperationsWorkspace(initialSegment) {
         <div class="crm-tool-wrap"><button class="crm-btn" id="crmFilter">${crmIcons.filter} Filtrer<span class="crm-b" id="crmFilterN" hidden></span></button></div>
         <div class="crm-tool-wrap"><button class="crm-btn" id="crmGroup">${crmIcons.group} Grouper par</button></div>
         <div class="crm-tool-wrap"><button class="crm-btn" id="crmSort">${crmIcons.sort} Trier</button></div>
-        <a class="crm-new" href="${escapeHtml(co.newHref)}">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</a>
+        ${co.newHref ? `<a class="crm-new" href="${escapeHtml(co.newHref)}">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</a>` : ''}
       </div>
       <div class="crm-chips" id="crmChips"></div>
       <div class="crm-card"><div class="crm-scroll"><table class="crm-table"><thead id="crmHead"></thead><tbody id="crmBody"></tbody></table></div></div>
@@ -2622,7 +2688,7 @@ async function renderOperationsWorkspace(initialSegment) {
 
   function rowHtml(r, co) {
     const cells = co.columns.map((col) => `<td>${col.cell(r)}</td>`).join('');
-    const eye = co.drawer ? `<button data-act="view" title="Aperçu">${crmIcons.eye}</button>` : `<button data-act="open" title="Ouvrir">${crmIcons.eye}</button>`;
+    const eye = co.drawerFn ? `<button data-act="view" title="Aperçu">${crmIcons.eye}</button>` : `<button data-act="open" title="Ouvrir">${crmIcons.eye}</button>`;
     return `<tr data-id="${escapeHtml(r.id)}"><td class="crm-cbcol"><span class="crm-cb"></span></td>${cells}<td class="crm-actcol"><span class="crm-rowact">${eye}<button data-act="open" title="Ouvrir la fiche">${crmIcons.edit}</button></span></td></tr>`;
   }
 
@@ -2648,10 +2714,10 @@ async function renderOperationsWorkspace(initialSegment) {
       tr.addEventListener('click', (e) => {
         const act = e.target.closest('[data-act]');
         const id = tr.dataset.id;
-        if (act && act.dataset.act === 'view') { openOrderDrawer(id); return; }
+        if (act && act.dataset.act === 'view') { (co.drawerFn || openOrderDrawer)(id); return; }
         if (act && act.dataset.act === 'open') { location.href = co.href({ id }); return; }
         if (e.target.closest('.crm-cb')) { e.target.closest('.crm-cb').classList.toggle('on'); return; }
-        if (co.drawer) openOrderDrawer(id); else location.href = co.href({ id });
+        if (co.drawerFn) co.drawerFn(id); else location.href = co.href({ id });
       });
     });
   }
@@ -2990,11 +3056,13 @@ async function start() {
     if (customerDetail) return await renderCustomerDetail(customerDetail[1]);
     if (path === '/app') return await renderDashboard();
     if (path === '/app/operations') return await renderOperations();
-    if (path === '/app/demandes') return await renderRequests();
+    // Les anciennes pages liste sont remplacées par les onglets du CRM Opérations.
+    // On y redirige toute entrée directe (lien obsolète, favori) pour une nav cohérente.
+    if (path === '/app/demandes') { location.replace('/app/operations?vue=demandes'); return; }
+    if (path === '/app/commandes') { location.replace('/app/operations?vue=commandes'); return; }
+    if (path === '/app/tournees') { location.replace('/app/operations?vue=tournees'); return; }
+    if (path === '/app/incidents') { location.replace('/app/operations?vue=incidents'); return; }
     if (path === '/app/nouvelle-commande') return await renderNewOrder();
-    if (path === '/app/commandes') return await renderOrders();
-    if (path === '/app/tournees') return await renderRuns();
-    if (path === '/app/incidents') return await renderIncidents();
     if (path === '/app/carte') return await renderOperationsMap();
     if (path === '/app/livreurs') return await renderDrivers();
     if (path === '/app/equipe') return await renderTeam();

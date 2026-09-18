@@ -886,6 +886,35 @@ async function initDatabase() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS failure_reason TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+      -- Numéro métier lisible CMD-AAAA-NNNN (par entreprise, par année).
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS reference TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS orders_reference_unique
+        ON orders(company_id, reference) WHERE reference IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS order_reference_counters (
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        year INTEGER NOT NULL,
+        last_seq INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (company_id, year)
+      );
+      -- Backfill idempotent : attribue un numéro aux commandes qui n'en ont pas,
+      -- dans l'ordre de création, par entreprise et par année.
+      WITH numbered AS (
+        SELECT id,
+               'CMD-' || EXTRACT(YEAR FROM created_at)::int || '-' ||
+               LPAD((ROW_NUMBER() OVER (
+                 PARTITION BY company_id, EXTRACT(YEAR FROM created_at)
+                 ORDER BY created_at, id))::text, 4, '0') AS ref
+        FROM orders WHERE reference IS NULL
+      )
+      UPDATE orders o SET reference = n.ref FROM numbered n WHERE o.id = n.id;
+      -- Amorce les compteurs à partir du plus grand numéro existant.
+      INSERT INTO order_reference_counters (company_id, year, last_seq)
+        SELECT company_id, SPLIT_PART(reference, '-', 2)::int AS year,
+               MAX(SPLIT_PART(reference, '-', 3)::int) AS last_seq
+        FROM orders WHERE reference LIKE 'CMD-%'
+        GROUP BY company_id, SPLIT_PART(reference, '-', 2)::int
+        ON CONFLICT (company_id, year)
+          DO UPDATE SET last_seq = GREATEST(order_reference_counters.last_seq, EXCLUDED.last_seq);
       CREATE UNIQUE INDEX IF NOT EXISTS orders_customer_request_unique
         ON orders(customer_request_id) WHERE customer_request_id IS NOT NULL;
 
@@ -1472,7 +1501,7 @@ async function loadDeliveryRun(companyId, runId, queryable = pool) {
   const [stops, eligibleOrders, events] = await Promise.all([
     queryable.query(
       `SELECT s.id, s.order_id, s.sequence, s.assignment_active, s.created_at,
-              o.status AS order_status, o.customer_name, o.customer_phone, o.requested_time,
+              o.status AS order_status, o.reference AS order_reference, o.customer_name, o.customer_phone, o.requested_time,
               o.neighborhood, o.landmark, o.delivery_address, o.destination_lat, o.destination_lng
        FROM delivery_stops s
        JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
@@ -1516,6 +1545,26 @@ async function loadDeliveryRun(companyId, runId, queryable = pool) {
 // Date de service « du jour », au format YYYY-MM-DD.
 function todayServiceDate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+// Attribue le numéro métier CMD-AAAA-NNNN à une commande (compteur atomique par
+// entreprise et par année). À appeler dans la transaction de création.
+async function assignOrderReference(client, companyId, orderId) {
+  const year = new Date().getFullYear();
+  const seq = await client.query(
+    `INSERT INTO order_reference_counters (company_id, year, last_seq)
+     VALUES ($1, $2, 1)
+     ON CONFLICT (company_id, year)
+       DO UPDATE SET last_seq = order_reference_counters.last_seq + 1
+     RETURNING last_seq`,
+    [companyId, year]
+  );
+  const reference = `CMD-${year}-${String(seq.rows[0].last_seq).padStart(4, '0')}`;
+  await client.query(
+    `UPDATE orders SET reference = $1 WHERE id = $2 AND company_id = $3`,
+    [reference, orderId, companyId]
+  );
+  return reference;
 }
 
 // Trouve (ou crée) la tournée ouverte du jour pour un livreur. La tournée est
@@ -2620,7 +2669,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
         [req.auth.company_id, customerId]
       ),
       client.query(
-        `SELECT o.id, o.status, o.neighborhood, o.landmark, o.created_at,
+        `SELECT o.id, o.reference, o.status, o.neighborhood, o.landmark, o.created_at,
                 o.updated_at, d.name AS driver_name
          FROM orders o JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
          WHERE o.company_id = $1 AND o.customer_id = $2
@@ -2902,7 +2951,7 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
             r.location_lat, r.location_lng, r.location_accuracy, r.location_at,
             r.neighborhood, r.landmark, r.notes, r.created_at, r.submitted_at, r.updated_at,
             r.expires_at, r.archived_at, r.validated_at, r.version,
-            o.id AS order_id, o.status AS order_status, d.name AS driver_name,
+            o.id AS order_id, o.status AS order_status, o.reference AS order_reference, d.name AS driver_name,
             t.token_ciphertext AS tracking_token_ciphertext, t.expires_at AS tracking_expires_at,
             t.revoked_at AS tracking_revoked_at, t.created_at AS tracking_created_at,
             t.version AS tracking_link_version
@@ -2994,6 +3043,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
         request.location_accuracy, request.neighborhood, request.landmark, request.notes,
       ]
     );
+    await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const trackingToken = randomToken(24);
     const trackingStorage = trackingTokenStorage(trackingToken);
     const trackingExpiration = createTrackingLinkExpiration();
@@ -4120,7 +4170,7 @@ app.post('/api/app/runs/:id/status', requireCompanyApi, requireCompanyRoles('own
 
 app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.requested_time,
+    `SELECT o.id, o.reference, o.status, o.customer_name, o.customer_phone, o.requested_time,
             o.neighborhood, o.landmark, o.created_at, o.updated_at,
             d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
             (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
@@ -4830,7 +4880,7 @@ app.get('/api/app/incidents', requireCompanyApi, asyncRoute(async (req, res) => 
   const result = await pool.query(
     `SELECT i.id, i.order_id, i.category, i.severity, i.description, i.status,
             i.created_at, i.resolved_at, o.customer_name, o.customer_phone,
-            o.neighborhood, o.status AS order_status,
+            o.neighborhood, o.status AS order_status, o.reference AS order_reference,
             d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
             (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
             opener.display_name AS opened_by, assignee.display_name AS assigned_to,
@@ -4859,7 +4909,7 @@ async function loadIncidentDossier(companyId, incidentId) {
             o.customer_name, o.customer_phone, o.delivery_address, o.requested_time,
             o.destination_lat, o.destination_lng, o.destination_accuracy, o.neighborhood,
             o.landmark, o.notes AS order_notes, o.status AS order_status, o.created_at AS order_created_at,
-            o.completed_at, o.cancelled_at, o.failure_reason,
+            o.reference AS order_reference, o.completed_at, o.cancelled_at, o.failure_reason,
             d.id AS driver_id, d.name AS driver_name, d.phone AS driver_phone,
             d.vehicle_type AS driver_vehicle_type,
             opener.display_name AS opened_by, resolver.display_name AS resolved_by,
@@ -5702,6 +5752,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, 'Confirmée') RETURNING id`,
       [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress]
     );
+    await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const token = randomToken(24);
     const tokenStorage = trackingTokenStorage(token);
     const trackingExpiration = createTrackingLinkExpiration();

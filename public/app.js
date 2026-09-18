@@ -296,7 +296,7 @@ async function renderRunDetail(id) {
     }
     container.innerHTML = `<div class="stop-list">${localStops.map((stop, index) => {
       const destination = stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser';
-      return `<article class="stop-card"><div class="stop-number">${index + 1}</div><div class="stop-main"><strong>Commande n° ${escapeHtml(stop.order_id)} · ${escapeHtml(stop.customer_name || 'Client')}</strong><span>${escapeHtml(destination)}</span><small>${escapeHtml(stop.requested_time || 'Créneau non renseigné')} · ${stop.destination_lat == null ? 'Position GPS manquante' : 'Position GPS disponible'} · ${escapeHtml(stop.order_status)}</small></div>${run.canReorderStops ? `<div class="stop-actions"><button class="secondary move-stop" data-direction="up" data-id="${escapeHtml(stop.id)}" ${index === 0 ? 'disabled' : ''} aria-label="Monter cet arrêt">↑</button><button class="secondary move-stop" data-direction="down" data-id="${escapeHtml(stop.id)}" ${index === localStops.length - 1 ? 'disabled' : ''} aria-label="Descendre cet arrêt">↓</button>${run.canEditStops ? `<button class="danger remove-stop" data-id="${escapeHtml(stop.id)}">Retirer</button>` : ''}</div>` : ''}</article>`;
+      return `<article class="stop-card"><div class="stop-number">${index + 1}</div><div class="stop-main"><strong>${escapeHtml(orderCode(stop.order_reference, stop.order_id))} · ${escapeHtml(stop.customer_name || 'Client')}</strong><span>${escapeHtml(destination)}</span><small>${escapeHtml(stop.requested_time || 'Créneau non renseigné')} · ${stop.destination_lat == null ? 'Position GPS manquante' : 'Position GPS disponible'} · ${escapeHtml(stop.order_status)}</small></div>${run.canReorderStops ? `<div class="stop-actions"><button class="secondary move-stop" data-direction="up" data-id="${escapeHtml(stop.id)}" ${index === 0 ? 'disabled' : ''} aria-label="Monter cet arrêt">↑</button><button class="secondary move-stop" data-direction="down" data-id="${escapeHtml(stop.id)}" ${index === localStops.length - 1 ? 'disabled' : ''} aria-label="Descendre cet arrêt">↓</button>${run.canEditStops ? `<button class="danger remove-stop" data-id="${escapeHtml(stop.id)}">Retirer</button>` : ''}</div>` : ''}</article>`;
     }).join('')}</div>`;
     container.querySelectorAll('.move-stop').forEach((button) => button.addEventListener('click', () => {
       const index = localStops.findIndex((stop) => String(stop.id) === button.dataset.id);
@@ -413,7 +413,7 @@ async function renderOrderDetail(id) {
   };
   const trackingLinkUsable = ['active', 'terminal'].includes(trackingLink.state);
   page.innerHTML = `
-    <div class="page-header"><div><a href="/app/operations?vue=commandes">← Retour aux commandes</a><h1 style="margin-top:12px">Commande n° ${escapeHtml(order.id)}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
+    <div class="page-header"><div><a href="/app/operations?vue=commandes">← Retour aux commandes</a><h1 style="margin-top:12px">${escapeHtml(orderCode(order.reference, order.id))}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
     <section class="card"><h2>Livraison</h2><div class="detail-grid">
       <div class="detail"><span>Client</span><strong>${escapeHtml(order.customer_name || '—')}</strong></div>
       <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
@@ -720,7 +720,7 @@ async function renderIncidentDetail(id) {
     : dossier.eventChainValid === false
       ? '<div class="notice error">L’intégrité de la chronologie ne peut pas être confirmée. Contactez le support avant d’utiliser ce dossier.</div>'
       : '<div class="notice">Dossier antérieur au journal d’intégrité : aucune chaîne d’événements disponible.</div>';
-  page.innerHTML = `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">Commande n° ${escapeHtml(incident.order_id)} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>
+  page.innerHTML = `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>
     <section class="card incident-report"><div class="page-header"><div><h2>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</h2><p class="subtitle">Gravité ${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)}</p></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</div>
       <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable du dossier</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(incident.order_id)} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
       <h3>Déclaration d’origine</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte n’est pas modifiable.</small>
@@ -2082,6 +2082,11 @@ const crmIcons = {
 function crmInitials(name) {
   return String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
 }
+// Numéro métier lisible : la référence CMD-AAAA-NNNN si présente, sinon repli
+// sur l'identifiant technique.
+function orderCode(reference, id) {
+  return reference || `CMD-${id}`;
+}
 function crmAvatar(name, opts) {
   if (!name) return '<span class="crm-muted">—</span>';
   const o = opts || {};
@@ -2178,7 +2183,7 @@ async function openOrderDrawer(orderId) {
     };
     wrap.querySelector('.crm-drawer').innerHTML = `
       <div class="crm-drawer-head">
-        <div><div class="crm-drawer-title">CMD-${escapeHtml(o.id)} ${crmChip(o.status, crmOrderStatusColor(o.status))}</div>
+        <div><div class="crm-drawer-title">${escapeHtml(orderCode(o.reference, o.id))} ${crmChip(o.status, crmOrderStatusColor(o.status))}</div>
           <small>Créée le ${escapeHtml(formatDate(o.created_at))}${creator ? ` par ${escapeHtml(creator)}` : ''}</small></div>
         <div class="crm-drawer-headact">
           ${o.trackingLink && o.trackingLink.path ? `<a class="crm-icobtn" href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener" title="Ouvrir le suivi client"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>` : ''}
@@ -2268,7 +2273,7 @@ async function openRequestDrawer(requestId) {
           <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(r.notes || 'Aucune')}</strong></div>
         </section>
         ${r.order_id ? `<section><h4><span class="crm-sec-ic">${secIc.truck}</span>Commande créée</h4>
-          <div class="crm-kv"><span>Commande</span><strong>CMD-${escapeHtml(r.order_id)}</strong></div>
+          <div class="crm-kv"><span>Commande</span><strong>${escapeHtml(orderCode(r.order_reference, r.order_id))}</strong></div>
           <div class="crm-kv"><span>Livreur</span><strong>${r.driver_name ? crmAvatar(r.driver_name) : '—'}</strong></div>
           <div class="crm-kv"><span>Statut</span><strong>${crmChip(r.order_status, crmOrderStatusColor(r.order_status))}</strong></div>
         </section>` : ''}
@@ -2392,9 +2397,9 @@ async function renderOperationsWorkspace(initialSegment) {
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? r.status : k === 'zone' ? (r.neighborhood || r.landmark || '—') : (r.driver_name || '—'),
       filterTest: (r, v) => r.status === v,
-      text: (r) => `${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
+      text: (r) => `${r.reference || ''} ${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
       columns: [
-        { key: 'id', label: 'N° Commande', cell: (r) => `<span class="crm-code">CMD-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
+        { key: 'id', label: 'N° Commande', cell: (r) => `<span class="crm-code">${escapeHtml(orderCode(r.reference, r.id))}</span>`, sortVal: (r) => Number(r.id) },
         { key: 'client', label: 'Client', cell: (r) => `<div class="crm-strong">${escapeHtml(r.customer_name || '—')}</div>${r.customer_phone ? `<div class="crm-sub">${escapeHtml(r.customer_phone)}</div>` : ''}`, sortVal: (r) => (r.customer_name || '').toLowerCase() },
         { key: 'zone', label: 'Zone', cell: (r) => escapeHtml(r.neighborhood || r.landmark || '—'), sortVal: (r) => (r.neighborhood || '').toLowerCase() },
         { key: 'driver', label: 'Livreur', cell: (r) => crmAvatar(r.driver_name, { photoUrl: r.driver_photo, online: r.driver_online }), sortVal: (r) => (r.driver_name || '').toLowerCase() },
@@ -2410,11 +2415,11 @@ async function renderOperationsWorkspace(initialSegment) {
       groupCols: [['status', 'Statut'], ['severity', 'Priorité'], ['assignee', 'Assigné à']],
       groupVal: (r, k) => k === 'status' ? (r.status === 'resolved' ? 'Résolu' : 'Ouvert') : k === 'severity' ? (incidentSeverityLabels[r.severity] || r.severity) : (r.assigned_to || r.driver_name || 'Non attribué'),
       filterTest: (r, v) => r.status === v,
-      text: (r) => `${r.id} ${incidentCategoryLabels[r.category] || r.category} ${r.order_id} ${r.customer_name || ''} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
+      text: (r) => `${r.id} ${incidentCategoryLabels[r.category] || r.category} ${r.order_reference || ''} ${r.order_id} ${r.customer_name || ''} ${r.driver_name || ''} ${r.status || ''}`.toLowerCase(),
       columns: [
         { key: 'id', label: 'N° Incident', cell: (r) => `<span class="crm-code">INC-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
         { key: 'type', label: 'Type', cell: (r) => escapeHtml(incidentCategoryLabels[r.category] || r.category), sortVal: (r) => r.category },
-        { key: 'order', label: 'Commande liée', cell: (r) => `<span class="crm-code">CMD-${escapeHtml(r.order_id)}</span>`, sortVal: (r) => Number(r.order_id) },
+        { key: 'order', label: 'Commande liée', cell: (r) => `<span class="crm-code">${escapeHtml(orderCode(r.order_reference, r.order_id))}</span>`, sortVal: (r) => Number(r.order_id) },
         { key: 'zone', label: 'Zone', cell: (r) => escapeHtml(r.neighborhood || '—') },
         { key: 'assignee', label: 'Assigné à', cell: (r) => (r.assigned_to || r.driver_name) ? crmAvatar(r.assigned_to || r.driver_name, r.assigned_to ? {} : { photoUrl: r.driver_photo, online: r.driver_online }) : '<span class="crm-muted">Non attribué</span>' },
         { key: 'severity', label: 'Priorité', cell: (r) => { const lbl = incidentSeverityLabels[r.severity] || r.severity; return crmChip(lbl, /haut|crit|élev|eleve|urgent/i.test(lbl || '') ? 'red' : /moy/i.test(lbl || '') ? 'amber' : 'grey'); } },
@@ -2818,7 +2823,7 @@ async function renderCustomerDetail(id) {
         <section class="card"><h2>Contacts (${formatInteger(contacts.length)})</h2>${contacts.length ? `<ul class="crm-contact-list">${contacts.map(contactMarkup).join('')}</ul>` : '<div class="empty compact-empty">Aucun contact enregistré.</div>'}</section>
         <section class="card"><h2>Lieux de livraison (${formatInteger(locations.length)})</h2><p class="section-hint">Les coordonnées GPS restent protégées et ne sont pas affichées ici.</p>${locations.length ? `<div class="crm-subcard-list">${locations.map(locationMarkup).join('')}</div>` : '<div class="empty compact-empty">Aucun lieu enregistré.</div>'}</section>
       </div>
-      <section class="card crm-section"><h2>Commandes (${formatInteger(orders.length)})</h2>${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Créée le</th><th>Destination</th><th>Livreur</th><th>État</th></tr></thead><tbody>${orders.map((order) => `<tr><td><a href="/app/commandes/${encodeURIComponent(order.id)}"><strong>N° ${escapeHtml(order.id)}</strong></a></td><td>${escapeHtml(formatDate(order.created_at))}</td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name || '—')}</td><td>${badge(order.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty compact-empty">Aucune commande liée.</div>'}</section>
+      <section class="card crm-section"><h2>Commandes (${formatInteger(orders.length)})</h2>${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Créée le</th><th>Destination</th><th>Livreur</th><th>État</th></tr></thead><tbody>${orders.map((order) => `<tr><td><a href="/app/commandes/${encodeURIComponent(order.id)}"><strong>${escapeHtml(orderCode(order.reference, order.id))}</strong></a></td><td>${escapeHtml(formatDate(order.created_at))}</td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name || '—')}</td><td>${badge(order.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty compact-empty">Aucune commande liée.</div>'}</section>
       <section class="card crm-section"><h2>Interactions récentes (${formatInteger(interactions.length)})</h2>${interactions.length ? `<ol class="timeline">${interactions.map((interaction) => `<li><strong>${escapeHtml(interactionPurposeLabels[interaction.purpose] || interaction.purpose || 'Échange')}</strong><span>${escapeHtml(interactionChannelLabels[interaction.channel] || interaction.channel || 'Canal non précisé')}${interaction.outcome ? ` · ${escapeHtml(interactionOutcomeLabels[interaction.outcome] || interaction.outcome)}` : ''}</span><small>${escapeHtml(formatDate(interaction.occurred_at))}</small>${interaction.summary ? `<p>${escapeHtml(interaction.summary)}</p>` : ''}</li>`).join('')}</ol>` : '<div class="empty compact-empty">Aucune interaction enregistrée.</div>'}</section>`;
   } catch (error) {
     page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">Fiche client</h1></div></div><div class="notice error" role="alert"><strong>Impossible de charger cette fiche.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryCustomerDetail" type="button">Réessayer</button></div>`;

@@ -521,6 +521,9 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-tab.active { color: var(--red); }
 .crm-tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2.5px; background: var(--red); border-radius: 2px; }
 .crm-tab .n { margin-left: 6px; font-size: 12px; color: #9aa4b2; font-weight: 700; }
+.crm-tab-add { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; margin-left: 4px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--muted); cursor: pointer; }
+.crm-tab-add:hover { border-color: #c7ced9; background: #f7f9fc; color: var(--ink); }
+.crm-tab-add svg { width: 16px; height: 16px; }
 .crm-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .crm-search { flex: 1; display: flex; align-items: center; gap: 9px; min-width: 240px; max-width: 460px; padding: 9px 13px; background: #fff; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); }
 .crm-search span { display: inline-flex; }
@@ -572,6 +575,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-table tbody tr:hover .crm-rowact { display: flex; }
 .crm-rowact button { width: 28px; height: 28px; border: 0; background: none; border-radius: 7px; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .crm-rowact button:hover { background: #f1f4f8; color: var(--ink); }
+.crm-rowact button.crm-rowact-danger:hover { background: #fdeceb; color: #b42318; }
 .crm-rowact svg { width: 15px; height: 15px; }
 .crm-code { font-weight: 700; color: var(--ink-strong); }
 .crm-strong { font-weight: 650; color: var(--ink-strong); }

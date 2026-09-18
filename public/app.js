@@ -177,57 +177,6 @@ async function renderDashboard() {
     <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/operations?vue=creer">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/operations?vue=tournees">Voir les tournées</a><a class="button secondary" href="/app/operations?vue=incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
 }
 
-async function renderRequests() {
-  setHeader('Demandes', 'Informations reçues avant création d’une commande');
-  page.innerHTML = `
-    <div class="page-header"><div><h1>Demandes clients</h1><p class="subtitle">Vérifiez et complétez les informations avant de lancer une livraison.</p></div><button class="primary" id="createLink">Générer un formulaire client</button></div>
-    <div id="linkResult"></div>
-    <section class="card"><div class="actions" style="justify-content:space-between;margin-bottom:16px"><h2 style="margin:0">File active</h2><div><button class="secondary" id="activeRequests">Actives</button> <button class="secondary" id="archivedRequests">Archives</button></div></div><div id="requestTable">Chargement…</div></section>`;
-
-  const linkResult = document.getElementById('linkResult');
-  document.getElementById('createLink').addEventListener('click', async (event) => {
-    event.currentTarget.disabled = true;
-    try {
-      const result = await api('/api/app/request-links', { method: 'POST' });
-      const url = `${location.origin}${result.path}`;
-      linkResult.innerHTML = `<div class="notice success"><strong>Formulaire créé.</strong><br><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a><div class="actions" style="margin-top:10px"><button class="secondary" id="copyLink">Copier le lien</button></div></div>`;
-      document.getElementById('copyLink').addEventListener('click', async () => {
-        await navigator.clipboard.writeText(url);
-        document.getElementById('copyLink').textContent = 'Lien copié';
-      });
-      await loadRequestTable('active');
-    } catch (error) {
-      linkResult.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    } finally {
-      event.currentTarget.disabled = false;
-    }
-  });
-  document.getElementById('activeRequests').addEventListener('click', () => loadRequestTable('active'));
-  document.getElementById('archivedRequests').addEventListener('click', () => loadRequestTable('archived'));
-  await loadRequestTable('active');
-}
-
-async function loadRequestTable(scope) {
-  const target = document.getElementById('requestTable');
-  target.textContent = 'Chargement…';
-  try {
-    const requests = await api(`/api/app/requests?scope=${encodeURIComponent(scope)}`);
-    if (!requests.length) {
-      target.innerHTML = `<div class="empty">Aucune demande ${scope === 'archived' ? 'archivée' : 'active'}.</div>`;
-      return;
-    }
-    target.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Client</th><th>Zone / repère</th><th>Créneau</th><th>Statut</th><th>Mise à jour</th></tr></thead><tbody>${requests.map((request) => `
-      <tr data-href="/app/demandes/${request.id}">
-        <td><strong>${escapeHtml(request.customer_name || 'En attente du client')}</strong><br><small>${escapeHtml(request.customer_phone || '')}</small></td>
-        <td>${escapeHtml(request.neighborhood || '—')}<br><small>${escapeHtml(request.landmark || '')}</small></td>
-        <td>${escapeHtml(request.requested_time || '—')}</td><td>${badge(request.status)}</td><td>${escapeHtml(formatDate(request.updated_at))}</td>
-      </tr>`).join('')}</tbody></table></div>`;
-    target.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', () => { location.href = row.dataset.href; }));
-  } catch (error) {
-    target.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-  }
-}
-
 async function renderRequestDetail(id) {
   setHeader('Détail de la demande', 'Vérification avant affectation');
   const request = await api(`/api/app/requests/${encodeURIComponent(id)}`);
@@ -318,49 +267,6 @@ async function renderNewOrder() {
       button.disabled = false;
     }
   });
-}
-
-async function renderOrders() {
-  setHeader('Commandes', 'Commandes confirmées et liens de suivi');
-  const orders = await api('/api/app/orders');
-  page.innerHTML = `<div class="page-header"><div><h1>Commandes</h1><p class="subtitle">Ouvrez une commande pour exécuter la livraison, déclarer un incident ou confirmer la remise.</p></div><a class="button primary" href="/app/nouvelle-commande">Nouvelle commande</a></div><section class="card">${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Client</th><th>Zone</th><th>Livreur</th><th>Statut</th><th>Suivi</th></tr></thead><tbody>${orders.map((order) => `<tr data-href="/app/commandes/${escapeHtml(order.id)}"><td>N° ${escapeHtml(order.id)}<br><small>${escapeHtml(formatDate(order.created_at))}</small></td><td><strong>${escapeHtml(order.customer_name || '—')}</strong><br><small>${escapeHtml(order.customer_phone || '')}</small></td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name)}</td><td>${badge(order.status)}</td><td>${order.trackingLink?.path ? `<a href="${escapeHtml(order.trackingLink.path)}" target="_blank" rel="noopener">Ouvrir</a>` : escapeHtml(order.trackingLink?.state === 'revoked' ? 'Révoqué' : '—')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune commande pour le moment.</div>'}</section>`;
-  document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', (event) => {
-    if (event.target.closest('a, button, input, select')) return;
-    location.href = row.dataset.href;
-  }));
-}
-
-async function renderRuns() {
-  setHeader('Tournées', 'Regrouper et ordonner les colis d’un livreur');
-  const [runs, drivers] = await Promise.all([api('/api/app/runs'), api('/api/app/drivers')]);
-  const now = new Date();
-  const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-  const selectableDrivers = drivers.filter((driver) => driver.active && !['inactive', 'off_duty', 'incident'].includes(driver.operationalState));
-  page.innerHTML = `<div class="page-header"><div><h1>Tournées</h1><p class="subtitle">Un même livreur peut transporter plusieurs colis, dans un ordre confirmé par l’équipe.</p></div></div>
-    <section class="card"><h2>Préparer une nouvelle tournée</h2><p class="subtitle">Une seule tournée ouverte par livreur et par date. Une seconde pourra être créée lorsque la première sera terminée ou annulée.</p>
-      <form id="runForm" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Nom de la tournée</label><input name="name" minlength="2" maxlength="120" value="Tournée du ${escapeHtml(new Date().toLocaleDateString('fr-FR'))}" required /></div><div class="field"><label>Date de service</label><input name="serviceDate" type="date" value="${escapeHtml(today)}" required /></div><div class="field full"><label>Livreur</label><select name="driverId" required><option value="">Sélectionner</option>${selectableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)} — ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)} — capacité ${escapeHtml(driver.capacity)} colis</option>`).join('')}</select></div></div><div class="actions" style="margin-top:18px"><button class="primary">Créer le brouillon</button></div></form><div id="runCreateResult"></div>
-    </section>
-    <section class="card" style="margin-top:18px"><h2>Historique des tournées</h2>${runs.length ? `<div class="table-wrap"><table><thead><tr><th>Tournée</th><th>Date</th><th>Livreur</th><th>Progression</th><th>État</th></tr></thead><tbody>${runs.map((run) => `<tr data-href="/app/tournees/${escapeHtml(run.id)}"><td><strong>${escapeHtml(run.name)}</strong><br><small>N° ${escapeHtml(run.id)}</small></td><td>${escapeHtml(formatDateOnly(run.service_date))}</td><td>${escapeHtml(run.driver_name)}<br><small>${escapeHtml(run.vehicle_type || '')}</small></td><td>${escapeHtml(run.terminal_stop_count)} / ${escapeHtml(run.stop_count)} arrêts terminés</td><td>${badge(runStatusLabels[run.status] || run.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune tournée créée.</div>'}</section>`;
-
-  document.getElementById('runForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector('button');
-    const values = Object.fromEntries(new FormData(form));
-    const idempotencyKey = idempotencyKeyFor(form, 'run-create', values);
-    button.disabled = true;
-    try {
-      const result = await api('/api/app/runs', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...values, idempotencyKey }),
-      });
-      location.href = `/app/tournees/${encodeURIComponent(result.id)}`;
-    } catch (error) {
-      document.getElementById('runCreateResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      button.disabled = false;
-    }
-  });
-  document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', () => { location.href = row.dataset.href; }));
 }
 
 async function renderRunDetail(id) {
@@ -800,19 +706,6 @@ const incidentEventLabels = {
   resolved: 'Incident résolu', retention_hold_placed: 'Gel de conservation activé',
   retention_hold_released: 'Gel de conservation levé',
 };
-
-async function renderIncidents(initialScope = 'open') {
-  setHeader('Incidents', 'Dossiers, responsabilités et conservation');
-  page.innerHTML = `<div class="page-header"><div><h1>Dossiers d’incident</h1><p class="subtitle">Les faits d’origine restent inchangés. Les compléments sont ajoutés dans une chronologie séparée.</p></div></div><section class="card"><div class="actions" id="incidentScopes" style="margin-bottom:16px"><button class="secondary" data-scope="open">Ouverts</button><button class="secondary" data-scope="resolved">Résolus</button><button class="secondary" data-scope="all">Tous</button></div><div id="incidentTable">Chargement…</div></section>`;
-  const load = async (scope) => {
-    const incidents = await api(`/api/app/incidents?scope=${encodeURIComponent(scope)}`);
-    document.querySelectorAll('#incidentScopes button').forEach((button) => button.disabled = button.dataset.scope === scope);
-    document.getElementById('incidentTable').innerHTML = incidents.length ? `<div class="table-wrap"><table><thead><tr><th>Incident</th><th>Commande</th><th>Client</th><th>Livreur</th><th>Responsable</th><th>État</th></tr></thead><tbody>${incidents.map((incident) => `<tr data-href="/app/incidents/${escapeHtml(incident.id)}"><td><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong><br><small>${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)} · ${escapeHtml(formatDate(incident.created_at))}</small></td><td>N° ${escapeHtml(incident.order_id)}<br><small>${escapeHtml(incident.order_status)}</small></td><td>${escapeHtml(incident.customer_name || '—')}<br><small>${escapeHtml(incident.neighborhood || incident.customer_phone || '—')}</small></td><td>${escapeHtml(incident.driver_name)}</td><td>${escapeHtml(incident.assigned_to || 'Non attribué')}</td><td>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}${incident.retention_hold_id ? '<br><span class="badge warning" style="margin-top:6px">Conservation gelée</span>' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun incident dans cette vue.</div>';
-    document.querySelectorAll('tr[data-href]').forEach((row) => row.addEventListener('click', () => { location.href = row.dataset.href; }));
-  };
-  document.querySelectorAll('#incidentScopes button').forEach((button) => button.addEventListener('click', () => load(button.dataset.scope).catch(renderError)));
-  await load(initialScope);
-}
 
 async function renderIncidentDetail(id) {
   setHeader('Dossier d’incident', 'Chronologie vérifiable et gel de conservation');
@@ -2182,6 +2075,8 @@ const crmIcons = {
   sort: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M6 12h12M10 18h4"/></svg>',
   eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
 };
 
 function crmInitials(name) {
@@ -2548,6 +2443,7 @@ async function renderOperationsWorkspace(initialSegment) {
     demandes: {
       title: 'Demandes', newLabel: 'Nouvelle demande', newHref: '/app/operations?vue=creer', placeholder: 'Rechercher une demande, un client…', countKey: 'active_requests',
       endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, drawerFn: openRequestDrawer, href: (r) => `/app/demandes/${r.id}`,
+      rowArchive: { title: 'Archiver', confirm: (id) => `Archiver la demande DEM-${id} ? Elle quittera la file active (réversible via l'onglet Archives).`, endpoint: (id) => `/api/app/requests/${encodeURIComponent(id)}/status`, body: { status: 'Archivée' } },
       statusValues: [], filterTest: (r, v) => r.status === v,
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['position', 'Position client']],
       groupVal: (r, k) => k === 'status' ? (r.status || '—') : k === 'zone' ? (r.neighborhood || '—') : (reqShared(r) ? 'Partagée' : 'Non partagée'),
@@ -2593,11 +2489,20 @@ async function renderOperationsWorkspace(initialSegment) {
 
   function renderTabs() {
     const el = document.getElementById('crmTabs');
-    el.innerHTML = valid.map((k) => {
+    const tabs = valid.map((k) => {
       const n = counts[cfg[k].countKey];
       return `<button class="crm-tab ${k === segment ? 'active' : ''}" data-seg="${k}">${escapeHtml(cfg[k].title)}${n != null ? `<span class="n">${escapeHtml(n)}</span>` : ''}</button>`;
     }).join('');
+    el.innerHTML = `${tabs}<span class="crm-tool-wrap"><button class="crm-tab-add" id="crmQuickCreate" type="button" title="Créer" aria-label="Créer">${crmIcons.plus}</button></span>`;
     el.querySelectorAll('[data-seg]').forEach((b) => b.addEventListener('click', () => switchSeg(b.dataset.seg)));
+    const add = document.getElementById('crmQuickCreate');
+    if (add) add.addEventListener('click', (e) => {
+      e.stopPropagation();
+      makeDrop(add, [
+        { value: 'commande', label: 'Nouvelle commande', onPick: () => { location.href = '/app/nouvelle-commande'; } },
+        { value: 'demande', label: 'Nouvelle demande (formulaire client)', onPick: () => { location.href = '/app/operations?vue=creer'; } },
+      ]);
+    });
   }
 
   function switchSeg(k) {
@@ -2689,7 +2594,22 @@ async function renderOperationsWorkspace(initialSegment) {
   function rowHtml(r, co) {
     const cells = co.columns.map((col) => `<td>${col.cell(r)}</td>`).join('');
     const eye = co.drawerFn ? `<button data-act="view" title="Aperçu">${crmIcons.eye}</button>` : `<button data-act="open" title="Ouvrir">${crmIcons.eye}</button>`;
-    return `<tr data-id="${escapeHtml(r.id)}"><td class="crm-cbcol"><span class="crm-cb"></span></td>${cells}<td class="crm-actcol"><span class="crm-rowact">${eye}<button data-act="open" title="Ouvrir la fiche">${crmIcons.edit}</button></span></td></tr>`;
+    const trash = co.rowArchive ? `<button data-act="archive" class="crm-rowact-danger" title="${escapeHtml(co.rowArchive.title)}">${crmIcons.trash}</button>` : '';
+    return `<tr data-id="${escapeHtml(r.id)}"><td class="crm-cbcol"><span class="crm-cb"></span></td>${cells}<td class="crm-actcol"><span class="crm-rowact">${eye}<button data-act="open" title="Ouvrir la fiche">${crmIcons.edit}</button>${trash}</span></td></tr>`;
+  }
+
+  async function rowArchive(co, id) {
+    if (!co.rowArchive) return;
+    if (!confirm(co.rowArchive.confirm(id))) return;
+    try {
+      await api(co.rowArchive.endpoint(id), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(co.rowArchive.body),
+      });
+      await loadSegment();
+    } catch (error) {
+      alert(error.message);
+    }
   }
 
   function renderBody() {
@@ -2715,6 +2635,7 @@ async function renderOperationsWorkspace(initialSegment) {
         const act = e.target.closest('[data-act]');
         const id = tr.dataset.id;
         if (act && act.dataset.act === 'view') { (co.drawerFn || openOrderDrawer)(id); return; }
+        if (act && act.dataset.act === 'archive') { e.stopPropagation(); rowArchive(co, id); return; }
         if (act && act.dataset.act === 'open') { location.href = co.href({ id }); return; }
         if (e.target.closest('.crm-cb')) { e.target.closest('.crm-cb').classList.toggle('on'); return; }
         if (co.drawerFn) co.drawerFn(id); else location.href = co.href({ id });

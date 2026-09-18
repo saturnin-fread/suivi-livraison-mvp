@@ -2418,6 +2418,7 @@ function renderOperationsCreate() {
 
 // Niveau 2 bis : le suivi de l'activité (table segmentée).
 async function renderOperationsWorkspace(initialSegment) {
+  page.classList.add('page-crm');
   const valid = ['commandes', 'incidents', 'tournees', 'demandes'];
   let segment = valid.includes(initialSegment) ? initialSegment : 'commandes';
   let raw = [];
@@ -2426,7 +2427,8 @@ async function renderOperationsWorkspace(initialSegment) {
   let group = null;
   let filter = null;
   let pageN = 1;
-  const pageSize = 10;
+  const pageSizeOptions = [10, 25, 50, 100];
+  let pageSize = (() => { try { const v = Number(localStorage.getItem('traxo.crmPerPage')); return pageSizeOptions.includes(v) ? v : 10; } catch { return 10; } })();
   const scopeState = { demandes: 'active', incidents: 'open' };
   let counts = {};
 
@@ -2576,6 +2578,24 @@ async function renderOperationsWorkspace(initialSegment) {
     makeDrop(anchor, items);
   }
 
+  function openPerPageMenu(anchor) {
+    emptyDrop();
+    const drop = document.createElement('div');
+    drop.className = 'crm-drop crm-drop-up crm-drop-right';
+    drop.innerHTML = pageSizeOptions.map((n) => `<button data-v="${n}" class="${n === pageSize ? 'active' : ''}">${n} par page</button>`).join('');
+    anchor.parentElement.appendChild(drop);
+    drop.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const b = e.target.closest('[data-v]');
+      if (!b) return;
+      drop.remove();
+      pageSize = Number(b.dataset.v);
+      try { localStorage.setItem('traxo.crmPerPage', String(pageSize)); } catch {}
+      pageN = 1;
+      renderBody();
+    });
+  }
+
   function computeRows() {
     const co = c();
     let out = raw.slice();
@@ -2658,8 +2678,11 @@ async function renderOperationsWorkspace(initialSegment) {
       for (let i = 1; i <= pages; i += 1) nums += btn(i, i, i === pageN ? 'active' : '');
       pager = `${btn(Math.max(1, pageN - 1), '‹')}${nums}${btn(Math.min(pages, pageN + 1), '›')}`;
     }
-    el.innerHTML = `<span>${escapeHtml(total)} résultat${total > 1 ? 's' : ''}</span><div class="crm-page"><span class="crm-per">${pageSize} par page</span>${pager}</div>`;
+    const chev = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+    el.innerHTML = `<span>${escapeHtml(total)} résultat${total > 1 ? 's' : ''}</span><div class="crm-page"><span class="crm-perwrap"><button class="crm-per" id="crmPer" type="button">${pageSize} par page ${chev}</button></span>${pager}</div>`;
     el.querySelectorAll('[data-p]').forEach((b) => b.addEventListener('click', () => { pageN = Number(b.dataset.p); renderBody(); }));
+    const perBtn = document.getElementById('crmPer');
+    if (perBtn) perBtn.addEventListener('click', (e) => { e.stopPropagation(); openPerPageMenu(perBtn); });
   }
 
   function renderAll() { renderChips(); renderHead(); renderBody(); }

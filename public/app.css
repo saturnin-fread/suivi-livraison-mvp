@@ -70,6 +70,8 @@ a { color: inherit; }
 .user-pop-item.danger { color: var(--danger); }
 .user-pop-item svg { width: 16px; height: 16px; flex: 0 0 auto; }
 .page { max-width: 1440px; margin: 0 auto; padding: 26px clamp(16px, 3vw, 40px) 60px; }
+/* CRM Opérations : pleine largeur, aligné à la sidebar comme la maquette. */
+.page.page-crm { max-width: none; margin: 0; padding: 22px clamp(16px, 2.2vw, 32px) 48px; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
 h1 { margin: 0; font-size: clamp(25px, 3vw, 34px); }
 h2 { margin: 0 0 16px; font-size: 19px; }
@@ -595,7 +597,12 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-empty { padding: 40px; text-align: center; color: var(--muted); }
 .crm-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 4px 0; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .crm-page { display: flex; align-items: center; gap: 6px; }
-.crm-per { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.crm-perwrap { position: relative; display: inline-flex; }
+.crm-per { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font-size: 13px; cursor: pointer; }
+.crm-per:hover { border-color: #c7ced9; background: #f7f9fc; }
+.crm-per svg { color: var(--muted); }
+.crm-drop-up { top: auto; bottom: calc(100% + 6px); }
+.crm-drop-right { left: auto; right: 0; }
 .crm-pg { min-width: 30px; height: 30px; border: 1px solid var(--line); background: #fff; border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 13px; }
 .crm-pg.active { background: var(--red); color: #fff; border-color: var(--red); font-weight: 700; }
 /* Panneau détail coulissant */

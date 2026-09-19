@@ -2583,6 +2583,16 @@ function normalizeDeliverySettings(stored) {
   }
   return out;
 }
+// Lit un réglage Livraisons d'une entreprise (best-effort : en cas d'erreur, on
+// retombe sur la valeur par défaut, jamais bloquant faute de configuration).
+async function companyDeliverySetting(companyId, key, queryable = pool) {
+  try {
+    const result = await queryable.query('SELECT delivery_settings FROM companies WHERE id = $1', [companyId]);
+    return normalizeDeliverySettings(result.rows[0] && result.rows[0].delivery_settings)[key];
+  } catch {
+    return defaultDeliverySettings[key];
+  }
+}
 
 app.get('/api/app/settings/deliveries', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query('SELECT delivery_settings FROM companies WHERE id = $1', [req.auth.company_id]);
@@ -2608,8 +2618,8 @@ app.patch('/api/app/settings/deliveries', requireCompanyApi, requireCompanyRoles
 // l'environnement (hypothèses commerciales à valider avant production).
 const billingCycleDiscounts = {
   monthly: 0,
-  quarterly: Math.min(0.9, Math.max(0, Number(process.env.BILLING_DISCOUNT_QUARTERLY) || 0.10)),
-  yearly: Math.min(0.9, Math.max(0, Number(process.env.BILLING_DISCOUNT_YEARLY) || 0.20)),
+  quarterly: Math.min(0.9, Math.max(0, Number(process.env.BILLING_DISCOUNT_QUARTERLY) || 0.05)),
+  yearly: Math.min(0.9, Math.max(0, Number(process.env.BILLING_DISCOUNT_YEARLY) || 0.10)),
 };
 const billingPlans = [
   { code: 'trial', name: 'Essai gratuit', microcopy: 'Découvrez TRAXO sans engagement.', kind: 'trial', monthly: 0, max: 0, capacityLabel: 'pendant 3 jours', tag: 'Première connexion uniquement', cta: 'Commencer l’essai', features: ['Toutes les fonctionnalités essentielles', 'Suivi de flotte en temps réel', 'Support par e-mail'] },
@@ -3151,6 +3161,9 @@ app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) =
 }));
 
 app.post('/api/app/request-links', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!(await companyDeliverySetting(req.auth.company_id, 'customerFormEnabled'))) {
+    return res.status(403).json({ error: 'Le formulaire client est désactivé dans vos paramètres Livraisons.' });
+  }
   const token = randomToken(24);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const result = await pool.query(
@@ -6042,6 +6055,9 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   if (!customerName || !deliveryAddress || !driverId) {
     return res.status(400).json({ error: 'Nom client, lieu de livraison et livreur sont obligatoires.' });
   }
+  if (!(await companyDeliverySetting(req.auth.company_id, 'internalEntryEnabled'))) {
+    return res.status(403).json({ error: 'La saisie interne est désactivée dans vos paramètres Livraisons.' });
+  }
   const client = await pool.connect();
   let committed = false;
   try {
@@ -6119,6 +6135,10 @@ app.post('/api/public/requests/:token', asyncRoute(async (req, res) => {
   const { customerName, customerPhone, requestedTime, locationLat, locationLng, locationAccuracy, neighborhood, landmark, notes } = req.body;
   if (!customerName || !customerPhone || !neighborhood) {
     return res.status(400).json({ error: 'Nom, téléphone et zone sont obligatoires.' });
+  }
+  const owning = await pool.query('SELECT company_id FROM customer_requests WHERE token = $1', [req.params.token]);
+  if (owning.rows[0] && !(await companyDeliverySetting(owning.rows[0].company_id, 'customerFormEnabled'))) {
+    return res.status(403).json({ error: 'Ce formulaire n’est plus actif.' });
   }
   const editToken = randomToken(24);
   const result = await pool.query(

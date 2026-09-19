@@ -2081,8 +2081,13 @@ async function renderSettings() {
 
   async function renderOverview(box) {
     let drivers = 0;
-    try { const s = await api('/api/app/summary'); drivers = Number(s.drivers || 0); } catch { /* ignore */ }
-    const plan = recommendPlan(drivers);
+    let plan = recommendPlan(0);
+    try {
+      const b = await api('/api/app/billing/plans');
+      drivers = Number(b.activeDrivers || 0);
+      const cur = b.plans.find((p) => p.code === (b.currentPlan || b.recommended));
+      plan = { name: cur ? cur.name : recommendPlan(drivers).name, monthly: cur ? cur.monthly : recommendPlan(drivers).monthly };
+    } catch { plan = recommendPlan(drivers); }
     const cats = [
       { key: 'general', title: 'Général', desc: 'Nom de l’entreprise, espace de travail, fuseau horaire et informations de base.' },
       { key: 'deliveries', title: 'Livraisons', desc: 'Validation, attribution et gestion des demandes de livraison.' },

@@ -10,19 +10,41 @@ Application multi-entreprises de préparation et de suivi des livraisons, relié
 - `/demande/:token` : collecte des informations du destinataire ;
 - `/suivi/:token` : suivi public d'une commande, limité à ce client.
 
+## Prérequis
+
+- Node.js 18+ ;
+- une base **PostgreSQL** accessible (locale ou hébergée) dont l’URL va dans `DATABASE_URL` ;
+- un compte **Traccar** pour la géolocalisation (optionnel pour démarrer ; la carte reste vide sans lui).
+
 ## Démarrage
 
 ```bash
 npm install
-copy .env.example .env
+cp .env.example .env      # puis remplir DATABASE_URL, ADMIN_USER/PASSWORD, PLATFORM_ADMIN_*, secrets
 npm start
 ```
+
+Au premier démarrage, le serveur **crée et met à jour le schéma automatiquement** (migrations idempotentes exécutées au boot) et amorce l’entreprise et les comptes de démonstration à partir des variables `ADMIN_*` / `PLATFORM_ADMIN_*`. Aucune commande de migration séparée n’est nécessaire.
 
 Puis ouvrir l’espace entreprise :
 
 ```text
 http://localhost:3000/app/login
 ```
+
+## Tests
+
+```bash
+npm run test:syntax   # vérifie la syntaxe de tout le code (rapide, sans base)
+npm run test:runs     # scénarios tournées (nécessite un serveur lancé + DATABASE_URL + ADMIN_*)
+npm run test:routing  # adaptateur de routage OSRM (unitaire, sans réseau)
+```
+
+Les scénarios `test:*` de bout en bout attendent l’application démarrée et une base joignable (voir `SMOKE_BASE_URL`, par défaut `http://127.0.0.1:3000`). `docs/TEST_PLAN.md` détaille la stratégie de test.
+
+## Architecture et documentation
+
+Le code métier tient dans `server.js` (API Express + migrations au boot), le front dans `public/` (`app.js`, `app.css`), et les briques réutilisables dans `lib/`. Le dossier `docs/` documente le modèle de données, la machine à états des commandes, les tournées, le routage, la facturation et les runbooks d’exploitation — commencer par `docs/ARCHITECTURE.md`.
 
 Le lien de démonstration n’existe que si `DEMO_TRACKING_ENABLED=true` et si un jeton local explicite est fourni. Ce mode est refusé en production Railway.
 

@@ -673,6 +673,8 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS admin_email TEXT;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Africa/Porto-Novo';
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS delivery_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_code TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'monthly';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS login_alerts BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
       ALTER TABLE app_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
@@ -2599,6 +2601,78 @@ app.patch('/api/app/settings/deliveries', requireCompanyApi, requireCompanyRoles
   );
   await writeAudit(req.auth, 'company', req.auth.company_id, 'delivery_settings_changed', merged);
   return res.json(normalizeDeliverySettings(result.rows[0].delivery_settings));
+}));
+
+// --- Paramètres > Facturation : plans d'abonnement ---
+// Source de vérité des formules. Les remises de cycle sont configurables via
+// l'environnement (hypothèses commerciales à valider avant production).
+const billingCycleDiscounts = {
+  monthly: 0,
+  quarterly: Math.min(0.9, Math.max(0, Number(process.env.BILLING_DISCOUNT_QUARTERLY) || 0.10)),
+  yearly: Math.min(0.9, Math.max(0, Number(process.env.BILLING_DISCOUNT_YEARLY) || 0.20)),
+};
+const billingPlans = [
+  { code: 'trial', name: 'Essai gratuit', microcopy: 'Découvrez TRAXO sans engagement.', kind: 'trial', monthly: 0, max: 0, capacityLabel: 'pendant 3 jours', tag: 'Première connexion uniquement', cta: 'Commencer l’essai', features: ['Toutes les fonctionnalités essentielles', 'Suivi de flotte en temps réel', 'Support par e-mail'] },
+  { code: 'flexible', name: 'Flexible', microcopy: 'Pour les petites flottes.', kind: 'per_driver', monthly: 1000, max: 9, capacityLabel: '1 à 9 livreurs', features: ['1 à 9 livreurs', 'Fonctionnalités essentielles', 'Suivi de flotte', 'Support standard'] },
+  { code: 'equipe', name: 'Équipe', microcopy: 'Le meilleur choix pour votre flotte actuelle.', kind: 'flat', monthly: 10000, max: 12, capacityLabel: 'Jusqu’à 12 livreurs', features: ['Jusqu’à 12 livreurs', 'Fonctionnalités essentielles', 'Suivi de flotte avancé', 'Meilleur rapport capacité-prix', 'Support prioritaire'] },
+  { code: 'croissance', name: 'Croissance', microcopy: 'Pour les flottes en expansion.', kind: 'flat', monthly: 18000, max: 25, capacityLabel: 'Jusqu’à 25 livreurs', features: ['Jusqu’à 25 livreurs', 'Fonctionnalités avancées', 'Suivi de flotte avancé', 'Rapports détaillés', 'Support prioritaire'] },
+  { code: 'business', name: 'Business', microcopy: 'Pour les opérations structurées.', kind: 'flat', monthly: 30000, max: 50, capacityLabel: 'Jusqu’à 50 livreurs', compact: true, features: [] },
+  { code: 'grande', name: 'Grande flotte', microcopy: 'Pour les grandes flottes et les besoins spécifiques.', kind: 'custom', monthly: null, max: null, capacityLabel: '51 livreurs et plus', compact: true, features: [] },
+];
+function recommendPlanCode(n) {
+  const count = Number(n) || 0;
+  if (count <= 9) return 'flexible';
+  if (count <= 12) return 'equipe';
+  if (count <= 25) return 'croissance';
+  if (count <= 50) return 'business';
+  return 'grande';
+}
+function planCapacity(code) {
+  const plan = billingPlans.find((p) => p.code === code);
+  return plan && plan.max != null ? plan.max : Infinity;
+}
+
+app.get('/api/app/billing/plans', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT plan_code, billing_cycle,
+            (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers
+     FROM companies c WHERE c.id = $1`,
+    [req.auth.company_id]
+  );
+  const row = result.rows[0] || {};
+  const activeDrivers = Number(row.active_drivers || 0);
+  const recommended = recommendPlanCode(activeDrivers);
+  return res.json({
+    activeDrivers,
+    recommended,
+    currentPlan: row.plan_code || recommended,
+    billingCycle: row.billing_cycle || 'monthly',
+    discounts: billingCycleDiscounts,
+    plans: billingPlans.map((p) => ({ ...p, max: p.max === null ? null : p.max })),
+  });
+}));
+
+app.post('/api/app/billing/plan', requireCompanyApi, requireCompanyRoles('owner'), asyncRoute(async (req, res) => {
+  const planCode = String(req.body.planCode || '');
+  const billingCycle = String(req.body.billingCycle || 'monthly');
+  const plan = billingPlans.find((p) => p.code === planCode);
+  if (!plan || plan.kind === 'trial' || plan.kind === 'custom') {
+    return res.status(400).json({ error: 'Cette formule ne peut pas être sélectionnée directement.' });
+  }
+  if (!Object.prototype.hasOwnProperty.call(billingCycleDiscounts, billingCycle)) {
+    return res.status(400).json({ error: 'Périodicité invalide.' });
+  }
+  const drivers = await pool.query(
+    'SELECT COUNT(*)::int AS n FROM drivers WHERE company_id = $1 AND active = TRUE AND archived_at IS NULL',
+    [req.auth.company_id]
+  );
+  const activeDrivers = drivers.rows[0].n;
+  if (activeDrivers > planCapacity(planCode)) {
+    return res.status(409).json({ error: `Cette formule accepte moins de livreurs que vos ${activeDrivers} livreurs actifs. Archivez des livreurs ou choisissez une formule supérieure.` });
+  }
+  await pool.query('UPDATE companies SET plan_code = $1, billing_cycle = $2, updated_at = NOW() WHERE id = $3', [planCode, billingCycle, req.auth.company_id]);
+  await writeAudit(req.auth, 'company', req.auth.company_id, 'plan_changed', { planCode, billingCycle });
+  return res.json({ planCode, billingCycle });
 }));
 
 // --- Paramètres > Sécurité : compte utilisateur ---

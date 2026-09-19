@@ -2284,28 +2284,116 @@ async function renderSettings() {
   }
 
   async function renderBilling(box) {
-    let drivers = 0;
-    try { const s = await api('/api/app/summary'); drivers = Number(s.drivers || 0); } catch { /* ignore */ }
-    const plan = recommendPlan(drivers);
-    const cap = planCapacityFor(plan.code);
+    if (new URLSearchParams(location.search).get('plans') === '1') return renderPlans(box);
+    const data = await api('/api/app/billing/plans');
+    const current = data.plans.find((p) => p.code === data.currentPlan) || data.plans.find((p) => p.code === data.recommended);
+    const drivers = data.activeDrivers;
+    const cap = current && current.max != null ? current.max : Infinity;
     const capLabel = cap === Infinity ? '∞' : cap;
     const pct = cap === Infinity ? 100 : Math.min(100, Math.round((drivers / cap) * 100));
     const remaining = cap === Infinity ? null : Math.max(0, cap - drivers);
+    const priceLabel = current.kind === 'per_driver' ? `${(current.monthly).toLocaleString('fr-FR')} FCFA / livreur / mois` : fmtFcfaMonth(current.monthly);
     box.innerHTML = `${head('Facturation', 'Suivez le coût de votre flotte et gérez votre abonnement.')}
       <section class="set2-card">
-        <div class="set2-blockhead"><h3 class="set2-blocktitle">Votre plan actuel</h3><a class="button secondary small" href="/app/parametres?section=billing">Changer de formule</a></div>
+        <div class="set2-blockhead"><h3 class="set2-blocktitle">Votre plan actuel</h3><button class="button secondary small" id="seePlans">Changer de formule</button></div>
         <div class="set2-plan">
-          <div><span class="set2-plan-name">${escapeHtml(plan.name)}</span><span class="set2-plan-price">${escapeHtml(fmtFcfaMonth(plan.monthly))}</span></div>
-          <div class="set2-plan-usage"><div class="set2-usebar"><i style="width:${pct}%"></i></div><small>${drivers} / ${escapeHtml(capLabel)} places utilisées${remaining != null ? ` · vous pouvez encore ajouter ${remaining} livreur${remaining > 1 ? 's' : ''}` : ''}</small></div>
+          <div><span class="set2-plan-name">${escapeHtml(current.name)}</span><span class="set2-plan-price">${escapeHtml(priceLabel)}</span></div>
+          <div class="set2-plan-usage"><div class="set2-usebar"><i style="width:${pct}%"></i></div><small>${drivers} / ${escapeHtml(capLabel)} places utilisées${remaining != null ? ` · vous pouvez encore ajouter ${remaining} livreur${remaining > 1 ? 's' : ''} sans changer de formule` : ''}</small></div>
         </div>
       </section>
       <section class="set2-card">
         <h3 class="set2-blocktitle">Paiement</h3>
         <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.billing}</span><div class="set2-opt-main"><strong>Aucun moyen de paiement configuré</strong><small>Configurez votre paiement pour activer le renouvellement automatique de votre abonnement.</small></div><button class="button secondary small" id="cfgPay">Configurer le paiement</button></div>
         <div id="setResult"></div>
-      </section>
-      <section class="set2-card set2-soon"><p>La facturation détaillée (plans, prochaine facture, historique des paiements) arrive avec les prochaines maquettes.</p></section>`;
+      </section>`;
     document.getElementById('cfgPay').addEventListener('click', () => notify('<div class="notice">La passerelle de paiement sera branchée prochainement.</div>'));
+    document.getElementById('seePlans').addEventListener('click', () => { try { history.replaceState(null, '', '/app/parametres?section=billing&plans=1'); } catch { /* ignore */ } renderBilling(box); });
+  }
+
+  function planCyclePrice(plan, cycle, discounts) {
+    if (plan.kind === 'trial') return { amount: 0, big: '0 FCFA', unit: 'pendant 3 jours' };
+    if (plan.kind === 'custom') return { amount: null, big: 'Sur devis', unit: '' };
+    const mult = cycle === 'monthly' ? 1 : cycle === 'quarterly' ? 3 : 12;
+    const per = cycle === 'monthly' ? '/ mois' : cycle === 'quarterly' ? '/ trimestre' : '/ an';
+    const amount = Math.round(plan.monthly * mult * (1 - (discounts[cycle] || 0)));
+    return { amount, big: `${amount.toLocaleString('fr-FR')} FCFA`, unit: plan.kind === 'per_driver' ? `/ livreur ${per}` : per };
+  }
+
+  async function renderPlans(box) {
+    const data = await api('/api/app/billing/plans');
+    const planIcons = {
+      trial: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/><path d="M12 8S9.5 3 7.5 4.5 9 8 12 8zM12 8s2.5-5 4.5-3.5S15 8 12 8z"/></svg>',
+      flexible: setIcons.user, equipe: setIcons.team,
+      croissance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="4" width="3" height="14"/></svg>',
+      business: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M8 7h.01M12 7h.01M16 7h.01M8 11h.01M12 11h.01M16 11h.01"/></svg>',
+      grande: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M8 7h.01M12 7h.01M16 7h.01M8 11h.01M12 11h.01M16 11h.01"/></svg>',
+    };
+    let cycle = data.billingCycle || 'monthly';
+    const trialDismissed = (() => { try { return sessionStorage.getItem('traxo.trialBanner') === 'off'; } catch { return false; } })();
+
+    const draw = () => {
+      const pct = (c) => Math.round((data.discounts[c] || 0) * 100);
+      const cycleBtn = (key, label) => `<button class="plan-cyc ${cycle === key ? 'active' : ''}" data-cyc="${key}">${label}${data.discounts[key] ? `<span class="plan-cyc-off">-${pct(key)}%</span>` : ''}</button>`;
+      const isCurrent = (p) => p.code === data.currentPlan;
+      const isReco = (p) => p.code === data.recommended;
+      const canPick = (p) => data.activeDrivers <= (p.max == null ? Infinity : p.max);
+      const card = (p) => {
+        const pr = planCyclePrice(p, cycle, data.discounts);
+        const reco = isReco(p) && p.kind !== 'trial';
+        const current = isCurrent(p) && p.kind !== 'trial' && p.kind !== 'custom';
+        const badges = `${reco ? '<span class="plan-badge reco">Recommandé</span>' : ''}${current ? '<span class="plan-badge cur">Plan actuel</span>' : ''}`;
+        const feats = (p.features || []).map((f) => `<li><span class="plan-check ${reco ? 'red' : ''}">${setIcons.check}</span>${escapeHtml(f)}</li>`).join('');
+        let cta;
+        if (p.kind === 'trial') cta = `<button class="button dark full" data-act="trial">${escapeHtml(p.cta || 'Commencer l’essai')}</button>`;
+        else if (p.kind === 'custom') cta = '<button class="button secondary full" data-act="contact">Nous contacter</button>';
+        else if (current) cta = `<button class="button accent full" disabled>${setIcons.check} Plan actuel</button>`;
+        else cta = `<button class="button ${reco ? 'accent' : 'secondary'} full" data-pick="${p.code}" ${canPick(p) ? '' : 'disabled title="Trop de livreurs actifs pour cette formule"'}>Choisir ce plan</button>`;
+        return `<article class="plan-card ${reco ? 'reco' : ''}">
+          <div class="plan-top"><span class="plan-ic">${planIcons[p.code] || setIcons.billing}</span><div class="plan-titles"><h3>${escapeHtml(p.name)}${badges ? `<div class="plan-badges">${badges}</div>` : ''}</h3><p>${escapeHtml(p.microcopy)}</p></div></div>
+          ${p.tag ? `<span class="plan-tag">${escapeHtml(p.tag)}</span>` : ''}
+          <div class="plan-price"><strong>${pr.big}</strong>${pr.unit ? `<small>${escapeHtml(pr.unit)}</small>` : ''}${p.kind === 'trial' ? '<small>Découvrez TRAXO sans engagement pendant 3 jours.</small>' : ''}</div>
+          <ul class="plan-feats">${feats}</ul>
+          <div class="plan-cta">${cta}</div>
+        </article>`;
+      };
+      const mains = data.plans.filter((p) => !p.compact);
+      const compacts = data.plans.filter((p) => p.compact);
+      const compactRow = (p) => {
+        const pr = planCyclePrice(p, cycle, data.discounts);
+        const cta = p.kind === 'custom' ? '<button class="button secondary small" data-act="contact">Nous contacter</button>' : `<button class="button secondary small" data-pick="${p.code}" ${data.activeDrivers <= (p.max || Infinity) ? '' : 'disabled'}>Choisir ce plan</button>`;
+        return `<div class="plan-compact"><span class="plan-ic sm">${planIcons[p.code] || setIcons.billing}</span><div class="plan-compact-main"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.microcopy)}</small></div><div class="plan-compact-price"><strong>${pr.big}</strong>${pr.unit ? `<small>${escapeHtml(pr.unit)}</small>` : ''}<small class="plan-compact-cap">${escapeHtml(p.capacityLabel)}</small></div>${cta}</div>`;
+      };
+      box.innerHTML = `
+        <div class="plan-breadcrumb"><a href="/app/parametres?section=overview">Paramètres</a><span>›</span><a href="#" id="crumbBilling">Facturation</a><span>›</span><span>Voir les plans</span></div>
+        <div class="plan-header">
+          <div><h2>Voir les plans</h2><p>Choisissez la formule la plus adaptée à la taille de votre flotte.</p></div>
+          <div class="plan-cycles">${cycleBtn('monthly', 'Mensuel')}${cycleBtn('quarterly', 'Trimestriel')}${cycleBtn('yearly', 'Annuel')}</div>
+        </div>
+        ${trialDismissed ? '' : `<div class="plan-trialbanner"><span class="plan-info-ic">${setIcons.shield}</span><span>L’essai gratuit est uniquement disponible lors de votre première connexion et valable pendant 3 jours.</span><button class="plan-trial-x" id="trialX" aria-label="Fermer">✕</button></div>`}
+        <div class="plan-grid">${mains.map(card).join('')}</div>
+        <div class="plan-others"><h4>Autres formules</h4><div class="plan-compacts">${compacts.map(compactRow).join('')}</div></div>
+        <div class="plan-foot"><span>Tous les plans incluent les fonctionnalités essentielles. Vous pouvez changer de formule à tout moment depuis votre espace.</span></div>
+        <div id="setResult"></div>`;
+
+      box.querySelectorAll('[data-cyc]').forEach((b) => b.addEventListener('click', () => { cycle = b.dataset.cyc; draw(); }));
+      const tx = document.getElementById('trialX');
+      if (tx) tx.addEventListener('click', () => { try { sessionStorage.setItem('traxo.trialBanner', 'off'); } catch { /* ignore */ } box.querySelector('.plan-trialbanner').remove(); });
+      const cb = document.getElementById('crumbBilling');
+      if (cb) cb.addEventListener('click', (e) => { e.preventDefault(); try { history.replaceState(null, '', '/app/parametres?section=billing'); } catch { /* ignore */ } renderBilling(box); });
+      box.querySelectorAll('[data-act="trial"]').forEach((b) => b.addEventListener('click', () => notify('<div class="notice">L’essai gratuit s’active uniquement lors de la première connexion de votre espace.</div>')));
+      box.querySelectorAll('[data-act="contact"]').forEach((b) => b.addEventListener('click', () => notify('<div class="notice">Écrivez-nous pour un devis Grande flotte : notre équipe vous recontactera.</div>')));
+      box.querySelectorAll('[data-pick]').forEach((b) => b.addEventListener('click', async () => {
+        if (b.disabled) return;
+        b.disabled = true;
+        try {
+          await api('/api/app/billing/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planCode: b.dataset.pick, billingCycle: cycle }) });
+          data.currentPlan = b.dataset.pick; data.billingCycle = cycle;
+          notify('<div class="notice success">Formule mise à jour. La passerelle de paiement sera branchée prochainement.</div>');
+          draw();
+        } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); b.disabled = false; }
+      }));
+    };
+    draw();
   }
 
   await loadSection();

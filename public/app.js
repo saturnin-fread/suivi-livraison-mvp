@@ -1985,103 +1985,330 @@ async function renderTeam() {
   }));
 }
 
-const settingsIcons = {
-  entreprise: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01"/><path d="M9 12v.01"/><path d="M9 15v.01"/><path d="M9 18v.01"/></svg>',
-  preuves: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
-  carte: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" x2="9" y1="3" y2="18"/><line x1="15" x2="15" y1="6" y2="21"/></svg>',
-  securite: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-  abonnement: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+const setIcons = {
+  overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+  general: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  deliveries: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
+  team: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  security: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  billing: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  screen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  crown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7l5 5 5-8 5 8 5-5-2 12H4z"/></svg>',
+  bike: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM12 17.5V14l-3-3 4-3 2 3h2"/></svg>',
 };
 
+const traxoRoleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
+
+function recommendPlan(n) {
+  const count = Number(n) || 0;
+  if (count <= 9) return { code: 'flexible', name: 'Flexible', monthly: Math.max(1, count) * 1000, capacity: 'Jusqu’à 9 livreurs' };
+  if (count <= 12) return { code: 'equipe', name: 'Équipe', monthly: 10000, capacity: 'Jusqu’à 12 livreurs' };
+  if (count <= 25) return { code: 'croissance', name: 'Croissance', monthly: 18000, capacity: 'Jusqu’à 25 livreurs' };
+  if (count <= 50) return { code: 'business', name: 'Business', monthly: 30000, capacity: 'Jusqu’à 50 livreurs' };
+  return { code: 'grande', name: 'Grande flotte', monthly: null, capacity: '51 livreurs et plus' };
+}
+function planCapacityFor(code) {
+  return ({ flexible: 9, equipe: 12, croissance: 25, business: 50, grande: Infinity })[code] || 12;
+}
+const fmtFcfaMonth = (n) => n == null ? 'Sur devis' : `${Number(n).toLocaleString('fr-FR')} FCFA / mois`;
+
+const settingsSections = [
+  { key: 'overview', label: 'Vue d’ensemble' },
+  { key: 'general', label: 'Général' },
+  { key: 'deliveries', label: 'Livraisons' },
+  { key: 'team', label: 'Équipe & permissions' },
+  { key: 'security', label: 'Sécurité' },
+  { key: 'billing', label: 'Facturation' },
+];
+
+function setToggle(name, on, disabled) {
+  return `<button type="button" class="set-toggle ${on ? 'on' : ''}" role="switch" aria-checked="${on ? 'true' : 'false'}" data-toggle="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}><span class="set-toggle-knob"></span></button>`;
+}
+
 async function renderSettings() {
-  setHeader('Paramètres', 'Configuration de l’espace TRAXO');
-  const settings = await api('/api/app/settings/proofs');
+  setHeader('Paramètres', 'Configurez TRAXO pour votre entreprise.');
   const canEdit = ['owner', 'manager'].includes(context.user.role);
   const company = context.company;
-  const isActive = (company.activationStatus || 'active') === 'active';
-  const modeOptions = (selected) => [
-    ['off', 'Désactivée'], ['optional', 'Facultative'], ['required', 'Obligatoire'],
-  ].map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('');
-  const initials = String(company.name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
-  const infoRow = (label, value) => `<div class="set-row"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`;
+  const initials = String(company.name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
+  let section = (new URLSearchParams(location.search).get('section') || 'overview').toLowerCase();
+  if (!settingsSections.some((s) => s.key === section)) section = 'overview';
 
-  const sections = [
-    { key: 'entreprise', label: 'Entreprise', body: `
-      <div class="set-company"><span class="avatar">${escapeHtml(initials)}</span><div><strong>${escapeHtml(company.name)}</strong><small>${escapeHtml(company.slug || '')}</small></div></div>
-      <div class="set-list">
-        ${infoRow('Identifiant', `#${escapeHtml(company.id)}`)}
-        ${infoRow('Votre rôle', escapeHtml(roleLabels[context.user.role] || context.user.role))}
-        ${infoRow('Compte', escapeHtml(context.user.name))}
-        ${infoRow('E-mail', escapeHtml(context.user.email))}
-      </div>
-      <p class="set-hint">Le changement de nom d’entreprise et le logo personnalisé arriveront prochainement.</p>` },
-    { key: 'preuves', label: 'Preuves de remise', body: `
-      <p class="set-lead">Le code client reste la preuve principale. Activez une photo ou une signature seulement si votre activité le justifie.</p>
-      <div class="notice">Une preuve « obligatoire » empêche la validation finale tant que le livreur ne l’a pas ajoutée. Les images restent privées.</div>
-      <form id="proofSettings"><div class="form-grid">
-        <div class="field"><label>Photo de remise</label><select name="photoMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.photo_proof_mode)}</select><small>Privilégiez le colis ou le lieu, sans visage ni pièce d’identité.</small></div>
-        <div class="field"><label>Signature du destinataire</label><select name="signatureMode" ${canEdit ? '' : 'disabled'}>${modeOptions(settings.signature_proof_mode)}</select><small>Ne demandez la signature que lorsqu’elle est réellement utile.</small></div>
-      </div>${canEdit ? '<div class="actions" style="margin-top:18px"><button class="primary">Enregistrer les règles</button></div>' : '<p class="notice">Seul un propriétaire ou manager peut modifier ces règles.</p>'}</form><div id="settingsResult"></div>` },
-    { key: 'carte', label: 'Carte & GPS', body: `
-      <p class="set-lead">Réglages de la carte d’exploitation et du suivi GPS.</p>
-      <div class="set-list">
-        ${infoRow('Fond par défaut', 'OpenStreetMap')}
-        ${infoRow('Satellite', '<span class="account-chip ok">'+settingsIcons.preuves+' Esri World Imagery</span>')}
-        ${infoRow('Mode hybride', 'Disponible')}
-        ${infoRow('Suivi GPS', 'Traccar')}
-      </div>
-      <p class="set-hint">L’enrôlement automatique des téléphones (QR + device) sera activé avec votre domaine GPS dédié.</p>` },
-    { key: 'securite', label: 'Sécurité', body: `
-      <p class="set-lead">Protections déjà en place sur votre espace.</p>
-      <div class="set-list">
-        ${infoRow('Mots de passe', 'scrypt + sel unique')}
-        ${infoRow('Sessions', 'cookie HttpOnly · jeton haché')}
-        ${infoRow('Connexion', 'limitée (anti-force-brute)')}
-        ${infoRow('Isolation', 'chaque entreprise est cloisonnée')}
-      </div>
-      <p class="set-hint">La vérification d’e-mail et la réinitialisation de mot de passe arriveront avec l’envoi d’e-mails.</p>` },
-    { key: 'abonnement', label: 'Abonnement', body: `
-      <div class="set-plan ${isActive ? 'ok' : 'preview'}">
-        <div><span>Statut du compte</span><strong>${isActive ? 'Compte actif' : 'Aperçu'}</strong></div>
-        <span class="badge ${isActive ? 'success' : 'warning'}">${isActive ? 'Actif' : 'Non activé'}</span>
-      </div>
-      <p class="set-lead">${isActive ? 'Toutes les fonctionnalités sont débloquées pour votre entreprise.' : 'Votre compte est en aperçu : vous pouvez naviguer, mais les fonctionnalités se débloquent après activation.'}</p>
-      <p class="set-hint">La facturation en ligne (Mobile Money) sera branchée prochainement ; l’activation est manuelle pour l’instant.</p>` },
-  ];
-
-  page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Configuration de l’espace TRAXO.</p></div></div>
-    <div class="settings-hub">
-      <nav class="settings-nav" id="settingsNav" aria-label="Sections des paramètres">
-        ${sections.map((section, index) => `<button class="settings-navitem ${index === 0 ? 'active' : ''}" data-sec="${section.key}">${settingsIcons[section.key]}<span>${section.label}</span></button>`).join('')}
+  page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Configurez TRAXO pour votre entreprise.</p></div></div>
+    <div class="set2-hub">
+      <nav class="set2-nav" id="set2Nav" aria-label="Sections des paramètres">
+        ${settingsSections.map((s) => `<button class="set2-navitem ${s.key === section ? 'active' : ''}" data-sec="${s.key}"><span class="set2-navic">${setIcons[s.key]}</span><span>${escapeHtml(s.label)}</span></button>`).join('')}
       </nav>
-      <div class="settings-panels" id="settingsPanels">
-        ${sections.map((section, index) => `<section class="card settings-sec ${index === 0 ? '' : 'is-hidden'}" data-sec="${section.key}"><h2>${section.label}</h2>${section.body}</section>`).join('')}
-      </div>
+      <div class="set2-content" id="set2Content"><div class="loading-state" style="padding:40px">Chargement…</div></div>
     </div>`;
 
-  document.getElementById('settingsNav').addEventListener('click', (event) => {
-    const item = event.target.closest('[data-sec]');
+  document.getElementById('set2Nav').addEventListener('click', (e) => {
+    const item = e.target.closest('[data-sec]');
     if (!item) return;
-    const key = item.dataset.sec;
-    document.querySelectorAll('#settingsNav .settings-navitem').forEach((navItem) => navItem.classList.toggle('active', navItem.dataset.sec === key));
-    document.querySelectorAll('#settingsPanels .settings-sec').forEach((section) => section.classList.toggle('is-hidden', section.dataset.sec !== key));
+    section = item.dataset.sec;
+    document.querySelectorAll('#set2Nav .set2-navitem').forEach((n) => n.classList.toggle('active', n.dataset.sec === section));
+    try { history.replaceState(null, '', `/app/parametres?section=${section}`); } catch { /* ignore */ }
+    loadSection();
   });
 
-  const form = document.getElementById('proofSettings');
-  if (canEdit && form) form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
-    button.disabled = true;
+  function notify(html) { const el = document.getElementById('setResult'); if (el) el.innerHTML = html; }
+
+  async function loadSection() {
+    const box = document.getElementById('set2Content');
+    box.innerHTML = '<div class="loading-state" style="padding:40px">Chargement…</div>';
     try {
-      const payload = Object.fromEntries(new FormData(event.currentTarget));
-      await api('/api/app/settings/proofs', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      document.getElementById('settingsResult').innerHTML = '<div class="notice success">Règles de preuve enregistrées.</div>';
+      if (section === 'overview') await renderOverview(box);
+      else if (section === 'general') await renderGeneral(box);
+      else if (section === 'deliveries') await renderDeliveries(box);
+      else if (section === 'team') await renderTeamSettings(box);
+      else if (section === 'security') await renderSecurity(box);
+      else if (section === 'billing') await renderBilling(box);
     } catch (error) {
-      document.getElementById('settingsResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    } finally {
-      button.disabled = false;
+      box.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
     }
-  });
+  }
+
+  function head(title, subtitle) {
+    return `<div class="set2-head"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div>`;
+  }
+
+  async function renderOverview(box) {
+    let drivers = 0;
+    try { const s = await api('/api/app/summary'); drivers = Number(s.drivers || 0); } catch { /* ignore */ }
+    const plan = recommendPlan(drivers);
+    const cats = [
+      { key: 'general', title: 'Général', desc: 'Nom de l’entreprise, espace de travail, fuseau horaire et informations de base.' },
+      { key: 'deliveries', title: 'Livraisons', desc: 'Validation, attribution et gestion des demandes de livraison.' },
+      { key: 'team', title: 'Équipe & permissions', desc: 'Gérez les utilisateurs, les rôles et les permissions.' },
+      { key: 'security', title: 'Sécurité', desc: 'Mot de passe, sessions, connexion et authentification à deux facteurs.' },
+      { key: 'billing', title: 'Facturation', desc: 'Gérez votre abonnement, vos factures et votre paiement.', right: `${drivers} livreur${drivers > 1 ? 's' : ''} · ${fmtFcfaMonth(plan.monthly)}` },
+    ];
+    box.innerHTML = `
+      <section class="set2-card set2-summary">
+        <span class="set2-logo">${escapeHtml(initials)}</span>
+        <div class="set2-summary-main"><h3>${escapeHtml(company.name)}</h3><span class="set2-slug">${escapeHtml(company.slug || '')}</span></div>
+        ${canEdit ? '<button class="button secondary small" id="editGeneral">Modifier</button>' : ''}
+        <div class="set2-summary-stats">
+          <div><span class="set2-ic">${setIcons.team}</span><div><strong>${drivers}</strong><small>livreur${drivers > 1 ? 's' : ''} actif${drivers > 1 ? 's' : ''}</small></div></div>
+          <div><span class="set2-ic">${setIcons.crown}</span><div><strong>${escapeHtml(traxoRoleLabels[context.user.role] || context.user.role)}</strong><small>Votre rôle</small></div></div>
+          <div><span class="set2-ic">${setIcons.billing}</span><div><strong>${escapeHtml(plan.name)}</strong><small>Formule</small></div></div>
+        </div>
+      </section>
+      <section class="set2-card">
+        <div class="set2-head"><h2>Paramètres de l’espace</h2><p>Gérez les principaux paramètres de votre entreprise.</p></div>
+        <div class="set2-cats">${cats.map((c) => `<button class="set2-cat" data-go="${c.key}"><span class="set2-cat-ic">${setIcons[c.key]}</span><span class="set2-cat-main"><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml(c.desc)}</small></span>${c.right ? `<span class="set2-cat-right">${escapeHtml(c.right)}</span>` : ''}<span class="set2-cat-chev">${setIcons.chevron}</span></button>`).join('')}</div>
+      </section>`;
+    box.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => { document.querySelector(`#set2Nav [data-sec="${b.dataset.go}"]`).click(); }));
+    const eg = document.getElementById('editGeneral');
+    if (eg) eg.addEventListener('click', () => document.querySelector('#set2Nav [data-sec="general"]').click());
+  }
+
+  async function renderGeneral(box) {
+    const c = await api('/api/app/company');
+    const tzOptions = (c.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${tz === c.timezone ? 'selected' : ''}>${escapeHtml(tz)}</option>`).join('');
+    box.innerHTML = `${head('Général', 'Gérez l’identité et les informations de votre entreprise.')}
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Profil de l’entreprise</h3>
+        <div class="set2-profile">
+          <div class="set2-profile-logo"><span class="set2-logo lg">${escapeHtml(initials)}</span>${canEdit ? '<button class="button secondary small" type="button" id="editLogo">Modifier</button>' : ''}</div>
+          <form id="companyForm" class="set2-profile-form">
+            <div class="field"><label>Nom de l’entreprise</label><input name="name" maxlength="120" value="${escapeHtml(c.name || '')}" ${canEdit ? '' : 'disabled'} required></div>
+            <div class="field"><label>Nom de l’espace</label><input name="slug" maxlength="80" value="${escapeHtml(c.slug || '')}" ${canEdit ? '' : 'disabled'} required></div>
+            <div class="field"><label>E-mail administratif</label><input name="adminEmail" type="email" value="${escapeHtml(c.admin_email || '')}" ${canEdit ? '' : 'disabled'}></div>
+            <div class="field"><label>Fuseau horaire</label><select name="timezone" ${canEdit ? '' : 'disabled'}>${tzOptions}</select></div>
+            ${canEdit ? '<div class="set2-formfoot"><button class="button primary">Enregistrer les modifications</button></div>' : ''}
+            <div id="setResult"></div>
+          </form>
+        </div>
+      </section>
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Informations de l’espace</h3>
+        <div class="set2-info">
+          <div class="set2-inforow"><span class="set2-info-ic">#</span><span>ID de l’espace</span><strong>#${escapeHtml(c.id)}</strong></div>
+          <div class="set2-inforow"><span class="set2-info-ic">${setIcons.crown}</span><span>Propriétaire</span><strong>${escapeHtml(c.owner_name || company.name)}</strong></div>
+          <div class="set2-inforow"><span class="set2-info-ic">${setIcons.overview}</span><span>Créé le</span><strong>${escapeHtml(formatDateOnly(c.created_at))}</strong></div>
+        </div>
+      </section>`;
+    const logoBtn = document.getElementById('editLogo');
+    if (logoBtn) logoBtn.addEventListener('click', () => notify('<div class="notice">L’import d’un logo personnalisé arrivera prochainement.</div>'));
+    const form = document.getElementById('companyForm');
+    if (canEdit && form) form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(form));
+      const btn = form.querySelector('button.primary'); btn.disabled = true;
+      try {
+        const saved = await api('/api/app/company', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        context.company.name = saved.name; context.company.slug = saved.slug;
+        notify('<div class="notice success">Profil enregistré.</div>');
+      } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); }
+      finally { btn.disabled = false; }
+    });
+  }
+
+  async function renderDeliveries(box) {
+    const d = await api('/api/app/settings/deliveries');
+    const row = (name, title, desc) => `<div class="set2-optrow"><span class="set2-opt-ic">${setIcons.play}</span><div class="set2-opt-main"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(desc)}</small></div>${setToggle(name, d[name], !canEdit)}</div>`;
+    box.innerHTML = `${head('Livraisons', 'Définissez les règles opérationnelles des commandes dans TRAXO.')}
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Validation d’une commande</h3>
+        <p class="set2-blocksub">Configurez les règles de validation et d’activation des commandes.</p>
+        ${row('validateBeforeTracking', 'Validation avant activation du suivi client', 'Lorsque le client a partagé sa position, le suivi ne devient visible qu’après validation de la commande par l’entreprise.')}
+        ${row('driverAssignmentRequired', 'Attribution du livreur obligatoire', 'Une commande doit avoir un livreur attribué avant de pouvoir être validée.')}
+        ${row('allowEditAfterValidation', 'Autoriser la modification après validation', 'Permet de modifier certains détails d’une commande après sa validation.')}
+      </section>
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Création des demandes</h3>
+        <p class="set2-blocksub">Choisissez comment les demandes de livraison peuvent être créées dans TRAXO.</p>
+        ${row('customerFormEnabled', 'Formulaire client activé', 'Le client remplit un formulaire pour créer une demande et peut partager une position.')}
+        ${row('internalEntryEnabled', 'Saisie interne activée', 'L’entreprise peut créer elle-même des demandes depuis son interface.')}
+        ${row('manualValidation', 'Validation manuelle par l’entreprise', 'Une demande issue du formulaire ne devient une commande active qu’après validation.')}
+        ${canEdit ? '<div class="set2-formfoot"><button class="button primary" id="saveDeliveries">Enregistrer les règles</button></div>' : ''}
+        <div id="setResult"></div>
+      </section>`;
+    const state = { ...d };
+    box.querySelectorAll('[data-toggle]').forEach((btn) => btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const on = !btn.classList.contains('on');
+      btn.classList.toggle('on', on); btn.setAttribute('aria-checked', on ? 'true' : 'false');
+      state[btn.dataset.toggle] = on;
+    }));
+    const save = document.getElementById('saveDeliveries');
+    if (save) save.addEventListener('click', async () => {
+      save.disabled = true;
+      try {
+        await api('/api/app/settings/deliveries', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
+        notify('<div class="notice success">Règles enregistrées.</div>');
+      } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); }
+      finally { save.disabled = false; }
+    });
+  }
+
+  async function renderTeamSettings(box) {
+    if (!canEdit) { box.innerHTML = `${head('Équipe & permissions', 'Gérez les accès, les rôles et les droits de votre espace.')}<section class="set2-card"><div class="notice">Seul un propriétaire ou un manager peut gérer l’équipe.</div></section>`; return; }
+    const data = await api('/api/app/team');
+    const roleCards = [
+      { ic: setIcons.crown, name: 'Propriétaire', desc: 'Accès complet à l’espace et à la facturation.' },
+      { ic: setIcons.user, name: 'Opérateur', desc: 'Gère les commandes, demandes et tournées.' },
+      { ic: setIcons.bike, name: 'Livreur', desc: 'Accède uniquement à ses tournées et au suivi GPS.' },
+    ];
+    const av = (name) => `<span class="set2-av">${escapeHtml(String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?')}</span>`;
+    const memberRows = (data.members || []).map((m) => `<tr><td><div class="set2-user">${av(m.display_name || m.driver_name)}<div><strong>${escapeHtml(m.display_name || m.driver_name || '—')}</strong><small>${escapeHtml(m.email || '')}</small></div></div></td><td>${escapeHtml(traxoRoleLabels[m.role] || m.role)}</td><td>${m.disabled ? '<span class="set2-badge grey">Suspendu</span>' : '<span class="set2-badge green">Actif</span>'}</td></tr>`).join('');
+    const inviteRows = (data.invitations || []).map((i) => `<tr><td><div class="set2-user">${av(i.display_name || i.email)}<div><strong>${escapeHtml(i.display_name || i.email)}</strong><small>${escapeHtml(i.email || '')}</small></div></div></td><td>${escapeHtml(traxoRoleLabels[i.role] || i.role)}</td><td><span class="set2-badge amber">Invité</span></td></tr>`).join('');
+    box.innerHTML = `${head('Équipe & permissions', 'Gérez les accès, les rôles et les droits de votre espace.')}
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Rôles</h3>
+        <div class="set2-roles">${roleCards.map((r) => `<div class="set2-role"><span class="set2-role-ic">${r.ic}</span><div><strong>${escapeHtml(r.name)}</strong><small>${escapeHtml(r.desc)}</small></div></div>`).join('')}</div>
+      </section>
+      <section class="set2-card">
+        <div class="set2-blockhead"><h3 class="set2-blocktitle">Utilisateurs</h3><button class="button primary small" id="inviteUser">${setIcons.user} Inviter un utilisateur</button></div>
+        <div class="crm-scroll"><table class="set2-table"><thead><tr><th>Nom</th><th>Rôle</th><th>Statut</th></tr></thead><tbody>${memberRows}${inviteRows}</tbody></table></div>
+        <div id="setResult"></div>
+      </section>`;
+    const invite = document.getElementById('inviteUser');
+    if (invite) invite.addEventListener('click', () => { location.href = '/app/equipe'; });
+  }
+
+  async function renderSecurity(box) {
+    const s = await api('/api/app/account/security');
+    const days = s.passwordChangedAt ? Math.max(0, Math.round((Date.now() - new Date(s.passwordChangedAt).getTime()) / 86400000)) : null;
+    const pwdSub = days == null ? 'Jamais modifié depuis la création' : `Dernière modification il y a ${days} jour${days > 1 ? 's' : ''}`;
+    box.innerHTML = `${head('Sécurité', 'Protégez votre compte et contrôlez les connexions à votre espace.')}
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Sécurité du compte</h3>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.lock}</span><div class="set2-opt-main"><strong>Mot de passe</strong><small>${escapeHtml(pwdSub)}</small></div><button class="button secondary small" id="editPwd">${setIcons.edit} Modifier</button></div>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.shield}</span><div class="set2-opt-main"><strong>Authentification à deux facteurs</strong><small>${s.twoFactorEnabled ? 'Activée' : 'Non configurée'}</small></div><button class="button secondary small" id="cfg2fa">Configurer</button></div>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.screen}</span><div class="set2-opt-main"><strong>Sessions actives</strong><small>${escapeHtml(s.activeSessions)} appareil${s.activeSessions > 1 ? 's' : ''} connecté${s.activeSessions > 1 ? 's' : ''}</small></div><button class="button secondary small" id="viewSessions">Voir les sessions</button></div>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.bell}</span><div class="set2-opt-main"><strong>Alertes de connexion</strong><small>Recevoir un e-mail lors d’une nouvelle connexion</small></div>${setToggle('loginAlerts', s.loginAlerts, false)}</div>
+        <div id="setResult"></div>
+      </section>
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Protection de l’espace</h3>
+        <p class="set2-blocksub">Votre espace TRAXO est conçu pour assurer la sécurité de vos données.</p>
+        <div class="set2-guarantees">
+          <div class="set2-guarantee"><span class="set2-g-ic">${setIcons.check}</span><div><strong>Données isolées par entreprise</strong><small>Vos données sont strictement séparées de celles des autres entreprises.</small></div></div>
+          <div class="set2-guarantee"><span class="set2-g-ic">${setIcons.check}</span><div><strong>Connexions protégées</strong><small>Toutes les connexions sont chiffrées et sécurisées.</small></div></div>
+          <div class="set2-guarantee"><span class="set2-g-ic">${setIcons.check}</span><div><strong>Sessions sécurisées</strong><small>Vos sessions sont protégées et automatiquement expirées en cas d’inactivité.</small></div></div>
+        </div>
+      </section>`;
+    const alertsToggle = box.querySelector('[data-toggle="loginAlerts"]');
+    if (alertsToggle) alertsToggle.addEventListener('click', async () => {
+      const on = !alertsToggle.classList.contains('on');
+      alertsToggle.classList.toggle('on', on); alertsToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+      try { await api('/api/app/account/preferences', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ loginAlerts: on }) }); }
+      catch { alertsToggle.classList.toggle('on', !on); }
+    });
+    document.getElementById('cfg2fa').addEventListener('click', () => notify('<div class="notice">L’authentification à deux facteurs arrivera prochainement.</div>'));
+    document.getElementById('editPwd').addEventListener('click', () => openPasswordModal());
+    document.getElementById('viewSessions').addEventListener('click', () => openSessionsModal());
+  }
+
+  function openPasswordModal() {
+    const modal = openModal('Modifier le mot de passe',
+      `<form id="pwdForm"><div class="field"><label>Mot de passe actuel</label><input name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label>Nouveau mot de passe (10 caractères min.)</label><input name="newPassword" type="password" autocomplete="new-password" minlength="10" required></div></form><p class="subtitle" style="margin:10px 0 0">Par sécurité, vos autres sessions seront déconnectées.</p><div id="modalResult"></div>`,
+      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" type="submit" form="pwdForm">Enregistrer</button>`);
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#pwdForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.currentTarget));
+      const btn = modal.backdrop.querySelector('button.primary'); btn.disabled = true;
+      try {
+        await api('/api/app/account/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        modal.close();
+        notify('<div class="notice success">Mot de passe mis à jour.</div>');
+      } catch (error) { modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; btn.disabled = false; }
+    });
+  }
+
+  async function openSessionsModal() {
+    const modal = openModal('Sessions actives',
+      '<div id="sessList"><div class="loading-state">Chargement…</div></div>',
+      '<button class="button secondary" data-modal-close type="button">Fermer</button>');
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    try {
+      const list = await api('/api/app/account/sessions');
+      const uaLabel = (ua) => {
+        if (!ua) return 'Appareil inconnu';
+        if (/mobile|android|iphone/i.test(ua)) return 'Mobile';
+        if (/mac|windows|linux/i.test(ua)) return 'Ordinateur';
+        return 'Navigateur';
+      };
+      modal.backdrop.querySelector('#sessList').innerHTML = list.length ? `<div class="set2-sessions">${list.map((s) => `<div class="set2-session"><div><strong>${escapeHtml(uaLabel(s.userAgent))}${s.current ? ' <span class="set2-badge green">Cet appareil</span>' : ''}</strong><small>Ouverte le ${escapeHtml(formatDate(s.createdAt))} · expire le ${escapeHtml(formatDateOnly(s.expiresAt))}</small></div></div>`).join('')}</div>` : '<div class="notice">Aucune session active.</div>';
+    } catch (error) { modal.backdrop.querySelector('#sessList').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; }
+  }
+
+  async function renderBilling(box) {
+    let drivers = 0;
+    try { const s = await api('/api/app/summary'); drivers = Number(s.drivers || 0); } catch { /* ignore */ }
+    const plan = recommendPlan(drivers);
+    const cap = planCapacityFor(plan.code);
+    const capLabel = cap === Infinity ? '∞' : cap;
+    const pct = cap === Infinity ? 100 : Math.min(100, Math.round((drivers / cap) * 100));
+    const remaining = cap === Infinity ? null : Math.max(0, cap - drivers);
+    box.innerHTML = `${head('Facturation', 'Suivez le coût de votre flotte et gérez votre abonnement.')}
+      <section class="set2-card">
+        <div class="set2-blockhead"><h3 class="set2-blocktitle">Votre plan actuel</h3><a class="button secondary small" href="/app/parametres?section=billing">Changer de formule</a></div>
+        <div class="set2-plan">
+          <div><span class="set2-plan-name">${escapeHtml(plan.name)}</span><span class="set2-plan-price">${escapeHtml(fmtFcfaMonth(plan.monthly))}</span></div>
+          <div class="set2-plan-usage"><div class="set2-usebar"><i style="width:${pct}%"></i></div><small>${drivers} / ${escapeHtml(capLabel)} places utilisées${remaining != null ? ` · vous pouvez encore ajouter ${remaining} livreur${remaining > 1 ? 's' : ''}` : ''}</small></div>
+        </div>
+      </section>
+      <section class="set2-card">
+        <h3 class="set2-blocktitle">Paiement</h3>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.billing}</span><div class="set2-opt-main"><strong>Aucun moyen de paiement configuré</strong><small>Configurez votre paiement pour activer le renouvellement automatique de votre abonnement.</small></div><button class="button secondary small" id="cfgPay">Configurer le paiement</button></div>
+        <div id="setResult"></div>
+      </section>
+      <section class="set2-card set2-soon"><p>La facturation détaillée (plans, prochaine facture, historique des paiements) arrive avec les prochaines maquettes.</p></section>`;
+    document.getElementById('cfgPay').addEventListener('click', () => notify('<div class="notice">La passerelle de paiement sera branchée prochainement.</div>'));
+  }
+
+  await loadSection();
 }
 
 // Illustrations Opérations, en SVG inline : vectoriel, léger, aux couleurs TRAXO.

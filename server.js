@@ -670,6 +670,12 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS photo_proof_mode TEXT NOT NULL DEFAULT 'off';
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS signature_proof_mode TEXT NOT NULL DEFAULT 'off';
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS activation_status TEXT NOT NULL DEFAULT 'active';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS admin_email TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Africa/Porto-Novo';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS delivery_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS login_alerts BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+      ALTER TABLE app_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
 
       UPDATE companies
       SET slug = 'chicago-consulting-group', updated_at = NOW()
@@ -1313,10 +1319,11 @@ async function initDatabase() {
 
 async function createSession(req, res, userId, companyId, scope) {
   const token = randomToken();
+  const userAgent = String(req.headers['user-agent'] || '').slice(0, 400) || null;
   await pool.query(
-    `INSERT INTO app_sessions (token_hash, user_id, company_id, scope, expires_at)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [digest(token), userId, companyId || null, scope, new Date(Date.now() + sessionDurationMs)]
+    `INSERT INTO app_sessions (token_hash, user_id, company_id, scope, expires_at, user_agent)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [digest(token), userId, companyId || null, scope, new Date(Date.now() + sessionDurationMs), userAgent]
   );
   setSessionCookie(req, res, token);
 }
@@ -2511,6 +2518,155 @@ app.get('/api/app/settings/proofs', requireCompanyApi, asyncRoute(async (req, re
     [req.auth.company_id]
   );
   return res.json(result.rows[0]);
+}));
+
+// --- Paramètres > Général : profil de l'entreprise ---
+const companyTimezones = [
+  'Africa/Porto-Novo', 'Africa/Abidjan', 'Africa/Accra', 'Africa/Lagos',
+  'Africa/Lome', 'Africa/Ouagadougou', 'Africa/Dakar', 'Africa/Bamako',
+  'Africa/Niamey', 'Africa/Douala', 'Africa/Kinshasa', 'UTC', 'Europe/Paris',
+];
+
+app.get('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT c.id, c.name, c.slug, c.admin_email, c.timezone, c.created_at,
+            (SELECT u.display_name FROM company_memberships m JOIN users u ON u.id = m.user_id
+             WHERE m.company_id = c.id AND m.role = 'owner' ORDER BY m.id LIMIT 1) AS owner_name,
+            (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers
+     FROM companies c WHERE c.id = $1`,
+    [req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Entreprise introuvable.' });
+  return res.json({ ...result.rows[0], timezones: companyTimezones });
+}));
+
+app.patch('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const slug = String(req.body.slug || '').trim().toLowerCase();
+  const adminEmail = req.body.adminEmail == null || req.body.adminEmail === '' ? null : String(req.body.adminEmail).trim();
+  const timezone = String(req.body.timezone || '').trim();
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Le nom de l’entreprise doit contenir entre 2 et 120 caractères.' });
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length < 2 || slug.length > 80) {
+    return res.status(400).json({ error: 'Le nom d’espace ne peut contenir que des lettres minuscules, chiffres et tirets.' });
+  }
+  if (adminEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail)) return res.status(400).json({ error: 'E-mail administratif invalide.' });
+  if (!companyTimezones.includes(timezone)) return res.status(400).json({ error: 'Fuseau horaire non pris en charge.' });
+  try {
+    const result = await pool.query(
+      `UPDATE companies SET name = $1, slug = $2, admin_email = $3, timezone = $4, updated_at = NOW()
+       WHERE id = $5 RETURNING id, name, slug, admin_email, timezone`,
+      [name, slug, adminEmail, timezone, req.auth.company_id]
+    );
+    await writeAudit(req.auth, 'company', req.auth.company_id, 'profile_updated', { name, slug });
+    return res.json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Ce nom d’espace est déjà utilisé.' });
+    console.error('Company update error:', error.message);
+    return res.status(500).json({ error: 'Impossible d’enregistrer le profil.' });
+  }
+}));
+
+// --- Paramètres > Livraisons : règles opérationnelles ---
+const deliverySettingKeys = ['validateBeforeTracking', 'driverAssignmentRequired', 'allowEditAfterValidation', 'customerFormEnabled', 'internalEntryEnabled', 'manualValidation'];
+const defaultDeliverySettings = {
+  validateBeforeTracking: true, driverAssignmentRequired: true, allowEditAfterValidation: false,
+  customerFormEnabled: true, internalEntryEnabled: true, manualValidation: true,
+};
+function normalizeDeliverySettings(stored) {
+  const out = { ...defaultDeliverySettings };
+  if (stored && typeof stored === 'object') {
+    for (const key of deliverySettingKeys) {
+      if (typeof stored[key] === 'boolean') out[key] = stored[key];
+    }
+  }
+  return out;
+}
+
+app.get('/api/app/settings/deliveries', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query('SELECT delivery_settings FROM companies WHERE id = $1', [req.auth.company_id]);
+  return res.json(normalizeDeliverySettings(result.rows[0] && result.rows[0].delivery_settings));
+}));
+
+app.patch('/api/app/settings/deliveries', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const incoming = {};
+  for (const key of deliverySettingKeys) {
+    if (typeof req.body[key] === 'boolean') incoming[key] = req.body[key];
+  }
+  const merged = normalizeDeliverySettings(incoming);
+  const result = await pool.query(
+    `UPDATE companies SET delivery_settings = $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING delivery_settings`,
+    [JSON.stringify(merged), req.auth.company_id]
+  );
+  await writeAudit(req.auth, 'company', req.auth.company_id, 'delivery_settings_changed', merged);
+  return res.json(normalizeDeliverySettings(result.rows[0].delivery_settings));
+}));
+
+// --- Paramètres > Sécurité : compte utilisateur ---
+app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, res) => {
+  const [user, sessions] = await Promise.all([
+    pool.query('SELECT password_changed_at, login_alerts FROM users WHERE id = $1', [req.auth.user_id]),
+    pool.query('SELECT COUNT(*)::int AS n FROM app_sessions WHERE user_id = $1 AND expires_at > NOW()', [req.auth.user_id]),
+  ]);
+  const row = user.rows[0] || {};
+  return res.json({
+    passwordChangedAt: row.password_changed_at || null,
+    loginAlerts: row.login_alerts !== false,
+    activeSessions: sessions.rows[0].n,
+    twoFactorEnabled: false,
+  });
+}));
+
+app.get('/api/app/account/sessions', requireCompanyApi, asyncRoute(async (req, res) => {
+  const currentHash = digest(String(parseCookies(req).delivery_session || ''));
+  const result = await pool.query(
+    `SELECT token_hash, user_agent, created_at, expires_at FROM app_sessions
+     WHERE user_id = $1 AND expires_at > NOW() ORDER BY created_at DESC LIMIT 50`,
+    [req.auth.user_id]
+  );
+  return res.json(result.rows.map((row) => ({
+    id: row.token_hash.slice(0, 12),
+    current: row.token_hash === currentHash,
+    userAgent: row.user_agent || null,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+  })));
+}));
+
+app.post('/api/app/account/password', requireCompanyApi, asyncRoute(async (req, res) => {
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  if (newPassword.length < 10 || newPassword.length > 200) return res.status(400).json({ error: 'Le nouveau mot de passe doit contenir au moins 10 caractères.' });
+  const user = await pool.query('SELECT password_salt, password_hash FROM users WHERE id = $1', [req.auth.user_id]);
+  if (!user.rows[0] || !passwordMatches(currentPassword, user.rows[0].password_salt, user.rows[0].password_hash)) {
+    return res.status(400).json({ error: 'Mot de passe actuel incorrect.' });
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  const currentHash = digest(String(parseCookies(req).delivery_session || ''));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE users SET password_salt = $1, password_hash = $2, password_changed_at = NOW() WHERE id = $3`,
+      [salt, hashPassword(newPassword, salt), req.auth.user_id]
+    );
+    // Déconnecte les autres sessions par sécurité, garde la session courante.
+    await client.query('DELETE FROM app_sessions WHERE user_id = $1 AND token_hash <> $2', [req.auth.user_id, currentHash]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Password change error:', error.message);
+    return res.status(500).json({ error: 'Impossible de changer le mot de passe.' });
+  } finally {
+    client.release();
+  }
+  await writeAudit(req.auth, 'user', req.auth.user_id, 'password_changed', {});
+  return res.json({ ok: true });
+}));
+
+app.patch('/api/app/account/preferences', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (typeof req.body.loginAlerts !== 'boolean') return res.status(400).json({ error: 'Préférence invalide.' });
+  await pool.query('UPDATE users SET login_alerts = $1 WHERE id = $2', [req.body.loginAlerts, req.auth.user_id]);
+  return res.json({ loginAlerts: req.body.loginAlerts });
 }));
 
 app.patch('/api/app/settings/proofs', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {

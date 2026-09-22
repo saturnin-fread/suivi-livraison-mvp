@@ -1,5 +1,21 @@
 # Historique des changements
 
+## 2026-09-19
+
+- Déploiement d'un service OSRM Bénin dédié et activation du calage cartographique (map-matching) du rejeu GPS sur le réseau routier réel.
+- Correction du rejeu GPS pour n'afficher qu'une seule journée à la fois, avec navigation jour par jour.
+- Ajout, sur la carte, de l'itinéraire routier réel du livreur vers sa destination (live rouge pour une tournée active), puis de l'itinéraire prévisionnel bleu d'une tournée planifiée ou en brouillon à travers tous les arrêts.
+- Refonte de la section Opérations en CRM : page d'accueil à deux entrées, sous-page de création de formulaire, espace de travail type tableur (Commandes, Incidents, Tournées, Demandes) avec recherche, tri, filtre, regroupement et pagination, et panneau de détail coulissant (drawer) pour les commandes et les demandes.
+- Ajout des photos de livreur (upload redimensionné, stockage privé) et d'une pastille de présence en ligne / signal ancien / hors ligne dans les listes et les fiches.
+- Mise en pleine largeur du CRM Opérations et sélecteur « éléments par page » réellement fonctionnel, contrôles de pagination toujours visibles.
+- Tournées automatiques : suppression du plafond de capacité, rattachement automatique des commandes à la tournée du jour du livreur dès leur création, et optimisation de l'ordre de passage sur routes réelles via OSRM ; rétro-rattachement des commandes actives existantes au démarrage.
+- Numérotation métier des commandes au format CMD-AAAA-NNNN, attribuée atomiquement à la création et rétro-appliquée aux commandes existantes.
+- Ajout de la réassignation d'un livreur depuis la fiche commande, avec déplacement automatique entre tournées et garde sur les commandes terminées.
+- Navigation unifiée vers le CRM Opérations : redirection des anciennes pages liste, correction des liens « Retour » et suppression du code mort correspondant.
+- Refonte des Paramètres selon la nouvelle architecture (Vue d'ensemble, Général, Livraisons, Équipe & permissions, Sécurité, Facturation) avec sauvegarde du profil entreprise, réglages Livraisons persistés et appliqués (formulaire client, saisie interne), changement de mot de passe réel, sessions actives et alertes de connexion ; retrait de « Carte & GPS » et « Preuves de remise ».
+- Ajout de la page « Voir les plans » (formules, cycle mensuel/trimestriel/annuel avec remises configurables côté serveur, recommandation selon le nombre de livreurs, garde anti-downgrade) sans marque de paiement affichée ni codée en dur.
+- Mise à jour de la documentation d'onboarding : README (prérequis, migrations au démarrage, tests) et `.env.example` complété.
+
 ## 2026-09-15
 
 - Ajout d’une durée de sept jours par défaut, de la révocation et du renouvellement des liens de suivi.

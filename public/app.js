@@ -785,6 +785,7 @@ async function renderOperationsMap() {
   const bikeSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';
   const playIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
   const pauseIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+  const calIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>';
   page.innerHTML = `<div class="ops">
     <div id="operationsMap" aria-label="Carte des livreurs et destinations"></div>
 
@@ -847,7 +848,7 @@ async function renderOperationsMap() {
   const operatorLayer = L.layerGroup().addTo(map);
   const replayLayer = L.layerGroup().addTo(map);
   let liveRoute = null; // { driverId, runId, distanceMeters, durationSeconds } ou { driverId, unavailable, reason }
-  const replay = { active: false, driverId: null, positions: [], roadGeometry: null, index: 0, playing: false, timer: null, marker: null, dayStart: null, prevAuto: true };
+  const replay = { active: false, driverId: null, positions: [], roadGeometry: null, index: 0, playing: false, timer: null, marker: null, dayStart: null, prevAuto: true, speed: 1 };
 
   let baseStreet = null;
   let baseSatellite = null;
@@ -1000,13 +1001,6 @@ async function renderOperationsMap() {
   }
 
   function todayMidnight() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
-  function dayLabel(ts) {
-    const start = new Date(ts); start.setHours(0, 0, 0, 0);
-    const diff = Math.round((start.getTime() - todayMidnight()) / 86400000);
-    if (diff === 0) return 'Aujourd’hui';
-    if (diff === -1) return 'Hier';
-    return start.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-  }
 
   function replayWindow(key) {
     const now = Date.now();
@@ -1028,56 +1022,148 @@ async function renderOperationsMap() {
   }
 
   const winLabels = { 30: '30 min', 60: '1 h', 180: '3 h' };
+
+  function periodDayMidnight(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
+
+  function renderPeriodCalendar() {
+    const base = replay.pickerMonth != null ? new Date(replay.pickerMonth) : new Date(replay.pickerDay != null ? replay.pickerDay : todayMidnight());
+    const y = base.getFullYear();
+    const m = base.getMonth();
+    const monthName = new Date(y, m, 1).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    const firstDow = (new Date(y, m, 1).getDay() + 6) % 7; // lundi = 0
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const today = todayMidnight();
+    const nextDisabled = new Date(y, m + 1, 1).getTime() > today;
+    let cells = '';
+    for (let i = 0; i < firstDow; i += 1) cells += '<span class="opscal-cell empty"></span>';
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const ts = new Date(y, m, d).setHours(0, 0, 0, 0);
+      const sel = replay.pickerDay != null && ts === replay.pickerDay;
+      cells += `<button type="button" class="opscal-cell ${sel ? 'sel' : ''}" data-cal-day="${ts}" ${ts > today ? 'disabled' : ''}>${d}</button>`;
+    }
+    return `<div class="opscal">
+      <div class="opscal-head"><button type="button" class="opscal-nav" data-cal-nav="-1" aria-label="Mois précédent">‹</button><strong>${escapeHtml(monthName.charAt(0).toUpperCase() + monthName.slice(1))}</strong><button type="button" class="opscal-nav" data-cal-nav="1" aria-label="Mois suivant" ${nextDisabled ? 'disabled' : ''}>›</button></div>
+      <div class="opscal-dow">${['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((d) => `<span>${d}</span>`).join('')}</div>
+      <div class="opscal-grid">${cells}</div>
+    </div>`;
+  }
+
+  function renderPeriodPicker() {
+    const dayTs = replay.pickerDay != null ? replay.pickerDay : todayMidnight();
+    const dayStr = new Date(dayTs).toLocaleDateString('fr-FR');
+    return `<div class="ops-period" role="dialog" aria-label="Choisir une période">
+      <div class="ops-period-head"><strong>Période</strong><button type="button" class="ops-period-x" data-period-close aria-label="Fermer">✕</button></div>
+      <div class="ops-period-presets">
+        <button type="button" class="ops-chip" data-preset="30">30 min</button>
+        <button type="button" class="ops-chip" data-preset="60">1 h</button>
+        <button type="button" class="ops-chip" data-preset="180">3 h</button>
+        <button type="button" class="ops-chip" data-preset="today">Aujourd’hui</button>
+        <button type="button" class="ops-chip" data-preset="yesterday">Hier</button>
+      </div>
+      <div class="ops-period-custom">
+        <div class="ops-period-title">Journée sélectionnée</div>
+        <div class="ops-period-range">
+          <label>Jour<input type="text" value="${escapeHtml(dayStr)}" readonly></label>
+          <label>De<input type="time" id="periodFrom" value="${escapeHtml(replay.pickerFromTime || '00:00')}"></label>
+          <label>À<input type="time" id="periodTo" value="${escapeHtml(replay.pickerToTime || '23:59')}"></label>
+        </div>
+        ${renderPeriodCalendar()}
+      </div>
+      <div class="ops-period-foot"><button type="button" class="button primary" data-period-apply>Rejouer ce jour</button><button type="button" class="button secondary" data-period-reset>Réinitialiser</button></div>
+    </div>`;
+  }
+
+  function applyPeriod() {
+    const from = document.getElementById('periodFrom');
+    const to = document.getElementById('periodTo');
+    if (from) replay.pickerFromTime = from.value || '00:00';
+    if (to) replay.pickerToTime = to.value || '23:59';
+    const day = replay.pickerDay != null ? replay.pickerDay : todayMidnight();
+    const ft = replay.pickerFromTime || '00:00';
+    const tt = replay.pickerToTime || '23:59';
+    const fullDay = ft === '00:00' && (tt === '23:59' || tt === '24:00');
+    replay.pickerOpen = false;
+    if (fullDay) { replay.dayStart = day; startReplay('day'); return; }
+    const [fh, fm] = ft.split(':').map(Number);
+    const [th, tm] = tt.split(':').map(Number);
+    const fromTs = day + (fh * 60 + fm) * 60000;
+    const toTs = day + (th * 60 + tm) * 60000;
+    if (toTs <= fromTs) { replay.statusText = 'L’heure de fin doit suivre l’heure de début.'; replay.pickerOpen = true; renderReplayUI(); return; }
+    replay.dayStart = day;
+    replay.customFrom = new Date(fromTs).toISOString();
+    replay.customTo = new Date(toTs).toISOString();
+    startReplay('custom');
+  }
+
   function renderReplayUI() {
     const slot = document.getElementById('opsReplay');
     if (!slot) return;
     const hasTrack = replay.positions.length > 0;
+    const todayActive = String(replay.windowKey) === 'day' && replay.dayStart === todayMidnight();
     slot.innerHTML = `<div class="ops-replay">
       <div class="ops-replay-windows">
         ${['30', '60', '180'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
-        <div class="ops-day-nav">
-          <button type="button" class="ops-day-arrow" data-day-step="-1" title="Jour précédent" aria-label="Jour précédent">‹</button>
-          <button type="button" class="ops-win ops-day-label ${String(replay.windowKey) === 'day' ? 'active' : ''}" data-day-play title="Rejouer cette journée complète">${escapeHtml(dayLabel(replay.dayStart != null ? replay.dayStart : todayMidnight()))}</button>
-          <button type="button" class="ops-day-arrow" data-day-step="1" title="Jour suivant" aria-label="Jour suivant" ${(replay.dayStart == null || replay.dayStart >= todayMidnight()) ? 'disabled' : ''}>›</button>
-        </div>
-        <button type="button" class="ops-win ${replay.customOpen ? 'active' : ''}" data-replay-custom>Période…</button>
+        <button type="button" class="ops-win ${todayActive ? 'active' : ''}" data-win-today>Aujourd’hui</button>
+        <button type="button" class="ops-win ops-win-period ${replay.pickerOpen ? 'active' : ''}" data-period-toggle>${calIcon} Période</button>
         <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
       </div>
-      ${replay.customOpen ? `<div class="ops-replay-range">
-        <label>Du<input type="datetime-local" id="replayFrom" value="${escapeHtml(replay.customFrom || '')}"/></label>
-        <label>Au<input type="datetime-local" id="replayTo" value="${escapeHtml(replay.customTo || '')}"/></label>
-        <button type="button" class="button secondary" id="replayApply">Rejouer</button>
-      </div>` : ''}
-      <div class="ops-replay-status">${escapeHtml(replay.statusText || 'Choisissez une période pour rejouer le trajet. Astuce : le trajet complet d’une journée est destiné aux tests ; le suivi par commande arrive avec la refonte Commandes.')}</div>
+      ${replay.pickerOpen ? renderPeriodPicker() : ''}
+      <div class="ops-replay-status">${escapeHtml(replay.statusText || 'Choisissez une période pour rejouer le trajet — « Hier » ou une date précise dans « Période ».')}</div>
       ${hasTrack ? `<div class="ops-replay-controls">
         <button type="button" class="ops-replay-play" id="opsReplayPlay">${replay.playing ? pauseIcon : playIcon}</button>
         <input type="range" id="opsReplayRange" min="0" max="${replay.positions.length - 1}" value="${replay.index}" aria-label="Position dans le trajet"/>
+        <select class="ops-replay-speed" id="opsReplaySpeed" aria-label="Vitesse de lecture">${[1, 2, 4, 8].map((s) => `<option value="${s}" ${Number(replay.speed || 1) === s ? 'selected' : ''}>${s}x</option>`).join('')}</select>
       </div>
       <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
     </div>`;
+
     slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
-    slot.querySelector('[data-day-play]')?.addEventListener('click', () => {
-      if (replay.dayStart == null) replay.dayStart = todayMidnight();
-      startReplay('day');
-    });
-    slot.querySelectorAll('[data-day-step]').forEach((btn) => btn.addEventListener('click', () => {
-      const base = replay.dayStart != null ? replay.dayStart : todayMidnight();
-      const next = base + Number(btn.dataset.step) * 86400000;
-      if (next > todayMidnight()) return; // pas de journée future
-      replay.dayStart = next;
-      startReplay('day');
-    }));
+    slot.querySelector('[data-win-today]')?.addEventListener('click', () => { replay.dayStart = todayMidnight(); startReplay('day'); });
     slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
-    slot.querySelector('[data-replay-custom]')?.addEventListener('click', () => { replay.customOpen = !replay.customOpen; renderReplayUI(); });
-    slot.querySelector('#replayApply')?.addEventListener('click', () => {
-      replay.customFrom = slot.querySelector('#replayFrom').value;
-      replay.customTo = slot.querySelector('#replayTo').value;
-      if (!replay.customFrom || !replay.customTo) { replay.statusText = 'Renseignez une date de début et de fin.'; renderReplayUI(); return; }
-      startReplay('custom');
+    slot.querySelector('[data-period-toggle]')?.addEventListener('click', () => {
+      replay.pickerOpen = !replay.pickerOpen;
+      if (replay.pickerOpen) {
+        replay.pickerDay = replay.dayStart != null ? replay.dayStart : todayMidnight();
+        replay.pickerMonth = periodDayMidnight(replay.pickerDay);
+        if (replay.pickerFromTime == null) replay.pickerFromTime = '00:00';
+        if (replay.pickerToTime == null) replay.pickerToTime = '23:59';
+      }
+      renderReplayUI();
     });
+    slot.querySelector('[data-period-close]')?.addEventListener('click', () => { replay.pickerOpen = false; renderReplayUI(); });
+    slot.querySelectorAll('[data-preset]').forEach((btn) => btn.addEventListener('click', () => {
+      const p = btn.dataset.preset;
+      replay.pickerOpen = false;
+      if (p === 'today') { replay.dayStart = todayMidnight(); startReplay('day'); }
+      else if (p === 'yesterday') { replay.dayStart = todayMidnight() - 86400000; startReplay('day'); }
+      else startReplay(p);
+    }));
+    slot.querySelectorAll('[data-cal-day]').forEach((btn) => btn.addEventListener('click', () => {
+      replay.pickerFromTime = (document.getElementById('periodFrom') || {}).value || replay.pickerFromTime;
+      replay.pickerToTime = (document.getElementById('periodTo') || {}).value || replay.pickerToTime;
+      replay.pickerDay = Number(btn.dataset.calDay);
+      renderReplayUI();
+    }));
+    slot.querySelectorAll('[data-cal-nav]').forEach((btn) => btn.addEventListener('click', () => {
+      const base = new Date(replay.pickerMonth != null ? replay.pickerMonth : todayMidnight());
+      base.setDate(1);
+      base.setMonth(base.getMonth() + Number(btn.dataset.calNav));
+      replay.pickerMonth = base.getTime();
+      renderReplayUI();
+    }));
+    slot.querySelector('[data-period-apply]')?.addEventListener('click', applyPeriod);
+    slot.querySelector('[data-period-reset]')?.addEventListener('click', () => {
+      replay.pickerDay = todayMidnight();
+      replay.pickerMonth = todayMidnight();
+      replay.pickerFromTime = '00:00';
+      replay.pickerToTime = '23:59';
+      renderReplayUI();
+    });
+
     if (hasTrack) {
       slot.querySelector('#opsReplayPlay').addEventListener('click', togglePlay);
       slot.querySelector('#opsReplayRange').addEventListener('input', (event) => { stopPlay(); replay.index = Number(event.target.value); drawReplayFrame(); });
+      slot.querySelector('#opsReplaySpeed')?.addEventListener('change', (event) => { replay.speed = Number(event.target.value) || 1; if (replay.playing) { stopPlay(); togglePlay(); } });
       drawReplayFrame();
     }
   }
@@ -1162,10 +1248,11 @@ async function renderOperationsMap() {
     replay.playing = true;
     const btn = document.getElementById('opsReplayPlay');
     if (btn) btn.innerHTML = pauseIcon;
+    const interval = Math.max(40, Math.round(220 / (Number(replay.speed) || 1)));
     replay.timer = setInterval(() => {
       if (replay.index >= replay.positions.length - 1) { stopPlay(); return; }
       replay.index += 1; drawReplayFrame();
-    }, 220);
+    }, interval);
   }
   function closeReplay() {
     stopPlay();

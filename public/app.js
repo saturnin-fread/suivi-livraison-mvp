@@ -780,19 +780,37 @@ async function renderIncidentDetail(id) {
 }
 
 async function renderOperationsMap() {
-  setHeader('Carte d’exploitation', 'Tour de contrôle de la flotte en direct');
+  setHeader('Carte d’exploitation', 'Pilotez votre flotte et vos opérations en temps réel.');
   page.classList.add('page-map');
   const bikeSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';
   const playIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
   const pauseIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
   const calIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>';
+  const pinIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>';
+  const truckIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M20 17h1a1 1 0 0 0 1-1v-3.34a1 1 0 0 0-.3-.71l-2.65-2.65a1 1 0 0 0-.71-.3H14v8h1"/><circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>';
+  // Regroupe les états opérationnels détaillés en 4 statuts affichés (maquette) :
+  // En cours (vert), GPS ancien (ambre), Incident (rouge), Hors ligne (gris).
+  const statusBucket = (state) => {
+    if (state === 'incident') return 'incident';
+    if (state === 'stale') return 'stale';
+    if (['offline', 'off_duty', 'inactive'].includes(state)) return 'offline';
+    return 'active';
+  };
+  const bucketMeta = {
+    active: { label: 'En cours', dot: '#16a34a' },
+    stale: { label: 'GPS ancien', dot: '#d97706' },
+    incident: { label: 'Incident', dot: '#e11d2a' },
+    offline: { label: 'Hors ligne', dot: '#94a3b8' },
+  };
+  const vehicleIsCar = (driver) => /v[ée]hic|voit|car|auto|camion|truck/i.test(String(driver.vehicleType || ''));
+  let fleetFilter = 'all';
   page.innerHTML = `<div class="ops">
     <div id="operationsMap" aria-label="Carte des livreurs et destinations"></div>
 
     <aside class="ops-panel ops-float" id="opsPanel" aria-label="Panneau des opérations">
       <div class="ops-bar" data-drag="opsPanel">
         <span class="ops-grip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
-        <span class="ops-bar-title">Flotte</span>
+        <span class="ops-bar-title">Déplacer</span>
         <button type="button" class="ops-mini" data-collapse="opsPanel" title="Replier / déplier"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
       </div>
       <div id="opsPanelBody"><div class="ops-loading">Chargement des opérations…</div></div>
@@ -824,11 +842,10 @@ async function renderOperationsMap() {
     </div>
 
     <div class="ops-legend" id="opsLegend" hidden>
-      <span class="ops-leg"><i class="dot state-available"></i>Disponible</span>
-      <span class="ops-leg"><i class="dot state-busy"></i>En course</span>
-      <span class="ops-leg"><i class="dot state-full"></i>Complet</span>
-      <span class="ops-leg"><i class="dot state-stale"></i>GPS ancien</span>
-      <span class="ops-leg"><i class="dot state-incident"></i>Incident</span>
+      <span class="ops-leg"><i class="dot" style="background:#16a34a"></i>En cours</span>
+      <span class="ops-leg"><i class="dot" style="background:#d97706"></i>GPS ancien</span>
+      <span class="ops-leg"><i class="dot" style="background:#e11d2a"></i>Incident</span>
+      <span class="ops-leg"><i class="dot" style="background:#94a3b8"></i>Hors ligne</span>
     </div>
     <button type="button" class="ops-icon-btn ops-legend-toggle" id="legendToggle" title="Légende"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
 
@@ -912,36 +929,67 @@ async function renderOperationsMap() {
 
   function renderKpis() {
     const s = snapshot.summary;
-    document.getElementById('opsKpis').innerHTML = `
-      <div class="ops-kpi"><span>Livreurs</span><strong>${escapeHtml(s.drivers)}</strong></div>
-      <div class="ops-kpi"><span>Positions reçues</span><strong>${escapeHtml(s.locatedDrivers)}</strong></div>
-      <div class="ops-kpi"><span>Commandes actives</span><strong>${escapeHtml(s.activeOrders)}</strong></div>
-      <div class="ops-kpi"><span>Tournées ouvertes</span><strong>${escapeHtml(s.openRuns)}</strong></div>
-      <div class="ops-kpi"><span>GPS à vérifier</span><strong>${escapeHtml(s.staleDrivers)}</strong></div>
-      <div class="ops-kpi"><span>Incidents ouverts</span><strong>${escapeHtml(s.openIncidents)}</strong></div>`;
+    const online = s.onlineDrivers != null
+      ? s.onlineDrivers
+      : snapshot.drivers.filter((driver) => statusBucket(driver.operationalState) === 'active').length;
+    const tiles = [
+      { label: 'Livreurs en ligne', value: online, dot: '#16a34a' },
+      { label: 'Demandes en attente', value: s.pendingRequests || 0, dot: '#d97706' },
+      { label: 'Commandes actives', value: s.activeOrders, dot: '#2563eb' },
+      { label: 'Tournées ouvertes', value: s.openRuns, dot: '#94a3b8' },
+      { label: 'GPS à vérifier', value: s.staleDrivers, dot: '#d97706' },
+      { label: 'Incidents ouverts', value: s.openIncidents, dot: '#e11d2a' },
+    ];
+    document.getElementById('opsKpis').innerHTML = tiles.map((t) => `<div class="ops-kpi">
+      <span class="ops-kpi-label"><i class="ops-kpi-dot" style="background:${t.dot}"></i>${escapeHtml(t.label)}</span>
+      <strong>${escapeHtml(t.value)}</strong></div>`).join('');
+  }
+
+  const chevRight = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+  const searchIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>';
+
+  function driverPlace(driver) {
+    const firstStop = (driver.runs || []).flatMap((run) => run.stops || [])[0] || (driver.unplannedOrders || [])[0];
+    if (firstStop) return firstStop.neighborhood || firstStop.landmark || firstStop.deliveryAddress || 'Destination à préciser';
+    return driver.position ? 'Position GPS reçue' : 'Sans position';
   }
 
   function fleetListHtml() {
     const drivers = snapshot.drivers;
-    const located = snapshot.summary.locatedDrivers;
-    const cards = drivers.map((driver) => {
-      const state = driverStateLabels[driver.operationalState] || driver.operationalState;
-      const age = driver.position ? formatAge(driver.position.timestamp) : 'sans position';
-      return `<button type="button" class="ops-driver-card" data-action="select" data-id="${escapeHtml(driver.id)}">
-        <span class="ops-driver-dot state-${escapeHtml(driver.operationalState)}"></span>
-        <span class="ops-driver-main"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis · ${escapeHtml(age)}</small></span>
-        <span class="ops-driver-side">${badge(state)}${driver.openIncidents ? `<span class="ops-inc">${escapeHtml(driver.openIncidents)} incident(s)</span>` : ''}</span>
+    const counts = { all: drivers.length, active: 0, stale: 0, incident: 0, offline: 0 };
+    drivers.forEach((driver) => { counts[statusBucket(driver.operationalState)] += 1; });
+    const filtered = fleetFilter === 'all' ? drivers : drivers.filter((driver) => statusBucket(driver.operationalState) === fleetFilter);
+    const chip = (key, label, dot) => `<button type="button" class="ops-fchip ${fleetFilter === key ? 'active' : ''}" data-filter="${key}">${dot ? `<i class="ops-fchip-dot" style="background:${dot}"></i>` : ''}${label}</button>`;
+    const cards = filtered.map((driver) => {
+      const b = statusBucket(driver.operationalState);
+      const meta = bucketMeta[b];
+      const age = driver.lastUpdate ? formatAge(driver.lastUpdate) : 'sans position';
+      const icon = vehicleIsCar(driver) ? truckIcon : bikeSvg;
+      const sel = String(selectedDriverId) === String(driver.id);
+      return `<button type="button" class="ops-dcard ${sel ? 'sel' : ''}" data-action="select" data-id="${escapeHtml(driver.id)}">
+        <span class="ops-dcard-av bucket-${b}">${icon}</span>
+        <span class="ops-dcard-main">
+          <span class="ops-dcard-top"><strong>${escapeHtml(driver.name)}</strong><span class="ops-badge2 bucket-${b}"><i style="background:${meta.dot}"></i>${meta.label}</span></span>
+          <small class="ops-dcard-sub">${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</small>
+          <small class="ops-dcard-loc"><span class="ops-dcard-pin">${pinIcon}</span>${escapeHtml(driverPlace(driver))} · ${escapeHtml(age)}</small>
+        </span>
+        <span class="ops-dcard-chev">${chevRight}</span>
       </button>`;
     }).join('');
-    return `<div class="ops-panel-head">
-        <div><strong class="ops-panel-title">Flotte</strong><small>${escapeHtml(located)} / ${escapeHtml(drivers.length)} localisé(s)</small></div>
+    return `<div class="ops-fleet-head"><strong>Flotte active</strong><span class="ops-count">${escapeHtml(drivers.length)} véhicule${drivers.length > 1 ? 's' : ''}</span></div>
+      <div class="ops-search-wrap"><span class="ops-search-ic">${searchIcon}</span><input type="search" class="ops-search" id="driverSearch" placeholder="Rechercher un livreur, un véhicule…" autocomplete="off"/></div>
+      <div class="ops-fchips">
+        ${chip('all', 'Tous', null)}
+        ${chip('active', 'En cours', '#16a34a')}
+        ${chip('stale', 'GPS ancien', '#d97706')}
+        ${chip('incident', 'Incident', '#e11d2a')}
+        ${chip('offline', 'Hors ligne', '#94a3b8')}
       </div>
-      <div class="ops-panel-controls">
+      <div class="ops-driver-list" id="driverList">${cards || '<div class="ops-empty">Aucun livreur pour ce filtre.</div>'}</div>
+      <div class="ops-fleet-foot">
         <label class="ops-chk"><input type="checkbox" id="toggleDest" ${showDestinations ? 'checked' : ''}/> Destinations</label>
         <label class="ops-chk"><input type="checkbox" id="toggleAuto" ${autoRefresh ? 'checked' : ''}/> Actualisation auto</label>
-      </div>
-      <input type="search" class="ops-search" id="driverSearch" placeholder="Filtrer un livreur…" autocomplete="off"/>
-      <div class="ops-driver-list" id="driverList">${cards || '<div class="ops-empty">Aucun livreur enregistré.</div>'}</div>`;
+      </div>`;
   }
 
   function detailHtml(driver) {
@@ -952,22 +1000,31 @@ async function renderOperationsMap() {
       ${run.stops.length ? `<ol class="ops-stops">${run.stops.map((stop) => `<li><span class="stop-number">${escapeHtml(stop.sequence)}</span><div class="ops-stop-main"><strong>${escapeHtml(stop.customerName || `Commande n° ${stop.id}`)}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(stop.status)}</small>${stop.openIncidents ? `<span class="ops-inc">${escapeHtml(stop.openIncidents)} incident(s)</span>` : ''}</div><a href="/app/commandes/${escapeHtml(stop.id)}">Voir</a></li>`).join('')}</ol>` : '<p class="ops-empty">Aucun arrêt restant.</p>'}
       <a class="button secondary" href="/app/tournees/${escapeHtml(run.id)}">Ouvrir la tournée</a></section>`).join('');
     const unplanned = (driver.unplannedOrders || []).length ? `<section class="ops-run"><strong class="ops-run-title">Hors tournée</strong><ol class="ops-stops">${driver.unplannedOrders.map((order) => `<li><span class="stop-number">•</span><div class="ops-stop-main"><strong>${escapeHtml(order.customerName || `Commande n° ${order.id}`)}</strong><small>${escapeHtml(order.neighborhood || order.landmark || order.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(order.status)}</small></div><a href="/app/commandes/${escapeHtml(order.id)}">Voir</a></li>`).join('')}</ol></section>` : '';
-    return `<div class="ops-panel-head ops-detail-head">
+    const b = statusBucket(driver.operationalState);
+    const meta = bucketMeta[b];
+    const icon = vehicleIsCar(driver) ? truckIcon : bikeSvg;
+    const accuracyVal = driver.position?.accuracy != null && Number.isFinite(Number(driver.position.accuracy)) ? Math.round(Number(driver.position.accuracy)) : null;
+    const accuracyNote = accuracyVal == null ? '' : (accuracyVal <= 20 ? 'Bonne' : accuracyVal <= 60 ? 'Correcte' : 'Approximative');
+    return `<div class="ops-detail-head">
         <button type="button" class="ops-back" data-action="back" title="Retour à la flotte"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
-        <div><strong class="ops-panel-title">${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</small></div>
-        ${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}
+        <strong class="ops-detail-title">Détails du livreur</strong>
+      </div>
+      <div class="ops-detail-id">
+        <span class="ops-dcard-av bucket-${b}">${icon}</span>
+        <div class="ops-detail-idmain"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</small></div>
+        <span class="ops-badge2 bucket-${b}"><i style="background:${meta.dot}"></i>${meta.label}</span>
       </div>
       <div class="ops-metrics">
-        <div class="ops-metric"><span>Dernière position</span><strong>${driver.position ? escapeHtml(formatAge(driver.position.timestamp)) : 'Indisponible'}</strong></div>
-        <div class="ops-metric"><span>Précision</span><strong>${driver.position?.accuracy != null && Number.isFinite(Number(driver.position.accuracy)) ? `${Math.round(Number(driver.position.accuracy))} m` : '—'}</strong></div>
-        <div class="ops-metric"><span>Vitesse</span><strong>${speedKmh == null ? '—' : `${speedKmh.toFixed(0)} km/h`}</strong></div>
-        <div class="ops-metric"><span>Incidents</span><strong>${escapeHtml(driver.openIncidents)}</strong></div>
+        <div class="ops-metric"><span>Dernière position</span><strong>${escapeHtml(driverPlace(driver))}</strong><em>${driver.position ? escapeHtml(formatAge(driver.position.timestamp)) : 'Indisponible'}</em></div>
+        <div class="ops-metric"><span>Précision GPS</span><strong>${accuracyVal == null ? '—' : `${accuracyVal} m`}</strong><em>${escapeHtml(accuracyNote)}</em></div>
+        <div class="ops-metric"><span>Vitesse</span><strong>${speedKmh == null ? '—' : `${speedKmh.toFixed(0)} km/h`}</strong><em>&nbsp;</em></div>
+        <div class="ops-metric"><span>Incidents</span><strong>${escapeHtml(driver.openIncidents)}</strong><em>${driver.openIncidents ? 'À traiter' : 'Aucun'}</em></div>
       </div>
       <div class="ops-detail-actions">
         <button type="button" class="button secondary" data-action="center" ${driver.position ? '' : 'disabled'}>Centrer</button>
-        <button type="button" class="button ${isolate ? 'accent' : 'secondary'}" data-action="isolate">${isolate ? 'Voir toute la flotte' : 'Isoler ce livreur'}</button>
+        <button type="button" class="button ${isolate ? 'accent' : 'secondary'}" data-action="isolate">${isolate ? 'Voir toute la flotte' : 'Isoler'}</button>
         ${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler</a>` : ''}
-        <button type="button" class="button ${replay.active && String(replay.driverId) === String(driver.id) ? 'accent' : 'secondary'}" data-action="replay">Rejouer le trajet</button>
+        <button type="button" class="button ${replay.active && String(replay.driverId) === String(driver.id) ? 'accent' : 'primary'}" data-action="replay">Voir le trajet</button>
       </div>
       <div id="opsReplay" class="ops-replay-slot"></div>
       ${driver.position?.stale ? '<div class="ops-note warning">Position de plus de 10 minutes : ne pas présenter comme du direct.</div>' : !driver.position ? '<div class="ops-note warning">Aucune coordonnée GPS exploitable pour ce livreur.</div>' : ''}
@@ -982,11 +1039,16 @@ async function renderOperationsMap() {
       const search = document.getElementById('driverSearch');
       if (search) search.addEventListener('input', () => {
         const q = search.value.trim().toLowerCase();
-        document.querySelectorAll('#driverList .ops-driver-card').forEach((card) => {
+        document.querySelectorAll('#driverList .ops-dcard').forEach((card) => {
           const name = card.querySelector('strong')?.textContent.toLowerCase() || '';
-          card.style.display = name.includes(q) ? '' : 'none';
+          const sub = card.querySelector('.ops-dcard-sub')?.textContent.toLowerCase() || '';
+          card.style.display = (name.includes(q) || sub.includes(q)) ? '' : 'none';
         });
       });
+      panelBody.querySelectorAll('[data-filter]').forEach((btn) => btn.addEventListener('click', () => {
+        fleetFilter = btn.dataset.filter;
+        renderPanel();
+      }));
       document.getElementById('toggleDest')?.addEventListener('change', (event) => { showDestinations = event.target.checked; redrawMap(); });
       document.getElementById('toggleAuto')?.addEventListener('change', (event) => { autoRefresh = event.target.checked; scheduleRefresh(); });
     } else if (replay.active && String(replay.driverId) === String(driver.id)) {

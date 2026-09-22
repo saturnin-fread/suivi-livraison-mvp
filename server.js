@@ -3438,7 +3438,7 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res) => {
-  const [driversResult, runsResult, ordersResult] = await Promise.all([
+  const [driversResult, runsResult, ordersResult, pendingRequestsResult] = await Promise.all([
     pool.query(
       `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
               d.active, d.traccar_unique_id,
@@ -3489,8 +3489,15 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
        LIMIT 501`,
       [req.auth.company_id, terminalOrderStatuses]
     ),
+    pool.query(
+      `SELECT COUNT(*)::int AS pending
+       FROM customer_requests
+       WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier'`,
+      [req.auth.company_id]
+    ),
   ]);
 
+  const pendingRequests = Number(pendingRequestsResult.rows[0]?.pending || 0);
   const ordersTruncated = ordersResult.rows.length > 500;
   const orders = ordersResult.rows.slice(0, 500).map((order) => ({
     id: order.id,
@@ -3611,6 +3618,8 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
       staleDrivers: drivers.filter((driver) => driver.position?.stale || ['stale', 'offline'].includes(driver.operationalState)).length,
       openRuns: runsResult.rows.length,
       activeOrders: orders.length,
+      pendingRequests,
+      onlineDrivers: drivers.filter((driver) => ['available', 'busy', 'full', 'pause'].includes(driver.operationalState)).length,
       locatedDestinations: orders.filter((order) => order.destination).length,
       openIncidents: drivers.reduce((sum, driver) => sum + driver.openIncidents, 0),
       ordersTruncated,

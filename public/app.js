@@ -1100,11 +1100,12 @@ async function renderOperationsMap() {
     if (!slot) return;
     const hasTrack = replay.positions.length > 0;
     const todayActive = String(replay.windowKey) === 'day' && replay.dayStart === todayMidnight();
+    const yesterdayActive = String(replay.windowKey) === 'day' && replay.dayStart === todayMidnight() - 86400000;
     slot.innerHTML = `<div class="ops-replay">
       <div class="ops-replay-windows">
-        ${['30', '60', '180'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
         <button type="button" class="ops-win ${todayActive ? 'active' : ''}" data-win-today>Aujourd’hui</button>
         <button type="button" class="ops-win ops-win-period ${replay.pickerOpen ? 'active' : ''}" data-period-toggle>${calIcon} Période</button>
+        <button type="button" class="ops-win ${yesterdayActive ? 'active' : ''}" data-win-yesterday>Hier</button>
         <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
       </div>
       ${replay.pickerOpen ? renderPeriodPicker() : ''}
@@ -1117,8 +1118,8 @@ async function renderOperationsMap() {
       <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
     </div>`;
 
-    slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
     slot.querySelector('[data-win-today]')?.addEventListener('click', () => { replay.dayStart = todayMidnight(); startReplay('day'); });
+    slot.querySelector('[data-win-yesterday]')?.addEventListener('click', () => { replay.dayStart = todayMidnight() - 86400000; startReplay('day'); });
     slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
     slot.querySelector('[data-period-toggle]')?.addEventListener('click', () => {
       replay.pickerOpen = !replay.pickerOpen;

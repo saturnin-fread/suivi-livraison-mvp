@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const path = require('node:path');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const express = require('express');
 const axios = require('axios');
 const multer = require('multer');
@@ -305,6 +306,41 @@ app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules', '
   maxAge: '30d',
 }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Empreinte d'assets : force le navigateur à recharger app.js/app.css (et les
+// pages livreur) après chaque déploiement. Sans elle, les références « /app.js »
+// sans version restent servies depuis le cache et l'ancienne interface persiste
+// malgré une nouvelle version en ligne. Priorité au SHA du commit Railway ;
+// sinon empreinte du contenu des fichiers ; sinon horodatage de démarrage.
+const ASSET_VERSION = (() => {
+  const fromEnv = process.env.ASSET_VERSION || process.env.RAILWAY_GIT_COMMIT_SHA;
+  if (fromEnv) return String(fromEnv).slice(0, 12);
+  try {
+    const hash = crypto.createHash('sha1');
+    for (const file of ['app.js', 'app.css', 'driver.js', 'driver.css']) {
+      try { hash.update(fs.readFileSync(path.join(__dirname, 'public', file))); } catch (_) { /* fichier absent : ignoré */ }
+    }
+    return hash.digest('hex').slice(0, 12);
+  } catch (_) {
+    return String(Date.now());
+  }
+})();
+
+// Sert une page HTML « coquille » en y estampillant les assets locaux
+// (`/app.css`, `/app.js`, `/driver.css`, `/driver.js`) avec `?v=ASSET_VERSION`,
+// et marque le document lui-même en `no-cache` pour qu'il soit toujours revalidé
+// (donc la nouvelle version d'assets est prise en compte dès le déploiement).
+const shellCache = new Map();
+function sendShell(res, file) {
+  let html = shellCache.get(file);
+  if (html == null) {
+    html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
+      .replace(/(href|src)="\/(app|driver)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+    shellCache.set(file, html);
+  }
+  res.set('Cache-Control', 'no-cache');
+  res.type('html').send(html);
+}
 app.use('/api', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();
@@ -1725,7 +1761,7 @@ app.get('/health', asyncRoute(async (_req, res) => {
 
 app.get('/', (_req, res) => res.redirect('/app'));
 
-app.get('/app/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'app-login.html')));
+app.get('/app/login', (_req, res) => sendShell(res, 'app-login.html'));
 // Brute-force protection on sign-in: a per-IP quota plus a per-email quota so a
 // single targeted account cannot be hammered even from many IPs.
 const loginRateLimit = createRateLimitMiddleware({
@@ -1855,7 +1891,7 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
   return res.redirect('/app/login?created=1');
 }));
 
-app.get('/admin/login', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'platform-login.html')));
+app.get('/admin/login', (_req, res) => sendShell(res, 'platform-login.html'));
 app.post('/admin/login', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Base métier non configurée.');
   const email = normalizeEmail(req.body.user);
@@ -1879,7 +1915,7 @@ app.post('/admin/logout', asyncRoute(async (req, res) => {
 }));
 
 app.get('/admin', requirePlatformPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'platform-admin.html'));
+  sendShell(res, 'platform-admin.html');
 });
 
 const companyPages = [
@@ -1887,23 +1923,23 @@ const companyPages = [
   '/app/livreurs', '/app/tournees', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
 ];
 app.get(companyPages, requireCompanyPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+  sendShell(res, 'app.html');
 });
 app.get('/app/demandes/:id', requireCompanyPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+  sendShell(res, 'app.html');
 });
 app.get('/app/commandes/:id', requireCompanyPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+  sendShell(res, 'app.html');
 });
 app.get('/app/incidents/:id', requireCompanyPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+  sendShell(res, 'app.html');
 });
 app.get('/app/tournees/:id', requireCompanyPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+  sendShell(res, 'app.html');
 });
 
 app.get(['/driver', '/driver/commandes/:id'], requireDriverPage, (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'driver.html'));
+  sendShell(res, 'driver.html');
 });
 
 app.get('/suivi/:token', (req, res) => {
@@ -1914,7 +1950,7 @@ app.get('/suivi/:token', (req, res) => {
     'Referrer-Policy': 'origin',
     'X-Robots-Tag': 'noindex, nofollow',
   });
-  return res.sendFile(path.join(__dirname, 'public', 'tracking.html'));
+  return sendShell(res, 'tracking.html');
 });
 
 app.get('/demande/:token', asyncRoute(async (req, res) => {
@@ -1927,14 +1963,14 @@ app.get('/demande/:token', asyncRoute(async (req, res) => {
   if (request.status !== 'En attente d’informations') {
     return res.redirect(`/demande/${encodeURIComponent(req.params.token)}/confirmation`);
   }
-  return res.sendFile(path.join(__dirname, 'public', 'request.html'));
+  return sendShell(res, 'request.html');
 }));
 
 app.get('/demande/:token/confirmation', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Service momentanément indisponible.');
   const result = await pool.query('SELECT id FROM customer_requests WHERE token = $1', [req.params.token]);
   if (!result.rows[0]) return res.status(404).send('Cette demande est introuvable.');
-  return res.sendFile(path.join(__dirname, 'public', 'confirmation.html'));
+  return sendShell(res, 'confirmation.html');
 }));
 
 app.get('/invitation/:token', asyncRoute(async (req, res) => {
@@ -1945,7 +1981,7 @@ app.get('/invitation/:token', asyncRoute(async (req, res) => {
     [digest(req.params.token)]
   );
   if (!result.rows[0]) return res.status(404).send('Cette invitation est invalide, expirée ou déjà utilisée.');
-  return res.sendFile(path.join(__dirname, 'public', 'invitation.html'));
+  return sendShell(res, 'invitation.html');
 }));
 
 app.get('/api/public/invitations/:token', asyncRoute(async (req, res) => {

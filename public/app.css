@@ -208,6 +208,60 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .ops-metric strong { display: block; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .ops-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; }
 .ops-detail-actions .button { min-height: 38px; padding: 8px 12px; }
+
+/* --- Panneau Flotte active (refonte carte d'exploitation) --- */
+.ops-fleet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 16px 10px; }
+.ops-fleet-head strong { font-size: 17px; color: var(--ink-strong); }
+.ops-count { flex: none; padding: 4px 10px; border-radius: 999px; background: #eef2f7; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+.ops-search-wrap { position: relative; margin: 2px 16px 10px; }
+.ops-search-ic { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.ops-search-ic svg { width: 16px; height: 16px; display: block; }
+.ops-search { width: 100%; margin: 0; padding: 9px 12px 9px 34px; border: 1px solid #cbd2dc; border-radius: 10px; font-size: 13px; }
+.ops-fchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px; border-bottom: 1px solid var(--line); }
+.ops-fchip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border: 1px solid #cbd2dc; border-radius: 999px; background: #fff; color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+.ops-fchip:hover { background: #f4f6f9; }
+.ops-fchip.active { background: var(--red); border-color: var(--red); color: #fff; }
+.ops-fchip-dot { width: 8px; height: 8px; border-radius: 50%; }
+.ops-fchip.active .ops-fchip-dot { box-shadow: 0 0 0 2px rgba(255,255,255,.6); }
+.ops-driver-list { padding: 10px; display: grid; gap: 8px; }
+.ops-dcard { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 11px; width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 12px; background: #fff; text-align: left; cursor: pointer; }
+.ops-dcard:hover { border-color: #b9c2cf; background: #fafbfc; }
+.ops-dcard.sel { border-color: var(--red); background: #fff5f4; box-shadow: inset 3px 0 0 var(--red); }
+.ops-dcard-av { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 11px; background: #475569; }
+.ops-dcard-av svg { width: 22px; height: 22px; }
+.ops-dcard-av.bucket-active { background: #16a34a; }
+.ops-dcard-av.bucket-stale { background: #d97706; }
+.ops-dcard-av.bucket-incident { background: #e11d2a; }
+.ops-dcard-av.bucket-offline { background: #94a3b8; }
+.ops-dcard-main { min-width: 0; display: grid; gap: 3px; }
+.ops-dcard-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ops-dcard-top strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-badge2 { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.ops-badge2 i { width: 7px; height: 7px; border-radius: 50%; }
+.ops-badge2.bucket-active { background: #e7f6ec; color: #15803d; }
+.ops-badge2.bucket-stale { background: #fdf0dd; color: #b45309; }
+.ops-badge2.bucket-incident { background: #fdecec; color: #b91c1c; }
+.ops-badge2.bucket-offline { background: #eef1f5; color: #64748b; }
+.ops-dcard-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-dcard-loc { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-dcard-pin svg { width: 13px; height: 13px; display: block; flex: none; }
+.ops-dcard-chev { color: #b9c2cf; }
+.ops-dcard-chev svg { width: 18px; height: 18px; display: block; }
+.ops-fleet-foot { display: flex; flex-wrap: wrap; gap: 12px 18px; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+
+/* Détails du livreur */
+.ops-detail-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 6px; }
+.ops-detail-title { font-size: 15px; color: var(--ink-strong); }
+.ops-detail-id { display: flex; align-items: center; gap: 11px; padding: 6px 16px 12px; border-bottom: 1px solid var(--line); }
+.ops-detail-id .ops-dcard-av { flex: none; }
+.ops-detail-idmain { flex: 1 1 auto; min-width: 0; }
+.ops-detail-idmain strong { display: block; font-size: 15px; }
+.ops-detail-idmain small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.ops-metric em { display: block; margin-top: 3px; font-style: normal; color: var(--muted); font-size: 11px; }
+
+/* Tuiles Résumé */
+.ops-kpi-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.25; }
+.ops-kpi-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .ops-replay-slot:empty { display: none; }
 .ops-replay { margin: 0 16px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #f7f8fb; }
 .ops-replay-windows { display: flex; flex-wrap: wrap; gap: 6px; position: relative; }
@@ -288,10 +342,10 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .ops-icon-btn svg { width: 19px; height: 19px; }
 .ops-icon-btn:hover { border-color: var(--ink); }
 .ops-cluster-actions .ops-icon-btn { width: 40px; justify-content: center; padding: 0; }
-.ops-kpis { display: grid; grid-template-columns: repeat(3, minmax(84px, 1fr)); gap: 8px; padding: 12px; }
-.ops-kpi { padding: 9px 11px; border-radius: 9px; background: #f6f8fb; }
+.ops-kpis { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 8px; padding: 12px; }
+.ops-kpi { padding: 10px 12px; border-radius: 10px; background: #f6f8fb; border: 1px solid var(--line); }
 .ops-kpi span { display: block; color: var(--muted); font-size: 11px; }
-.ops-kpi strong { display: block; margin-top: 3px; font-size: 20px; font-variant-numeric: tabular-nums; }
+.ops-kpi strong { display: block; margin-top: 4px; font-size: 22px; font-variant-numeric: tabular-nums; }
 .ops-legend { position: absolute; bottom: 14px; left: 14px; z-index: 1200; display: flex; flex-wrap: wrap; gap: 8px 14px; max-width: 320px; padding: 11px 13px; background: #fff; border: 1px solid #e6e9ef; border-radius: 11px; box-shadow: 0 8px 24px rgba(12, 13, 16, .14); }
 .ops-leg { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 650; }
 .ops-leg .dot { width: 11px; height: 11px; border-radius: 50%; }

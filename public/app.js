@@ -1175,7 +1175,10 @@ async function renderOperationsMap() {
       ${hasTrack ? `<div class="ops-replay-controls">
         <button type="button" class="ops-replay-play" id="opsReplayPlay">${replay.playing ? pauseIcon : playIcon}</button>
         <input type="range" id="opsReplayRange" min="0" max="${replay.positions.length - 1}" value="${replay.index}" aria-label="Position dans le trajet"/>
-        <select class="ops-replay-speed" id="opsReplaySpeed" aria-label="Vitesse de lecture">${[1, 2, 4, 8].map((s) => `<option value="${s}" ${Number(replay.speed || 1) === s ? 'selected' : ''}>${s}x</option>`).join('')}</select>
+      </div>
+      <div class="ops-replay-speedrow">
+        <span class="ops-replay-speedlbl">Vitesse</span>
+        <div class="ops-seg" role="group" aria-label="Vitesse de lecture">${[1, 2, 4, 8].map((s) => `<button type="button" class="ops-seg-btn ${Number(replay.speed || 1) === s ? 'active' : ''}" data-speed="${s}">${s}×</button>`).join('')}</div>
       </div>
       <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
     </div>`;
@@ -1226,7 +1229,13 @@ async function renderOperationsMap() {
     if (hasTrack) {
       slot.querySelector('#opsReplayPlay').addEventListener('click', togglePlay);
       slot.querySelector('#opsReplayRange').addEventListener('input', (event) => { stopPlay(); replay.index = Number(event.target.value); drawReplayFrame(); });
-      slot.querySelector('#opsReplaySpeed')?.addEventListener('change', (event) => { replay.speed = Number(event.target.value) || 1; if (replay.playing) { stopPlay(); togglePlay(); } });
+      slot.querySelectorAll('[data-speed]').forEach((btn) => btn.addEventListener('click', () => {
+        replay.speed = Number(btn.dataset.speed) || 1;
+        const playing = replay.playing;
+        if (playing) stopPlay();
+        slot.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', b === btn));
+        if (playing) togglePlay();
+      }));
       drawReplayFrame();
     }
   }

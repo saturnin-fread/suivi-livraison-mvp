@@ -166,7 +166,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 #operationsMap { position: absolute; inset: 0; width: 100%; height: 100%; background: #e8eef5; z-index: 1; }
 .ops-loading { padding: 22px; color: var(--muted); }
 /* Overlays flottants */
-.ops-panel { position: absolute; top: 14px; left: 14px; z-index: 1200; width: 340px; max-width: calc(100% - 28px); max-height: calc(100% - 28px); display: flex; flex-direction: column; background: #fff; border: 1px solid #e6e9ef; border-radius: 14px; box-shadow: 0 14px 40px rgba(12, 13, 16, .18); overflow: hidden; }
+.ops-panel { position: absolute; top: 14px; left: 14px; z-index: 1200; width: 384px; max-width: calc(100% - 28px); max-height: calc(100% - 28px); display: flex; flex-direction: column; background: #fff; border: 1px solid #e6e9ef; border-radius: 14px; box-shadow: 0 14px 40px rgba(12, 13, 16, .18); overflow: hidden; }
 .ops-panel.dragging { box-shadow: 0 22px 60px rgba(12, 13, 16, .3); user-select: none; }
 .ops-bar { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 10px; border-bottom: 1px solid var(--line); background: #fbfcfd; cursor: grab; touch-action: none; }
 .ops-panel.dragging .ops-bar { cursor: grabbing; }
@@ -273,29 +273,30 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .ops-win-close { margin-left: auto; color: var(--danger); border-color: #efb4b0; }
 
 /* Sélecteur de période (calendrier + plage horaire) du rejeu GPS */
-.ops-period { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12); }
-.ops-period-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.ops-period-head strong { font-size: 13.5px; color: var(--ink-strong); }
-.ops-period-x { border: 0; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 4px; }
-.ops-period-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.ops-chip { padding: 5px 10px; border: 1px solid #cbd2dc; border-radius: 999px; background: #f6f8fb; color: var(--ink); font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.ops-period { margin: 12px -4px 2px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12); }
+.ops-period-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.ops-period-head strong { font-size: 14px; color: var(--ink-strong); }
+.ops-period-x { border: 0; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; cursor: pointer; padding: 2px 4px; }
+.ops-period-presets { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+.ops-chip { padding: 6px 12px; border: 1px solid #cbd2dc; border-radius: 999px; background: #f6f8fb; color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
 .ops-chip:hover { background: #eef2f7; }
-.ops-period-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); margin-bottom: 6px; }
-.ops-period-range { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.ops-period-range label { display: grid; gap: 4px; margin: 0; font-size: 11px; font-weight: 700; color: var(--muted); }
-.ops-period-range input { padding: 7px 9px; font-size: 12.5px; border: 1px solid #cbd2dc; border-radius: 8px; }
+.ops-period-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); margin-bottom: 8px; }
+.ops-period-range { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.ops-period-range label { display: grid; gap: 5px; margin: 0; font-size: 11px; font-weight: 700; color: var(--muted); }
+.ops-period-range label:first-child { grid-column: 1 / -1; }
+.ops-period-range input { width: 100%; padding: 9px 11px; font-size: 13px; border: 1px solid #cbd2dc; border-radius: 9px; }
 .ops-period-range input[readonly] { background: #f6f8fb; color: var(--ink); }
-.ops-period-foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.ops-period-foot .button { min-height: 34px; padding: 6px 12px; }
-.opscal { border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
-.opscal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.opscal-head strong { font-size: 12.5px; color: var(--ink-strong); }
-.opscal-nav { width: 26px; height: 26px; border: 1px solid #cbd2dc; border-radius: 7px; background: #fff; color: var(--ink); font-size: 14px; line-height: 1; cursor: pointer; }
+.ops-period-foot { display: flex; gap: 10px; margin-top: 14px; }
+.ops-period-foot .button { flex: 1 1 auto; min-height: 40px; padding: 8px 12px; }
+.opscal { border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.opscal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.opscal-head strong { font-size: 13.5px; color: var(--ink-strong); }
+.opscal-nav { width: 30px; height: 30px; border: 1px solid #cbd2dc; border-radius: 8px; background: #fff; color: var(--ink); font-size: 15px; line-height: 1; cursor: pointer; }
 .opscal-nav:disabled { color: #c4cbd4; cursor: default; }
-.opscal-dow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; }
-.opscal-dow span { text-align: center; font-size: 10px; font-weight: 700; color: var(--muted); }
-.opscal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-.opscal-cell { height: 30px; border: 0; border-radius: 7px; background: #f6f8fb; color: var(--ink); font-size: 12px; font-weight: 650; cursor: pointer; }
+.opscal-dow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 6px; }
+.opscal-dow span { text-align: center; font-size: 10.5px; font-weight: 700; color: var(--muted); }
+.opscal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.opscal-cell { height: 38px; border: 0; border-radius: 9px; background: #f6f8fb; color: var(--ink); font-size: 13px; font-weight: 650; cursor: pointer; }
 .opscal-cell:hover:not(:disabled):not(.empty) { background: #e6ecf4; }
 .opscal-cell.empty { background: transparent; cursor: default; }
 .opscal-cell.sel { background: var(--red); color: #fff; }

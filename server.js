@@ -2850,26 +2850,44 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
   return res.json(result.rows[0]);
 }));
 
-// Agrégat des notifications actionnables pour la cloche de la top-bar.
+// Fil de notifications actionnables (items individuels deep-linkés) pour la
+// cloche de la top-bar : chaque élément renvoie à l'emplacement exact.
 app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
-  const result = await pool.query(
-    `SELECT
-       (SELECT COUNT(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier')::int AS requests_to_review,
-       (SELECT COUNT(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open')::int AS open_incidents,
-       (SELECT COUNT(*) FROM delivery_runs WHERE company_id = $1 AND status = 'draft')::int AS draft_runs,
-       (SELECT COUNT(*) FROM orders WHERE company_id = $1 AND driver_id IS NULL AND status <> ALL($2::text[]))::int AS unassigned_orders,
-       (SELECT COUNT(*) FROM order_retention_holds WHERE company_id = $1 AND status = 'active' AND review_due_at < NOW())::int AS overdue_holds`,
-    [req.auth.company_id, terminalOrderStatuses]
-  );
-  const c = result.rows[0];
-  const groups = [
-    { type: 'requests', label: 'Demandes à vérifier', count: c.requests_to_review, href: '/app/operations?vue=demandes' },
-    { type: 'unassigned', label: 'Commandes à affecter', count: c.unassigned_orders, href: '/app/operations?vue=commandes' },
-    { type: 'incidents', label: 'Incidents ouverts', count: c.open_incidents, href: '/app/operations?vue=incidents' },
-    { type: 'runs', label: 'Tournées à planifier', count: c.draft_runs, href: '/app/operations?vue=tournees' },
-    { type: 'holds', label: 'Rétentions à revoir', count: c.overdue_holds, href: '/app/clients' },
-  ].filter((group) => group.count > 0);
-  return res.json({ total: groups.reduce((sum, group) => sum + group.count, 0), groups });
+  const cid = req.auth.company_id;
+  const [reqs, unassigned, incidents, runs] = await Promise.all([
+    pool.query(
+      `SELECT id, customer_name, created_at FROM customer_requests
+       WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier'
+       ORDER BY created_at DESC LIMIT 12`,
+      [cid]
+    ),
+    pool.query(
+      `SELECT id, customer_name, reference, created_at FROM orders
+       WHERE company_id = $1 AND driver_id IS NULL AND status <> ALL($2::text[])
+       ORDER BY created_at DESC LIMIT 12`,
+      [cid, terminalOrderStatuses]
+    ),
+    pool.query(
+      `SELECT i.id, i.created_at, o.customer_name FROM delivery_incidents i
+       LEFT JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
+       WHERE i.company_id = $1 AND i.status = 'open'
+       ORDER BY i.created_at DESC LIMIT 12`,
+      [cid]
+    ),
+    pool.query(
+      `SELECT id, name, created_at FROM delivery_runs
+       WHERE company_id = $1 AND status = 'draft'
+       ORDER BY created_at DESC LIMIT 12`,
+      [cid]
+    ),
+  ]);
+  const items = [];
+  for (const r of reqs.rows) items.push({ id: `request-${r.id}`, type: 'requests', title: 'Nouvelle demande à vérifier', summary: r.customer_name || 'Client à préciser', at: r.created_at, href: `/app/demandes/${r.id}` });
+  for (const o of unassigned.rows) items.push({ id: `order-${o.id}`, type: 'unassigned', title: 'Commande à affecter', summary: [o.reference, o.customer_name].filter(Boolean).join(' · ') || `Commande n° ${o.id}`, at: o.created_at, href: `/app/commandes/${o.id}` });
+  for (const i of incidents.rows) items.push({ id: `incident-${i.id}`, type: 'incidents', title: 'Incident ouvert', summary: i.customer_name ? `Commande de ${i.customer_name}` : `Incident n° ${i.id}`, at: i.created_at, href: `/app/incidents/${i.id}` });
+  for (const r of runs.rows) items.push({ id: `run-${r.id}`, type: 'runs', title: 'Tournée à planifier', summary: r.name || `Tournée n° ${r.id}`, at: r.created_at, href: `/app/tournees/${r.id}` });
+  items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  return res.json({ items: items.slice(0, 20), generatedAt: new Date().toISOString() });
 }));
 
 app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {

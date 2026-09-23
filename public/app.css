@@ -1128,21 +1128,28 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .notif-btn:hover { background: #f4f6f9; }
 .notif-btn svg { width: 19px; height: 19px; }
 .notif-dot { position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 800; box-shadow: 0 0 0 2px #fff; }
-.notif-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 1400; width: 320px; max-width: calc(100vw - 24px); background: #fff; border: 1px solid #e6e9ef; border-radius: 14px; box-shadow: 0 16px 44px rgba(12,13,16,.20); overflow: hidden; }
-.notif-pop-head { padding: 13px 15px; border-bottom: 1px solid var(--line); font-size: 14px; }
-.notif-pop-body { max-height: 60vh; overflow-y: auto; padding: 6px; }
-.notif-item { display: flex; align-items: center; gap: 11px; padding: 10px 11px; border-radius: 10px; color: var(--ink); text-decoration: none; }
+.notif-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 1400; width: 360px; max-width: calc(100vw - 24px); background: #fff; border: 1px solid #e6e9ef; border-radius: 16px; box-shadow: 0 16px 44px rgba(12,13,16,.20); overflow: hidden; }
+.notif-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+.notif-pop-head strong { font-size: 15px; }
+.notif-readall { border: 0; background: transparent; color: var(--red); font-size: 12px; font-weight: 700; cursor: pointer; padding: 2px 4px; }
+.notif-readall:hover { text-decoration: underline; }
+.notif-pop-body { max-height: 66vh; overflow-y: auto; padding: 6px; }
+.notif-item { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 11px 12px 11px 13px; border-radius: 12px; color: var(--ink); text-decoration: none; }
 .notif-item:hover { background: #f4f6f9; }
-.notif-item-ic { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #94a3b8; }
+.notif-item.unread { background: #fbfcfe; }
+.notif-item.unread::before { content: ''; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 4px; height: 24px; border-radius: 3px; background: var(--red); }
+.notif-item-ic { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; color: #fff; }
+.notif-item-ic svg { width: 18px; height: 18px; }
 .notif-item-ic.notif-requests { background: #d97706; }
 .notif-item-ic.notif-unassigned { background: #2563eb; }
 .notif-item-ic.notif-incidents { background: #e11d2a; }
 .notif-item-ic.notif-runs { background: #7c3aed; }
-.notif-item-ic.notif-holds { background: #0891b2; }
-.notif-item-main { flex: 1 1 auto; min-width: 0; }
-.notif-item-main strong { font-size: 13.5px; font-weight: 650; }
-.notif-item-count { flex: none; min-width: 22px; height: 22px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #eef2f7; color: var(--ink); font-size: 12px; font-weight: 800; }
-.notif-empty { padding: 22px 14px; text-align: center; color: var(--muted); font-size: 13px; }
+.notif-item-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.notif-item-main strong { font-size: 13.5px; font-weight: 700; }
+.notif-item-main small { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notif-item-time { flex: none; color: #9aa4b2; font-size: 11.5px; font-weight: 600; white-space: nowrap; padding-top: 2px; }
+.notif-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 30px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.notif-empty-ic { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; background: #e7f6ec; color: #15803d; font-size: 18px; font-weight: 800; }
 
 /* --- Actions groupées (barre contextuelle CRM) --- */
 .cli-bulk { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: #111827; color: #fff; border-radius: 12px; }

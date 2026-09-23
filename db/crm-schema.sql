@@ -415,6 +415,12 @@ CREATE TABLE IF NOT EXISTS customer_merge_events (
 );
 
 ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_by_event_id BIGINT;
+-- Secteur d'activité libre (Distribution, Restauration…), distinct de
+-- customer_type (person/organization).
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS sector TEXT;
+-- Stade de pipeline surchargé manuellement (glisser-déposer). NULL => stade
+-- dérivé automatiquement de l'activité.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS pipeline_stage TEXT;
 DO $migration$
 BEGIN
   IF NOT EXISTS (

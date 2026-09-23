@@ -3317,12 +3317,93 @@ async function renderCustomers() {
         <button type="button" class="button primary cli-new" id="cliNew">${ic.plus}<span>Nouveau client</span></button>
       </div>
     </div>
+    <div id="cliBulk" class="cli-bulk" hidden></div>
     <div id="cliBody" class="cli-body" aria-live="polite"></div>
   </div>`;
 
   const body = document.getElementById('cliBody');
+  const bulk = document.getElementById('cliBulk');
   const queryInput = document.getElementById('cliQuery');
   let loading = false;
+  const selected = new Set();
+  let currentRows = [];
+
+  // Barre d'actions groupées : apparaît dès la première sélection (CRM).
+  const refreshBulk = () => {
+    if (!selected.size) { bulk.hidden = true; bulk.innerHTML = ''; return; }
+    bulk.hidden = false;
+    bulk.innerHTML = `<span class="cli-bulk-count">${selected.size} sélectionné${selected.size > 1 ? 's' : ''}</span>
+      <div class="cli-bulk-actions">
+        <button type="button" class="cli-bulk-btn" data-bulk="export">Exporter (CSV)</button>
+        <button type="button" class="cli-bulk-btn danger" data-bulk="archive">Archiver</button>
+        <button type="button" class="cli-bulk-btn ghost" data-bulk="clear">Effacer</button>
+      </div>`;
+    bulk.querySelector('[data-bulk="export"]').addEventListener('click', exportSelectedCsv);
+    bulk.querySelector('[data-bulk="archive"]').addEventListener('click', archiveSelected);
+    bulk.querySelector('[data-bulk="clear"]').addEventListener('click', () => {
+      selected.clear();
+      body.querySelectorAll('.cli-row-check').forEach((c) => { c.checked = false; c.closest('tr')?.classList.remove('sel'); });
+      const all = body.querySelector('#cliAll'); if (all) all.checked = false;
+      refreshBulk();
+    });
+  };
+
+  const csvCell = (value) => {
+    const text = value == null ? '' : String(value);
+    return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const exportSelectedCsv = () => {
+    const chosen = currentRows.filter((r) => selected.has(String(r.id)));
+    const header = ['Code', 'Nom', 'Secteur', 'Téléphone', 'Statut', 'Commandes', 'Lieux', 'Dernière activité'];
+    const lines = [header.join(';')];
+    chosen.forEach((r) => {
+      const act = customerActivity(r);
+      lines.push([customerCode(r), r.display_name || '', r.sector || '', r.primary_phone || '',
+        CUSTOMER_STAGES[customerStage(r)].label, r.order_count, r.location_count, act.dateStr].map(csvCell).join(';'));
+    });
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `clients-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+  const archiveSelected = async () => {
+    const ids = [...selected];
+    if (!ids.length || !confirm(`Archiver ${ids.length} client(s) ? Ils n'apparaîtront plus par défaut.`)) return;
+    try {
+      await Promise.all(ids.map((id) => api(`/api/app/crm/customers/${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'archived' }),
+      })));
+      selected.clear(); refreshBulk(); load();
+    } catch (error) { alert(error.message || 'Archivage impossible.'); }
+  };
+
+  const archiveOne = async (id) => {
+    if (!confirm('Archiver ce client ?')) return;
+    try {
+      await api(`/api/app/crm/customers/${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'archived' }),
+      });
+      selected.delete(String(id)); refreshBulk(); load();
+    } catch (error) { alert(error.message || 'Archivage impossible.'); }
+  };
+
+  // Menu « ⋮ » par ligne / carte.
+  const openKebab = (btn, id) => {
+    document.querySelectorAll('.cli-kebab-pop').forEach((p) => p.remove());
+    const pop = document.createElement('div');
+    pop.className = 'cli-kebab-pop';
+    pop.innerHTML = `
+      <a class="cli-kebab-item" href="/app/clients/${encodeURIComponent(id)}">Ouvrir la fiche</a>
+      <a class="cli-kebab-item" href="/app/nouvelle-commande">Nouvelle commande</a>
+      <button type="button" class="cli-kebab-item danger" data-act="archive">Archiver</button>`;
+    btn.parentElement.style.position = 'relative';
+    btn.parentElement.appendChild(pop);
+    pop.querySelector('[data-act="archive"]').addEventListener('click', () => { pop.remove(); archiveOne(id); });
+    const away = (event) => { if (!pop.contains(event.target) && event.target !== btn) { pop.remove(); document.removeEventListener('click', away); } };
+    setTimeout(() => document.addEventListener('click', away), 0);
+  };
 
   const syncUrl = () => {
     const p = new URLSearchParams();
@@ -3373,7 +3454,7 @@ async function renderCustomers() {
     return `<tr data-id="${escapeHtml(row.id)}">
       <td class="cli-check"><input type="checkbox" class="cli-row-check" aria-label="Sélectionner ${escapeHtml(row.display_name || '')}"></td>
       <td class="cli-id">${escapeHtml(customerCode(row))}</td>
-      <td><div class="cli-name">${customerAvatarHtml(row)}<span class="cli-name-main"><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong><small>${escapeHtml(row.customer_type || '—')}</small></span></div></td>
+      <td><div class="cli-name">${customerAvatarHtml(row)}<span class="cli-name-main"><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong><small>${escapeHtml(row.sector || '—')}</small></span></div></td>
       <td><span class="cli-inline">${ic.phone}${escapeHtml(row.primary_phone || '—')}</span></td>
       <td>${customerStageBadge(row)}</td>
       <td class="cli-num">${formatInteger(row.order_count)}</td>
@@ -3389,7 +3470,7 @@ async function renderCustomers() {
       <div class="cli-gcard-head">${customerAvatarHtml(row, 'cli-av cli-av-lg')}<div class="cli-gcard-id"><small>${escapeHtml(customerCode(row))}</small><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong></div>${customerStageBadge(row)}</div>
       <div class="cli-gcard-grid">
         <div class="cli-inline">${ic.phone}${escapeHtml(row.primary_phone || '—')}</div>
-        <div class="cli-inline">${ic.building}${escapeHtml(row.customer_type || '—')}</div>
+        <div class="cli-inline">${ic.building}${escapeHtml(row.sector || '—')}</div>
         <div class="cli-inline">${ic.cart}${formatInteger(row.order_count)} commandes</div>
         <div class="cli-inline">${ic.pin}${formatInteger(row.location_count)} lieux connus</div>
       </div>
@@ -3404,8 +3485,8 @@ async function renderCustomers() {
   const pipeCard = (row) => {
     const act = customerActivity(row);
     const st = customerStage(row);
-    return `<article class="cli-pcard" data-href="/app/clients/${encodeURIComponent(row.id)}">
-      <div class="cli-pcard-head">${customerAvatarHtml(row)}<div class="cli-pcard-id"><small>${escapeHtml(customerCode(row))}</small><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong><small>${escapeHtml(row.customer_type || '—')}</small></div><span class="cli-pcard-chev">${ic.chev}</span></div>
+    return `<article class="cli-pcard" data-id="${escapeHtml(row.id)}" data-href="/app/clients/${encodeURIComponent(row.id)}">
+      <div class="cli-pcard-head">${customerAvatarHtml(row)}<div class="cli-pcard-id"><small>${escapeHtml(customerCode(row))}</small><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong><small>${escapeHtml(row.sector || '—')}</small></div><span class="cli-pcard-chev">${ic.chev}</span></div>
       <div class="cli-pcard-meta">
         <div class="cli-inline">${ic.pin}${escapeHtml(row.primary_locality || row.primary_neighborhood || '—')}</div>
         <div class="cli-inline">${ic.cart}${formatInteger(row.order_count)} commandes</div>
@@ -3417,20 +3498,88 @@ async function renderCustomers() {
 
   const bindRows = () => {
     body.querySelectorAll('.cli-pcard[data-href]').forEach((el) => el.addEventListener('click', (event) => {
-      if (event.target.closest('a,button')) return;
+      if (event.target.closest('a,button') || el.classList.contains('cli-dragging')) return;
       location.href = el.dataset.href;
     }));
-    const all = body.querySelector('#cliAll');
-    if (all) all.addEventListener('change', () => {
-      body.querySelectorAll('.cli-row-check').forEach((c) => { c.checked = all.checked; c.closest('tr').classList.toggle('sel', all.checked); });
+    // Sélection CRM (persistante entre pages)
+    const rowCheck = (c) => {
+      const id = c.closest('tr')?.dataset.id;
+      if (!id) return;
+      if (c.checked) selected.add(String(id)); else selected.delete(String(id));
+      c.closest('tr').classList.toggle('sel', c.checked);
+      refreshBulk();
+      const all = body.querySelector('#cliAll');
+      if (all) all.checked = [...body.querySelectorAll('.cli-row-check')].every((x) => x.checked);
+    };
+    body.querySelectorAll('.cli-row-check').forEach((c) => {
+      const id = c.closest('tr')?.dataset.id;
+      if (id && selected.has(String(id))) { c.checked = true; c.closest('tr').classList.add('sel'); }
+      c.addEventListener('change', () => rowCheck(c));
     });
-    body.querySelectorAll('.cli-row-check').forEach((c) => c.addEventListener('change', () => c.closest('tr').classList.toggle('sel', c.checked)));
+    const all = body.querySelector('#cliAll');
+    if (all) {
+      all.checked = body.querySelectorAll('.cli-row-check').length > 0 && [...body.querySelectorAll('.cli-row-check')].every((x) => x.checked);
+      all.addEventListener('change', () => {
+        body.querySelectorAll('.cli-row-check').forEach((c) => { c.checked = all.checked; const id = c.closest('tr')?.dataset.id; if (id) { if (all.checked) selected.add(String(id)); else selected.delete(String(id)); } c.closest('tr').classList.toggle('sel', all.checked); });
+        refreshBulk();
+      });
+    }
+    // Menus « ⋮ »
+    body.querySelectorAll('.cli-kebab').forEach((btn) => btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const id = btn.closest('[data-id]')?.dataset.id;
+      if (id) openKebab(btn, id);
+    }));
     body.querySelectorAll('[data-page]').forEach((b) => b.addEventListener('click', () => {
       const n = Number(b.dataset.page);
       if (!b.disabled && n >= 1) { state.page = n; load(); }
     }));
     body.querySelector('#cliPer')?.addEventListener('change', (event) => { state.perPage = Number(event.target.value) || 10; state.page = 1; load(); });
+    if (state.view === 'pipeline') initPipelineDnD();
+    refreshBulk();
   };
+
+  // Glisser-déposer du pipeline (SortableJS) : déposer une carte dans une autre
+  // colonne fige le stade en manuel (surcharge). Nécessite Sortable chargé.
+  function initPipelineDnD() {
+    if (typeof Sortable === 'undefined') return;
+    body.querySelectorAll('.cli-col-body').forEach((col) => {
+      // eslint-disable-next-line no-new
+      Sortable.create(col, {
+        group: 'cli-pipe',
+        animation: 150,
+        ghostClass: 'cli-pcard-ghost',
+        draggable: '.cli-pcard',
+        onStart: (event) => event.item.classList.add('cli-dragging'),
+        onEnd: async (event) => {
+          setTimeout(() => event.item.classList.remove('cli-dragging'), 0);
+          const toStage = event.to?.dataset.stage;
+          const fromStage = event.from?.dataset.stage;
+          const id = event.item?.dataset.id;
+          event.to?.querySelector('.cli-col-empty')?.remove();
+          if (!toStage || !id || toStage === fromStage) return;
+          try {
+            await api(`/api/app/crm/customers/${encodeURIComponent(id)}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pipelineStage: toStage }),
+            });
+            const row = currentRows.find((r) => String(r.id) === String(id));
+            if (row) row.stage = toStage;
+            // Met à jour l'étiquette de stade et les compteurs de colonne.
+            const meta = CUSTOMER_STAGES[toStage];
+            const tag = event.item.querySelector('.cli-tag');
+            if (tag && meta) { tag.textContent = meta.label; tag.style.background = meta.bg; tag.style.color = meta.text; }
+            body.querySelectorAll('.cli-col').forEach((section) => {
+              const count = section.querySelectorAll('.cli-pcard').length;
+              const el = section.querySelector('.cli-col-count'); if (el) el.textContent = count;
+            });
+          } catch (error) {
+            alert(error.message || 'Déplacement impossible.');
+            load();
+          }
+        },
+      });
+    });
+  }
 
   const load = async () => {
     if (loading) return;
@@ -3448,6 +3597,7 @@ async function renderCustomers() {
     try {
       const result = await api(`/api/app/crm/customers?${params}`);
       const rows = Array.isArray(result.customers) ? result.customers : [];
+      currentRows = rows;
       const pagination = result.pagination || {};
       const stageCounts = result.stageCounts || { nouveau: 0, actif: 0, a_relancer: 0, inactif: 0 };
       if (state.view === 'pipeline') {
@@ -3458,7 +3608,7 @@ async function renderCustomers() {
           const cards = groups[st].map(pipeCard).join('');
           return `<section class="cli-col">
             <header class="cli-col-head"><span class="cli-col-dot" style="background:${meta.dot}"></span><strong>${meta.plural}</strong><span class="cli-col-count">${stageCounts[st] ?? groups[st].length}</span></header>
-            <div class="cli-col-body">${cards || '<div class="cli-col-empty">Aucun client</div>'}</div>
+            <div class="cli-col-body" data-stage="${st}">${cards || '<div class="cli-col-empty">Aucun client</div>'}</div>
           </section>`;
         }).join('')}</div>`;
       } else if (!rows.length) {
@@ -3533,7 +3683,7 @@ function openNewCustomerModal(onCreated) {
     <div class="cli-modal-head"><strong>Nouveau client</strong><button type="button" class="cli-modal-x" aria-label="Fermer">✕</button></div>
     <form id="cliNewForm" class="cli-modal-body">
       <label class="field"><span>Nom du client *</span><input name="displayName" type="text" maxlength="200" required autocomplete="off" placeholder="Ex. Boutique Tendance"></label>
-      <label class="field"><span>Secteur / type</span><input name="customerType" type="text" maxlength="120" autocomplete="off" placeholder="Ex. Commerce de détail"></label>
+      <label class="field"><span>Secteur d'activité</span><input name="sector" type="text" maxlength="120" autocomplete="off" placeholder="Ex. Commerce de détail"></label>
       <label class="field"><span>Téléphone</span><input name="phone" type="tel" maxlength="320" autocomplete="off" placeholder="Ex. 229 97 00 00 00"></label>
       <div class="cli-modal-err" hidden></div>
       <div class="cli-modal-foot"><button type="button" class="button secondary" id="cliNewCancel">Annuler</button><button type="submit" class="button primary">Créer le client</button></div>
@@ -3558,7 +3708,7 @@ function openNewCustomerModal(onCreated) {
       await api('/api/app/crm/customers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ displayName, customerType: values.get('customerType') || '', phone: values.get('phone') || '' }),
+        body: JSON.stringify({ displayName, sector: values.get('sector') || '', phone: values.get('phone') || '' }),
       });
       close();
       if (typeof onCreated === 'function') onCreated();

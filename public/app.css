@@ -1143,3 +1143,25 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .notif-item-main strong { font-size: 13.5px; font-weight: 650; }
 .notif-item-count { flex: none; min-width: 22px; height: 22px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #eef2f7; color: var(--ink); font-size: 12px; font-weight: 800; }
 .notif-empty { padding: 22px 14px; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* --- Actions groupées (barre contextuelle CRM) --- */
+.cli-bulk { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: #111827; color: #fff; border-radius: 12px; }
+.cli-bulk-count { font-size: 13.5px; font-weight: 700; }
+.cli-bulk-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cli-bulk-btn { padding: 7px 13px; border: 1px solid #ffffff33; border-radius: 8px; background: #ffffff14; color: #fff; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.cli-bulk-btn:hover { background: #ffffff26; }
+.cli-bulk-btn.danger { background: #e11d2a; border-color: #e11d2a; }
+.cli-bulk-btn.danger:hover { background: #c81824; }
+.cli-bulk-btn.ghost { background: transparent; }
+
+/* --- Menu « ⋮ » --- */
+.cli-kebab-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 70; min-width: 190px; padding: 6px; background: #fff; border: 1px solid #e6e9ef; border-radius: 11px; box-shadow: 0 14px 40px rgba(12,13,16,.18); }
+.cli-kebab-item { display: block; width: 100%; padding: 9px 11px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 13px; font-weight: 650; text-align: left; text-decoration: none; cursor: pointer; }
+.cli-kebab-item:hover { background: #f4f6f9; }
+.cli-kebab-item.danger { color: var(--danger); }
+
+/* --- Glisser-déposer pipeline --- */
+.cli-pcard { touch-action: manipulation; }
+.cli-col-body .cli-pcard { cursor: grab; }
+.cli-pcard.cli-dragging { cursor: grabbing; }
+.cli-pcard-ghost { opacity: .45; background: #eef2f7; border-style: dashed; }

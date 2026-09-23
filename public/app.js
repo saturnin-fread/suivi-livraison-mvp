@@ -3964,23 +3964,58 @@ async function initNotifications() {
   const btn = document.getElementById('notifBtn');
   const pop = document.getElementById('notifPop');
   const dot = document.getElementById('notifDot');
-  const body = document.getElementById('notifPopBody');
-  if (!btn || !pop || !dot || !body) return;
+  if (!btn || !pop || !dot) return;
+  const SEEN_KEY = 'traxo.notif.lastSeen';
+  const readSeen = () => { try { return Number(localStorage.getItem(SEEN_KEY) || 0); } catch { return 0; } };
+  const writeSeen = (ts) => { try { localStorage.setItem(SEEN_KEY, String(ts)); } catch { /* stockage indisponible */ } };
+  const notifIcons = {
+    requests: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
+    unassigned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></svg>',
+    incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4M12 17h.01"/></svg>',
+    runs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h6a4 4 0 0 0 0-8H8a4 4 0 0 1 0-8h4"/></svg>',
+  };
+  const relTime = (iso) => {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return '';
+    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return 'à l’instant';
+    const m = Math.floor(s / 60); if (m < 60) return `il y a ${m} min`;
+    const h = Math.floor(m / 60); if (h < 24) return `il y a ${h} h`;
+    const d = Math.floor(h / 24); if (d < 7) return `il y a ${d} j`;
+    return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+  };
   let open = false;
+  let lastData = { items: [] };
   const render = (data) => {
-    const total = Number(data?.total || 0);
-    if (total > 0) { dot.hidden = false; dot.textContent = total > 99 ? '99+' : String(total); }
+    lastData = data || { items: [] };
+    const items = Array.isArray(lastData.items) ? lastData.items : [];
+    const seen = readSeen();
+    const unread = items.filter((it) => new Date(it.at).getTime() > seen).length;
+    if (unread > 0) { dot.hidden = false; dot.textContent = unread > 99 ? '99+' : String(unread); }
     else dot.hidden = true;
-    const groups = Array.isArray(data?.groups) ? data.groups : [];
-    body.innerHTML = groups.length
-      ? groups.map((g) => `<a class="notif-item" href="${escapeHtml(g.href)}"><span class="notif-item-ic notif-${escapeHtml(g.type)}"></span><span class="notif-item-main"><strong>${escapeHtml(g.label)}</strong></span><span class="notif-item-count">${escapeHtml(g.count)}</span></a>`).join('')
-      : '<div class="notif-empty">Rien à signaler pour le moment.</div>';
+    const head = `<div class="notif-pop-head"><strong>Notifications</strong>${items.length ? '<button type="button" class="notif-readall">Tout marquer comme lu</button>' : ''}</div>`;
+    const feed = items.length
+      ? items.map((it) => {
+          const isUnread = new Date(it.at).getTime() > seen;
+          return `<a class="notif-item ${isUnread ? 'unread' : ''}" href="${escapeHtml(it.href)}">
+            <span class="notif-item-ic notif-${escapeHtml(it.type)}">${notifIcons[it.type] || ''}</span>
+            <span class="notif-item-main"><strong>${escapeHtml(it.title)}</strong><small>${escapeHtml(it.summary)}</small></span>
+            <span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>
+          </a>`;
+        }).join('')
+      : '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Tout est à jour. Aucune action en attente.</div>';
+    pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>`;
+    pop.querySelector('.notif-readall')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      writeSeen(Date.now());
+      render(lastData);
+    });
   };
   const load = async () => { try { render(await api('/api/app/notifications')); } catch { /* silencieux */ } };
   btn.addEventListener('click', (event) => {
     event.stopPropagation();
     open = !open;
-    if (open) { pop.removeAttribute('hidden'); load(); } else pop.setAttribute('hidden', '');
+    if (open) { pop.removeAttribute('hidden'); render(lastData); load(); } else pop.setAttribute('hidden', '');
     btn.setAttribute('aria-expanded', String(open));
   });
   document.addEventListener('click', (event) => {

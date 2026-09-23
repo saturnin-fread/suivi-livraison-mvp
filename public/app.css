@@ -656,7 +656,9 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-table tbody tr:last-child td { border-bottom: 0; }
 .crm-cbcol { width: 42px; }
 .crm-cb { display: inline-block; width: 16px; height: 16px; border: 1.5px solid #cfd6e0; border-radius: 5px; vertical-align: middle; cursor: pointer; }
-.crm-cb.on { background: var(--red); border-color: var(--red); }
+.crm-cb.on { background: var(--red); border-color: var(--red); position: relative; }
+.crm-cb.on::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.crm-table tr.crm-rowsel > td { background: #fff5f4; }
 .crm-actcol { width: 30px; }
 .crm-rowact { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); display: none; gap: 3px; background: #fff; padding: 4px; border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 6px 18px rgba(17, 18, 21, .12); }
 .crm-table tbody tr:hover .crm-rowact { display: flex; }
@@ -1172,3 +1174,12 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .cli-col-body .cli-pcard { cursor: grab; }
 .cli-pcard.cli-dragging { cursor: grabbing; }
 .cli-pcard-ghost { opacity: .45; background: #eef2f7; border-style: dashed; }
+
+/* --- Modale de fusion de doublons --- */
+.cli-merge-lead { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.cli-merge-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 44vh; overflow-y: auto; }
+.cli-merge-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; }
+.cli-merge-info { min-width: 0; }
+.cli-merge-info strong { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cli-merge-info small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.cli-merge-btn { flex: none; min-height: 34px; padding: 6px 12px; }

@@ -2899,6 +2899,7 @@ async function renderOperationsWorkspace(initialSegment) {
   let pageSize = (() => { try { const v = Number(localStorage.getItem('traxo.crmPerPage')); return pageSizeOptions.includes(v) ? v : 10; } catch { return 10; } })();
   const scopeState = { demandes: 'active', incidents: 'open' };
   let counts = {};
+  const crmSelected = new Set();
 
   const cfg = {
     commandes: {
@@ -2995,6 +2996,7 @@ async function renderOperationsWorkspace(initialSegment) {
         ${co.newHref ? `<a class="crm-new" href="${escapeHtml(co.newHref)}">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</a>` : ''}
       </div>
       <div class="crm-chips" id="crmChips"></div>
+      <div class="cli-bulk" id="crmBulk" hidden></div>
       <div class="crm-card"><div class="crm-scroll"><table class="crm-table"><thead id="crmHead"></thead><tbody id="crmBody"></tbody></table></div></div>
       <div class="crm-foot" id="crmFoot"></div>`;
     renderTabs();
@@ -3024,7 +3026,7 @@ async function renderOperationsWorkspace(initialSegment) {
 
   function switchSeg(k) {
     if (k === segment) return;
-    segment = k; query = ''; sort = null; group = null; filter = null; pageN = 1;
+    segment = k; query = ''; sort = null; group = null; filter = null; pageN = 1; crmSelected.clear();
     try { history.replaceState(null, '', `/app/operations?vue=${k}`); } catch { /* ignore */ }
     shell(); loadSegment();
   }
@@ -3104,15 +3106,87 @@ async function renderOperationsWorkspace(initialSegment) {
     };
     const cells = co.columns.map((col) => `<th data-sort="${col.sortVal ? col.key : ''}"><span class="crm-th">${escapeHtml(col.label)}${sortIco(col)}</span></th>`).join('');
     const head = document.getElementById('crmHead');
-    head.innerHTML = `<tr><th class="crm-cbcol"><span class="crm-cb"></span></th>${cells}<th class="crm-actcol"></th></tr>`;
+    head.innerHTML = `<tr><th class="crm-cbcol"><span class="crm-cb" id="crmHeadCb" title="Tout sélectionner"></span></th>${cells}<th class="crm-actcol"></th></tr>`;
     head.querySelectorAll('[data-sort]').forEach((th) => { if (th.dataset.sort) th.addEventListener('click', () => { const k = th.dataset.sort; sort = (sort && sort.key === k) ? { key: k, dir: -sort.dir } : { key: k, dir: 1 }; renderAll(); }); });
+    document.getElementById('crmHeadCb')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const rows = [...document.querySelectorAll('#crmBody tr[data-id]')];
+      const allOn = rows.length > 0 && rows.every((tr) => crmSelected.has(String(tr.dataset.id)));
+      rows.forEach((tr) => {
+        const id = String(tr.dataset.id);
+        if (allOn) crmSelected.delete(id); else crmSelected.add(id);
+        tr.classList.toggle('crm-rowsel', !allOn);
+        tr.querySelector('.crm-cb')?.classList.toggle('on', !allOn);
+      });
+      syncHeadCb();
+      refreshCrmBulk();
+    });
+    syncHeadCb();
+  }
+
+  function syncHeadCb() {
+    const cb = document.getElementById('crmHeadCb');
+    if (!cb) return;
+    const rows = [...document.querySelectorAll('#crmBody tr[data-id]')];
+    cb.classList.toggle('on', rows.length > 0 && rows.every((tr) => crmSelected.has(String(tr.dataset.id))));
+  }
+
+  function stripHtml(html) { const d = document.createElement('div'); d.innerHTML = String(html == null ? '' : html); return (d.textContent || '').replace(/\s+/g, ' ').trim(); }
+  function csvCell(value) { const t = value == null ? '' : String(value); return /[",\n;]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }
+
+  function refreshCrmBulk() {
+    const bar = document.getElementById('crmBulk');
+    if (!bar) return;
+    if (!crmSelected.size) { bar.hidden = true; bar.innerHTML = ''; return; }
+    const co = c();
+    bar.hidden = false;
+    bar.innerHTML = `<span class="cli-bulk-count">${crmSelected.size} sélectionné${crmSelected.size > 1 ? 's' : ''}</span>
+      <div class="cli-bulk-actions">
+        <button type="button" class="cli-bulk-btn" data-b="export">Exporter (CSV)</button>
+        ${co.rowArchive ? '<button type="button" class="cli-bulk-btn danger" data-b="archive">Archiver</button>' : ''}
+        <button type="button" class="cli-bulk-btn ghost" data-b="clear">Effacer</button>
+      </div>`;
+    bar.querySelector('[data-b="export"]').addEventListener('click', () => exportCrmSelection(co));
+    bar.querySelector('[data-b="archive"]')?.addEventListener('click', () => archiveCrmSelection(co));
+    bar.querySelector('[data-b="clear"]').addEventListener('click', () => {
+      crmSelected.clear();
+      document.querySelectorAll('#crmBody tr[data-id]').forEach((tr) => { tr.classList.remove('crm-rowsel'); tr.querySelector('.crm-cb')?.classList.remove('on'); });
+      syncHeadCb(); refreshCrmBulk();
+    });
+  }
+
+  function exportCrmSelection(co) {
+    const chosen = raw.filter((r) => crmSelected.has(String(r.id)));
+    const header = ['ID', ...co.columns.map((col) => col.label)];
+    const lines = [header.map(csvCell).join(';')];
+    chosen.forEach((r) => { lines.push([r.id, ...co.columns.map((col) => stripHtml(col.cell(r)))].map(csvCell).join(';')); });
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${segment}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function archiveCrmSelection(co) {
+    if (!co.rowArchive) return;
+    const ids = [...crmSelected];
+    if (!ids.length || !confirm(`${co.rowArchive.title} — ${ids.length} élément(s) ?`)) return;
+    try {
+      await Promise.all(ids.map((id) => api(co.rowArchive.endpoint(id), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(co.rowArchive.body),
+      })));
+      crmSelected.clear(); refreshCrmBulk();
+      await loadSegment();
+    } catch (error) { alert(error.message || 'Action impossible.'); }
   }
 
   function rowHtml(r, co) {
     const cells = co.columns.map((col) => `<td>${col.cell(r)}</td>`).join('');
     const eye = co.drawerFn ? `<button data-act="view" title="Aperçu">${crmIcons.eye}</button>` : `<button data-act="open" title="Ouvrir">${crmIcons.eye}</button>`;
     const trash = co.rowArchive ? `<button data-act="archive" class="crm-rowact-danger" title="${escapeHtml(co.rowArchive.title)}">${crmIcons.trash}</button>` : '';
-    return `<tr data-id="${escapeHtml(r.id)}"><td class="crm-cbcol"><span class="crm-cb"></span></td>${cells}<td class="crm-actcol"><span class="crm-rowact">${eye}<button data-act="open" title="Ouvrir la fiche">${crmIcons.edit}</button>${trash}</span></td></tr>`;
+    const on = crmSelected.has(String(r.id));
+    return `<tr data-id="${escapeHtml(r.id)}" class="${on ? 'crm-rowsel' : ''}"><td class="crm-cbcol"><span class="crm-cb ${on ? 'on' : ''}"></span></td>${cells}<td class="crm-actcol"><span class="crm-rowact">${eye}<button data-act="open" title="Ouvrir la fiche">${crmIcons.edit}</button>${trash}</span></td></tr>`;
   }
 
   async function rowArchive(co, id) {
@@ -3154,10 +3228,21 @@ async function renderOperationsWorkspace(initialSegment) {
         if (act && act.dataset.act === 'view') { (co.drawerFn || openOrderDrawer)(id); return; }
         if (act && act.dataset.act === 'archive') { e.stopPropagation(); rowArchive(co, id); return; }
         if (act && act.dataset.act === 'open') { location.href = co.href({ id }); return; }
-        if (e.target.closest('.crm-cb')) { e.target.closest('.crm-cb').classList.toggle('on'); return; }
+        if (e.target.closest('.crm-cb')) {
+          e.stopPropagation();
+          const on = !crmSelected.has(String(id));
+          if (on) crmSelected.add(String(id)); else crmSelected.delete(String(id));
+          e.target.closest('.crm-cb').classList.toggle('on', on);
+          tr.classList.toggle('crm-rowsel', on);
+          syncHeadCb();
+          refreshCrmBulk();
+          return;
+        }
         if (co.drawerFn) co.drawerFn(id); else location.href = co.href({ id });
       });
     });
+    syncHeadCb();
+    refreshCrmBulk();
   }
 
   function renderFoot(total) {
@@ -3397,12 +3482,57 @@ async function renderCustomers() {
     pop.innerHTML = `
       <a class="cli-kebab-item" href="/app/clients/${encodeURIComponent(id)}">Ouvrir la fiche</a>
       <a class="cli-kebab-item" href="/app/nouvelle-commande">Nouvelle commande</a>
+      <button type="button" class="cli-kebab-item" data-act="merge">Fusionner un doublon</button>
       <button type="button" class="cli-kebab-item danger" data-act="archive">Archiver</button>`;
     btn.parentElement.style.position = 'relative';
     btn.parentElement.appendChild(pop);
+    pop.querySelector('[data-act="merge"]').addEventListener('click', () => { pop.remove(); openMergeModal(id); });
     pop.querySelector('[data-act="archive"]').addEventListener('click', () => { pop.remove(); archiveOne(id); });
     const away = (event) => { if (!pop.contains(event.target) && event.target !== btn) { pop.remove(); document.removeEventListener('click', away); } };
     setTimeout(() => document.addEventListener('click', away), 0);
+  };
+
+  // Modale de fusion : liste les doublons (même téléphone) et fusionne dans la fiche courante.
+  const openMergeModal = async (targetId) => {
+    const target = currentRows.find((r) => String(r.id) === String(targetId));
+    const targetName = target ? (target.display_name || customerCode(target)) : `#${targetId}`;
+    const overlay = document.createElement('div');
+    overlay.className = 'cli-modal-overlay';
+    overlay.innerHTML = `<div class="cli-modal" role="dialog" aria-modal="true" aria-label="Fusionner un doublon">
+      <div class="cli-modal-head"><strong>Fusionner un doublon</strong><button type="button" class="cli-modal-x" aria-label="Fermer">✕</button></div>
+      <div class="cli-modal-body">
+        <p class="cli-merge-lead">Les fiches ci-dessous partagent un téléphone avec <strong>${escapeHtml(targetName)}</strong>. La fusion bascule leur historique (commandes, demandes) vers cette fiche ; le doublon devient une redirection.</p>
+        <div id="cliMergeList">${loadingState('Recherche des doublons…')}</div>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+    overlay.querySelector('.cli-modal-x').addEventListener('click', close);
+    const listEl = overlay.querySelector('#cliMergeList');
+    try {
+      const { duplicates } = await api(`/api/app/crm/customers/${encodeURIComponent(targetId)}/duplicates`);
+      if (!duplicates || !duplicates.length) {
+        listEl.innerHTML = '<div class="cli-empty" style="padding:24px 12px"><strong>Aucun doublon détecté.</strong><p>Aucune autre fiche ne partage ce téléphone.</p></div>';
+        return;
+      }
+      listEl.innerHTML = `<ul class="cli-merge-list">${duplicates.map((d) => `<li class="cli-merge-row" data-src="${escapeHtml(d.id)}">
+        <div class="cli-merge-info"><strong>${escapeHtml(d.display_name || 'Client sans nom')}</strong><small>${escapeHtml(customerCode(d))} · ${escapeHtml(d.primary_phone || '—')} · ${formatInteger(d.order_count)} cmd</small></div>
+        <button type="button" class="button secondary cli-merge-btn">Fusionner ici</button></li>`).join('')}</ul>`;
+      listEl.querySelectorAll('.cli-merge-row').forEach((row) => {
+        row.querySelector('.cli-merge-btn').addEventListener('click', async () => {
+          if (!confirm('Fusionner ce doublon dans la fiche courante ? Son historique bascule ici et il devient une redirection.')) return;
+          const b = row.querySelector('.cli-merge-btn'); b.disabled = true; b.textContent = 'Fusion…';
+          try {
+            await api(`/api/app/crm/customers/${encodeURIComponent(targetId)}/merge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: Number(row.dataset.src) }) });
+            row.remove(); load();
+            if (!listEl.querySelector('.cli-merge-row')) close();
+          } catch (err) { b.disabled = false; b.textContent = 'Fusionner ici'; alert(err.message || 'Fusion impossible.'); }
+        });
+      });
+    } catch (err) {
+      listEl.innerHTML = `<div class="notice error">${escapeHtml(err.message || 'Erreur de chargement des doublons.')}</div>`;
+    }
   };
 
   const syncUrl = () => {

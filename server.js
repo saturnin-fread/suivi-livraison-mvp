@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const express = require('express');
 const axios = require('axios');
+const nodemailer = require('nodemailer');
 const multer = require('multer');
 const { Pool } = require('pg');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
@@ -2888,26 +2889,54 @@ async function buildNotificationItems(cid) {
   return items.slice(0, 20);
 }
 
-// --- E-mail (préparé, inactif tant qu'aucun fournisseur n'est configuré) ---
-function emailConfigured() { return Boolean(process.env.RESEND_API_KEY); }
+// --- E-mail — indépendant du fournisseur (SMTP standard, ou Resend en repli) ---
+// Inactif tant qu'aucun fournisseur n'est configuré. Pour activer : renseigner
+// les variables SMTP_* (Brevo, Amazon SES, Mailgun…) ou RESEND_API_KEY.
+const smtpConfigured = () => Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+function emailConfigured() { return smtpConfigured() || Boolean(process.env.RESEND_API_KEY); }
+function emailFrom() { return process.env.EMAIL_FROM || 'TRAXO <notifications@gettraxo.app>'; }
 function escHtmlServer(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
-// Envoi via l'API HTTP Resend si RESEND_API_KEY est défini ; sinon no-op
-// (statut « email_not_configured ») — l'activation = poser la variable d'env.
+let mailTransport = null;
+function getMailTransport() {
+  if (mailTransport) return mailTransport;
+  if (!smtpConfigured()) return null;
+  const port = Number(process.env.SMTP_PORT || 587);
+  mailTransport = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port,
+    secure: process.env.SMTP_SECURE === 'true' || port === 465,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  });
+  return mailTransport;
+}
+// Envoi : SMTP en priorité (n'importe quel fournisseur), Resend HTTP en repli ;
+// no-op « email_not_configured » si rien n'est configuré.
 async function sendEmail({ to, subject, html, text }) {
-  if (!emailConfigured()) return { sent: false, reason: 'email_not_configured' };
   if (!to) return { sent: false, reason: 'no_recipient' };
-  const from = process.env.EMAIL_FROM || 'TRAXO <notifications@traxo.app>';
-  try {
-    await axios.post('https://api.resend.com/emails', { from, to, subject, html, text }, {
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      timeout: 10000,
-    });
-    return { sent: true };
-  } catch (error) {
-    return { sent: false, reason: 'send_failed', detail: error.response?.data || error.message };
+  const from = emailFrom();
+  const transport = getMailTransport();
+  if (transport) {
+    try {
+      await transport.sendMail({ from, to, subject, html, text });
+      return { sent: true, via: 'smtp' };
+    } catch (error) {
+      return { sent: false, reason: 'send_failed', detail: error.message };
+    }
   }
+  if (process.env.RESEND_API_KEY) {
+    try {
+      await axios.post('https://api.resend.com/emails', { from, to, subject, html, text }, {
+        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 10000,
+      });
+      return { sent: true, via: 'resend' };
+    } catch (error) {
+      return { sent: false, reason: 'send_failed', detail: error.response?.data || error.message };
+    }
+  }
+  return { sent: false, reason: 'email_not_configured' };
 }
 // Construit le digest e-mail des actions en attente d'une entreprise.
 async function buildCompanyDigest(cid, appBaseUrl = '') {

@@ -1165,9 +1165,10 @@ async function renderOperationsMap() {
     const yesterdayActive = String(replay.windowKey) === 'day' && replay.dayStart === todayMidnight() - 86400000;
     slot.innerHTML = `<div class="ops-replay">
       <div class="ops-replay-windows">
+        ${['30', '60', '180'].map((k) => `<button type="button" class="ops-win ${String(replay.windowKey) === k ? 'active' : ''}" data-win="${k}">${winLabels[k]}</button>`).join('')}
         <button type="button" class="ops-win ${todayActive ? 'active' : ''}" data-win-today>Aujourd’hui</button>
-        <button type="button" class="ops-win ops-win-period ${replay.pickerOpen ? 'active' : ''}" data-period-toggle>${calIcon} Période</button>
         <button type="button" class="ops-win ${yesterdayActive ? 'active' : ''}" data-win-yesterday>Hier</button>
+        <button type="button" class="ops-win ops-win-period ${replay.pickerOpen ? 'active' : ''}" data-period-toggle>${calIcon} Période</button>
         <button type="button" class="ops-win ops-win-close" data-replay-close title="Fermer le rejeu">Fermer</button>
       </div>
       ${replay.pickerOpen ? renderPeriodPicker() : ''}
@@ -1183,6 +1184,7 @@ async function renderOperationsMap() {
       <div class="ops-replay-read" id="opsReplayRead"></div>` : ''}
     </div>`;
 
+    slot.querySelectorAll('[data-win]').forEach((btn) => btn.addEventListener('click', () => startReplay(btn.dataset.win)));
     slot.querySelector('[data-win-today]')?.addEventListener('click', () => { replay.dayStart = todayMidnight(); startReplay('day'); });
     slot.querySelector('[data-win-yesterday]')?.addEventListener('click', () => { replay.dayStart = todayMidnight() - 86400000; startReplay('day'); });
     slot.querySelector('[data-replay-close]')?.addEventListener('click', closeReplay);
@@ -3805,5 +3807,38 @@ document.addEventListener('click', (event) => {
   }
 });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { userMenu?.setAttribute('hidden', ''); userMenuBtn?.setAttribute('aria-expanded', 'false'); } });
+
+// Cloche de notifications : agrège les éléments actionnables (demandes à
+// vérifier, commandes à affecter, incidents, tournées brouillon, rétentions).
+async function initNotifications() {
+  const btn = document.getElementById('notifBtn');
+  const pop = document.getElementById('notifPop');
+  const dot = document.getElementById('notifDot');
+  const body = document.getElementById('notifPopBody');
+  if (!btn || !pop || !dot || !body) return;
+  let open = false;
+  const render = (data) => {
+    const total = Number(data?.total || 0);
+    if (total > 0) { dot.hidden = false; dot.textContent = total > 99 ? '99+' : String(total); }
+    else dot.hidden = true;
+    const groups = Array.isArray(data?.groups) ? data.groups : [];
+    body.innerHTML = groups.length
+      ? groups.map((g) => `<a class="notif-item" href="${escapeHtml(g.href)}"><span class="notif-item-ic notif-${escapeHtml(g.type)}"></span><span class="notif-item-main"><strong>${escapeHtml(g.label)}</strong></span><span class="notif-item-count">${escapeHtml(g.count)}</span></a>`).join('')
+      : '<div class="notif-empty">Rien à signaler pour le moment.</div>';
+  };
+  const load = async () => { try { render(await api('/api/app/notifications')); } catch { /* silencieux */ } };
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    open = !open;
+    if (open) { pop.removeAttribute('hidden'); load(); } else pop.setAttribute('hidden', '');
+    btn.setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', (event) => {
+    if (open && !event.target.closest('.notif-menu')) { pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false'); }
+  });
+  await load();
+  setInterval(load, 60000);
+}
+initNotifications();
 
 start();

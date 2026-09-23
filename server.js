@@ -2850,6 +2850,28 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
   return res.json(result.rows[0]);
 }));
 
+// Agrégat des notifications actionnables pour la cloche de la top-bar.
+app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT
+       (SELECT COUNT(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier')::int AS requests_to_review,
+       (SELECT COUNT(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open')::int AS open_incidents,
+       (SELECT COUNT(*) FROM delivery_runs WHERE company_id = $1 AND status = 'draft')::int AS draft_runs,
+       (SELECT COUNT(*) FROM orders WHERE company_id = $1 AND driver_id IS NULL AND status <> ALL($2::text[]))::int AS unassigned_orders,
+       (SELECT COUNT(*) FROM order_retention_holds WHERE company_id = $1 AND status = 'active' AND review_due_at < NOW())::int AS overdue_holds`,
+    [req.auth.company_id, terminalOrderStatuses]
+  );
+  const c = result.rows[0];
+  const groups = [
+    { type: 'requests', label: 'Demandes à vérifier', count: c.requests_to_review, href: '/app/operations?vue=demandes' },
+    { type: 'unassigned', label: 'Commandes à affecter', count: c.unassigned_orders, href: '/app/operations?vue=commandes' },
+    { type: 'incidents', label: 'Incidents ouverts', count: c.open_incidents, href: '/app/operations?vue=incidents' },
+    { type: 'runs', label: 'Tournées à planifier', count: c.draft_runs, href: '/app/operations?vue=tournees' },
+    { type: 'holds', label: 'Rétentions à revoir', count: c.overdue_holds, href: '/app/clients' },
+  ].filter((group) => group.count > 0);
+  return res.json({ total: groups.reduce((sum, group) => sum + group.count, 0), groups });
+}));
+
 app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
   const pageNumber = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
   const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));

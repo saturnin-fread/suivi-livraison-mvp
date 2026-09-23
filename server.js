@@ -2850,10 +2850,8 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
   return res.json(result.rows[0]);
 }));
 
-// Fil de notifications actionnables (items individuels deep-linkés) pour la
-// cloche de la top-bar : chaque élément renvoie à l'emplacement exact.
-app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
-  const cid = req.auth.company_id;
+// Construit la liste des notifications actionnables d'une entreprise.
+async function buildNotificationItems(cid) {
   const [reqs, unassigned, incidents, runs] = await Promise.all([
     pool.query(
       `SELECT id, customer_name, created_at FROM customer_requests
@@ -2887,7 +2885,62 @@ app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res)
   for (const i of incidents.rows) items.push({ id: `incident-${i.id}`, type: 'incidents', title: 'Incident ouvert', summary: i.customer_name ? `Commande de ${i.customer_name}` : `Incident n° ${i.id}`, at: i.created_at, href: `/app/incidents/${i.id}` });
   for (const r of runs.rows) items.push({ id: `run-${r.id}`, type: 'runs', title: 'Tournée à planifier', summary: r.name || `Tournée n° ${r.id}`, at: r.created_at, href: `/app/tournees/${r.id}` });
   items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-  return res.json({ items: items.slice(0, 20), generatedAt: new Date().toISOString() });
+  return items.slice(0, 20);
+}
+
+// --- E-mail (préparé, inactif tant qu'aucun fournisseur n'est configuré) ---
+function emailConfigured() { return Boolean(process.env.RESEND_API_KEY); }
+function escHtmlServer(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+// Envoi via l'API HTTP Resend si RESEND_API_KEY est défini ; sinon no-op
+// (statut « email_not_configured ») — l'activation = poser la variable d'env.
+async function sendEmail({ to, subject, html, text }) {
+  if (!emailConfigured()) return { sent: false, reason: 'email_not_configured' };
+  if (!to) return { sent: false, reason: 'no_recipient' };
+  const from = process.env.EMAIL_FROM || 'TRAXO <notifications@traxo.app>';
+  try {
+    await axios.post('https://api.resend.com/emails', { from, to, subject, html, text }, {
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      timeout: 10000,
+    });
+    return { sent: true };
+  } catch (error) {
+    return { sent: false, reason: 'send_failed', detail: error.response?.data || error.message };
+  }
+}
+// Construit le digest e-mail des actions en attente d'une entreprise.
+async function buildCompanyDigest(cid, appBaseUrl = '') {
+  const items = await buildNotificationItems(cid);
+  if (!items.length) return null;
+  const rows = items.map((it) => `<tr><td style="padding:10px 14px;border-bottom:1px solid #eef1f5">
+    <strong style="color:#111827">${escHtmlServer(it.title)}</strong><br>
+    <span style="color:#667085;font-size:13px">${escHtmlServer(it.summary)}</span>
+    ${appBaseUrl ? `<br><a href="${escHtmlServer(appBaseUrl + it.href)}" style="color:#e11d2a;font-size:12px;text-decoration:none">Ouvrir →</a>` : ''}
+  </td></tr>`).join('');
+  const html = `<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:560px;margin:auto">
+    <h2 style="color:#111827">TRAXO — ${items.length} action(s) en attente</h2>
+    <table style="border-collapse:collapse;width:100%;border:1px solid #eef1f5;border-radius:10px;overflow:hidden">${rows}</table>
+    <p style="color:#98a2b3;font-size:12px;margin-top:16px">Résumé automatique des actions en attente dans votre espace TRAXO.</p></div>`;
+  const text = items.map((it) => `- ${it.title} : ${it.summary}`).join('\n');
+  return { count: items.length, subject: `TRAXO — ${items.length} action(s) en attente`, html, text };
+}
+
+app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
+  const items = await buildNotificationItems(req.auth.company_id);
+  return res.json({ items, generatedAt: new Date().toISOString() });
+}));
+
+// Digest e-mail à la demande. Reste inactif (sent:false, reason:
+// email_not_configured) tant que RESEND_API_KEY n'est pas défini.
+app.post('/api/app/notifications/digest', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!['owner', 'manager'].includes(req.auth.role)) return res.status(403).json({ error: 'Réservé aux responsables.' });
+  const digest = await buildCompanyDigest(req.auth.company_id, process.env.APP_BASE_URL || '');
+  if (!digest) return res.json({ sent: false, reason: 'nothing_to_send', count: 0, configured: emailConfigured() });
+  const company = await pool.query('SELECT admin_email FROM companies WHERE id = $1', [req.auth.company_id]);
+  const to = company.rows[0]?.admin_email || null;
+  const result = await sendEmail({ to, subject: digest.subject, html: digest.html, text: digest.text });
+  return res.json({ ...result, count: digest.count, configured: emailConfigured(), recipient: to });
 }));
 
 app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -3162,7 +3215,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
   if (!Number.isInteger(customerId) || customerId < 1) return res.status(404).json({ error: 'Client introuvable.' });
   const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const customer = await client.query(
-      `SELECT id, customer_code, customer_type, display_name, status,
+      `SELECT id, customer_code, customer_type, sector, display_name, status,
               preferred_language, service_notes, created_at, updated_at
        FROM customers WHERE id = $1 AND company_id = $2`,
       [customerId, req.auth.company_id]

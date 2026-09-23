@@ -2907,8 +2907,8 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
     // commandes — distinct de c.status (actif/ne pas contacter/archivé).
     const baseCte = `
       WITH base AS (
-        SELECT c.id, c.customer_code, c.customer_type, c.display_name, c.status,
-               c.created_at, c.updated_at,
+        SELECT c.id, c.customer_code, c.customer_type, c.sector, c.pipeline_stage,
+               c.display_name, c.status, c.created_at, c.updated_at,
                primary_contact.value_display AS primary_phone,
                loc.locality AS primary_locality, loc.neighborhood AS primary_neighborhood,
                lastord.status AS last_order_status, lastord.created_at AS last_order_at,
@@ -2938,7 +2938,7 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
         WHERE ${filters}
         GROUP BY c.id, primary_contact.value_display, loc.locality, loc.neighborhood, lastord.status, lastord.created_at
       ),
-      staged AS (
+      auto AS (
         SELECT *,
           COALESCE(last_order_at, created_at) AS last_activity_at,
           CASE
@@ -2948,8 +2948,15 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
             WHEN last_order_at >= NOW() - INTERVAL '30 days' THEN 'actif'
             WHEN last_order_at >= NOW() - INTERVAL '90 days' THEN 'a_relancer'
             ELSE 'inactif'
-          END AS stage
+          END AS auto_stage
         FROM base
+      ),
+      staged AS (
+        SELECT *,
+          -- Surcharge manuelle (glisser-déposer) prioritaire sur le stade auto.
+          COALESCE(NULLIF(pipeline_stage, ''), auto_stage) AS stage,
+          CASE WHEN NULLIF(pipeline_stage, '') IS NOT NULL THEN 'manual' ELSE 'auto' END AS stage_source
+        FROM auto
       )`;
     const stageFilter = stage ? ` WHERE stage = $${values.length + 1}` : '';
     const scopedValues = stage ? [...values, stage] : values;
@@ -2984,15 +2991,15 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
 app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
   const displayName = String(req.body?.displayName ?? req.body?.display_name ?? '').trim().slice(0, 200);
   if (!displayName) return res.status(400).json({ error: 'Le nom du client est requis.' });
-  const customerType = String(req.body?.customerType ?? req.body?.customer_type ?? '').trim().slice(0, 120) || null;
+  const sector = String(req.body?.sector ?? req.body?.customerType ?? req.body?.customer_type ?? '').trim().slice(0, 120) || null;
   const phone = String(req.body?.phone ?? '').trim().slice(0, 320);
   const created = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const inserted = await client.query(
-      `INSERT INTO customers (company_id, customer_code, customer_type, display_name, status,
+      `INSERT INTO customers (company_id, customer_code, sector, display_name, status,
          created_by_user_id, updated_by_user_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'active', $5, $5, NOW(), NOW())
        RETURNING id`,
-      [req.auth.company_id, `MANUAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, customerType, displayName, req.auth.user_id || null]
+      [req.auth.company_id, `MANUAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, sector, displayName, req.auth.user_id || null]
     );
     const id = inserted.rows[0].id;
     await client.query(
@@ -3010,6 +3017,48 @@ app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res
     return id;
   });
   return res.status(201).json({ id: created, customer_code: `CL-${String(created).padStart(4, '0')}` });
+}));
+
+// Mise à jour légère d'un client : stade de pipeline (glisser-déposer) et/ou
+// statut (archivage). pipelineStage = null réinitialise en mode auto.
+app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const customerId = Number(req.params.id);
+  if (!Number.isInteger(customerId) || customerId < 1) return res.status(404).json({ error: 'Client introuvable.' });
+  const sets = [];
+  const values = [];
+  if ('pipelineStage' in (req.body || {})) {
+    const raw = req.body.pipelineStage;
+    if (raw === null || raw === '') {
+      sets.push(`pipeline_stage = NULL`);
+    } else if (['nouveau', 'actif', 'a_relancer', 'inactif'].includes(String(raw))) {
+      values.push(String(raw));
+      sets.push(`pipeline_stage = $${values.length}`);
+    } else {
+      return res.status(400).json({ error: 'Stade de pipeline invalide.' });
+    }
+  }
+  if ('status' in (req.body || {})) {
+    const status = String(req.body.status);
+    if (!['active', 'archived', 'do_not_contact'].includes(status)) {
+      return res.status(400).json({ error: 'Statut client invalide.' });
+    }
+    values.push(status);
+    sets.push(`status = $${values.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucune modification fournie.' });
+  values.push(req.auth.user_id || null);
+  const updatedBy = `$${values.length}`;
+  values.push(customerId);
+  const idParam = `$${values.length}`;
+  values.push(req.auth.company_id);
+  const companyParam = `$${values.length}`;
+  const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => client.query(
+    `UPDATE customers SET ${sets.join(', ')}, updated_by_user_id = ${updatedBy}, updated_at = NOW(), version = version + 1
+     WHERE id = ${idParam} AND company_id = ${companyParam} RETURNING id`,
+    values
+  ));
+  if (!result.rows[0]) return res.status(404).json({ error: 'Client introuvable.' });
+  return res.json({ id: result.rows[0].id });
 }));
 
 app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, res) => {

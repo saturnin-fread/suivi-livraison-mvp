@@ -3864,7 +3864,8 @@ function locationMarkup(place) {
 
 async function renderCustomerDetail(id) {
   setHeader('Fiche client', 'Contacts, lieux et historique opérationnel');
-  page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">Fiche client</h1></div></div><section class="card">${loadingState('Chargement de la fiche client…')}</section>`;
+  page.classList.add('page-crm');
+  page.innerHTML = `<section class="card">${loadingState('Chargement de la fiche client…')}</section>`;
   try {
     const result = await api(`/api/app/crm/customers/${encodeURIComponent(id)}`);
     const customer = result.customer || {};
@@ -3873,14 +3874,75 @@ async function renderCustomerDetail(id) {
     const orders = Array.isArray(result.orders) ? result.orders : [];
     const interactions = Array.isArray(result.interactions) ? result.interactions : [];
     setHeader(customer.display_name || 'Fiche client', 'Contacts, lieux et historique opérationnel');
-    page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">${escapeHtml(customer.display_name || 'Client sans nom')}</h1><p class="subtitle">Référence ${escapeHtml(customer.customer_code || customer.id || id)}</p></div>${customerStatusBadge(customer.status)}</div>
-      <section class="card"><h2>Informations principales</h2><div class="detail-grid"><div class="detail"><span>Nom</span><strong>${escapeHtml(customer.display_name || '—')}</strong></div><div class="detail"><span>Langue préférée</span><strong>${escapeHtml(customer.preferred_language || 'Non renseignée')}</strong></div><div class="detail"><span>Création de la fiche</span><strong>${escapeHtml(formatDate(customer.created_at))}</strong></div></div>${customer.service_notes ? `<div class="notice"><strong>Note de service</strong><p>${escapeHtml(customer.service_notes)}</p></div>` : ''}</section>
-      <div class="crm-detail-columns">
-        <section class="card"><h2>Contacts (${formatInteger(contacts.length)})</h2>${contacts.length ? `<ul class="crm-contact-list">${contacts.map(contactMarkup).join('')}</ul>` : '<div class="empty compact-empty">Aucun contact enregistré.</div>'}</section>
-        <section class="card"><h2>Lieux de livraison (${formatInteger(locations.length)})</h2><p class="section-hint">Les coordonnées GPS restent protégées et ne sont pas affichées ici.</p>${locations.length ? `<div class="crm-subcard-list">${locations.map(locationMarkup).join('')}</div>` : '<div class="empty compact-empty">Aucun lieu enregistré.</div>'}</section>
-      </div>
-      <section class="card crm-section"><h2>Commandes (${formatInteger(orders.length)})</h2>${orders.length ? `<div class="table-wrap"><table><thead><tr><th>Commande</th><th>Créée le</th><th>Destination</th><th>Livreur</th><th>État</th></tr></thead><tbody>${orders.map((order) => `<tr><td><a href="/app/commandes/${encodeURIComponent(order.id)}"><strong>${escapeHtml(orderCode(order.reference, order.id))}</strong></a></td><td>${escapeHtml(formatDate(order.created_at))}</td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name || '—')}</td><td>${badge(order.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty compact-empty">Aucune commande liée.</div>'}</section>
-      <section class="card crm-section"><h2>Interactions récentes (${formatInteger(interactions.length)})</h2>${interactions.length ? `<ol class="timeline">${interactions.map((interaction) => `<li><strong>${escapeHtml(interactionPurposeLabels[interaction.purpose] || interaction.purpose || 'Échange')}</strong><span>${escapeHtml(interactionChannelLabels[interaction.channel] || interaction.channel || 'Canal non précisé')}${interaction.outcome ? ` · ${escapeHtml(interactionOutcomeLabels[interaction.outcome] || interaction.outcome)}` : ''}</span><small>${escapeHtml(formatDate(interaction.occurred_at))}</small>${interaction.summary ? `<p>${escapeHtml(interaction.summary)}</p>` : ''}</li>`).join('')}</ol>` : '<div class="empty compact-empty">Aucune interaction enregistrée.</div>'}</section>`;
+
+    const phone = contacts.find((ct) => ct.kind === 'phone' && ct.value_display)?.value_display || null;
+    const telHref = phone ? String(phone).replace(/[^+\d]/g, '') : '';
+    const lastOrderAt = orders.reduce((max, o) => { const t = new Date(o.created_at).getTime(); return t > max ? t : max; }, 0);
+    const avatarRow = { id: customer.id, display_name: customer.display_name };
+
+    const tabAperçu = `
+      <div class="fiche-grid">
+        <section class="fiche-card"><h3>Informations</h3><dl class="fiche-dl">
+          <div><dt>Secteur</dt><dd>${escapeHtml(customer.sector || '—')}</dd></div>
+          <div><dt>Langue préférée</dt><dd>${escapeHtml(customer.preferred_language || 'Non renseignée')}</dd></div>
+          <div><dt>Création de la fiche</dt><dd>${escapeHtml(formatDate(customer.created_at))}</dd></div>
+          <div><dt>Téléphone principal</dt><dd>${escapeHtml(phone || '—')}</dd></div>
+        </dl>${customer.service_notes ? `<div class="notice"><strong>Note de service</strong><p>${escapeHtml(customer.service_notes)}</p></div>` : ''}</section>
+        <section class="fiche-card"><h3>Résumé</h3><div class="fiche-mini">
+          <div><span>Commandes</span><strong>${formatInteger(orders.length)}</strong></div>
+          <div><span>Lieux connus</span><strong>${formatInteger(locations.length)}</strong></div>
+          <div><span>Contacts</span><strong>${formatInteger(contacts.length)}</strong></div>
+          <div><span>Interactions</span><strong>${formatInteger(interactions.length)}</strong></div>
+        </div></section>
+      </div>`;
+    const tabContacts = contacts.length
+      ? `<section class="fiche-card"><ul class="crm-contact-list">${contacts.map(contactMarkup).join('')}</ul></section>`
+      : '<div class="cli-empty"><strong>Aucun contact enregistré.</strong><p>Les contacts s\'ajoutent à partir des commandes.</p></div>';
+    const tabLieux = locations.length
+      ? `<p class="section-hint" style="margin:0 2px 12px">Les coordonnées GPS restent protégées et ne sont pas affichées ici.</p><div class="crm-subcard-list">${locations.map(locationMarkup).join('')}</div>`
+      : '<div class="cli-empty"><strong>Aucun lieu enregistré.</strong><p>Les lieux de livraison apparaissent à partir des commandes.</p></div>';
+    const tabCommandes = orders.length
+      ? `<section class="fiche-card"><div class="table-wrap"><table class="cli-table"><thead><tr><th>Commande</th><th>Créée le</th><th>Destination</th><th>Livreur</th><th>État</th></tr></thead><tbody>${orders.map((order) => `<tr><td><a href="/app/commandes/${encodeURIComponent(order.id)}"><strong>${escapeHtml(orderCode(order.reference, order.id))}</strong></a></td><td>${escapeHtml(formatDate(order.created_at))}</td><td>${escapeHtml(order.neighborhood || order.landmark || '—')}</td><td>${escapeHtml(order.driver_name || '—')}</td><td>${badge(order.status)}</td></tr>`).join('')}</tbody></table></div></section>`
+      : '<div class="cli-empty"><strong>Aucune commande liée.</strong><p>Créez une commande pour ce client.</p></div>';
+    const tabActivite = interactions.length
+      ? `<section class="fiche-card"><ol class="timeline">${interactions.map((interaction) => `<li><strong>${escapeHtml(interactionPurposeLabels[interaction.purpose] || interaction.purpose || 'Échange')}</strong><span>${escapeHtml(interactionChannelLabels[interaction.channel] || interaction.channel || 'Canal non précisé')}${interaction.outcome ? ` · ${escapeHtml(interactionOutcomeLabels[interaction.outcome] || interaction.outcome)}` : ''}</span><small>${escapeHtml(formatDate(interaction.occurred_at))}</small>${interaction.summary ? `<p>${escapeHtml(interaction.summary)}</p>` : ''}</li>`).join('')}</ol></section>`
+      : '<div class="cli-empty"><strong>Aucune interaction enregistrée.</strong><p>L\'historique des échanges apparaîtra ici.</p></div>';
+    const tabs = { apercu: tabAperçu, contacts: tabContacts, lieux: tabLieux, commandes: tabCommandes, activite: tabActivite };
+
+    page.innerHTML = `<div class="fiche">
+      <a class="fiche-back" href="/app/clients">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>'} Retour aux clients</a>
+      <header class="fiche-head">
+        ${customerAvatarHtml(avatarRow, 'cli-av cli-av-lg')}
+        <div class="fiche-head-main"><h1>${escapeHtml(customer.display_name || 'Client sans nom')}</h1><p>${escapeHtml(customerCode(customer))}${customer.sector ? ` · ${escapeHtml(customer.sector)}` : ''}</p></div>
+        ${customerStatusBadge(customer.status)}
+        <div class="fiche-actions">
+          <a class="button secondary" href="/app/nouvelle-commande">Nouvelle commande</a>
+          ${telHref ? `<a class="button secondary" href="tel:${escapeHtml(telHref)}">Appeler</a>` : ''}
+          <button type="button" class="button secondary" id="ficheArchive">Archiver</button>
+        </div>
+      </header>
+      <nav class="fiche-tabs" id="ficheTabs">
+        <button type="button" class="fiche-tab active" data-tab="apercu">Aperçu</button>
+        <button type="button" class="fiche-tab" data-tab="contacts">Contacts <span class="fiche-tabn">${formatInteger(contacts.length)}</span></button>
+        <button type="button" class="fiche-tab" data-tab="lieux">Lieux <span class="fiche-tabn">${formatInteger(locations.length)}</span></button>
+        <button type="button" class="fiche-tab" data-tab="commandes">Commandes <span class="fiche-tabn">${formatInteger(orders.length)}</span></button>
+        <button type="button" class="fiche-tab" data-tab="activite">Activité <span class="fiche-tabn">${formatInteger(interactions.length)}</span></button>
+      </nav>
+      <div class="fiche-body" id="ficheBody">${tabs.apercu}</div>
+    </div>`;
+
+    const bodyEl = document.getElementById('ficheBody');
+    document.querySelectorAll('.fiche-tab').forEach((tab) => tab.addEventListener('click', () => {
+      document.querySelectorAll('.fiche-tab').forEach((t) => t.classList.toggle('active', t === tab));
+      bodyEl.innerHTML = tabs[tab.dataset.tab] || '';
+    }));
+    document.getElementById('ficheArchive')?.addEventListener('click', async () => {
+      if (!confirm('Archiver ce client ? Il n\'apparaîtra plus dans la liste par défaut.')) return;
+      try {
+        await api(`/api/app/crm/customers/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'archived' }) });
+        location.href = '/app/clients';
+      } catch (error) { alert(error.message || 'Archivage impossible.'); }
+    });
   } catch (error) {
     page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">Fiche client</h1></div></div><div class="notice error" role="alert"><strong>Impossible de charger cette fiche.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryCustomerDetail" type="button">Réessayer</button></div>`;
     document.getElementById('retryCustomerDetail')?.addEventListener('click', () => renderCustomerDetail(id));

@@ -2919,7 +2919,10 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
           AND search_contact.is_active = TRUE
           AND search_contact.value_display ILIKE $2
       ))
-      AND ($3::text IS NULL OR c.status = $3)`;
+      AND ($3::text IS NULL OR c.status = $3)
+      -- Par défaut on masque les fiches archivées/fusionnées/anonymisées ;
+      -- elles restent accessibles via un filtre de statut explicite.
+      AND ($3::text IS NOT NULL OR c.status NOT IN ('archived', 'merged', 'anonymized'))`;
     // Stade d'engagement dérivé (Nouveau / Actif / À relancer / Inactif) à partir de
     // l'ancienneté de la dernière commande, de la date de création et du nombre de
     // commandes — distinct de c.status (actif/ne pas contacter/archivé).
@@ -3011,6 +3014,12 @@ app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res
   if (!displayName) return res.status(400).json({ error: 'Le nom du client est requis.' });
   const sector = String(req.body?.sector ?? req.body?.customerType ?? req.body?.customer_type ?? '').trim().slice(0, 120) || null;
   const phone = String(req.body?.phone ?? '').trim().slice(0, 320);
+  // Validation du téléphone : rejette la saisie sans chiffres exploitables
+  // (ex. « essai »), source de fiches parasites.
+  if (phone) {
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length < 6) return res.status(400).json({ error: 'Numéro de téléphone invalide.' });
+  }
   const created = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const inserted = await client.query(
       `INSERT INTO customers (company_id, customer_code, sector, display_name, status,
@@ -3077,6 +3086,75 @@ app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req
   ));
   if (!result.rows[0]) return res.status(404).json({ error: 'Client introuvable.' });
   return res.json({ id: result.rows[0].id });
+}));
+
+// Doublons potentiels d'un client : autres fiches partageant un téléphone
+// normalisé identique.
+app.get('/api/app/crm/customers/:id/duplicates', requireCompanyApi, asyncRoute(async (req, res) => {
+  const customerId = Number(req.params.id);
+  if (!Number.isInteger(customerId) || customerId < 1) return res.status(404).json({ error: 'Client introuvable.' });
+  const rows = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    const result = await client.query(
+      `WITH me AS (
+         SELECT DISTINCT value_normalized FROM customer_contacts
+         WHERE company_id = $1 AND customer_id = $2 AND kind = 'phone'
+           AND is_active = TRUE AND value_normalized IS NOT NULL AND value_normalized <> ''
+       )
+       SELECT c.id, c.customer_code, c.display_name, c.status,
+              MIN(cc.value_display) AS primary_phone,
+              (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id)::int AS order_count
+       FROM customers c
+       JOIN customer_contacts cc ON cc.company_id = c.company_id AND cc.customer_id = c.id
+         AND cc.kind = 'phone' AND cc.is_active = TRUE
+       WHERE c.company_id = $1 AND c.id <> $2
+         AND c.status NOT IN ('merged', 'anonymized')
+         AND cc.value_normalized IN (SELECT value_normalized FROM me)
+       GROUP BY c.id
+       ORDER BY order_count DESC, c.id ASC
+       LIMIT 20`,
+      [req.auth.company_id, customerId]
+    );
+    return result.rows;
+  });
+  return res.json({ duplicates: rows });
+}));
+
+// Fusion douce : bascule l'historique (commandes, demandes) du doublon vers la
+// fiche cible et marque le doublon « merged » (redirection). Ne re-parente pas
+// les contacts/lieux (FK composites) : approche sûre pour le MVP.
+app.post('/api/app/crm/customers/:id/merge', requireCompanyApi, asyncRoute(async (req, res) => {
+  const targetId = Number(req.params.id);
+  const sourceId = Number(req.body?.sourceId);
+  if (!Number.isInteger(targetId) || targetId < 1) return res.status(404).json({ error: 'Fiche cible introuvable.' });
+  if (!Number.isInteger(sourceId) || sourceId < 1) return res.status(400).json({ error: 'Doublon invalide.' });
+  if (targetId === sourceId) return res.status(400).json({ error: 'Impossible de fusionner une fiche avec elle-même.' });
+  try {
+    const merged = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+      const both = await client.query(
+        `SELECT id, status FROM customers WHERE company_id = $1 AND id IN ($2, $3) FOR UPDATE`,
+        [req.auth.company_id, targetId, sourceId]
+      );
+      const target = both.rows.find((row) => row.id === targetId);
+      const source = both.rows.find((row) => row.id === sourceId);
+      if (!target || !source) { const err = new Error('Fiche introuvable.'); err.code = 'NOT_FOUND'; throw err; }
+      if (target.status === 'merged') { const err = new Error('La fiche cible est déjà fusionnée.'); err.code = 'BAD'; throw err; }
+      if (source.status === 'merged') { const err = new Error('Ce doublon est déjà fusionné.'); err.code = 'BAD'; throw err; }
+      await client.query(`UPDATE orders SET customer_id = $1 WHERE company_id = $2 AND customer_id = $3`, [targetId, req.auth.company_id, sourceId]);
+      await client.query(`UPDATE customer_requests SET customer_id = $1 WHERE company_id = $2 AND customer_id = $3`, [targetId, req.auth.company_id, sourceId]);
+      await client.query(
+        `UPDATE customers SET status = 'merged', merged_into_customer_id = $1,
+           updated_by_user_id = $2, updated_at = NOW(), version = version + 1
+         WHERE company_id = $3 AND id = $4`,
+        [targetId, req.auth.user_id || null, req.auth.company_id, sourceId]
+      );
+      return { targetId, sourceId };
+    });
+    return res.json({ ok: true, ...merged });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') return res.status(404).json({ error: error.message });
+    if (error.code === 'BAD') return res.status(409).json({ error: error.message });
+    throw error;
+  }
 }));
 
 app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, res) => {

@@ -2859,6 +2859,16 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
   if (status && !allowedStatuses.includes(status)) {
     return res.status(400).json({ error: 'État client invalide.' });
   }
+  const allowedStages = ['nouveau', 'actif', 'a_relancer', 'inactif'];
+  const stage = req.query.stage && allowedStages.includes(String(req.query.stage)) ? String(req.query.stage) : null;
+  const sortMap = {
+    recent: 'last_activity_at DESC NULLS LAST, updated_at DESC, id DESC',
+    oldest: 'last_activity_at ASC NULLS FIRST, id ASC',
+    name: 'display_name ASC, id ASC',
+    orders: 'order_count DESC, id DESC',
+  };
+  const sort = sortMap[String(req.query.sort)] ? String(req.query.sort) : 'recent';
+
   const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const values = [req.auth.company_id, query ? `%${query}%` : null, status];
     const filters = `c.company_id = $1
@@ -2870,37 +2880,71 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
           AND search_contact.value_display ILIKE $2
       ))
       AND ($3::text IS NULL OR c.status = $3)`;
-    const [countResult, customersResult] = await Promise.all([
-      client.query(`SELECT COUNT(*)::int AS total FROM customers c WHERE ${filters}`, values),
-      client.query(
-        `SELECT c.id, c.customer_code, c.display_name, c.status, c.updated_at,
-                primary_contact.value_display AS primary_phone,
-                COUNT(DISTINCT o.id)::int AS order_count,
-                COUNT(DISTINCT l.id) FILTER (WHERE l.is_active = TRUE)::int AS location_count,
-                MAX(o.created_at) AS last_order_at,
-                COUNT(DISTINCT i.id) FILTER (WHERE i.status = 'open')::int AS open_incident_count
-         FROM customers c
-         LEFT JOIN LATERAL (
-           SELECT cc.value_display FROM customer_contacts cc
-           WHERE cc.company_id = c.company_id AND cc.customer_id = c.id
-             AND cc.kind = 'phone' AND cc.is_active = TRUE
-           ORDER BY cc.is_primary DESC, cc.id ASC LIMIT 1
-         ) primary_contact ON TRUE
-         LEFT JOIN orders o ON o.company_id = c.company_id AND o.customer_id = c.id
-         LEFT JOIN customer_locations l ON l.company_id = c.company_id AND l.customer_id = c.id
-         LEFT JOIN delivery_incidents i ON i.company_id = c.company_id AND i.order_id = o.id
-         WHERE ${filters}
-         GROUP BY c.id, primary_contact.value_display
-         ORDER BY MAX(o.created_at) DESC NULLS LAST, c.updated_at DESC, c.id DESC
-         LIMIT $4 OFFSET $5`,
-        [...values, limit, (pageNumber - 1) * limit]
+    // Stade d'engagement dérivé (Nouveau / Actif / À relancer / Inactif) à partir de
+    // l'ancienneté de la dernière commande, de la date de création et du nombre de
+    // commandes — distinct de c.status (actif/ne pas contacter/archivé).
+    const baseCte = `
+      WITH base AS (
+        SELECT c.id, c.customer_code, c.customer_type, c.display_name, c.status,
+               c.created_at, c.updated_at,
+               primary_contact.value_display AS primary_phone,
+               loc.locality AS primary_locality, loc.neighborhood AS primary_neighborhood,
+               lastord.status AS last_order_status, lastord.created_at AS last_order_at,
+               COUNT(DISTINCT o.id)::int AS order_count,
+               COUNT(DISTINCT l.id) FILTER (WHERE l.is_active = TRUE)::int AS location_count,
+               COUNT(DISTINCT i.id) FILTER (WHERE i.status = 'open')::int AS open_incident_count
+        FROM customers c
+        LEFT JOIN LATERAL (
+          SELECT cc.value_display FROM customer_contacts cc
+          WHERE cc.company_id = c.company_id AND cc.customer_id = c.id
+            AND cc.kind = 'phone' AND cc.is_active = TRUE
+          ORDER BY cc.is_primary DESC, cc.id ASC LIMIT 1
+        ) primary_contact ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT cl.locality, cl.neighborhood FROM customer_locations cl
+          WHERE cl.company_id = c.company_id AND cl.customer_id = c.id AND cl.is_active = TRUE
+          ORDER BY cl.last_used_at DESC NULLS LAST, cl.id DESC LIMIT 1
+        ) loc ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT o2.status, o2.created_at FROM orders o2
+          WHERE o2.company_id = c.company_id AND o2.customer_id = c.id
+          ORDER BY o2.created_at DESC LIMIT 1
+        ) lastord ON TRUE
+        LEFT JOIN orders o ON o.company_id = c.company_id AND o.customer_id = c.id
+        LEFT JOIN customer_locations l ON l.company_id = c.company_id AND l.customer_id = c.id
+        LEFT JOIN delivery_incidents i ON i.company_id = c.company_id AND i.order_id = o.id
+        WHERE ${filters}
+        GROUP BY c.id, primary_contact.value_display, loc.locality, loc.neighborhood, lastord.status, lastord.created_at
       ),
+      staged AS (
+        SELECT *,
+          COALESCE(last_order_at, created_at) AS last_activity_at,
+          CASE
+            WHEN last_order_at IS NULL AND created_at >= NOW() - INTERVAL '30 days' THEN 'nouveau'
+            WHEN last_order_at IS NULL THEN 'inactif'
+            WHEN created_at >= NOW() - INTERVAL '21 days' AND order_count <= 2 THEN 'nouveau'
+            WHEN last_order_at >= NOW() - INTERVAL '30 days' THEN 'actif'
+            WHEN last_order_at >= NOW() - INTERVAL '90 days' THEN 'a_relancer'
+            ELSE 'inactif'
+          END AS stage
+        FROM base
+      )`;
+    const stageFilter = stage ? ` WHERE stage = $${values.length + 1}` : '';
+    const scopedValues = stage ? [...values, stage] : values;
+    const listValues = [...scopedValues, limit, (pageNumber - 1) * limit];
+    const [countResult, rowsResult, stageCountsResult] = await Promise.all([
+      client.query(`${baseCte} SELECT COUNT(*)::int AS total FROM staged${stageFilter}`, scopedValues),
+      client.query(`${baseCte} SELECT * FROM staged${stageFilter} ORDER BY ${sortMap[sort]} LIMIT $${listValues.length - 1} OFFSET $${listValues.length}`, listValues),
+      client.query(`${baseCte} SELECT stage, COUNT(*)::int AS total FROM staged GROUP BY stage`, values),
     ]);
-    return { total: countResult.rows[0].total, customers: customersResult.rows };
+    const stageCounts = { nouveau: 0, actif: 0, a_relancer: 0, inactif: 0 };
+    for (const row of stageCountsResult.rows) if (row.stage in stageCounts) stageCounts[row.stage] = row.total;
+    return { total: countResult.rows[0].total, customers: rowsResult.rows, stageCounts };
   });
   const totalPages = Math.max(1, Math.ceil(result.total / limit));
   return res.json({
     customers: result.customers,
+    stageCounts: result.stageCounts,
     pagination: {
       page: pageNumber,
       limit,
@@ -2908,8 +2952,42 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
       totalPages,
       hasPrevious: pageNumber > 1,
       hasNext: pageNumber < totalPages,
+      sort,
+      stage,
     },
   });
+}));
+
+// Création manuelle d'un client depuis le CRM (bouton « Nouveau client »).
+app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
+  const displayName = String(req.body?.displayName ?? req.body?.display_name ?? '').trim().slice(0, 200);
+  if (!displayName) return res.status(400).json({ error: 'Le nom du client est requis.' });
+  const customerType = String(req.body?.customerType ?? req.body?.customer_type ?? '').trim().slice(0, 120) || null;
+  const phone = String(req.body?.phone ?? '').trim().slice(0, 320);
+  const created = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    const inserted = await client.query(
+      `INSERT INTO customers (company_id, customer_code, customer_type, display_name, status,
+         created_by_user_id, updated_by_user_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', $5, $5, NOW(), NOW())
+       RETURNING id`,
+      [req.auth.company_id, `MANUAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, customerType, displayName, req.auth.user_id || null]
+    );
+    const id = inserted.rows[0].id;
+    await client.query(
+      `UPDATE customers SET customer_code = $1 WHERE id = $2 AND company_id = $3`,
+      [`CL-${String(id).padStart(4, '0')}`, id, req.auth.company_id]
+    );
+    if (phone) {
+      await client.query(
+        `INSERT INTO customer_contacts (company_id, customer_id, kind, value_display, value_normalized,
+           is_primary, created_by_user_id, updated_by_user_id)
+         VALUES ($1, $2, 'phone', $3, $4, TRUE, $5, $5)`,
+        [req.auth.company_id, id, phone, phone.replace(/[^\d+]/g, ''), req.auth.user_id || null]
+      );
+    }
+    return id;
+  });
+  return res.status(201).json({ id: created, customer_code: `CL-${String(created).padStart(4, '0')}` });
 }));
 
 app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, res) => {

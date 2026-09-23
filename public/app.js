@@ -3220,87 +3220,351 @@ function paginationState(raw, itemCount) {
   };
 }
 
-function customerListMarkup(customers, pagination, hasFilters) {
-  if (!customers.length) {
-    return `<div class="empty crm-empty"><strong>${hasFilters ? 'Aucun client ne correspond à cette recherche.' : 'Aucun client enregistré pour le moment.'}</strong>
-      <p>${hasFilters ? 'Modifiez les critères ou affichez tous les clients.' : 'Les fiches apparaîtront ici à partir des commandes.'}</p>
-      ${hasFilters ? '<button class="secondary" id="clearCustomerFilters" type="button">Effacer les filtres</button>' : '<a class="button primary" href="/app/nouvelle-commande">Créer une commande</a>'}
-    </div>`;
+const CUSTOMER_STAGES = {
+  nouveau: { label: 'Nouveau', plural: 'Nouveaux', dot: '#7c3aed', bg: '#f3e8ff', text: '#6b21a8' },
+  actif: { label: 'Actif', plural: 'Actifs', dot: '#16a34a', bg: '#e7f6ec', text: '#15803d' },
+  a_relancer: { label: 'À relancer', plural: 'À relancer', dot: '#d97706', bg: '#fdf0dd', text: '#b45309' },
+  inactif: { label: 'Inactif', plural: 'Inactifs', dot: '#94a3b8', bg: '#eef1f5', text: '#64748b' },
+};
+const CUSTOMER_AVATAR_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#16a34a', '#db2777', '#d97706', '#4f46e5', '#0d9488'];
+
+function customerCode(row) {
+  const code = String(row.customer_code || '');
+  if (/^CL-\d+/i.test(code)) return code.toUpperCase();
+  return `CL-${String(row.id).padStart(4, '0')}`;
+}
+function customerInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+}
+function customerAvatarColor(row) {
+  const key = String(row.id || row.display_name || '');
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return CUSTOMER_AVATAR_COLORS[hash % CUSTOMER_AVATAR_COLORS.length];
+}
+function customerStage(row) {
+  return CUSTOMER_STAGES[row.stage] ? row.stage : 'inactif';
+}
+function customerActivity(row) {
+  const at = row.last_order_at || row.last_activity_at || row.updated_at;
+  const dateStr = at ? formatDate(at) : '—';
+  let event = 'Aucune activité récente';
+  const last = row.last_order_at ? new Date(row.last_order_at).getTime() : null;
+  if (last != null && Number.isFinite(last)) {
+    const age = Date.now() - last;
+    if (row.last_order_status === 'Livrée') event = 'Commande livrée';
+    else if (age <= 3 * 86400000) event = 'Nouvelle commande';
+    else if (age <= 30 * 86400000) event = `Commande ${row.last_order_status || 'en cours'}`;
+    else event = 'Aucune activité récente';
   }
-  const state = paginationState(pagination, customers.length);
-  const totalLabel = state.total == null ? `${customers.length} client${customers.length > 1 ? 's' : ''} affiché${customers.length > 1 ? 's' : ''}` : `${formatInteger(state.total)} client${state.total > 1 ? 's' : ''}`;
-  return `<div class="crm-list-meta"><p>${escapeHtml(totalLabel)}</p><p>Page ${escapeHtml(state.currentPage)} sur ${escapeHtml(state.totalPages)}</p></div>
-    <div class="customer-list">${customers.map((customer) => `<article class="customer-card">
-      <div class="customer-card-heading"><div><h2><a href="/app/clients/${encodeURIComponent(customer.id)}">${escapeHtml(customer.display_name || 'Client sans nom')}</a></h2><p>${escapeHtml(customer.primary_phone || 'Téléphone non renseigné')}</p></div>${customerStatusBadge(customer.status)}</div>
-      <dl class="customer-summary">
-        <div><dt>Commandes</dt><dd>${formatInteger(customer.order_count)}</dd></div>
-        <div><dt>Lieux connus</dt><dd>${formatInteger(customer.location_count)}</dd></div>
-        <div><dt>Incidents ouverts</dt><dd>${formatInteger(customer.open_incident_count)}</dd></div>
-        <div><dt>Dernière commande</dt><dd>${escapeHtml(formatDate(customer.last_order_at))}</dd></div>
-      </dl>
-      <a class="customer-open" href="/app/clients/${encodeURIComponent(customer.id)}" aria-label="Ouvrir la fiche de ${escapeHtml(customer.display_name || 'ce client')}">Ouvrir la fiche <span aria-hidden="true">→</span></a>
-    </article>`).join('')}</div>
-    <nav class="pagination" aria-label="Pages de clients">
-      <button class="secondary" id="customerPrevious" type="button" ${state.hasPrevious ? '' : 'disabled'}>Page précédente</button>
-      <span>Page ${escapeHtml(state.currentPage)} sur ${escapeHtml(state.totalPages)}</span>
-      <button class="secondary" id="customerNext" type="button" ${state.hasNext ? '' : 'disabled'}>Page suivante</button>
-    </nav>`;
+  return { dateStr, event };
+}
+function customerStageBadge(row) {
+  const meta = CUSTOMER_STAGES[customerStage(row)];
+  return `<span class="cli-badge" style="background:${meta.bg};color:${meta.text}"><i style="background:${meta.dot}"></i>${meta.label}</span>`;
+}
+function customerAvatarHtml(row, cls = 'cli-av') {
+  return `<span class="${cls}" style="background:${customerAvatarColor(row)}">${escapeHtml(customerInitials(row.display_name))}</span>`;
 }
 
 async function renderCustomers() {
-  setHeader('Clients', 'Historique, contacts et lieux de livraison');
-  const initial = new URLSearchParams(location.search);
-  const initialStatus = ['active', 'do_not_contact', 'archived'].includes(initial.get('status')) ? initial.get('status') : '';
-  page.innerHTML = `<div class="page-header"><div><h1>Clients</h1><p class="subtitle">Retrouvez les informations utiles issues des commandes, sans afficher les coordonnées GPS.</p></div></div>
-    <section class="card crm-filter-card"><form id="customerSearch" class="crm-search" role="search">
-      <div class="field"><label for="customerQuery">Nom ou téléphone</label><input id="customerQuery" name="q" type="search" value="${escapeHtml(initial.get('q') || '')}" maxlength="120" autocomplete="off" placeholder="Ex. Afi ou 97 00 00 00" /></div>
-      <div class="field"><label for="customerStatus">État du client</label><select id="customerStatus" name="status"><option value="">Tous les états</option><option value="active" ${initialStatus === 'active' ? 'selected' : ''}>Actif</option><option value="do_not_contact" ${initialStatus === 'do_not_contact' ? 'selected' : ''}>Ne pas contacter</option><option value="archived" ${initialStatus === 'archived' ? 'selected' : ''}>Archivé</option></select></div>
-      <div class="actions crm-search-actions"><button class="primary" type="submit">Rechercher</button><button class="secondary" id="resetCustomerSearch" type="button">Réinitialiser</button></div>
-    </form></section>
-    <section class="card crm-results" aria-labelledby="customerResultsTitle"><h2 id="customerResultsTitle">Résultats</h2><div id="customerResults" aria-live="polite"></div></section>`;
+  setHeader('Clients', 'Gérez vos clients, suivez leurs commandes et leurs lieux de livraison.');
+  page.classList.add('page-crm');
+  const ic = {
+    crm: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+    gallery: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+    pipeline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="12" y1="4" x2="12" y2="14"/><line x1="18" y1="4" x2="18" y2="18"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
+    filter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>',
+    sort: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5h10"/><path d="M11 9h7"/><path d="M11 13h4"/><path d="m3 17 3 3 3-3"/><path d="M6 18V4"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+    phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
+    building: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M9 6h.01M15 6h.01M9 10h.01M15 10h.01M9 14h.01M15 14h.01"/></svg>',
+    cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>',
+    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
+    cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
+    ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  };
 
-  const form = document.getElementById('customerSearch');
-  const target = document.getElementById('customerResults');
-  let currentPage = Math.max(1, Number(initial.get('page')) || 1);
+  const initial = new URLSearchParams(location.search);
+  const state = {
+    view: ['crm', 'gallery', 'pipeline'].includes(initial.get('vue')) ? initial.get('vue') : 'crm',
+    q: initial.get('q') || '',
+    stage: ['nouveau', 'actif', 'a_relancer', 'inactif'].includes(initial.get('stage')) ? initial.get('stage') : '',
+    sort: ['recent', 'oldest', 'name', 'orders'].includes(initial.get('sort')) ? initial.get('sort') : 'recent',
+    page: Math.max(1, Number(initial.get('page')) || 1),
+    perPage: [10, 20, 50].includes(Number(initial.get('per'))) ? Number(initial.get('per')) : 10,
+  };
+  const SORT_LABELS = { recent: 'Activité récente', oldest: 'Plus ancien', name: 'Nom (A→Z)', orders: 'Nb de commandes' };
+
+  page.innerHTML = `<div class="cli">
+    <div class="cli-toolbar">
+      <div class="cli-tabs" role="tablist">
+        <button type="button" class="cli-tab" data-view="crm">${ic.crm}<span>CRM</span></button>
+        <button type="button" class="cli-tab" data-view="gallery">${ic.gallery}<span>Gallery</span></button>
+        <button type="button" class="cli-tab" data-view="pipeline">${ic.pipeline}<span>Pipeline</span></button>
+      </div>
+      <div class="cli-tools">
+        <div class="cli-search"><span class="cli-search-ic">${ic.search}</span><input type="search" id="cliQuery" placeholder="Rechercher un client, un téléphone ou une adresse…" autocomplete="off" value="${escapeHtml(state.q)}"></div>
+        <div class="cli-menu" id="cliFilterMenu"><button type="button" class="cli-tool-btn" id="cliFilterBtn">${ic.filter}<span>Filtrer</span><b class="cli-caret"></b></button></div>
+        <div class="cli-menu" id="cliSortMenu"><button type="button" class="cli-tool-btn" id="cliSortBtn">${ic.sort}<span>Trier par</span><b class="cli-caret"></b></button></div>
+        <button type="button" class="button primary cli-new" id="cliNew">${ic.plus}<span>Nouveau client</span></button>
+      </div>
+    </div>
+    <div id="cliBody" class="cli-body" aria-live="polite"></div>
+  </div>`;
+
+  const body = document.getElementById('cliBody');
+  const queryInput = document.getElementById('cliQuery');
   let loading = false;
 
-  const clearFilters = () => {
-    form.reset();
-    document.getElementById('customerQuery').value = '';
-    document.getElementById('customerStatus').value = '';
-    currentPage = 1;
-    loadCustomers();
+  const syncUrl = () => {
+    const p = new URLSearchParams();
+    if (state.view !== 'crm') p.set('vue', state.view);
+    if (state.q) p.set('q', state.q);
+    if (state.stage) p.set('stage', state.stage);
+    if (state.sort !== 'recent') p.set('sort', state.sort);
+    if (state.page > 1) p.set('page', String(state.page));
+    if (state.perPage !== 10) p.set('per', String(state.perPage));
+    history.replaceState(null, '', `/app/clients${p.toString() ? `?${p}` : ''}`);
   };
-  const loadCustomers = async () => {
+  const syncTabs = () => {
+    document.querySelectorAll('.cli-tab').forEach((t) => t.classList.toggle('active', t.dataset.view === state.view));
+  };
+
+  const pagerHtml = (pagination) => {
+    const total = pagination.total ?? 0;
+    const from = total === 0 ? 0 : (state.page - 1) * state.perPage + 1;
+    const to = Math.min(total, state.page * state.perPage);
+    const totalPages = pagination.totalPages || 1;
+    const nums = [];
+    const push = (n) => nums.push(`<button type="button" class="cli-page ${n === state.page ? 'active' : ''}" data-page="${n}">${n}</button>`);
+    if (totalPages <= 7) { for (let n = 1; n <= totalPages; n += 1) push(n); }
+    else {
+      push(1);
+      let start = Math.max(2, state.page - 1);
+      let end = Math.min(totalPages - 1, state.page + 1);
+      if (state.page <= 3) { start = 2; end = 5; }
+      if (state.page >= totalPages - 2) { start = totalPages - 4; end = totalPages - 1; }
+      if (start > 2) nums.push('<span class="cli-ellipsis">…</span>');
+      for (let n = start; n <= end; n += 1) push(n);
+      if (end < totalPages - 1) nums.push('<span class="cli-ellipsis">…</span>');
+      push(totalPages);
+    }
+    return `<div class="cli-pager">
+      <span class="cli-pager-info">Affichage de ${from} à ${to} sur ${formatInteger(total)} clients</span>
+      <div class="cli-pager-nav">
+        <button type="button" class="cli-page cli-arrow" data-page="${state.page - 1}" ${state.page <= 1 ? 'disabled' : ''}>‹</button>
+        ${nums.join('')}
+        <button type="button" class="cli-page cli-arrow" data-page="${state.page + 1}" ${state.page >= totalPages ? 'disabled' : ''}>›</button>
+      </div>
+      <div class="cli-perpage"><select id="cliPer">${[10, 20, 50].map((n) => `<option value="${n}" ${state.perPage === n ? 'selected' : ''}>${n} par page</option>`).join('')}</select></div>
+    </div>`;
+  };
+
+  const crmRow = (row) => {
+    const act = customerActivity(row);
+    return `<tr data-id="${escapeHtml(row.id)}">
+      <td class="cli-check"><input type="checkbox" class="cli-row-check" aria-label="Sélectionner ${escapeHtml(row.display_name || '')}"></td>
+      <td class="cli-id">${escapeHtml(customerCode(row))}</td>
+      <td><div class="cli-name">${customerAvatarHtml(row)}<span class="cli-name-main"><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong><small>${escapeHtml(row.customer_type || '—')}</small></span></div></td>
+      <td><span class="cli-inline">${ic.phone}${escapeHtml(row.primary_phone || '—')}</span></td>
+      <td>${customerStageBadge(row)}</td>
+      <td class="cli-num">${formatInteger(row.order_count)}</td>
+      <td><span class="cli-inline">${ic.pin}${escapeHtml(row.primary_locality || row.primary_neighborhood || '—')}</span></td>
+      <td><div class="cli-activity"><strong>${escapeHtml(act.dateStr)}</strong><small>${escapeHtml(act.event)}</small></div></td>
+      <td class="cli-actions"><a class="cli-open" href="/app/clients/${encodeURIComponent(row.id)}">${ic.ext}<span>Ouvrir la fiche</span></a><button type="button" class="cli-kebab" aria-label="Plus d'actions">⋮</button></td>
+    </tr>`;
+  };
+
+  const galleryCard = (row) => {
+    const act = customerActivity(row);
+    return `<article class="cli-gcard">
+      <div class="cli-gcard-head">${customerAvatarHtml(row, 'cli-av cli-av-lg')}<div class="cli-gcard-id"><small>${escapeHtml(customerCode(row))}</small><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong></div>${customerStageBadge(row)}</div>
+      <div class="cli-gcard-grid">
+        <div class="cli-inline">${ic.phone}${escapeHtml(row.primary_phone || '—')}</div>
+        <div class="cli-inline">${ic.building}${escapeHtml(row.customer_type || '—')}</div>
+        <div class="cli-inline">${ic.cart}${formatInteger(row.order_count)} commandes</div>
+        <div class="cli-inline">${ic.pin}${formatInteger(row.location_count)} lieux connus</div>
+      </div>
+      <div class="cli-gcard-foot">
+        <div class="cli-inline cli-gcard-act">${ic.cal}<div><small>Dernière activité</small><strong>${escapeHtml(act.dateStr)}</strong></div></div>
+        <a class="cli-open" href="/app/clients/${encodeURIComponent(row.id)}">${ic.ext}<span>Ouvrir la fiche</span></a>
+        <button type="button" class="cli-kebab" aria-label="Plus d'actions">⋮</button>
+      </div>
+    </article>`;
+  };
+
+  const pipeCard = (row) => {
+    const act = customerActivity(row);
+    const st = customerStage(row);
+    return `<article class="cli-pcard" data-href="/app/clients/${encodeURIComponent(row.id)}">
+      <div class="cli-pcard-head">${customerAvatarHtml(row)}<div class="cli-pcard-id"><small>${escapeHtml(customerCode(row))}</small><strong>${escapeHtml(row.display_name || 'Client sans nom')}</strong><small>${escapeHtml(row.customer_type || '—')}</small></div><span class="cli-pcard-chev">${ic.chev}</span></div>
+      <div class="cli-pcard-meta">
+        <div class="cli-inline">${ic.pin}${escapeHtml(row.primary_locality || row.primary_neighborhood || '—')}</div>
+        <div class="cli-inline">${ic.cart}${formatInteger(row.order_count)} commandes</div>
+        <div class="cli-inline">${ic.clock}Dernière activité : ${escapeHtml(act.dateStr)}</div>
+      </div>
+      <span class="cli-tag" style="background:${CUSTOMER_STAGES[st].bg};color:${CUSTOMER_STAGES[st].text}">${CUSTOMER_STAGES[st].label}</span>
+    </article>`;
+  };
+
+  const bindRows = () => {
+    body.querySelectorAll('.cli-pcard[data-href]').forEach((el) => el.addEventListener('click', (event) => {
+      if (event.target.closest('a,button')) return;
+      location.href = el.dataset.href;
+    }));
+    const all = body.querySelector('#cliAll');
+    if (all) all.addEventListener('change', () => {
+      body.querySelectorAll('.cli-row-check').forEach((c) => { c.checked = all.checked; c.closest('tr').classList.toggle('sel', all.checked); });
+    });
+    body.querySelectorAll('.cli-row-check').forEach((c) => c.addEventListener('change', () => c.closest('tr').classList.toggle('sel', c.checked)));
+    body.querySelectorAll('[data-page]').forEach((b) => b.addEventListener('click', () => {
+      const n = Number(b.dataset.page);
+      if (!b.disabled && n >= 1) { state.page = n; load(); }
+    }));
+    body.querySelector('#cliPer')?.addEventListener('change', (event) => { state.perPage = Number(event.target.value) || 10; state.page = 1; load(); });
+  };
+
+  const load = async () => {
     if (loading) return;
     loading = true;
-    target.setAttribute('aria-busy', 'true');
-    target.innerHTML = loadingState('Chargement des clients…');
-    const values = new FormData(form);
-    const parameters = new URLSearchParams({ page: String(currentPage), limit: '20' });
-    const query = String(values.get('q') || '').trim();
-    const status = String(values.get('status') || '');
-    if (query) parameters.set('q', query);
-    if (status) parameters.set('status', status);
+    syncUrl();
+    syncTabs();
+    body.setAttribute('aria-busy', 'true');
+    body.innerHTML = loadingState('Chargement des clients…');
+    const params = new URLSearchParams();
+    if (state.q.trim()) params.set('q', state.q.trim());
+    if (state.stage) params.set('stage', state.stage);
+    params.set('sort', state.sort);
+    if (state.view === 'pipeline') { params.set('limit', '200'); params.set('page', '1'); }
+    else { params.set('limit', String(state.perPage)); params.set('page', String(state.page)); }
     try {
-      const result = await api(`/api/app/crm/customers?${parameters}`);
-      const customers = Array.isArray(result.customers) ? result.customers : [];
-      target.innerHTML = customerListMarkup(customers, result.pagination || {}, Boolean(query || status));
-      document.getElementById('clearCustomerFilters')?.addEventListener('click', clearFilters);
-      document.getElementById('customerPrevious')?.addEventListener('click', () => { currentPage -= 1; loadCustomers(); });
-      document.getElementById('customerNext')?.addEventListener('click', () => { currentPage += 1; loadCustomers(); });
+      const result = await api(`/api/app/crm/customers?${params}`);
+      const rows = Array.isArray(result.customers) ? result.customers : [];
+      const pagination = result.pagination || {};
+      const stageCounts = result.stageCounts || { nouveau: 0, actif: 0, a_relancer: 0, inactif: 0 };
+      if (state.view === 'pipeline') {
+        const groups = { nouveau: [], actif: [], a_relancer: [], inactif: [] };
+        rows.forEach((r) => { groups[customerStage(r)].push(r); });
+        body.innerHTML = `<div class="cli-pipe">${Object.keys(CUSTOMER_STAGES).map((st) => {
+          const meta = CUSTOMER_STAGES[st];
+          const cards = groups[st].map(pipeCard).join('');
+          return `<section class="cli-col">
+            <header class="cli-col-head"><span class="cli-col-dot" style="background:${meta.dot}"></span><strong>${meta.plural}</strong><span class="cli-col-count">${stageCounts[st] ?? groups[st].length}</span></header>
+            <div class="cli-col-body">${cards || '<div class="cli-col-empty">Aucun client</div>'}</div>
+          </section>`;
+        }).join('')}</div>`;
+      } else if (!rows.length) {
+        body.innerHTML = `<div class="cli-empty"><strong>${state.q || state.stage ? 'Aucun client ne correspond.' : 'Aucun client enregistré.'}</strong><p>${state.q || state.stage ? 'Modifiez la recherche ou les filtres.' : 'Les fiches apparaissent à partir des commandes, ou créez un client.'}</p></div>`;
+      } else if (state.view === 'gallery') {
+        body.innerHTML = `<div class="cli-gallery">${rows.map(galleryCard).join('')}</div>${pagerHtml(pagination)}`;
+      } else {
+        body.innerHTML = `<div class="cli-table-wrap"><table class="cli-table">
+          <thead><tr>
+            <th class="cli-check"><input type="checkbox" id="cliAll" aria-label="Tout sélectionner"></th>
+            <th>ID client</th><th>Nom du client</th><th>Téléphone</th><th>Statut</th><th>Cmds</th><th>Lieux connus</th><th>Dernière activité</th><th>Actions</th>
+          </tr></thead>
+          <tbody>${rows.map(crmRow).join('')}</tbody>
+        </table></div>${pagerHtml(pagination)}`;
+      }
+      bindRows();
     } catch (error) {
-      target.innerHTML = `<div class="notice error" role="alert"><strong>Impossible de charger les clients.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryCustomers" type="button">Réessayer</button></div>`;
-      document.getElementById('retryCustomers')?.addEventListener('click', loadCustomers);
+      body.innerHTML = `<div class="notice error" role="alert"><strong>Impossible de charger les clients.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="cliRetry" type="button">Réessayer</button></div>`;
+      document.getElementById('cliRetry')?.addEventListener('click', load);
     } finally {
-      target.removeAttribute('aria-busy');
+      body.removeAttribute('aria-busy');
       loading = false;
     }
   };
 
-  form.addEventListener('submit', (event) => { event.preventDefault(); currentPage = 1; loadCustomers(); });
-  document.getElementById('resetCustomerSearch').addEventListener('click', clearFilters);
-  await loadCustomers();
+  // Onglets de vue
+  document.querySelectorAll('.cli-tab').forEach((tab) => tab.addEventListener('click', () => {
+    if (state.view === tab.dataset.view) return;
+    state.view = tab.dataset.view; state.page = 1; load();
+  }));
+  // Recherche (léger debounce)
+  let searchTimer = null;
+  queryInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { state.q = queryInput.value; state.page = 1; load(); }, 280);
+  });
+  // Menus Filtrer / Trier
+  const buildMenu = (menuEl, items, current, onPick) => {
+    const btn = menuEl.querySelector('button');
+    let open = false;
+    const close = () => { menuEl.querySelector('.cli-pop')?.remove(); open = false; btn.classList.remove('active'); };
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (open) { close(); return; }
+      document.querySelectorAll('.cli-pop').forEach((p) => p.remove());
+      const pop = document.createElement('div');
+      pop.className = 'cli-pop';
+      pop.innerHTML = items.map((it) => `<button type="button" class="cli-pop-item ${it.value === current() ? 'active' : ''}" data-value="${it.value}">${escapeHtml(it.label)}</button>`).join('');
+      menuEl.appendChild(pop);
+      open = true; btn.classList.add('active');
+      pop.querySelectorAll('[data-value]').forEach((b) => b.addEventListener('click', () => { onPick(b.dataset.value); close(); }));
+    });
+    document.addEventListener('click', (event) => { if (open && !menuEl.contains(event.target)) close(); });
+  };
+  buildMenu(document.getElementById('cliFilterMenu'),
+    [{ value: '', label: 'Tous les statuts' }, { value: 'nouveau', label: 'Nouveau' }, { value: 'actif', label: 'Actif' }, { value: 'a_relancer', label: 'À relancer' }, { value: 'inactif', label: 'Inactif' }],
+    () => state.stage, (v) => { state.stage = v; state.page = 1; document.getElementById('cliFilterBtn').classList.toggle('has-value', Boolean(v)); load(); });
+  buildMenu(document.getElementById('cliSortMenu'),
+    Object.keys(SORT_LABELS).map((k) => ({ value: k, label: SORT_LABELS[k] })),
+    () => state.sort, (v) => { state.sort = v; load(); });
+  // Nouveau client
+  document.getElementById('cliNew').addEventListener('click', () => openNewCustomerModal(load));
+
+  syncTabs();
+  await load();
+}
+
+function openNewCustomerModal(onCreated) {
+  const overlay = document.createElement('div');
+  overlay.className = 'cli-modal-overlay';
+  overlay.innerHTML = `<div class="cli-modal" role="dialog" aria-modal="true" aria-label="Nouveau client">
+    <div class="cli-modal-head"><strong>Nouveau client</strong><button type="button" class="cli-modal-x" aria-label="Fermer">✕</button></div>
+    <form id="cliNewForm" class="cli-modal-body">
+      <label class="field"><span>Nom du client *</span><input name="displayName" type="text" maxlength="200" required autocomplete="off" placeholder="Ex. Boutique Tendance"></label>
+      <label class="field"><span>Secteur / type</span><input name="customerType" type="text" maxlength="120" autocomplete="off" placeholder="Ex. Commerce de détail"></label>
+      <label class="field"><span>Téléphone</span><input name="phone" type="tel" maxlength="320" autocomplete="off" placeholder="Ex. 229 97 00 00 00"></label>
+      <div class="cli-modal-err" hidden></div>
+      <div class="cli-modal-foot"><button type="button" class="button secondary" id="cliNewCancel">Annuler</button><button type="submit" class="button primary">Créer le client</button></div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+  overlay.querySelector('.cli-modal-x').addEventListener('click', close);
+  overlay.querySelector('#cliNewCancel').addEventListener('click', close);
+  const form = overlay.querySelector('#cliNewForm');
+  const err = overlay.querySelector('.cli-modal-err');
+  form.querySelector('input[name="displayName"]').focus();
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = new FormData(form);
+    const displayName = String(values.get('displayName') || '').trim();
+    if (!displayName) { err.hidden = false; err.textContent = 'Le nom du client est requis.'; return; }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true; submit.textContent = 'Création…';
+    try {
+      await api('/api/app/crm/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName, customerType: values.get('customerType') || '', phone: values.get('phone') || '' }),
+      });
+      close();
+      if (typeof onCreated === 'function') onCreated();
+    } catch (error) {
+      err.hidden = false; err.textContent = error.message || 'Création impossible.';
+      submit.disabled = false; submit.textContent = 'Créer le client';
+    }
+  });
 }
 
 function contactMarkup(contact) {

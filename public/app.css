@@ -1261,8 +1261,9 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .rep-source-body small { display: block; color: var(--muted); font-size: 13.5px; line-height: 1.55; margin-bottom: 16px; }
 .rep-source-arrow { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--red); color: #fff; }
 .rep-source-arrow svg { width: 18px; height: 18px; }
-.rep-source-art { position: absolute; right: -10px; bottom: -18px; color: var(--red); opacity: .08; pointer-events: none; z-index: 1; }
-.rep-source-art svg { width: 170px; height: 170px; }
+.rep-source-art { position: absolute; right: 20px; top: 50%; transform: translateY(-50%); pointer-events: none; z-index: 1; }
+.rep-source-art svg { width: 138px; height: auto; display: block; }
+@media (max-width: 560px) { .rep-source-art { display: none; } .rep-source-body { max-width: 100%; } }
 .rep-config { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
 .rep-config-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .rep-source-tag { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--muted); }

@@ -36,6 +36,21 @@ const {
   OPERATIONS_NUMERIC_COLUMNS,
 } = require('./lib/crm-operations-export');
 const {
+  buildCustomersExportQuery,
+  CUSTOMERS_NUMERIC_COLUMNS,
+  buildIncidentsExportQuery,
+  INCIDENTS_NUMERIC_COLUMNS,
+  buildRoutesExportQuery,
+  ROUTES_NUMERIC_COLUMNS,
+} = require('./lib/crm-dataset-exports');
+// Jeux de données câblés pour l'export (requête + colonnes numériques).
+const EXPORT_QUERY_BUILDERS = {
+  operations: { build: buildOperationsExportQuery, numeric: OPERATIONS_NUMERIC_COLUMNS },
+  customers: { build: buildCustomersExportQuery, numeric: CUSTOMERS_NUMERIC_COLUMNS },
+  incidents: { build: buildIncidentsExportQuery, numeric: INCIDENTS_NUMERIC_COLUMNS },
+  routes: { build: buildRoutesExportQuery, numeric: ROUTES_NUMERIC_COLUMNS },
+};
+const {
   TrackingLinkPolicyError,
   createTrackingLinkExpiration,
   evaluateTrackingLink,
@@ -3607,10 +3622,11 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
     throw error;
   }
 
-  if (contract.dataset !== 'operations') {
+  const wiredDataset = EXPORT_QUERY_BUILDERS[contract.dataset];
+  if (!wiredDataset) {
     await recordExportLog(auth, contract, 'failed', { failureCode: 'DATASET_NOT_WIRED' });
     return res.status(400).json({
-      error: `L’export du jeu de données « ${contract.dataset} » n’est pas encore disponible. Seul « operations » l’est pour l’instant.`,
+      error: `L’export du jeu de données « ${contract.dataset} » n’est pas encore disponible.`,
       code: 'DATASET_NOT_WIRED',
     });
   }
@@ -3618,7 +3634,7 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
   let rows;
   try {
     rows = await withCompanyTransaction(pool, auth.company_id, async (client) => {
-      const query = buildOperationsExportQuery(contract, auth.company_id);
+      const query = wiredDataset.build(contract, auth.company_id);
       const result = await client.query(query.text, query.values);
       return result.rows;
     });
@@ -3635,7 +3651,7 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
     });
   }
 
-  const normalizedRows = rows.map((row) => normalizeExportRow(row, OPERATIONS_NUMERIC_COLUMNS));
+  const normalizedRows = rows.map((row) => normalizeExportRow(row, wiredDataset.numeric));
   const format = body.format === 'csv' ? 'csv' : 'xlsx';
 
   // Fabrique l'artefact selon le format demandé (XLSX via le générateur audité,

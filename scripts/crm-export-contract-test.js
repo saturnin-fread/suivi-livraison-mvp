@@ -50,13 +50,14 @@ function baseRequest(overrides = {}) {
   };
 }
 
-test('les profils exposent uniquement les cinq jeux de données prévus', () => {
+test('les profils exposent uniquement les jeux de données prévus', () => {
   assert.deepEqual(Object.keys(DATASETS).sort(), [
     'customers',
     'drivers_summary',
     'incidents',
     'operations',
     'payments',
+    'routes',
   ]);
 });
 
@@ -72,7 +73,7 @@ test('owner et manager peuvent exporter les profils de gestion', () => {
 
 test('operator ne peut exporter que les opérations', () => {
   assert.equal(createExportContract(baseRequest({ role: 'operator' })).dataset, 'operations');
-  for (const dataset of ['customers', 'drivers_summary', 'incidents', 'payments']) {
+  for (const dataset of ['customers', 'drivers_summary', 'incidents', 'payments', 'routes']) {
     expectCode('FORBIDDEN_EXPORT', () => createExportContract(baseRequest({ role: 'operator', dataset })));
   }
 });

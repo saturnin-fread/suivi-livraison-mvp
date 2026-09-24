@@ -5200,26 +5200,54 @@ async function initNotifications() {
     const d = Math.floor(h / 24); if (d < 7) return `il y a ${d} j`;
     return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
   };
+  const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; };
+  const dayBucket = (iso) => {
+    const now = new Date();
+    const y = new Date(now); y.setDate(now.getDate() - 1);
+    const k = dayKey(iso);
+    if (k === dayKey(now)) return 'today';
+    if (k === dayKey(y)) return 'yesterday';
+    return 'older';
+  };
+  const notifGroups = [['today', 'Aujourd’hui'], ['yesterday', 'Hier'], ['older', 'Plus anciennes']];
   let open = false;
+  let notifTab = 'all';
   let lastData = { items: [] };
+  const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+  const itemHtml = (it, isUnread) => `<a class="notif-item ${isUnread ? 'unread' : ''}" href="${escapeHtml(it.href)}">
+      <span class="notif-item-ic notif-${escapeHtml(it.type)}">${notifIcons[it.type] || ''}</span>
+      <span class="notif-item-main"><strong>${escapeHtml(it.title)}</strong><small>${escapeHtml(it.summary)}</small></span>
+      <span class="notif-item-side"><span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>${isUnread ? '<span class="notif-item-udot" aria-label="Non lue"></span>' : ''}</span>
+    </a>`;
   const render = (data) => {
     lastData = data || { items: [] };
     const items = Array.isArray(lastData.items) ? lastData.items : [];
     const seen = readSeen();
-    const unread = items.filter((it) => new Date(it.at).getTime() > seen).length;
+    const isUnread = (it) => new Date(it.at).getTime() > seen;
+    const unread = items.filter(isUnread).length;
     if (unread > 0) { dot.hidden = false; dot.textContent = unread > 99 ? '99+' : String(unread); }
     else dot.hidden = true;
-    const head = `<div class="notif-pop-head"><strong>Notifications</strong>${items.length ? '<button type="button" class="notif-readall">Tout marquer comme lu</button>' : ''}</div>`;
-    const feed = items.length
-      ? items.map((it) => {
-          const isUnread = new Date(it.at).getTime() > seen;
-          return `<a class="notif-item ${isUnread ? 'unread' : ''}" href="${escapeHtml(it.href)}">
-            <span class="notif-item-ic notif-${escapeHtml(it.type)}">${notifIcons[it.type] || ''}</span>
-            <span class="notif-item-main"><strong>${escapeHtml(it.title)}</strong><small>${escapeHtml(it.summary)}</small></span>
-            <span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>
-          </a>`;
-        }).join('')
-      : '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Tout est à jour. Aucune action en attente.</div>';
+    const head = `<div class="notif-pop-head">
+        <strong>Notifications</strong>
+        <div class="notif-head-actions">${items.length ? '<button type="button" class="notif-readall">Tout marquer comme lu</button>' : ''}<button type="button" class="notif-close" aria-label="Fermer">${closeIcon}</button></div>
+      </div>
+      <div class="notif-tabs" role="tablist">
+        <button type="button" class="notif-tab ${notifTab === 'all' ? 'active' : ''}" data-tab="all">Toutes${unread ? `<span class="notif-tabbadge">${unread > 99 ? '99+' : unread}</span>` : ''}</button>
+        <button type="button" class="notif-tab ${notifTab === 'unread' ? 'active' : ''}" data-tab="unread">Non lues</button>
+      </div>`;
+    const shown = notifTab === 'unread' ? items.filter(isUnread) : items;
+    let feed;
+    if (!shown.length) {
+      feed = notifTab === 'unread'
+        ? '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Aucune notification non lue.</div>'
+        : '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Tout est à jour. Aucune action en attente.</div>';
+    } else {
+      const buckets = { today: [], yesterday: [], older: [] };
+      shown.forEach((it) => buckets[dayBucket(it.at)].push(it));
+      feed = notifGroups.map(([key, label]) => buckets[key].length
+        ? `<div class="notif-group"><div class="notif-group-head">${label}</div>${buckets[key].map((it) => itemHtml(it, isUnread(it))).join('')}</div>`
+        : '').join('');
+    }
     const canDigest = ['owner', 'manager'].includes(context?.user?.role);
     const foot = canDigest
       ? `<div class="notif-pop-foot">
@@ -5231,6 +5259,16 @@ async function initNotifications() {
         </div>`
       : '';
     pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>${foot}`;
+    pop.querySelectorAll('.notif-tab').forEach((tab) => tab.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (notifTab === tab.dataset.tab) return;
+      notifTab = tab.dataset.tab;
+      render(lastData);
+    }));
+    pop.querySelector('.notif-close')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false');
+    });
     pop.querySelector('.notif-readall')?.addEventListener('click', (event) => {
       event.stopPropagation();
       writeSeen(Date.now());

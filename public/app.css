@@ -1146,6 +1146,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .notif-item-ic.notif-unassigned { background: #2563eb; }
 .notif-item-ic.notif-incidents { background: #e11d2a; }
 .notif-item-ic.notif-runs { background: #7c3aed; }
+.notif-item-ic.notif-relaunch { background: #0891b2; }
 .notif-item-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
 .notif-item-main strong { font-size: 13.5px; font-weight: 700; }
 .notif-item-main small { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1216,6 +1217,18 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .fiche-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
 .fiche-card { padding: 16px 18px; background: #fff; border: 1px solid var(--line); border-radius: 14px; }
 .fiche-card h3 { margin: 0 0 12px; font-size: 15px; }
+.fiche-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.fiche-card-head h3 { margin: 0; }
+.fiche-edit-btn { border: 1px solid var(--line); background: #f7f9fc; color: var(--ink); font-size: 12.5px; font-weight: 700; padding: 5px 12px; border-radius: 8px; cursor: pointer; }
+.fiche-edit-btn:hover { background: #eef2f8; border-color: #cbd5e1; }
+.fiche-form { display: grid; gap: 14px; }
+.fiche-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 700; color: var(--ink); }
+.fiche-form input, .fiche-form textarea { font: inherit; font-weight: 400; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; width: 100%; }
+.fiche-form input:focus, .fiche-form textarea:focus { outline: 2px solid var(--red); outline-offset: 1px; border-color: transparent; }
+.fiche-form textarea { resize: vertical; min-height: 84px; }
+.fiche-form-actions { display: flex; gap: 10px; }
+.fiche-form-msg { margin: 0; padding: 9px 12px; border-radius: 9px; background: #fdecec; color: #99101a; border: 1px solid #f6c9cc; font-size: 13px; font-weight: 600; }
+.fiche-form-msg[hidden] { display: none; }
 .fiche-dl { display: grid; gap: 12px; margin: 0; }
 .fiche-dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .fiche-dl dt { color: var(--muted); font-size: 13px; }

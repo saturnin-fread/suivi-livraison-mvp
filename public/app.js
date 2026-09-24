@@ -3882,7 +3882,7 @@ async function renderCustomerDetail(id) {
 
     const tabAperçu = `
       <div class="fiche-grid">
-        <section class="fiche-card"><h3>Informations</h3><dl class="fiche-dl">
+        <section class="fiche-card"><div class="fiche-card-head"><h3>Informations</h3><button type="button" class="fiche-edit-btn" id="ficheEdit">Modifier</button></div><dl class="fiche-dl">
           <div><dt>Secteur</dt><dd>${escapeHtml(customer.sector || '—')}</dd></div>
           <div><dt>Langue préférée</dt><dd>${escapeHtml(customer.preferred_language || 'Non renseignée')}</dd></div>
           <div><dt>Création de la fiche</dt><dd>${escapeHtml(formatDate(customer.created_at))}</dd></div>
@@ -3943,6 +3943,47 @@ async function renderCustomerDetail(id) {
         location.href = '/app/clients';
       } catch (error) { alert(error.message || 'Archivage impossible.'); }
     });
+
+    // Édition en ligne de la fiche (nom, secteur, note de service).
+    const showEditForm = () => {
+      bodyEl.innerHTML = `<section class="fiche-card"><h3>Modifier la fiche</h3>
+        <form id="ficheEditForm" class="fiche-form">
+          <label>Nom du client<input name="displayName" maxlength="160" required value="${escapeHtml(customer.display_name || '')}"></label>
+          <label>Secteur<input name="sector" maxlength="120" value="${escapeHtml(customer.sector || '')}" placeholder="Ex. Restauration, e-commerce…"></label>
+          <label>Note de service<textarea name="serviceNotes" maxlength="2000" rows="4" placeholder="Contexte, préférences, consignes de livraison…">${escapeHtml(customer.service_notes || '')}</textarea></label>
+          <p class="fiche-form-msg" id="ficheEditMsg" role="alert" hidden></p>
+          <div class="fiche-form-actions">
+            <button type="submit" class="button">Enregistrer</button>
+            <button type="button" class="button secondary" id="ficheEditCancel">Annuler</button>
+          </div>
+        </form></section>`;
+      document.getElementById('ficheEditCancel').addEventListener('click', () => { bodyEl.innerHTML = tabs.apercu; });
+      document.getElementById('ficheEditForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const msg = document.getElementById('ficheEditMsg');
+        const submitBtn = form.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        try {
+          await api(`/api/app/crm/customers/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              displayName: form.displayName.value.trim(),
+              sector: form.sector.value.trim(),
+              serviceNotes: form.serviceNotes.value.trim(),
+            }),
+          });
+          await renderCustomerDetail(id);
+        } catch (error) {
+          submitBtn.disabled = false;
+          msg.textContent = error.message || 'Enregistrement impossible.';
+          msg.hidden = false;
+        }
+      });
+    };
+    // Délégation : le bouton « Modifier » est ré-injecté à chaque retour sur l'onglet Aperçu.
+    bodyEl.addEventListener('click', (event) => { if (event.target.closest('#ficheEdit')) showEditForm(); });
   } catch (error) {
     page.innerHTML = `<div class="page-header"><div><a href="/app/clients">← Retour aux clients</a><h1 style="margin-top:12px">Fiche client</h1></div></div><div class="notice error" role="alert"><strong>Impossible de charger cette fiche.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryCustomerDetail" type="button">Réessayer</button></div>`;
     document.getElementById('retryCustomerDetail')?.addEventListener('click', () => renderCustomerDetail(id));
@@ -4165,6 +4206,7 @@ async function initNotifications() {
     unassigned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></svg>',
     incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4M12 17h.01"/></svg>',
     runs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h6a4 4 0 0 0 0-8H8a4 4 0 0 1 0-8h4"/></svg>',
+    relaunch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
   };
   const relTime = (iso) => {
     const t = new Date(iso).getTime();

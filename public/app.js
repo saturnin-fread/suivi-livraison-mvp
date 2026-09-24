@@ -4196,11 +4196,41 @@ async function initNotifications() {
           </a>`;
         }).join('')
       : '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Tout est à jour. Aucune action en attente.</div>';
-    pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>`;
+    const canDigest = ['owner', 'manager'].includes(context?.user?.role);
+    const foot = canDigest
+      ? `<div class="notif-pop-foot">
+          <button type="button" class="notif-digest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+            M’envoyer un récap par e-mail
+          </button>
+          <span class="notif-digest-msg" role="status" aria-live="polite"></span>
+        </div>`
+      : '';
+    pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>${foot}`;
     pop.querySelector('.notif-readall')?.addEventListener('click', (event) => {
       event.stopPropagation();
       writeSeen(Date.now());
       render(lastData);
+    });
+    const digestBtn = pop.querySelector('.notif-digest');
+    digestBtn?.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const msg = pop.querySelector('.notif-digest-msg');
+      const setMsg = (text, tone) => { if (msg) { msg.className = `notif-digest-msg${tone ? ` ${tone}` : ''}`; msg.textContent = text; } };
+      digestBtn.disabled = true;
+      setMsg('Envoi en cours…');
+      try {
+        const r = await api('/api/app/notifications/digest', { method: 'POST' });
+        if (r.sent) setMsg(`Récap envoyé à ${r.recipient || 'votre e-mail'}.`, 'ok');
+        else if (r.reason === 'nothing_to_send') setMsg('Rien à envoyer : aucune action en attente.');
+        else if (r.reason === 'email_not_configured') setMsg('Envoi d’e-mail non configuré.', 'err');
+        else if (r.reason === 'no_recipient') setMsg('Aucune adresse destinataire. Renseignez l’e-mail de l’entreprise dans Paramètres.', 'err');
+        else setMsg('Échec de l’envoi. Réessayez plus tard.', 'err');
+      } catch (error) {
+        setMsg(error.message || 'Échec de l’envoi.', 'err');
+      } finally {
+        digestBtn.disabled = false;
+      }
     });
   };
   const load = async () => { try { render(await api('/api/app/notifications')); } catch { /* silencieux */ } };

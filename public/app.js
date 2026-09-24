@@ -4033,87 +4033,277 @@ function reportsMarkup(metrics) {
     <div class="notice"><strong>Lecture responsable :</strong> ces chiffres servent à suivre les opérations. Aucun score, classement ou sanction automatique des livreurs n’est produit.</div>`;
 }
 
-async function downloadOperationsExport(monthValue, button) {
-  const status = document.getElementById('exportStatus');
-  let period;
-  try {
-    period = monthPeriod(monthValue);
-  } catch (error) {
-    if (status) { status.textContent = error.message; status.classList.add('error-text'); }
-    return;
-  }
-  // The export contract uses an exclusive upper bound: pass the first day of the
-  // next month so the whole selected month is covered.
-  const [year, month] = monthValue.split('-').map(Number);
-  const exclusiveTo = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Export en cours…';
-  if (status) { status.textContent = ''; status.classList.remove('error-text'); }
-  try {
-    const response = await fetch('/api/app/crm/exports', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        dataset: 'operations',
-        purpose: 'Export mensuel des opérations',
-        period: { from: period.from, to: exclusiveTo },
-      }),
-    });
-    if (response.status === 401) { location.href = '/app/login'; return; }
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || 'Export impossible pour le moment.');
-    }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `operations-${monthValue}.xlsx`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    if (status) { status.textContent = 'Export téléchargé.'; status.classList.remove('error-text'); }
-  } catch (error) {
-    if (status) { status.textContent = error.message; status.classList.add('error-text'); }
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
+// --- Rapports : assistant d'export en 3 étapes (choisir → configurer → télécharger) ---
+const REPORT_ICONS = {
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></svg>',
+  route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16V9a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v0"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+};
+const REPORT_SOURCES = [
+  { key: 'orders', dataset: 'operations', label: 'Commandes', icon: 'box', wired: true,
+    desc: 'Exportez vos commandes, leur statut, leur affectation et leurs informations de livraison.', list: '/api/app/orders' },
+  { key: 'routes', dataset: 'routes', label: 'Tournées', icon: 'route', wired: false,
+    desc: 'Exportez vos tournées, leurs livreurs, leurs arrêts et leur état.', list: '/api/app/runs' },
+  { key: 'incidents', dataset: 'incidents', label: 'Incidents', icon: 'alert', wired: false,
+    desc: 'Exportez les incidents signalés et leur état de traitement.', list: '/api/app/incidents' },
+  { key: 'clients', dataset: 'customers', label: 'Clients', icon: 'users', wired: false,
+    desc: 'Exportez les clients enregistrés et leurs informations utiles.', list: '/api/app/crm/customers' },
+];
+// Colonnes de l'export « Commandes » (dataset operations). Les colonnes de base
+// sont toujours incluses par le contrat serveur ; les colonnes « sensibles »
+// sont facultatives (le contrat trace leur inclusion).
+const ORDERS_BASE_COLUMNS = [
+  { key: 'reference', label: 'ID commande' },
+  { key: 'created_at', label: 'Date de création' },
+  { key: 'status', label: 'Statut' },
+  { key: 'destination_zone', label: 'Zone' },
+  { key: 'driver_reference', label: 'Livreur' },
+  { key: 'run_reference', label: 'Tournée' },
+  { key: 'requested_window', label: 'Créneau souhaité' },
+  { key: 'delivered_at', label: 'Livrée le' },
+  { key: 'incident_count', label: 'Nb incidents' },
+];
+const ORDERS_SENSITIVE_COLUMNS = [
+  { key: 'customer_name', label: 'Client', on: true },
+  { key: 'customer_phone', label: 'Téléphone', on: false },
+  { key: 'delivery_address', label: 'Adresse', on: false },
+  { key: 'delivery_instructions', label: 'Instructions', on: false },
+];
+
+function reportStepper(active) {
+  const steps = [['1', 'Choisir les données'], ['2', 'Configurer l’export'], ['3', 'Télécharger']];
+  return `<ol class="rep-steps">${steps.map(([n, label], i) => {
+    const idx = i + 1;
+    const state = idx < active ? 'done' : (idx === active ? 'current' : 'todo');
+    const dot = state === 'done'
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+      : n;
+    return `<li class="rep-step ${state}"><span class="rep-step-dot">${dot}</span><span class="rep-step-label">${idx}. ${escapeHtml(label)}</span></li>`;
+  }).join('')}</ol>`;
+}
+
+function reportSetSource(key) {
+  const url = key ? `/app/rapports?source=${encodeURIComponent(key)}` : '/app/rapports';
+  history.pushState({}, '', url);
+  renderReports();
 }
 
 async function renderReports() {
-  setHeader('Rapports', 'Indicateurs mensuels vérifiables');
-  const requestedMonth = new URLSearchParams(location.search).get('month');
-  const selectedMonth = /^\d{4}-\d{2}$/.test(requestedMonth || '') ? requestedMonth : currentPortoNovoMonth();
-  page.innerHTML = `<div class="page-header"><div><h1>Rapports mensuels</h1><p class="subtitle">Analysez les opérations avec des indicateurs transparents et séparés par devise.</p></div></div>
-    <section class="card report-filter-card"><form id="reportFilter" class="report-filter"><div class="field"><label for="reportMonth">Mois à analyser</label><input id="reportMonth" name="month" type="month" value="${escapeHtml(selectedMonth)}" required /></div><button class="primary" type="submit">Afficher le rapport</button></form></section>
-    <div id="reportResults" aria-live="polite"></div>`;
-  const form = document.getElementById('reportFilter');
-  const target = document.getElementById('reportResults');
-  let loading = false;
-  const loadReport = async () => {
-    if (loading) return;
-    loading = true;
-    target.setAttribute('aria-busy', 'true');
-    target.innerHTML = `<section class="card">${loadingState('Calcul du rapport…')}</section>`;
-    try {
-      const period = monthPeriod(document.getElementById('reportMonth').value);
-      const metrics = await api(`/api/app/crm/metrics?from=${encodeURIComponent(period.from)}&to=${encodeURIComponent(period.to)}`);
-      target.innerHTML = reportsMarkup(metrics);
-      const exportBtn = document.getElementById('exportReportBtn');
-      exportBtn?.addEventListener('click', () => downloadOperationsExport(document.getElementById('reportMonth').value, exportBtn));
-    } catch (error) {
-      target.innerHTML = `<div class="notice error" role="alert"><strong>Impossible de calculer ce rapport.</strong><p>${escapeHtml(error.message)}</p><button class="secondary" id="retryReport" type="button">Réessayer</button></div>`;
-      document.getElementById('retryReport')?.addEventListener('click', loadReport);
-    } finally {
-      target.removeAttribute('aria-busy');
-      loading = false;
-    }
+  setHeader('Rapports', 'Exportez les données utiles de votre activité');
+  page.classList.remove('page-crm');
+  const sourceKey = new URLSearchParams(location.search).get('source');
+  const source = REPORT_SOURCES.find((s) => s.key === sourceKey);
+  if (!source) return reportStepStart();
+  return reportStepConfigure(source);
+}
+
+// Étape 1 — choisir la source.
+function reportStepStart() {
+  page.innerHTML = `<div class="rep">
+    ${reportStepper(1)}
+    <div class="rep-head"><span class="rep-rule"></span><h1>Quels rapports souhaitez-vous exporter ?</h1><p>Sélectionnez le type de données que vous souhaitez exporter depuis TRAXO.</p></div>
+    <div class="rep-sources">${REPORT_SOURCES.map((s) => `
+      <button type="button" class="rep-source" data-source="${s.key}">
+        <span class="rep-source-ic">${REPORT_ICONS[s.icon]}</span>
+        <span class="rep-source-main"><strong>${escapeHtml(s.label)}</strong><small>${escapeHtml(s.desc)}</small></span>
+        <span class="rep-source-go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+      </button>`).join('')}</div>
+  </div>`;
+  page.querySelectorAll('.rep-source').forEach((btn) => btn.addEventListener('click', () => reportSetSource(btn.dataset.source)));
+}
+
+// Étape 2 — configurer et générer.
+async function reportStepConfigure(source) {
+  const firstOfThisMonth = `${currentPortoNovoMonth()}-01`;
+  const today = new Date().toISOString().slice(0, 10);
+  page.innerHTML = `<div class="rep">
+    ${reportStepper(2)}
+    <div class="rep-head"><span class="rep-rule"></span><h1>Configurer l’export</h1><p>Affinez les données à exporter puis choisissez votre format.</p></div>
+    <section class="rep-config">
+      <div class="rep-config-bar">
+        <div class="rep-source-tag"><span class="rep-source-ic sm">${REPORT_ICONS[source.icon]}</span>Source : <strong>${escapeHtml(source.label)}</strong></div>
+        <div class="rep-filters">
+          <label class="rep-field"><span>Du</span><input type="date" id="repFrom" value="${firstOfThisMonth}"></label>
+          <label class="rep-field"><span>Au</span><input type="date" id="repTo" value="${today}"></label>
+          <input type="search" id="repSearch" class="rep-search" placeholder="Rechercher…">
+        </div>
+        <div class="rep-actions">
+          <div class="rep-format" role="group" aria-label="Format">
+            <button type="button" class="rep-fmt active" data-fmt="csv">CSV</button>
+            <button type="button" class="rep-fmt" data-fmt="xlsx">Excel</button>
+          </div>
+          <div class="rep-fields-wrap">
+            <button type="button" class="button secondary" id="repFieldsBtn">Choisir les champs</button>
+            <div class="rep-fields-pop" id="repFieldsPop" hidden></div>
+          </div>
+          <button type="button" class="button primary" id="repGenerate">${source.wired ? 'Générer l’export' : 'Bientôt disponible'}</button>
+        </div>
+      </div>
+      <div class="rep-preview" id="repPreview">${loadingState('Chargement de l’aperçu…')}</div>
+      ${source.wired ? '' : '<p class="rep-soon">La génération de fichier pour cette source arrive bientôt. L’aperçu ci-dessus reflète vos données réelles.</p>'}
+    </section>
+    <div class="rep-back"><button type="button" class="link-btn" id="repBack">← Changer de source</button></div>
+  </div>`;
+
+  document.getElementById('repBack').addEventListener('click', () => reportSetSource(null));
+
+  // Format segmenté.
+  let format = 'csv';
+  page.querySelectorAll('.rep-fmt').forEach((btn) => btn.addEventListener('click', () => {
+    format = btn.dataset.fmt;
+    page.querySelectorAll('.rep-fmt').forEach((b) => b.classList.toggle('active', b === btn));
+  }));
+
+  // Sélecteur de colonnes (Commandes uniquement pour l'instant).
+  const sensitiveState = new Map(ORDERS_SENSITIVE_COLUMNS.map((c) => [c.key, c.on]));
+  const fieldsPop = document.getElementById('repFieldsPop');
+  const fieldsBtn = document.getElementById('repFieldsBtn');
+  if (source.key === 'orders') {
+    const rowsHtml = [
+      ...ORDERS_BASE_COLUMNS.map((c) => `<label class="rep-field-row"><input type="checkbox" checked disabled><span>${escapeHtml(c.label)}</span><small>Toujours incluse</small></label>`),
+      ...ORDERS_SENSITIVE_COLUMNS.map((c) => `<label class="rep-field-row"><input type="checkbox" data-col="${c.key}" ${c.on ? 'checked' : ''}><span>${escapeHtml(c.label)}</span><small>Sensible</small></label>`),
+    ].join('');
+    fieldsPop.innerHTML = `<div class="rep-fields-head">Colonnes à exporter</div>${rowsHtml}`;
+    fieldsPop.querySelectorAll('input[data-col]').forEach((cb) => cb.addEventListener('change', () => sensitiveState.set(cb.dataset.col, cb.checked)));
+    fieldsBtn.addEventListener('click', (e) => { e.stopPropagation(); fieldsPop.hidden = !fieldsPop.hidden; });
+    document.addEventListener('click', (e) => { if (!e.target.closest('.rep-fields-wrap')) fieldsPop.hidden = true; });
+  } else {
+    fieldsBtn.disabled = true;
+  }
+
+  // Aperçu (données réelles via l'endpoint liste de la source).
+  const preview = document.getElementById('repPreview');
+  let allRows = [];
+  try {
+    const data = await api(source.list);
+    allRows = reportExtractRows(source.key, data);
+  } catch (error) {
+    preview.innerHTML = `<div class="notice error">${escapeHtml(error.message || 'Aperçu indisponible.')}</div>`;
+  }
+  const renderPreview = () => {
+    const from = document.getElementById('repFrom').value;
+    const to = document.getElementById('repTo').value;
+    const q = document.getElementById('repSearch').value.trim().toLowerCase();
+    const filtered = allRows.filter((r) => {
+      const d = (r._date || '').slice(0, 10);
+      if (from && d && d < from) return false;
+      if (to && d && d > to) return false;
+      if (q && !r._search.includes(q)) return false;
+      return true;
+    });
+    preview.dataset.count = String(filtered.length);
+    preview.innerHTML = reportPreviewTable(source.key, filtered);
   };
-  form.addEventListener('submit', (event) => { event.preventDefault(); loadReport(); });
-  await loadReport();
+  if (allRows.length) renderPreview();
+  ['repFrom', 'repTo'].forEach((id) => document.getElementById(id).addEventListener('change', renderPreview));
+  document.getElementById('repSearch').addEventListener('input', renderPreview);
+
+  // Génération.
+  document.getElementById('repGenerate').addEventListener('click', async (event) => {
+    if (!source.wired) return;
+    const btn = event.currentTarget;
+    const from = document.getElementById('repFrom').value;
+    const to = document.getElementById('repTo').value;
+    if (!from || !to) { alert('Choisissez une période (du / au).'); return; }
+    // Borne haute exclusive : on ajoute un jour pour inclure la date « au ».
+    const exclusiveTo = new Date(new Date(`${to}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10);
+    const sensitiveColumns = [...sensitiveState.entries()].filter(([, on]) => on).map(([k]) => k);
+    btn.disabled = true; btn.textContent = 'Génération…';
+    try {
+      const response = await fetch('/api/app/crm/exports', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dataset: source.dataset,
+          purpose: `Export ${source.label} depuis Rapports`,
+          period: { from, to: exclusiveTo },
+          sensitiveColumns,
+          format,
+        }),
+      });
+      if (response.status === 401) { location.href = '/app/login'; return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || 'Export impossible pour le moment.');
+      }
+      const blob = await response.blob();
+      const rowCount = Number(response.headers.get('X-Export-Row-Count') || preview.dataset.count || 0);
+      const bytes = Number(response.headers.get('X-Export-Bytes') || blob.size || 0);
+      const colCount = ORDERS_BASE_COLUMNS.length + sensitiveColumns.length;
+      reportStepResult(source, { blob, rowCount, bytes, colCount, from, to, format, sensitiveCount: sensitiveColumns.length });
+    } catch (error) {
+      btn.disabled = false; btn.textContent = 'Générer l’export';
+      alert(error.message || 'Export impossible.');
+    }
+  });
+}
+
+// Extrait des lignes normalisées pour l'aperçu selon la source.
+function reportExtractRows(key, data) {
+  const arr = Array.isArray(data) ? data : (data.items || data.customers || data.orders || data.runs || data.incidents || []);
+  return arr.map((r) => {
+    if (key === 'orders') {
+      return { _date: r.created_at, _search: [r.reference, r.customer_name, r.neighborhood, r.driver_name, r.status].filter(Boolean).join(' ').toLowerCase(),
+        c: [orderCode(r.reference, r.id), formatDate(r.created_at), r.customer_name || '—', r.neighborhood || '—', r.driver_name || '—', r.status || '—', formatDate(r.updated_at)] };
+    }
+    if (key === 'clients') {
+      return { _date: r.last_activity_at || r.created_at, _search: [r.customer_code, r.display_name, r.primary_phone, r.status].filter(Boolean).join(' ').toLowerCase(),
+        c: [r.customer_code || `#${r.id}`, r.display_name || '—', r.primary_phone || '—', r.status || '—', String(r.order_count ?? '—'), formatDate(r.last_order_at)] };
+    }
+    if (key === 'routes') {
+      return { _date: r.service_date || r.created_at, _search: [r.name, r.driver_name, r.status].filter(Boolean).join(' ').toLowerCase(),
+        c: [r.name || `T-${r.id}`, r.driver_name || '—', r.status || '—', String(r.stop_count ?? r.stops?.length ?? '—'), formatDate(r.service_date || r.created_at)] };
+    }
+    // incidents
+    return { _date: r.created_at || r.opened_at, _search: [r.category, r.status, r.customer_name].filter(Boolean).join(' ').toLowerCase(),
+      c: [`#${r.id}`, r.category || '—', r.status || '—', r.customer_name || (r.order_id ? `Commande ${r.order_id}` : '—'), formatDate(r.created_at || r.opened_at)] };
+  });
+}
+
+function reportPreviewTable(key, rows) {
+  const heads = {
+    orders: ['ID commande', 'Date', 'Client', 'Zone', 'Livreur', 'Statut', 'Dernière MAJ'],
+    clients: ['ID client', 'Nom', 'Téléphone', 'Statut', 'Commandes', 'Dernière commande'],
+    routes: ['ID tournée', 'Livreur', 'Statut', 'Arrêts', 'Date'],
+    incidents: ['ID incident', 'Type', 'Statut', 'Contexte', 'Date'],
+  }[key];
+  if (!rows.length) return '<div class="cli-empty"><strong>Aucune donnée ne correspond à vos filtres.</strong><p>Élargissez la période ou la recherche.</p></div>';
+  const shown = rows.slice(0, 12);
+  return `<div class="rep-preview-meta">${formatInteger(rows.length)} ligne${rows.length > 1 ? 's' : ''}${rows.length > shown.length ? ` · aperçu des ${shown.length} premières` : ''}</div>
+    <div class="table-wrap"><table class="cli-table rep-table"><thead><tr>${heads.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+    <tbody>${shown.map((r) => `<tr>${r.c.map((v, i) => `<td>${i === 0 ? `<strong>${escapeHtml(v)}</strong>` : escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+
+// Étape 3 — export prêt.
+function reportStepResult(source, info) {
+  const monthName = new Date(`${info.from}T00:00:00Z`).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  const fileName = `${source.key}-${info.from}_${info.to}.${info.format}`;
+  const sizeKo = Math.max(1, Math.round(info.bytes / 1024));
+  const url = URL.createObjectURL(info.blob);
+  page.innerHTML = `<div class="rep">
+    ${reportStepper(3)}
+    <div class="rep-head"><span class="rep-rule"></span><h1>Export prêt</h1><p>Votre fichier a été généré avec succès.</p></div>
+    <div class="rep-result">
+      <section class="rep-card">
+        <div class="rep-card-head"><span class="rep-card-ic red">${REPORT_ICONS.box}</span><h3>Résumé de l’export</h3></div>
+        <dl class="rep-summary">
+          <div><dt>Source</dt><dd>${escapeHtml(source.label)}</dd></div>
+          <div><dt>Période</dt><dd>${escapeHtml(info.from)} → ${escapeHtml(info.to)}</dd></div>
+          <div><dt>Format</dt><dd>${info.format === 'csv' ? 'CSV' : 'Excel'}</dd></div>
+          <div><dt>Colonnes</dt><dd>${formatInteger(info.colCount)}</dd></div>
+          <div><dt>Lignes</dt><dd>${formatInteger(info.rowCount)}</dd></div>
+        </dl>
+      </section>
+      <section class="rep-card">
+        <div class="rep-card-head"><span class="rep-card-ic green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><h3>Votre fichier est prêt</h3></div>
+        <p class="rep-sub">Téléchargez votre fichier pour l’enregistrer sur votre appareil.</p>
+        <div class="rep-file"><span class="rep-file-ic">${info.format === 'csv' ? 'CSV' : 'XLS'}</span><div><strong>${escapeHtml(fileName)}</strong><small>${formatInteger(info.rowCount)} lignes · ${sizeKo} Ko</small></div></div>
+        <a class="button primary rep-dl" href="${url}" download="${escapeHtml(fileName)}">Télécharger le fichier</a>
+        <button type="button" class="button secondary rep-again" id="repAgain">Créer un autre export</button>
+      </section>
+    </div>
+  </div>`;
+  document.getElementById('repAgain').addEventListener('click', () => { URL.revokeObjectURL(url); reportSetSource(source.key); });
 }
 
 async function start() {

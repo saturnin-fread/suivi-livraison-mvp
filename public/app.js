@@ -160,21 +160,726 @@ function renderError(error) {
   page.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
 }
 
+// ===========================================================================
+// Tableaux de bord (onglets) — câblés sur GET /api/app/dashboard.
+// Graphiques en SVG inline (zéro dépendance), fidèles aux maquettes TRAXO.
+// ===========================================================================
+const DASH_TABS = [
+  { key: 'general', label: 'Général' },
+  { key: 'commandes', label: 'Commandes' },
+  { key: 'livraisons', label: 'Livraisons' },
+  { key: 'livreurs', label: 'Livreurs' },
+  { key: 'demandes', label: 'Demandes' },
+  { key: 'tournees', label: 'Tournées' },
+  { key: 'incidents', label: 'Incidents' },
+];
+const dashboardState = { period: 7, tab: 'general', data: null };
+
+const DASH_ICONS = {
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg>',
+  truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M14 9h4l3 3v5h-2"/><circle cx="7.5" cy="17.5" r="2"/><circle cx="17.5" cy="17.5" r="2"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.1V12a10 10 0 1 1-5.9-9.1"/><path d="m9 11 3 3L22 4"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+  xcircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
+  percent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>',
+  route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+};
+
+const DASH_ORDER_STATUS_COLOR = {
+  'Livrée': '#10b981', 'Confirmée': '#2563eb', 'En préparation': '#94a3b8',
+  'Récupérée': '#0ea5e9', 'En tournée': '#6366f1', 'En livraison': '#3b82f6',
+  'Arrivée': '#f59e0b', 'Échec': '#dc2626', 'Retour': '#f97316',
+  'Retournée': '#b91c1c', 'Annulée': '#64748b',
+};
+const DASH_REQUEST_STATUS_COLOR = {
+  'À vérifier': '#f59e0b', 'Informations à compléter': '#0ea5e9', 'Confirmée': '#10b981',
+  'Refusée': '#dc2626', 'En attente d’informations': '#94a3b8', 'Archivée': '#64748b',
+};
+const DASH_AVAILABILITY_COLOR = {
+  available: '#10b981', busy: '#3b82f6', full: '#8b5cf6', pause: '#f59e0b',
+  off_duty: '#f59e0b', incident: '#dc2626', offline: '#94a3b8', inactive: '#cbd5e1', stale: '#f59e0b',
+};
+const DASH_INCIDENT_COLOR = {
+  adresse: '#f59e0b', client_injoignable: '#3b82f6', colis: '#8b5cf6', paiement: '#0ea5e9',
+  vehicule: '#64748b', gps: '#14b8a6', autre: '#e11d2a',
+};
+const DASH_INCIDENT_STATUS_LABEL = { open: 'Ouvert', resolved: 'Résolu', closed: 'Clôturé' };
+const DASH_PALETTE = ['#e11d2a', '#16233f', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#0ea5e9', '#64748b'];
+
+function dashNiceCeil(value) {
+  const v = Math.max(1, value);
+  if (v <= 5) return 5;
+  const pow = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / pow;
+  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  return step * pow;
+}
+function dashInitials(name) {
+  return String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+}
+function dashDayShort(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(d);
+}
+function dashFormatRange(from, to) {
+  const f = new Date(`${from}T00:00:00Z`);
+  const t = new Date(`${to}T00:00:00Z`);
+  const sameMonth = from.slice(0, 7) === to.slice(0, 7);
+  const dayF = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', timeZone: 'UTC' }).format(f);
+  if (sameMonth) {
+    const rest = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(t);
+    return `${dayF} – ${rest}`;
+  }
+  const left = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(f);
+  const right = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(t);
+  return `${left} – ${right}`;
+}
+function dashCompactRange(from, to) {
+  const f = new Date(`${from}T00:00:00Z`);
+  const t = new Date(`${to}T00:00:00Z`);
+  const dayF = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', timeZone: 'UTC' }).format(f);
+  if (from.slice(0, 7) === to.slice(0, 7)) {
+    return `${dayF} – ${new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(t)}`;
+  }
+  const left = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(f);
+  const right = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(t);
+  return `${left} – ${right}`;
+}
+function dashDuration(seconds) {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return '—';
+  const s = Math.max(0, Math.round(Number(seconds)));
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  if (h >= 1) return `${h} h ${String(m).padStart(2, '0')}`;
+  return `${m} min`;
+}
+
+// Libellé de comparaison (« vs 11 – 17 sept. »), rempli après chargement.
+let dashCmpLabel = '';
+
+function dashDelta(trend, invert) {
+  if (!trend) return '';
+  const inner = () => {
+    if (trend.isNew) return '<span class="dd-val up">Nouveau</span>';
+    const pct = trend.deltaPct;
+    if (pct == null || !Number.isFinite(pct)) return '<span class="dd-val flat">—</span>';
+    const r = Math.round(pct * 10) / 10;
+    if (r === 0) return '<span class="dd-val flat">↗ 0 %</span>';
+    const positive = r > 0;
+    const good = invert ? !positive : positive;
+    return `<span class="dd-val ${good ? 'up' : 'down'}">${positive ? '↗' : '↘'} ${positive ? '+' : '−'}${Math.abs(r).toLocaleString('fr-FR')} %</span>`;
+  };
+  return `<span class="dash-delta">${inner()}<span class="dd-cmp">vs ${escapeHtml(dashCmpLabel)}</span></span>`;
+}
+function dashDeltaPoints(points, invert) {
+  const inner = () => {
+    if (points == null || !Number.isFinite(points)) return '<span class="dd-val flat">—</span>';
+    const r = Math.round(points * 10) / 10;
+    if (r === 0) return '<span class="dd-val flat">↗ 0 pt</span>';
+    const positive = r > 0;
+    const good = invert ? !positive : positive;
+    return `<span class="dd-val ${good ? 'up' : 'down'}">${positive ? '↗' : '↘'} ${positive ? '+' : '−'}${Math.abs(r).toLocaleString('fr-FR')} pt</span>`;
+  };
+  return `<span class="dash-delta">${inner()}<span class="dd-cmp">vs ${escapeHtml(dashCmpLabel)}</span></span>`;
+}
+
+function dashKpi({ icon, label, value, delta, tone }) {
+  return `<article class="dash-kpi">
+    <div class="dash-kpi-head"><span class="dash-kpi-ic ${tone || ''}">${icon}</span><span class="dash-kpi-label">${escapeHtml(label)}</span></div>
+    <strong class="dash-kpi-value">${escapeHtml(value)}</strong>
+    ${delta || '<span class="dash-delta"></span>'}
+  </article>`;
+}
+
+function dashCard(title, body, control) {
+  return `<section class="card dash-card">
+    <div class="dash-card-head"><h2 class="dash-card-title">${escapeHtml(title)}</h2>${control || ''}</div>
+    ${body}
+  </section>`;
+}
+function dashChip(text) {
+  return `<span class="dash-chip">${escapeHtml(text)} ${DASH_ICONS.chevron}</span>`;
+}
+function dashLink(text) {
+  return `<span class="dash-cardlink">${escapeHtml(text)}</span>`;
+}
+function dashLegend(items) {
+  return `<div class="dash-legend">${items.map((it) => `<span><i class="${it.line ? 'line' : ''}" style="background:${it.color}"></i>${escapeHtml(it.label)}</span>`).join('')}</div>`;
+}
+
+// --- Graphiques SVG (style épuré : courbes lissées, dégradés doux, tooltips) --
+const DASH_W = 760;
+const DASH_H = 250;
+const DASH_PAD = { l: 40, r: 16, t: 24, b: 30 };
+let dashUidSeq = 0;
+const dashUid = () => `dg${(dashUidSeq += 1)}`;
+function dashGeom(n) {
+  const iw = DASH_W - DASH_PAD.l - DASH_PAD.r;
+  const ih = DASH_H - DASH_PAD.t - DASH_PAD.b;
+  return { iw, ih, x: (i) => DASH_PAD.l + iw * ((i + 0.5) / n) };
+}
+// Attribut data-tip (info-bulle au survol). Le texte est déjà échappé/formaté.
+function dashTip(text) { return ` data-tip="${text}"`; }
+// Rectangle à coins supérieurs arrondis, base plate (look Metabase).
+function dashTopRect(x, w, yTop, yBase, r) {
+  const h = yBase - yTop;
+  const rr = Math.max(0, Math.min(r, w / 2, h));
+  return `M${x.toFixed(1)},${yBase.toFixed(1)} L${x.toFixed(1)},${(yTop + rr).toFixed(1)} Q${x.toFixed(1)},${yTop.toFixed(1)} ${(x + rr).toFixed(1)},${yTop.toFixed(1)} L${(x + w - rr).toFixed(1)},${yTop.toFixed(1)} Q${(x + w).toFixed(1)},${yTop.toFixed(1)} ${(x + w).toFixed(1)},${(yTop + rr).toFixed(1)} L${(x + w).toFixed(1)},${yBase.toFixed(1)} Z`;
+}
+// Courbe lissée monotone (Fritsch–Carlson) — pas de dépassement sous la ligne de base.
+function dashSmoothPath(pts) {
+  const n = pts.length;
+  if (n < 2) return n ? `M ${pts[0][0]} ${pts[0][1]}` : '';
+  const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
+  const dx = []; const dy = []; const ms = [];
+  for (let i = 0; i < n - 1; i += 1) { dx[i] = xs[i + 1] - xs[i]; dy[i] = ys[i + 1] - ys[i]; ms[i] = dy[i] / dx[i]; }
+  const m = new Array(n);
+  m[0] = ms[0]; m[n - 1] = ms[n - 2];
+  for (let i = 1; i < n - 1; i += 1) m[i] = (ms[i - 1] * ms[i] <= 0) ? 0 : (ms[i - 1] + ms[i]) / 2;
+  for (let i = 0; i < n - 1; i += 1) {
+    if (ms[i] === 0) { m[i] = 0; m[i + 1] = 0; } else {
+      const a = m[i] / ms[i]; const b = m[i + 1] / ms[i]; const s = a * a + b * b;
+      if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * ms[i]; m[i + 1] = t * b * ms[i]; }
+    }
+  }
+  let d = `M ${xs[0].toFixed(1)} ${ys[0].toFixed(1)}`;
+  for (let i = 0; i < n - 1; i += 1) {
+    const c1x = xs[i] + dx[i] / 3; const c1y = ys[i] + m[i] * dx[i] / 3;
+    const c2x = xs[i + 1] - dx[i] / 3; const c2y = ys[i + 1] - m[i + 1] * dx[i] / 3;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${xs[i + 1].toFixed(1)} ${ys[i + 1].toFixed(1)}`;
+  }
+  return d;
+}
+function dashBarGrad(id, color) {
+  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}"/><stop offset="1" stop-color="${color}" stop-opacity="0.78"/></linearGradient>`;
+}
+function dashAreaGrad(id, color) {
+  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity="0.24"/><stop offset="0.9" stop-color="${color}" stop-opacity="0.02"/></linearGradient>`;
+}
+function dashGrid(niceMax, opts = {}) {
+  const { ih } = { ih: DASH_H - DASH_PAD.t - DASH_PAD.b };
+  let g = '';
+  for (let k = 0; k <= 4; k += 1) {
+    const val = (niceMax / 4) * k;
+    const y = DASH_PAD.t + ih - ih * (val / niceMax);
+    g += `<line x1="${DASH_PAD.l}" y1="${y.toFixed(1)}" x2="${DASH_W - DASH_PAD.r}" y2="${y.toFixed(1)}" stroke="#f0f3f8" stroke-width="1"${k === 0 ? '' : ' stroke-dasharray="2 4"'}/>`;
+    g += `<text x="${DASH_PAD.l - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="dash-axis">${opts.percent ? Math.round(val) + '%' : formatInteger(Math.round(val))}</text>`;
+  }
+  return g;
+}
+function dashXLabels(series, n) {
+  const { x } = dashGeom(n);
+  const step = Math.max(1, Math.ceil(n / 8));
+  return series.map((d, i) => (i % step === 0 || i === n - 1)
+    ? `<text x="${x(i).toFixed(1)}" y="${DASH_H - 9}" text-anchor="middle" class="dash-axis">${dashDayShort(d.date)}</text>` : '').join('');
+}
+function dashLinePlot(series, k, color, x, y, { labels, dashed, name } = {}) {
+  const pts = series.map((d, i) => [x(i), y(Number(d[k]) || 0)]);
+  const path = dashSmoothPath(pts);
+  const line = `<path d="${path}" fill="none" stroke="${color}" stroke-width="${dashed ? 2 : 2.6}" stroke-linejoin="round" stroke-linecap="round"${dashed ? ' stroke-dasharray="5 5" opacity="0.85"' : ''}/>`;
+  const dots = series.map((d, i) => `<circle class="dash-pt" cx="${pts[i][0].toFixed(1)}" cy="${pts[i][1].toFixed(1)}" r="${dashed ? 3 : 3.6}" fill="#fff" stroke="${color}" stroke-width="2"${dashTip(`${dashDayShort(d.date)} · <b>${formatInteger(Number(d[k]) || 0)}</b>${name ? ` ${escapeHtml(name)}` : ''}`)}/>`).join('');
+  const lab = labels ? series.map((d, i) => `<text x="${pts[i][0].toFixed(1)}" y="${(pts[i][1] - 10).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${formatInteger(Number(d[k]) || 0)}</text>`).join('') : '';
+  return { line, dots, lab };
+}
+
+// Barres (une série) + libellés + ligne secondaire ou « période précédente ».
+function dashBarChart(series, opt) {
+  if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
+  const n = series.length;
+  const { ih, x } = dashGeom(n);
+  const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.key]) || 0, opt.lineKey ? (Number(d[opt.lineKey]) || 0) : 0, opt.prevKey ? (Number(d[opt.prevKey]) || 0) : 0)));
+  const niceMax = dashNiceCeil(maxV);
+  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
+  const base = DASH_PAD.t + ih;
+  const bw = Math.max(6, Math.min(30, (dashGeom(n).iw / n) * 0.5));
+  const gid = dashUid();
+  const bars = series.map((d, i) => {
+    const v = Number(d[opt.key]) || 0;
+    if (v <= 0) return '';
+    const yTop = y(v);
+    const path = `<path class="dash-barrect" d="${dashTopRect(x(i) - bw / 2, bw, yTop, base, 5)}" fill="url(#${gid})"${dashTip(`${dashDayShort(d.date)} · <b>${formatInteger(v)}</b> ${escapeHtml(opt.barName || '')}`)}/>`;
+    const label = `<text x="${x(i).toFixed(1)}" y="${(yTop - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.labelColor || opt.color}">${formatInteger(v)}</text>`;
+    return path + label;
+  }).join('');
+  let overlay = '';
+  if (opt.prevKey) { const p = dashLinePlot(series, opt.prevKey, '#c3ccd9', x, y, { dashed: true, name: opt.prevName }); overlay += p.line + p.dots; }
+  if (opt.lineKey) { const p = dashLinePlot(series, opt.lineKey, opt.lineColor || '#10b981', x, y, { labels: true, name: opt.lineName }); overlay += p.line + p.dots + p.lab; }
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet"><defs>${dashBarGrad(gid, opt.color)}</defs>${dashGrid(niceMax)}${bars}${overlay}${dashXLabels(series, n)}</svg>`;
+}
+
+// Deux lignes lissées (période courante vs précédente).
+function dashDualLineChart(series, opt) {
+  if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
+  const n = series.length;
+  const { ih, x } = dashGeom(n);
+  const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.aKey]) || 0, Number(d[opt.bKey]) || 0)));
+  const niceMax = dashNiceCeil(maxV);
+  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
+  const b = dashLinePlot(series, opt.bKey, '#c3ccd9', x, y, { dashed: true, name: opt.bName });
+  const a = dashLinePlot(series, opt.aKey, opt.aColor || '#e11d2a', x, y, { labels: true, name: opt.aName });
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${b.line}${b.dots}${a.line}${a.dots}${a.lab}${dashXLabels(series, n)}</svg>`;
+}
+
+// Aire lissée (taux %, 0–100).
+function dashAreaChart(points, opt) {
+  const valid = (points || []).filter((p) => p.value != null);
+  if (!valid.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
+  const n = points.length;
+  const { ih, x } = dashGeom(n);
+  const niceMax = 100;
+  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
+  const color = opt.color || '#3b82f6';
+  const gid = dashUid();
+  const idx = points.map((d, i) => (d.value == null ? null : i)).filter((i) => i != null);
+  const pts = idx.map((i) => [x(i), y(points[i].value)]);
+  const linePath = dashSmoothPath(pts);
+  const base = DASH_PAD.t + ih;
+  const areaPath = `${linePath} L ${pts[pts.length - 1][0].toFixed(1)} ${base.toFixed(1)} L ${pts[0][0].toFixed(1)} ${base.toFixed(1)} Z`;
+  const dots = idx.map((i) => `<circle class="dash-pt" cx="${x(i).toFixed(1)}" cy="${y(points[i].value).toFixed(1)}" r="3.4" fill="#fff" stroke="${color}" stroke-width="2"${dashTip(`${dashDayShort(points[i].date)} · <b>${Math.round(points[i].value)}%</b>`)}/><text x="${x(i).toFixed(1)}" y="${(y(points[i].value) - 10).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${Math.round(points[i].value)}%</text>`).join('');
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet"><defs>${dashAreaGrad(gid, color)}</defs>${dashGrid(niceMax, { percent: true })}<path d="${areaPath}" fill="url(#${gid})"/><path d="${linePath}" fill="none" stroke="${color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>${dots}${dashXLabels(points, n)}</svg>`;
+}
+
+// Barres groupées (deux séries par catégorie) — ex. Livraisons par livreur.
+function dashGroupedChart(items, opt) {
+  if (!items || !items.length) return '<div class="dash-empty">Aucune donnée</div>';
+  const n = items.length;
+  const { ih, iw } = dashGeom(n);
+  const maxV = Math.max(1, ...items.map((d) => Math.max(Number(d[opt.aKey]) || 0, Number(d[opt.bKey]) || 0)));
+  const niceMax = dashNiceCeil(maxV);
+  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
+  const base = DASH_PAD.t + ih;
+  const groupW = iw / n;
+  const bw = Math.min(26, groupW * 0.26);
+  const ga = dashUid(); const gb = dashUid();
+  let bars = ''; let labels = '';
+  items.forEach((d, i) => {
+    const cx = DASH_PAD.l + groupW * (i + 0.5);
+    const va = Number(d[opt.aKey]) || 0; const vb = Number(d[opt.bKey]) || 0;
+    if (va > 0) { bars += `<path class="dash-barrect" d="${dashTopRect(cx - bw - 3, bw, y(va), base, 5)}" fill="url(#${ga})"${dashTip(`${escapeHtml(d.label)} · <b>${formatInteger(va)}</b> ${escapeHtml(opt.aName || '')}`)}/><text x="${(cx - bw / 2 - 3).toFixed(1)}" y="${(y(va) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.aColor}">${formatInteger(va)}</text>`; }
+    if (vb > 0) { bars += `<path class="dash-barrect" d="${dashTopRect(cx + 3, bw, y(vb), base, 5)}" fill="url(#${gb})"${dashTip(`${escapeHtml(d.label)} · <b>${formatInteger(vb)}</b> ${escapeHtml(opt.bName || '')}`)}/><text x="${(cx + bw / 2 + 3).toFixed(1)}" y="${(y(vb) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.bColor}">${formatInteger(vb)}</text>`; }
+    labels += `<circle cx="${cx.toFixed(1)}" cy="${DASH_H - 15}" r="11" fill="#eef1f6"/><text x="${cx.toFixed(1)}" y="${DASH_H - 11.5}" text-anchor="middle" class="dash-initials">${escapeHtml(dashInitials(d.label))}</text>`;
+    labels += `<text x="${cx.toFixed(1)}" y="${DASH_H + 1}" text-anchor="middle" class="dash-axis">${escapeHtml((d.label || '').split(' ')[0])}</text>`;
+  });
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H + 16}" preserveAspectRatio="xMidYMid meet"><defs>${dashBarGrad(ga, opt.aColor)}${dashBarGrad(gb, opt.bColor)}</defs>${dashGrid(niceMax)}${bars}${labels}</svg>`;
+}
+
+// Barres empilées par jour (catégories) — ex. Incidents par jour.
+function dashStackedChart(series, categories) {
+  if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
+  const n = series.length;
+  const { ih, x } = dashGeom(n);
+  const totals = series.map((d) => categories.reduce((s, c) => s + (Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0), 0));
+  const niceMax = dashNiceCeil(Math.max(1, ...totals));
+  const base = DASH_PAD.t + ih;
+  const bw = Math.max(8, Math.min(28, (dashGeom(n).iw / n) * 0.44));
+  let bars = '';
+  series.forEach((d, i) => {
+    const active = categories.map((c) => ({ c, v: Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0 })).filter((s) => s.v > 0);
+    let acc = 0;
+    active.forEach((s, k) => {
+      const yBase = base - ih * (acc / niceMax);
+      const yTop = base - ih * ((acc + s.v) / niceMax);
+      const isTop = k === active.length - 1;
+      const shape = isTop
+        ? `<path d="${dashTopRect(x(i) - bw / 2, bw, yTop, yBase, 4)}" fill="${s.c.color}"${dashTip(`${dashDayShort(d.date)} · ${escapeHtml(s.c.label)} <b>${formatInteger(s.v)}</b>`)}/>`
+        : `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${(yBase - yTop).toFixed(1)}" fill="${s.c.color}"${dashTip(`${dashDayShort(d.date)} · ${escapeHtml(s.c.label)} <b>${formatInteger(s.v)}</b>`)}/>`;
+      bars += shape;
+      acc += s.v;
+    });
+    if (totals[i] > 0) bars += `<text x="${x(i).toFixed(1)}" y="${(base - ih * (totals[i] / niceMax) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="#475569">${formatInteger(totals[i])}</text>`;
+  });
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${bars}${dashXLabels(series, n)}</svg>`;
+}
+
+function dashPolar(cx, cy, r, a) { const rad = ((a - 90) * Math.PI) / 180; return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]; }
+function dashRingArc(cx, cy, r, s, e) {
+  const [x1, y1] = dashPolar(cx, cy, r, s); const [x2, y2] = dashPolar(cx, cy, r, e);
+  const large = e - s > 180 ? 1 : 0;
+  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+}
+function dashDonut(rawSegments, opt = {}) {
+  const segments = (rawSegments || []).filter((s) => (Number(s.value) || 0) > 0);
+  const total = segments.reduce((s, x) => s + (Number(x.value) || 0), 0);
+  if (!total) return '<div class="dash-empty">Aucune donnée sur la période</div>';
+  const cx = 90; const cy = 90; const r = 68; const th = 17;
+  const gap = segments.length > 1 ? 3 : 0;
+  let acc = 0;
+  const arcs = segments.map((s, i) => {
+    const frac = (Number(s.value) || 0) / total;
+    const a0 = acc * 360; acc += frac; const a1 = acc * 360;
+    const color = s.color || DASH_PALETTE[i % DASH_PALETTE.length];
+    const pct = Math.round(frac * 100);
+    const tip = dashTip(`${escapeHtml(s.label)} · <b>${formatInteger(s.value)}</b> · ${pct}%`);
+    if (frac >= 0.9999) return `<circle class="dash-seg" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${th}"${tip}/>`;
+    return `<path class="dash-seg" d="${dashRingArc(cx, cy, r, a0 + gap / 2, a1 - gap / 2)}" fill="none" stroke="${color}" stroke-width="${th}" stroke-linecap="round"${tip}/>`;
+  }).join('');
+  const legend = segments.map((s, i) => {
+    const color = s.color || DASH_PALETTE[i % DASH_PALETTE.length];
+    const pct = Math.round(((Number(s.value) || 0) / total) * 100);
+    return `<li><span class="dash-dot" style="background:${color}"></span><span class="dash-leg-label">${escapeHtml(s.label)}</span><strong class="dash-leg-val">${formatInteger(s.value)}</strong><span class="dash-leg-pct">${pct}%</span></li>`;
+  }).join('');
+  return `<div class="dash-donut-wrap">
+    <svg class="dash-donut" viewBox="0 0 180 180">${arcs}
+      <text x="90" y="85" text-anchor="middle" class="dash-donut-total">${formatInteger(opt.total != null ? opt.total : total)}</text>
+      <text x="90" y="104" text-anchor="middle" class="dash-donut-sub">${escapeHtml(opt.centerLabel || 'total')}</text>
+    </svg>
+    <ul class="dash-legend-list">${legend}</ul>
+  </div>`;
+}
+
+// Info-bulle partagée (survol des points/barres/segments) — initialisée une fois.
+(function dashTooltipSetup() {
+  if (typeof document === 'undefined' || (typeof window !== 'undefined' && window.__dashTipInit)) return;
+  if (typeof window !== 'undefined') window.__dashTipInit = true;
+  let tip = null;
+  const ensure = () => { if (!tip) { tip = document.createElement('div'); tip.className = 'dash-tip'; tip.setAttribute('hidden', ''); document.body.appendChild(tip); } return tip; };
+  document.addEventListener('pointerover', (e) => {
+    const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+    if (!el) return;
+    const t = ensure(); t.innerHTML = el.getAttribute('data-tip'); t.removeAttribute('hidden');
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!tip || tip.hasAttribute('hidden')) return;
+    const pad = 14; const r = tip.getBoundingClientRect();
+    let x = e.clientX + pad; let y = e.clientY + pad;
+    if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
+    if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
+    tip.style.left = `${x}px`; tip.style.top = `${y}px`;
+  });
+  document.addEventListener('pointerout', (e) => {
+    const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+    if (el && tip) tip.setAttribute('hidden', '');
+  });
+}());
+
+function dashProgressRows(rows, opt = {}) {
+  if (!rows.length) return '<div class="dash-empty">Aucune donnée</div>';
+  const base = opt.base != null ? opt.base : Math.max(1, ...rows.map((r) => Number(r.value) || 0));
+  return `<ul class="dash-bars">${rows.map((r) => {
+    const v = Number(r.value) || 0;
+    const pct = base > 0 ? Math.round((v / base) * 100) : 0;
+    return `<li><div class="dash-bar-head"><span>${escapeHtml(r.label)}</span><span class="dash-bar-nums"><strong>${escapeHtml(r.display != null ? r.display : formatInteger(v))}</strong><span class="dash-bar-pct">${pct}%</span></span></div><div class="dash-bar-track"><span style="width:${pct}%;background:${r.color || '#e11d2a'}"></span></div></li>`;
+  }).join('')}</ul>`;
+}
+
+// --- Tableaux ---------------------------------------------------------------
+function dashRecentOrders(rows) {
+  if (!rows.length) return '<div class="dash-empty">Aucune commande</div>';
+  return `<div class="dash-table-wrap"><table class="dash-table">
+    <thead><tr><th>Commande</th><th>Client</th><th>Livreur</th><th>Statut</th><th>Créée</th></tr></thead>
+    <tbody>${rows.map((o) => `<tr onclick="location.href='/app/commandes/${o.id}'">
+      <td><strong>${escapeHtml(o.reference || `#${o.id}`)}</strong></td>
+      <td>${escapeHtml(o.customerName || '—')}</td>
+      <td>${escapeHtml(o.driverName || '—')}</td>
+      <td>${badge(o.status)}</td>
+      <td class="dash-muted">${escapeHtml(formatDate(o.createdAt))}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function dashRequestCode(r) {
+  const d = new Date(r.createdAt);
+  const ymd = Number.isNaN(d.getTime()) ? '00000000' : `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  return `DE-${ymd}-${String(r.id).padStart(4, '0')}`;
+}
+function dashRecentRequests(rows) {
+  if (!rows.length) return '<div class="dash-empty">Aucune demande</div>';
+  return `<div class="dash-table-wrap"><table class="dash-table">
+    <thead><tr><th>ID</th><th>Client</th><th>Position</th><th>Statut</th><th>Reçue le</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/demandes/${r.id}'">
+      <td><strong>${escapeHtml(dashRequestCode(r))}</strong></td>
+      <td>${escapeHtml(r.customerName || 'À préciser')}</td>
+      <td>${r.hasLocation ? `<span class="dash-pos">${DASH_ICONS.pin}Position reçue</span>` : '<span class="dash-muted">—</span>'}</td>
+      <td>${badge(r.status)}</td>
+      <td class="dash-muted">${escapeHtml(formatDate(r.createdAt))}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function dashRecentIncidents(rows) {
+  if (!rows.length) return '<div class="dash-empty">Aucun incident</div>';
+  return `<div class="dash-table-wrap"><table class="dash-table">
+    <thead><tr><th>ID</th><th>Type</th><th>Commande</th><th>Statut</th><th>Signalé le</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/incidents/${r.id}'">
+      <td><strong>INC-${escapeHtml(String(r.id).padStart(3, '0'))}</strong></td>
+      <td><span class="dash-type"><span class="dash-dot" style="background:${DASH_INCIDENT_COLOR[r.category] || '#e11d2a'}"></span>${escapeHtml(incidentCategoryLabels[r.category] || r.category || 'Autre')}</span></td>
+      <td>${escapeHtml(r.orderReference || '—')}</td>
+      <td>${badge(DASH_INCIDENT_STATUS_LABEL[r.status] || r.status)}</td>
+      <td class="dash-muted">${escapeHtml(formatDate(r.createdAt))}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function dashPerfTable(drivers, columns) {
+  if (!drivers.length) return '<div class="dash-empty">Aucun livreur actif</div>';
+  const head = columns.map((c) => `<th class="${c.num ? 'num' : ''}">${escapeHtml(c.label)}</th>`).join('');
+  return `<div class="dash-table-wrap"><table class="dash-table">
+    <thead><tr><th>Livreur</th>${head}</tr></thead>
+    <tbody>${drivers.map((d) => `<tr>
+      <td><span class="dash-driver"><span class="dash-avatar">${escapeHtml(dashInitials(d.name))}</span>${escapeHtml(d.name)}</span></td>
+      ${columns.map((c) => c.render(d)).join('')}
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function dashRateCell(numer, denom) {
+  const pct = denom > 0 ? Math.round((numer / denom) * 100) : 0;
+  return `<td><div class="dash-cell-rate"><div class="dash-mini-track"><span style="width:${pct}%"></span></div><span>${pct}%</span></div></td>`;
+}
+
+
+// --- Contenu par onglet -----------------------------------------------------
+function dashTabContent(tab, data) {
+  const m = data.metrics;
+  const now = data.now;
+  const val = (t) => formatInteger(t ? t.value : 0);
+  const rate = (t) => (t && t.value != null ? formatPercent(t.value) : '—');
+  const orderStatusSeg = data.distributions.orderStatus.map((s) => ({ ...s, color: DASH_ORDER_STATUS_COLOR[s.label] }));
+  const perJour = dashChip('Par jour');
+  const cettePeriode = dashChip('Cette période');
+
+  if (tab === 'commandes') {
+    const kpis = [
+      dashKpi({ icon: DASH_ICONS.box, label: 'Commandes créées', value: val(m.ordersCreated), delta: dashDelta(m.ordersCreated), tone: 'red' }),
+      dashKpi({ icon: DASH_ICONS.check, label: 'Livrées', value: val(m.delivered), delta: dashDelta(m.delivered), tone: 'green' }),
+      dashKpi({ icon: DASH_ICONS.clock, label: 'En cours', value: formatInteger(now.openDeliveries), tone: 'blue' }),
+      dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de livraison', value: rate(m.deliveryRate), delta: dashDeltaPoints(m.deliveryRate.deltaPoints), tone: 'orange' }),
+    ];
+    return dashKpiRow(kpis) + `<div class="dash-grid-2">
+      ${dashCard('Commandes créées par jour', dashLegend([{ color: '#e11d2a', label: 'Créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
+      ${dashCard('Répartition par statut', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
+    </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes'));
+  }
+
+  if (tab === 'livraisons') {
+    const assigned = m.ordersCreated.value;
+    const seg = [
+      { label: 'Terminées', value: m.delivered.value, color: '#3b82f6' },
+      { label: 'En cours', value: now.openDeliveries, color: '#f59e0b' },
+      { label: 'Annulées', value: m.cancelled.value, color: '#e11d2a' },
+    ];
+    const ratePoints = data.series.map((d) => ({ date: d.date, value: (d.delivered + d.returned) > 0 ? (d.delivered / (d.delivered + d.returned)) * 100 : null }));
+    const kpis = [
+      dashKpi({ icon: DASH_ICONS.box, label: 'Livraisons assignées', value: formatInteger(assigned), delta: dashDelta(m.ordersCreated), tone: 'red' }),
+      dashKpi({ icon: DASH_ICONS.truck, label: 'Livraisons terminées', value: val(m.delivered), delta: dashDelta(m.delivered), tone: 'green' }),
+      dashKpi({ icon: DASH_ICONS.clock, label: 'En cours', value: formatInteger(now.openDeliveries), tone: 'blue' }),
+      dashKpi({ icon: DASH_ICONS.xcircle, label: 'Annulées', value: val(m.cancelled), delta: dashDelta(m.cancelled, true), tone: 'red' }),
+    ];
+    const driverRows = data.tables.drivers;
+    return dashKpiRow(kpis) + `<div class="dash-grid-2">
+      ${dashCard('Livraisons terminées par jour', dashLegend([{ color: '#3b82f6', label: 'Cette période (terminées)' }, { color: '#c3ccd9', label: 'Période précédente', line: true }]) + dashBarChart(data.series, { key: 'delivered', color: '#3b82f6', barName: 'livrées', prevKey: 'prevDelivered', prevName: '(préc.)' }), perJour)}
+      ${dashCard('État des livraisons', dashDonut(seg, { centerLabel: 'livraisons totales', total: assigned }), cettePeriode)}
+    </div><div class="dash-grid-2">
+      ${dashCard('Taux de livraison par jour', dashAreaChart(ratePoints, { color: '#3b82f6' }))}
+      ${dashCard('Répartition par livreur', dashPerfTable(driverRows, [
+        { label: 'Livraisons assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.assigned)}</td>` },
+        { label: 'Livraisons terminées', num: true, render: (d) => `<td class="num">${formatInteger(d.delivered)}</td>` },
+        { label: 'Taux de livraison', render: (d) => dashRateCell(d.delivered, d.assigned) },
+      ]), dashLink('Voir tous'))}
+    </div>`;
+  }
+
+  if (tab === 'livreurs') {
+    const availSeg = data.distributions.driverAvailability.map((s) => ({ label: driverStateLabels[s.label] || s.label, value: s.value, color: DASH_AVAILABILITY_COLOR[s.label] }));
+    const grouped = data.tables.drivers.map((d) => ({ label: d.name, assigned: d.assigned, delivered: d.delivered }));
+    const assignedTotal = m.ordersCreated.value;
+    const kpis = [
+      dashKpi({ icon: DASH_ICONS.users, label: 'Livreurs enregistrés', value: formatInteger(now.driversTotal), tone: 'red' }),
+      dashKpi({ icon: DASH_ICONS.user, label: 'Actifs cette période', value: val(m.driversActive), delta: dashDelta(m.driversActive), tone: 'green' }),
+      dashKpi({ icon: DASH_ICONS.box, label: 'Livraisons assignées', value: formatInteger(assignedTotal), delta: dashDelta(m.ordersCreated), tone: 'blue' }),
+      dashKpi({ icon: DASH_ICONS.check, label: 'Livraisons terminées', value: val(m.delivered), delta: dashDelta(m.delivered), tone: 'navy' }),
+    ];
+    const workload = [
+      { label: 'Assignées', value: assignedTotal, color: '#3b82f6' },
+      { label: 'Terminées', value: m.delivered.value, color: '#10b981' },
+      { label: 'En cours', value: now.openLoad, color: '#f59e0b' },
+      { label: 'Annulées', value: m.cancelled.value, color: '#e11d2a' },
+    ];
+    return dashKpiRow(kpis) + `<div class="dash-grid-2">
+      ${dashCard('Livraisons par livreur', dashLegend([{ color: '#3b82f6', label: 'Assignées' }, { color: '#10b981', label: 'Terminées' }]) + dashGroupedChart(grouped, { aKey: 'assigned', aColor: '#3b82f6', aName: 'assignées', bKey: 'delivered', bColor: '#10b981', bName: 'terminées' }), cettePeriode)}
+      ${dashCard('Disponibilité actuelle', dashDonut(availSeg, { centerLabel: 'livreurs totaux' }))}
+    </div><div class="dash-grid-2">
+      ${dashCard('Performance individuelle', dashPerfTable(data.tables.drivers, [
+        { label: 'Assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.assigned)}</td>` },
+        { label: 'Livrées', num: true, render: (d) => `<td class="num">${formatInteger(d.delivered)}</td>` },
+        { label: 'Taux de livraison', render: (d) => dashRateCell(d.delivered, d.assigned) },
+      ]), dashLink('Voir tous'))}
+      ${dashCard('Charge de travail', dashProgressRows(workload, { base: Math.max(1, assignedTotal) }))}
+    </div>`;
+  }
+
+  if (tab === 'demandes') {
+    const reqSeg = data.distributions.requestStatus.map((s) => ({ ...s, color: DASH_REQUEST_STATUS_COLOR[s.label] }));
+    const received = m.requestsReceived.value;
+    const kpis = [
+      dashKpi({ icon: DASH_ICONS.file, label: 'Demandes reçues', value: val(m.requestsReceived), delta: dashDelta(m.requestsReceived), tone: 'red' }),
+      dashKpi({ icon: DASH_ICONS.check, label: 'Validées', value: val(m.requestsConverted), delta: dashDelta(m.requestsConverted), tone: 'green' }),
+      dashKpi({ icon: DASH_ICONS.clock, label: 'À traiter', value: formatInteger(now.toProcess), tone: 'orange' }),
+      dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de validation', value: rate(m.conversionRate), delta: dashDeltaPoints(m.conversionRate.deltaPoints), tone: 'blue' }),
+    ];
+    const processing = [
+      { label: 'Demandes reçues', value: received, color: '#3b82f6' },
+      { label: 'Validées', value: m.requestsConverted.value, color: '#10b981' },
+      { label: 'À traiter', value: now.toProcess, color: '#f59e0b' },
+    ];
+    return dashKpiRow(kpis) + `<div class="dash-grid-2">
+      ${dashCard('Demandes reçues par jour', dashLegend([{ color: '#3b82f6', label: 'Demandes reçues (total)' }, { color: '#10b981', label: 'Validées', line: true }]) + dashBarChart(data.series, { key: 'requestsReceived', color: '#93c5fd', barName: 'reçues', labelColor: '#2563eb', lineKey: 'requestsConverted', lineColor: '#10b981', lineName: 'validées' }), perJour)}
+      ${dashCard('Traitement des demandes', dashProgressRows(processing, { base: Math.max(1, received) }), cettePeriode)}
+    </div><div class="dash-grid-2">
+      ${dashCard('Demandes récentes', dashRecentRequests(data.tables.recentRequests), dashLink('Voir toutes'))}
+      ${dashCard('Délais de validation', dashProgressRows(data.distributions.validationDelay.map((d, i) => ({ label: d.label, value: d.value, color: i === 0 ? '#10b981' : '#3b82f6' }))), cettePeriode)}
+    </div>`;
+  }
+
+  if (tab === 'tournees') {
+    const seg = [
+      { label: 'Terminées', value: m.runsCompleted.value, color: '#10b981' },
+      { label: 'En cours', value: now.runsActive, color: '#3b82f6' },
+      { label: 'Annulées', value: m.runsCancelled.value, color: '#e11d2a' },
+    ];
+    const totalRuns = seg.reduce((s, x) => s + x.value, 0);
+    const kpis = [
+      dashKpi({ icon: DASH_ICONS.route, label: 'Tournées planifiées', value: val(m.runsPlanned), delta: dashDelta(m.runsPlanned), tone: 'red' }),
+      dashKpi({ icon: DASH_ICONS.check, label: 'Terminées', value: val(m.runsCompleted), delta: dashDelta(m.runsCompleted), tone: 'green' }),
+      dashKpi({ icon: DASH_ICONS.clock, label: 'En cours', value: formatInteger(now.runsActive), tone: 'blue' }),
+      dashKpi({ icon: DASH_ICONS.xcircle, label: 'Annulées', value: val(m.runsCancelled), delta: dashDelta(m.runsCancelled, true), tone: 'red' }),
+    ];
+    return dashKpiRow(kpis) + `<div class="dash-grid-2">
+      ${dashCard('Tournées terminées par jour', dashLegend([{ color: '#e11d2a', label: 'Tournées terminées', line: true }, { color: '#c3ccd9', label: 'Période précédente', line: true }]) + dashDualLineChart(data.series, { aKey: 'runsCompleted', aColor: '#e11d2a', aName: 'terminées', bKey: 'prevRunsCompleted', bName: '(préc.)' }), perJour)}
+      ${dashCard('État des tournées', dashDonut(seg, { centerLabel: 'tournées totales', total: totalRuns }), cettePeriode)}
+    </div><div class="dash-grid-2">
+      ${dashCard('Tournées par livreur', dashPerfTable(data.tables.drivers, [
+        { label: 'Assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsAssigned)}</td>` },
+        { label: 'Terminées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsCompleted)}</td>` },
+        { label: 'En cours', num: true, render: (d) => `<td class="num">${formatInteger(d.runsInProgress)}</td>` },
+        { label: 'Annulées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsCancelled)}</td>` },
+        { label: 'Taux de réalisation', render: (d) => dashRateCell(d.runsCompleted, d.runsAssigned) },
+      ]))}
+      ${dashCard('Livraisons par tournée', dashProgressRows(data.distributions.deliveriesPerRun.map((d, i) => ({ label: d.label, value: d.value, color: ['#3b82f6', '#10b981', '#f59e0b'][i] }))), dashLink('Voir toutes'))}
+    </div>`;
+  }
+
+  if (tab === 'incidents') {
+    const catSeg = data.distributions.incidentCategory.map((s) => ({ label: incidentCategoryLabels[s.label] || s.label, value: s.value, color: DASH_INCIDENT_COLOR[s.label] || '#e11d2a' }));
+    const catKeys = data.distributions.incidentCategory.map((s) => ({ key: s.label, color: DASH_INCIDENT_COLOR[s.label] || '#e11d2a', label: incidentCategoryLabels[s.label] || s.label }));
+    const resolution = [
+      { label: 'Résolus', value: m.incidentsResolved.value, color: '#10b981' },
+      { label: 'Ouverts', value: now.openIncidents, color: '#f59e0b' },
+    ];
+    const kpis = [
+      dashKpi({ icon: DASH_ICONS.alert, label: 'Incidents signalés', value: val(m.incidentsOpened), delta: dashDelta(m.incidentsOpened, true), tone: 'red' }),
+      dashKpi({ icon: DASH_ICONS.check, label: 'Résolus', value: val(m.incidentsResolved), delta: dashDelta(m.incidentsResolved), tone: 'green' }),
+      dashKpi({ icon: DASH_ICONS.clock, label: 'Ouverts', value: formatInteger(now.openIncidents), tone: 'blue' }),
+      dashKpi({ icon: DASH_ICONS.clock, label: 'Délai médian', value: dashDuration(m.incidentMedianDelay.value), delta: dashDelta(m.incidentMedianDelay, true), tone: 'orange' }),
+    ];
+    return dashKpiRow(kpis) + `<div class="dash-grid-2">
+      ${dashCard('Incidents signalés par jour', dashLegend(catKeys.slice(0, 4).map((c) => ({ color: c.color, label: c.label }))) + dashStackedChart(data.series, catKeys), perJour)}
+      ${dashCard('Types d’incident', dashProgressRows(catSeg, { base: catSeg.reduce((s, x) => s + x.value, 0) || 1 }), cettePeriode)}
+    </div><div class="dash-grid-2">
+      ${dashCard('Incidents récents', dashRecentIncidents(data.tables.recentIncidents), dashLink('Voir tous'))}
+      ${dashCard('Résolution', dashProgressRows(resolution, { base: (m.incidentsResolved.value + now.openIncidents) || 1 }))}
+    </div>`;
+  }
+
+  // Général
+  const kpis = [
+    dashKpi({ icon: DASH_ICONS.box, label: 'Commandes créées', value: val(m.ordersCreated), delta: dashDelta(m.ordersCreated), tone: 'red' }),
+    dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de livraison', value: rate(m.deliveryRate), delta: dashDeltaPoints(m.deliveryRate.deltaPoints), tone: 'green' }),
+    dashKpi({ icon: DASH_ICONS.users, label: 'Livreurs actifs', value: val(m.driversActive), delta: dashDelta(m.driversActive), tone: 'navy' }),
+    dashKpi({ icon: DASH_ICONS.alert, label: 'Incidents ouverts', value: formatInteger(now.openIncidents), tone: 'orange' }),
+  ];
+  return dashKpiRow(kpis) + `<div class="dash-grid-2">
+    ${dashCard('Activité par jour', dashLegend([{ color: '#e11d2a', label: 'Commandes créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
+    ${dashCard('Répartition des commandes', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
+  </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes'));
+}
+
+function dashKpiRow(kpis) { return `<div class="dash-kpis">${kpis.join('')}</div>`; }
+
+function dashRenderTab() {
+  const content = document.getElementById('dashContent');
+  if (!content || !dashboardState.data) return;
+  content.innerHTML = dashTabContent(dashboardState.tab, dashboardState.data);
+  document.querySelectorAll('.dash-tab').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === dashboardState.tab));
+}
+function dashUpdateMeta() {
+  const data = dashboardState.data;
+  if (!data) return;
+  dashCmpLabel = dashCompactRange(data.comparison.from, data.comparison.to);
+  const rangeEl = document.getElementById('dashRange');
+  if (rangeEl) rangeEl.textContent = dashFormatRange(data.range.from, data.range.to);
+  const cmpEl = document.getElementById('dashCompare');
+  if (cmpEl) cmpEl.textContent = `Comparé aux ${data.comparison.days} jours précédents`;
+}
+async function dashLoadData() {
+  const content = document.getElementById('dashContent');
+  if (content) content.innerHTML = '<div class="dash-loading"><span class="dash-spinner"></span>Chargement des indicateurs…</div>';
+  try {
+    dashboardState.data = await api(`/api/app/dashboard?period=${dashboardState.period}`);
+    dashUpdateMeta();
+    dashRenderTab();
+  } catch (error) {
+    if (content) content.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+  }
+}
+function dashSyncUrl() {
+  const params = new URLSearchParams(location.search);
+  params.set('periode', String(dashboardState.period));
+  params.set('vue', dashboardState.tab);
+  history.replaceState(null, '', `${location.pathname}?${params.toString()}`);
+}
+
 async function renderDashboard() {
-  setHeader('Tableau de bord', 'Vue d’ensemble des opérations');
-  const summary = await api('/api/app/summary');
+  setHeader('Tableaux de bord', 'Analysez vos opérations par période');
+  const params = new URLSearchParams(location.search);
+  const periodParam = Number(params.get('periode'));
+  dashboardState.period = [7, 30].includes(periodParam) ? periodParam : dashboardState.period;
+  const tabParam = params.get('vue');
+  dashboardState.tab = DASH_TABS.some((t) => t.key === tabParam) ? tabParam : dashboardState.tab;
+
   page.innerHTML = `
-    <div class="page-header"><div><h1>Bonjour ${escapeHtml(context.user.name)}</h1><p class="subtitle">Voici les éléments qui demandent votre attention.</p></div><a class="button primary" href="/app/operations?vue=demandes">Gérer les demandes</a></div>
-    <section class="grid stats">
-      <article class="stat"><span>Demandes actives</span><strong>${escapeHtml(summary.active_requests)}</strong></article>
-      <article class="stat"><span>À vérifier</span><strong>${escapeHtml(summary.to_review)}</strong></article>
-      <article class="stat"><span>Commandes créées</span><strong>${escapeHtml(summary.orders)}</strong></article>
-      <article class="stat"><span>Livreurs enregistrés</span><strong>${escapeHtml(summary.drivers)}</strong></article>
-      <article class="stat"><span>Tournées ouvertes</span><strong>${escapeHtml(summary.open_runs)}</strong></article>
-      <article class="stat"><span>Incidents ouverts</span><strong>${escapeHtml(summary.open_incidents)}</strong></article>
-      <article class="stat"><span>Gels à réviser</span><strong>${escapeHtml(summary.overdue_holds)}</strong></article>
-    </section>
-    <section class="card" style="margin-top:18px"><h2>Accès rapides</h2><div class="actions"><a class="button primary" href="/app/operations?vue=creer">Nouvelle demande client</a><a class="button secondary" href="/app/nouvelle-commande">Commande directe</a><a class="button secondary" href="/app/operations?vue=tournees">Voir les tournées</a><a class="button secondary" href="/app/operations?vue=incidents">Dossiers d’incident</a><a class="button secondary" href="/app/carte">Carte d’exploitation</a></div></section>`;
+    <div class="dash-topbar">
+      <div class="dash-title-block">
+        <h1>Tableaux de bord</h1>
+        <p class="dash-subtitle">Analysez vos opérations par période</p>
+      </div>
+      <div class="dash-controls">
+        <span class="dash-daterange">${DASH_ICONS.calendar}<span id="dashRange">—</span>${DASH_ICONS.chevron}</span>
+        <div class="dash-period" role="group" aria-label="Période">
+          <button type="button" class="dash-period-btn ${dashboardState.period === 7 ? 'active' : ''}" data-period="7">7 jours</button>
+          <button type="button" class="dash-period-btn ${dashboardState.period === 30 ? 'active' : ''}" data-period="30">30 jours</button>
+        </div>
+        <a class="button secondary dash-export" href="/app/rapports">${DASH_ICONS.download}<span>Exporter</span>${DASH_ICONS.chevron}</a>
+        <p id="dashCompare" class="dash-compare">—</p>
+      </div>
+    </div>
+    <nav class="dash-tabs" aria-label="Vues">
+      ${DASH_TABS.map((t) => `<button type="button" class="dash-tab ${t.key === dashboardState.tab ? 'active' : ''}" data-tab="${t.key}">${escapeHtml(t.label)}</button>`).join('')}
+      <button type="button" class="dash-tab dash-tab-new" id="dashNewView" title="Vues personnalisées à venir">+ Nouvelle vue</button>
+    </nav>
+    <div id="dashContent" class="dash-content"></div>`;
+
+  document.querySelectorAll('.dash-tab[data-tab]').forEach((btn) => btn.addEventListener('click', () => {
+    if (dashboardState.tab === btn.dataset.tab) return;
+    dashboardState.tab = btn.dataset.tab;
+    dashSyncUrl();
+    dashRenderTab();
+  }));
+  document.querySelectorAll('.dash-period-btn').forEach((btn) => btn.addEventListener('click', () => {
+    const p = Number(btn.dataset.period);
+    if (dashboardState.period === p) return;
+    dashboardState.period = p;
+    document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    dashSyncUrl();
+    dashLoadData();
+  }));
+  document.getElementById('dashNewView')?.addEventListener('click', () => {
+    const content = document.getElementById('dashContent');
+    if (content) content.insertAdjacentHTML('afterbegin', '<div class="notice">Les vues personnalisées (filtres enregistrés) arriveront dans une prochaine version.</div>');
+  });
+
+  dashSyncUrl();
+  await dashLoadData();
 }
 
 async function renderRequestDetail(id) {
@@ -1716,7 +2421,7 @@ async function renderDrivers() {
     const located = drivers.filter((driver) => driver.lastUpdate).length;
     const capacity = drivers.reduce((sum, driver) => sum + Number(driver.capacity || 0), 0);
     const segments = [
-      { label: 'Disponibles', value: available, color: '#157347' },
+      { label: 'Disponibles', value: available, color: '#10b981' },
       { label: 'En course', value: busy, color: '#475569' },
       { label: 'Hors ligne', value: offline, color: '#a15c00' },
       { label: 'Désactivés', value: inactive, color: '#b42318' },

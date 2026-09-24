@@ -4050,26 +4050,50 @@ const REPORT_SOURCES = [
   { key: 'clients', dataset: 'customers', label: 'Clients', icon: 'users', wired: false,
     desc: 'Exportez les clients enregistrés et leurs informations utiles.', list: '/api/app/crm/customers' },
 ];
-// Colonnes de l'export « Commandes » (dataset operations). Les colonnes de base
-// sont toujours incluses par le contrat serveur ; les colonnes « sensibles »
-// sont facultatives (le contrat trace leur inclusion).
-const ORDERS_BASE_COLUMNS = [
-  { key: 'reference', label: 'ID commande' },
-  { key: 'created_at', label: 'Date de création' },
-  { key: 'status', label: 'Statut' },
-  { key: 'destination_zone', label: 'Zone' },
-  { key: 'driver_reference', label: 'Livreur' },
-  { key: 'run_reference', label: 'Tournée' },
-  { key: 'requested_window', label: 'Créneau souhaité' },
-  { key: 'delivered_at', label: 'Livrée le' },
-  { key: 'incident_count', label: 'Nb incidents' },
-];
-const ORDERS_SENSITIVE_COLUMNS = [
-  { key: 'customer_name', label: 'Client', on: true },
-  { key: 'customer_phone', label: 'Téléphone', on: false },
-  { key: 'delivery_address', label: 'Adresse', on: false },
-  { key: 'delivery_instructions', label: 'Instructions', on: false },
-];
+// Colonnes d'export par source. Les colonnes de base sont toujours incluses par
+// le contrat serveur ; les « sensibles » sont facultatives (inclusion tracée).
+const REPORT_COLUMNS = {
+  orders: {
+    base: [
+      { key: 'reference', label: 'ID commande' }, { key: 'created_at', label: 'Date de création' },
+      { key: 'status', label: 'Statut' }, { key: 'destination_zone', label: 'Zone' },
+      { key: 'driver_reference', label: 'Livreur' }, { key: 'run_reference', label: 'Tournée' },
+      { key: 'requested_window', label: 'Créneau souhaité' }, { key: 'delivered_at', label: 'Livrée le' },
+      { key: 'incident_count', label: 'Nb incidents' },
+    ],
+    sensitive: [
+      { key: 'customer_name', label: 'Client', on: true }, { key: 'customer_phone', label: 'Téléphone', on: false },
+      { key: 'delivery_address', label: 'Adresse', on: false }, { key: 'delivery_instructions', label: 'Instructions', on: false },
+    ],
+  },
+  clients: {
+    base: [
+      { key: 'customer_reference', label: 'ID client' }, { key: 'destination_zone', label: 'Zone' },
+      { key: 'order_count', label: 'Commandes' }, { key: 'completed_order_count', label: 'Commandes livrées' },
+      { key: 'last_order_at', label: 'Dernière commande' },
+    ],
+    sensitive: [{ key: 'customer_name', label: 'Nom', on: true }, { key: 'customer_phone', label: 'Téléphone', on: false }],
+  },
+  incidents: {
+    base: [
+      { key: 'incident_id', label: 'ID incident' }, { key: 'order_id', label: 'Commande' },
+      { key: 'category', label: 'Type' }, { key: 'severity', label: 'Gravité' }, { key: 'status', label: 'Statut' },
+      { key: 'opened_at', label: 'Ouvert le' }, { key: 'resolved_at', label: 'Résolu le' }, { key: 'resolution_code', label: 'Résolution' },
+    ],
+    sensitive: [],
+  },
+  routes: {
+    base: [{ key: 'run_reference', label: 'ID tournée' }, { key: 'driver_reference', label: 'Livreur' }, { key: 'status', label: 'Statut' }],
+    sensitive: [],
+  },
+};
+// Filtres (menus déroulants) par source, alimentés par les valeurs réelles.
+const REPORT_FILTERS = {
+  orders: [{ k: 'status', label: 'Tous les statuts' }, { k: 'zone', label: 'Toutes les zones' }, { k: 'driver', label: 'Tous les livreurs' }],
+  clients: [{ k: 'status', label: 'Tous les statuts' }, { k: 'type', label: 'Tous les types' }, { k: 'zone', label: 'Toutes les zones' }],
+  routes: [{ k: 'status', label: 'Tous les statuts' }, { k: 'driver', label: 'Tous les livreurs' }],
+  incidents: [{ k: 'status', label: 'Tous les statuts' }, { k: 'type', label: 'Tous les types' }],
+};
 
 function reportStepper(active) {
   const steps = [['1', 'Choisir les données'], ['2', 'Configurer l’export'], ['3', 'Télécharger']];
@@ -4105,9 +4129,13 @@ function reportStepStart() {
     <div class="rep-head"><span class="rep-rule"></span><h1>Quels rapports souhaitez-vous exporter ?</h1><p>Sélectionnez le type de données que vous souhaitez exporter depuis TRAXO.</p></div>
     <div class="rep-sources">${REPORT_SOURCES.map((s) => `
       <button type="button" class="rep-source" data-source="${s.key}">
-        <span class="rep-source-ic">${REPORT_ICONS[s.icon]}</span>
-        <span class="rep-source-main"><strong>${escapeHtml(s.label)}</strong><small>${escapeHtml(s.desc)}</small></span>
-        <span class="rep-source-go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+        <span class="rep-source-body">
+          <span class="rep-source-ic">${REPORT_ICONS[s.icon]}</span>
+          <strong>${escapeHtml(s.label)}</strong>
+          <small>${escapeHtml(s.desc)}</small>
+          <span class="rep-source-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+        </span>
+        <span class="rep-source-art" aria-hidden="true">${REPORT_ICONS[s.icon]}</span>
       </button>`).join('')}</div>
   </div>`;
   page.querySelectorAll('.rep-source').forEach((btn) => btn.addEventListener('click', () => reportSetSource(btn.dataset.source)));
@@ -4117,125 +4145,139 @@ function reportStepStart() {
 async function reportStepConfigure(source) {
   const firstOfThisMonth = `${currentPortoNovoMonth()}-01`;
   const today = new Date().toISOString().slice(0, 10);
+  const cols = REPORT_COLUMNS[source.key] || { base: [], sensitive: [] };
+  const filtersDef = REPORT_FILTERS[source.key] || [];
+
   page.innerHTML = `<div class="rep">
     ${reportStepper(2)}
     <div class="rep-head"><span class="rep-rule"></span><h1>Configurer l’export</h1><p>Affinez les données à exporter puis choisissez votre format.</p></div>
-    <section class="rep-config">
-      <div class="rep-config-bar">
-        <div class="rep-source-tag"><span class="rep-source-ic sm">${REPORT_ICONS[source.icon]}</span>Source : <strong>${escapeHtml(source.label)}</strong></div>
-        <div class="rep-filters">
-          <label class="rep-field"><span>Du</span><input type="date" id="repFrom" value="${firstOfThisMonth}"></label>
-          <label class="rep-field"><span>Au</span><input type="date" id="repTo" value="${today}"></label>
-          <input type="search" id="repSearch" class="rep-search" placeholder="Rechercher…">
-        </div>
-        <div class="rep-actions">
-          <div class="rep-format" role="group" aria-label="Format">
-            <button type="button" class="rep-fmt active" data-fmt="csv">CSV</button>
-            <button type="button" class="rep-fmt" data-fmt="xlsx">Excel</button>
-          </div>
-          <div class="rep-fields-wrap">
-            <button type="button" class="button secondary" id="repFieldsBtn">Choisir les champs</button>
-            <div class="rep-fields-pop" id="repFieldsPop" hidden></div>
-          </div>
-          <button type="button" class="button primary" id="repGenerate">${source.wired ? 'Générer l’export' : 'Bientôt disponible'}</button>
-        </div>
-      </div>
-      <div class="rep-preview" id="repPreview">${loadingState('Chargement de l’aperçu…')}</div>
-      ${source.wired ? '' : '<p class="rep-soon">La génération de fichier pour cette source arrive bientôt. L’aperçu ci-dessus reflète vos données réelles.</p>'}
-    </section>
+    <section class="rep-config" id="repShell">${loadingState('Chargement de l’aperçu…')}</section>
     <div class="rep-back"><button type="button" class="link-btn" id="repBack">← Changer de source</button></div>
   </div>`;
-
   document.getElementById('repBack').addEventListener('click', () => reportSetSource(null));
+
+  // Charge les données réelles puis construit la barre + le tableau.
+  let allRows = [];
+  let loadError = null;
+  try { allRows = reportExtractRows(source.key, await api(source.list)); }
+  catch (error) { loadError = error.message || 'Aperçu indisponible.'; }
+
+  const distinct = (k) => [...new Set(allRows.map((r) => r.f && r.f[k]).filter((v) => v && v !== '—'))].sort();
+  const filtersHtml = filtersDef.map((f) => `<div class="rep-sel"><select data-filter="${f.k}"><option value="">${escapeHtml(f.label)}</option>${distinct(f.k).map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('')}</select></div>`).join('');
+  const colSummary = cols.base.length + cols.sensitive.filter((c) => c.on).length;
+
+  document.getElementById('repShell').innerHTML = `
+    <div class="rep-config-bar">
+      <div class="rep-source-tag"><span class="rep-source-ic sm">${REPORT_ICONS[source.icon]}</span>Source : <strong>${escapeHtml(source.label)}</strong></div>
+      <div class="rep-period"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><input type="date" id="repFrom" value="${firstOfThisMonth}"><span>→</span><input type="date" id="repTo" value="${today}"></div>
+      ${filtersHtml}
+      <input type="search" id="repSearch" class="rep-search" placeholder="Rechercher…">
+      <div class="rep-format" role="group" aria-label="Format">
+        <button type="button" class="rep-fmt active" data-fmt="csv">CSV</button>
+        <button type="button" class="rep-fmt" data-fmt="xlsx">Excel</button>
+      </div>
+      <div class="rep-fields-wrap">
+        <button type="button" class="button secondary" id="repFieldsBtn">Choisir les champs</button>
+        <div class="rep-fields-pop" id="repFieldsPop" hidden></div>
+      </div>
+      <button type="button" class="button primary rep-gen" id="repGenerate">Générer l’export <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+    </div>
+    <div class="rep-preview" id="repPreview"></div>
+    <p class="rep-msg" id="repMsg" hidden></p>`;
 
   // Format segmenté.
   let format = 'csv';
-  page.querySelectorAll('.rep-fmt').forEach((btn) => btn.addEventListener('click', () => {
+  document.querySelectorAll('.rep-fmt').forEach((btn) => btn.addEventListener('click', () => {
     format = btn.dataset.fmt;
-    page.querySelectorAll('.rep-fmt').forEach((b) => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.rep-fmt').forEach((b) => b.classList.toggle('active', b === btn));
   }));
 
-  // Sélecteur de colonnes (Commandes uniquement pour l'instant).
-  const sensitiveState = new Map(ORDERS_SENSITIVE_COLUMNS.map((c) => [c.key, c.on]));
+  // Sélecteur de colonnes.
+  const sensitiveState = new Map(cols.sensitive.map((c) => [c.key, c.on]));
   const fieldsPop = document.getElementById('repFieldsPop');
   const fieldsBtn = document.getElementById('repFieldsBtn');
-  if (source.key === 'orders') {
-    const rowsHtml = [
-      ...ORDERS_BASE_COLUMNS.map((c) => `<label class="rep-field-row"><input type="checkbox" checked disabled><span>${escapeHtml(c.label)}</span><small>Toujours incluse</small></label>`),
-      ...ORDERS_SENSITIVE_COLUMNS.map((c) => `<label class="rep-field-row"><input type="checkbox" data-col="${c.key}" ${c.on ? 'checked' : ''}><span>${escapeHtml(c.label)}</span><small>Sensible</small></label>`),
-    ].join('');
-    fieldsPop.innerHTML = `<div class="rep-fields-head">Colonnes à exporter</div>${rowsHtml}`;
-    fieldsPop.querySelectorAll('input[data-col]').forEach((cb) => cb.addEventListener('change', () => sensitiveState.set(cb.dataset.col, cb.checked)));
-    fieldsBtn.addEventListener('click', (e) => { e.stopPropagation(); fieldsPop.hidden = !fieldsPop.hidden; });
-    document.addEventListener('click', (e) => { if (!e.target.closest('.rep-fields-wrap')) fieldsPop.hidden = true; });
-  } else {
-    fieldsBtn.disabled = true;
-  }
+  const rowsHtml = [
+    ...cols.base.map((c) => `<label class="rep-field-row"><input type="checkbox" checked disabled><span>${escapeHtml(c.label)}</span><small>Toujours incluse</small></label>`),
+    ...cols.sensitive.map((c) => `<label class="rep-field-row"><input type="checkbox" data-col="${c.key}" ${c.on ? 'checked' : ''}><span>${escapeHtml(c.label)}</span><small>Sensible</small></label>`),
+  ].join('');
+  fieldsPop.innerHTML = `<div class="rep-fields-head">Colonnes à exporter</div>${rowsHtml || '<div class="rep-field-row"><span>Colonnes standard</span></div>'}`;
+  fieldsPop.querySelectorAll('input[data-col]').forEach((cb) => cb.addEventListener('change', () => sensitiveState.set(cb.dataset.col, cb.checked)));
+  fieldsBtn.addEventListener('click', (e) => { e.stopPropagation(); fieldsPop.hidden = !fieldsPop.hidden; });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.rep-fields-wrap')) fieldsPop.hidden = true; });
 
-  // Aperçu (données réelles via l'endpoint liste de la source).
+  // Aperçu filtré.
   const preview = document.getElementById('repPreview');
-  let allRows = [];
-  try {
-    const data = await api(source.list);
-    allRows = reportExtractRows(source.key, data);
-  } catch (error) {
-    preview.innerHTML = `<div class="notice error">${escapeHtml(error.message || 'Aperçu indisponible.')}</div>`;
-  }
+  const activeFilters = () => filtersDef.map((f) => [f.k, document.querySelector(`select[data-filter="${f.k}"]`)?.value || '']).filter(([, v]) => v);
   const renderPreview = () => {
+    if (loadError) { preview.innerHTML = `<div class="notice error">${escapeHtml(loadError)}</div>`; return; }
     const from = document.getElementById('repFrom').value;
     const to = document.getElementById('repTo').value;
     const q = document.getElementById('repSearch').value.trim().toLowerCase();
+    const fils = activeFilters();
     const filtered = allRows.filter((r) => {
       const d = (r._date || '').slice(0, 10);
       if (from && d && d < from) return false;
       if (to && d && d > to) return false;
       if (q && !r._search.includes(q)) return false;
+      for (const [k, v] of fils) if ((r.f && r.f[k]) !== v) return false;
       return true;
     });
     preview.dataset.count = String(filtered.length);
     preview.innerHTML = reportPreviewTable(source.key, filtered);
   };
-  if (allRows.length) renderPreview();
+  renderPreview();
   ['repFrom', 'repTo'].forEach((id) => document.getElementById(id).addEventListener('change', renderPreview));
   document.getElementById('repSearch').addEventListener('input', renderPreview);
+  document.querySelectorAll('select[data-filter]').forEach((sel) => sel.addEventListener('change', renderPreview));
 
   // Génération.
   document.getElementById('repGenerate').addEventListener('click', async (event) => {
-    if (!source.wired) return;
     const btn = event.currentTarget;
+    const msg = document.getElementById('repMsg');
     const from = document.getElementById('repFrom').value;
     const to = document.getElementById('repTo').value;
-    if (!from || !to) { alert('Choisissez une période (du / au).'); return; }
-    // Borne haute exclusive : on ajoute un jour pour inclure la date « au ».
+    if (!from || !to) { msg.hidden = false; msg.className = 'rep-msg err'; msg.textContent = 'Choisissez une période (du / au).'; return; }
     const exclusiveTo = new Date(new Date(`${to}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10);
     const sensitiveColumns = [...sensitiveState.entries()].filter(([, on]) => on).map(([k]) => k);
+    const label = btn.innerHTML;
     btn.disabled = true; btn.textContent = 'Génération…';
+    msg.hidden = true;
     try {
       const response = await fetch('/api/app/crm/exports', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dataset: source.dataset,
-          purpose: `Export ${source.label} depuis Rapports`,
-          period: { from, to: exclusiveTo },
-          sensitiveColumns,
-          format,
-        }),
+        body: JSON.stringify({ dataset: source.dataset, purpose: `Export ${source.label} depuis Rapports`, period: { from, to: exclusiveTo }, sensitiveColumns, format }),
       });
       if (response.status === 401) { location.href = '/app/login'; return; }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
+        if (payload.code === 'DATASET_NOT_WIRED') {
+          btn.disabled = false; btn.innerHTML = label;
+          msg.hidden = false; msg.className = 'rep-msg'; msg.textContent = `La génération de fichier pour « ${source.label} » arrive très bientôt. L’aperçu ci-dessus reflète vos données réelles.`;
+          return;
+        }
         throw new Error(payload.error || 'Export impossible pour le moment.');
       }
       const blob = await response.blob();
       const rowCount = Number(response.headers.get('X-Export-Row-Count') || preview.dataset.count || 0);
       const bytes = Number(response.headers.get('X-Export-Bytes') || blob.size || 0);
-      const colCount = ORDERS_BASE_COLUMNS.length + sensitiveColumns.length;
-      reportStepResult(source, { blob, rowCount, bytes, colCount, from, to, format, sensitiveCount: sensitiveColumns.length });
+      const colCount = cols.base.length + sensitiveColumns.length;
+      reportStepResult(source, { blob, rowCount, bytes, colCount, from, to, format, filterCount: activeFilters().length });
     } catch (error) {
-      btn.disabled = false; btn.textContent = 'Générer l’export';
-      alert(error.message || 'Export impossible.');
+      btn.disabled = false; btn.innerHTML = label;
+      msg.hidden = false; msg.className = 'rep-msg err'; msg.textContent = error.message || 'Export impossible.';
     }
   });
+}
+
+// Rend une cellule de l'aperçu : texte simple, badge, ou deux lignes.
+function reportCell(cell, first) {
+  if (cell == null) return '<td>—</td>';
+  if (typeof cell === 'string') return `<td>${first ? `<strong>${escapeHtml(cell)}</strong>` : escapeHtml(cell)}</td>`;
+  if (cell.badge === 'order') return `<td>${badge(cell.v)}</td>`;
+  if (cell.badge === 'client') return `<td>${customerStatusBadge(cell.v)}</td>`;
+  if (cell.badge) return `<td><span class="rep-pill">${escapeHtml(cell.v || '—')}</span></td>`;
+  if (cell.sub) return `<td><div class="rep-cell2"><strong>${escapeHtml(cell.v || '—')}</strong><small>${escapeHtml(cell.sub)}</small></div></td>`;
+  return `<td>${first ? `<strong>${escapeHtml(cell.v || '—')}</strong>` : escapeHtml(cell.v || '—')}</td>`;
 }
 
 // Extrait des lignes normalisées pour l'aperçu selon la source.
@@ -4243,27 +4285,41 @@ function reportExtractRows(key, data) {
   const arr = Array.isArray(data) ? data : (data.items || data.customers || data.orders || data.runs || data.incidents || []);
   return arr.map((r) => {
     if (key === 'orders') {
-      return { _date: r.created_at, _search: [r.reference, r.customer_name, r.neighborhood, r.driver_name, r.status].filter(Boolean).join(' ').toLowerCase(),
-        c: [orderCode(r.reference, r.id), formatDate(r.created_at), r.customer_name || '—', r.neighborhood || '—', r.driver_name || '—', r.status || '—', formatDate(r.updated_at)] };
+      return {
+        _date: r.created_at, f: { status: r.status || '', zone: r.neighborhood || '', driver: r.driver_name || '' },
+        _search: [r.reference, r.customer_name, r.neighborhood, r.driver_name, r.status].filter(Boolean).join(' ').toLowerCase(),
+        cells: [orderCode(r.reference, r.id), formatDate(r.created_at), { v: r.customer_name || '—' }, { v: r.neighborhood || '—' }, { v: r.driver_name || '—' }, { badge: 'order', v: r.status }, { v: '—' }, formatDate(r.updated_at)],
+      };
     }
     if (key === 'clients') {
-      return { _date: r.last_activity_at || r.created_at, _search: [r.customer_code, r.display_name, r.primary_phone, r.status].filter(Boolean).join(' ').toLowerCase(),
-        c: [r.customer_code || `#${r.id}`, r.display_name || '—', r.primary_phone || '—', r.status || '—', String(r.order_count ?? '—'), formatDate(r.last_order_at)] };
+      const phone = r.primary_phone || r.phone || '—';
+      const zone = r.primary_locality || r.locality || '—';
+      return {
+        _date: r.last_activity_at || r.last_order_at || r.created_at, f: { status: r.status || '', zone: zone === '—' ? '' : zone, type: r.sector || '' },
+        _search: [r.customer_code, r.display_name, phone, r.status, r.sector].filter(Boolean).join(' ').toLowerCase(),
+        cells: [r.customer_code || `#${r.id}`, { v: r.display_name || '—' }, { v: phone }, { badge: 'client', v: r.status }, { v: r.sector || '—' }, { v: String(r.order_count ?? '—') }, { v: String(r.location_count ?? r.locations_count ?? '—') }, formatDate(r.last_order_at), formatDate(r.created_at)],
+      };
     }
     if (key === 'routes') {
-      return { _date: r.service_date || r.created_at, _search: [r.name, r.driver_name, r.status].filter(Boolean).join(' ').toLowerCase(),
-        c: [r.name || `T-${r.id}`, r.driver_name || '—', r.status || '—', String(r.stop_count ?? r.stops?.length ?? '—'), formatDate(r.service_date || r.created_at)] };
+      return {
+        _date: r.service_date || r.created_at, f: { status: r.status || '', driver: r.driver_name || '' },
+        _search: [r.name, r.driver_name, r.status].filter(Boolean).join(' ').toLowerCase(),
+        cells: [r.name || `T-${r.id}`, { v: r.driver_name || '—' }, { badge: 'route', v: r.status }, { v: String(r.stop_count ?? r.stops?.length ?? '—') }, formatDate(r.service_date || r.created_at)],
+      };
     }
     // incidents
-    return { _date: r.created_at || r.opened_at, _search: [r.category, r.status, r.customer_name].filter(Boolean).join(' ').toLowerCase(),
-      c: [`#${r.id}`, r.category || '—', r.status || '—', r.customer_name || (r.order_id ? `Commande ${r.order_id}` : '—'), formatDate(r.created_at || r.opened_at)] };
+    return {
+      _date: r.created_at || r.opened_at, f: { status: r.status || '', type: r.category || '' },
+      _search: [r.category, r.status, r.customer_name].filter(Boolean).join(' ').toLowerCase(),
+      cells: [`#${r.id}`, { v: r.category || '—' }, { badge: 'incident', v: r.status }, { v: r.customer_name || (r.order_id ? `Commande ${r.order_id}` : '—') }, formatDate(r.created_at || r.opened_at)],
+    };
   });
 }
 
 function reportPreviewTable(key, rows) {
   const heads = {
-    orders: ['ID commande', 'Date', 'Client', 'Zone', 'Livreur', 'Statut', 'Dernière MAJ'],
-    clients: ['ID client', 'Nom', 'Téléphone', 'Statut', 'Commandes', 'Dernière commande'],
+    orders: ['ID commande', 'Date de création', 'Client', 'Zone', 'Livreur', 'Statut', 'Tournée', 'Dernière mise à jour'],
+    clients: ['ID client', 'Nom', 'Téléphone', 'Statut', 'Type', 'Commandes', 'Lieux connus', 'Dernière commande', 'Date de création'],
     routes: ['ID tournée', 'Livreur', 'Statut', 'Arrêts', 'Date'],
     incidents: ['ID incident', 'Type', 'Statut', 'Contexte', 'Date'],
   }[key];
@@ -4271,15 +4327,15 @@ function reportPreviewTable(key, rows) {
   const shown = rows.slice(0, 12);
   return `<div class="rep-preview-meta">${formatInteger(rows.length)} ligne${rows.length > 1 ? 's' : ''}${rows.length > shown.length ? ` · aperçu des ${shown.length} premières` : ''}</div>
     <div class="table-wrap"><table class="cli-table rep-table"><thead><tr>${heads.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-    <tbody>${shown.map((r) => `<tr>${r.c.map((v, i) => `<td>${i === 0 ? `<strong>${escapeHtml(v)}</strong>` : escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+    <tbody>${shown.map((r) => `<tr>${r.cells.map((cell, i) => reportCell(cell, i === 0)).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
 // Étape 3 — export prêt.
 function reportStepResult(source, info) {
-  const monthName = new Date(`${info.from}T00:00:00Z`).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
   const fileName = `${source.key}-${info.from}_${info.to}.${info.format}`;
   const sizeKo = Math.max(1, Math.round(info.bytes / 1024));
   const url = URL.createObjectURL(info.blob);
+  const filterCount = info.filterCount || 0;
   page.innerHTML = `<div class="rep">
     ${reportStepper(3)}
     <div class="rep-head"><span class="rep-rule"></span><h1>Export prêt</h1><p>Votre fichier a été généré avec succès.</p></div>
@@ -4289,6 +4345,7 @@ function reportStepResult(source, info) {
         <dl class="rep-summary">
           <div><dt>Source</dt><dd>${escapeHtml(source.label)}</dd></div>
           <div><dt>Période</dt><dd>${escapeHtml(info.from)} → ${escapeHtml(info.to)}</dd></div>
+          <div><dt>Filtres</dt><dd>${filterCount ? `${filterCount} filtre${filterCount > 1 ? 's' : ''} appliqué${filterCount > 1 ? 's' : ''}` : 'Aucun'}</dd></div>
           <div><dt>Format</dt><dd>${info.format === 'csv' ? 'CSV' : 'Excel'}</dd></div>
           <div><dt>Colonnes</dt><dd>${formatInteger(info.colCount)}</dd></div>
           <div><dt>Lignes</dt><dd>${formatInteger(info.rowCount)}</dd></div>
@@ -4300,6 +4357,7 @@ function reportStepResult(source, info) {
         <div class="rep-file"><span class="rep-file-ic">${info.format === 'csv' ? 'CSV' : 'XLS'}</span><div><strong>${escapeHtml(fileName)}</strong><small>${formatInteger(info.rowCount)} lignes · ${sizeKo} Ko</small></div></div>
         <a class="button primary rep-dl" href="${url}" download="${escapeHtml(fileName)}">Télécharger le fichier</a>
         <button type="button" class="button secondary rep-again" id="repAgain">Créer un autre export</button>
+        <p class="rep-note">Le téléchargement reste disponible tant que vous gardez cette page ouverte.</p>
       </section>
     </div>
   </div>`;

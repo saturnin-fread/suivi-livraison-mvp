@@ -3847,6 +3847,366 @@ app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) =
   }
 }));
 
+// ---------------------------------------------------------------------------
+// Tableau de bord analytique (onglets Général / Commandes / Livraisons /
+// Livreurs / Demandes). Fenêtre glissante 7 ou 30 jours (ou plage explicite),
+// comparée à la période précédente de même longueur. Fuseau Africa/Porto-Novo
+// (UTC+1 fixe, sans heure d'été).
+// ---------------------------------------------------------------------------
+const DASHBOARD_TZ = 'Africa/Porto-Novo';
+const DASHBOARD_TZ_OFFSET_MIN = 60; // UTC+1 constant
+
+function dashboardLocalToday() {
+  const shifted = new Date(Date.now() + DASHBOARD_TZ_OFFSET_MIN * 60000);
+  return shifted.toISOString().slice(0, 10);
+}
+function dashboardAddDays(dateStr, n) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+function dashboardBound(dateStr) {
+  return `${dateStr}T00:00:00+01:00`;
+}
+function dashboardDaysBetween(fromStr, toStr) {
+  const a = Date.parse(`${fromStr}T00:00:00Z`);
+  const b = Date.parse(`${toStr}T00:00:00Z`);
+  return Math.round((b - a) / 86400000) + 1;
+}
+const DASHBOARD_MAX_DAYS = 366;
+const validDashboardDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+
+function dashboardWindow(query) {
+  const today = dashboardLocalToday();
+  let from;
+  let to;
+  if (validDashboardDate(query.from) && validDashboardDate(query.to) && query.from <= query.to) {
+    from = query.from;
+    to = query.to;
+    if (dashboardDaysBetween(from, to) > DASHBOARD_MAX_DAYS) {
+      from = dashboardAddDays(to, -(DASHBOARD_MAX_DAYS - 1));
+    }
+  } else {
+    const requested = Number(query.period);
+    const days = requested === 30 ? 30 : (requested === 90 ? 90 : 7);
+    to = today;
+    from = dashboardAddDays(to, -(days - 1));
+  }
+  const days = dashboardDaysBetween(from, to);
+  const prevTo = dashboardAddDays(from, -1);
+  const prevFrom = dashboardAddDays(from, -days);
+  return {
+    from,
+    to,
+    days,
+    prevFrom,
+    prevTo,
+    startIso: dashboardBound(from),
+    endIso: dashboardBound(dashboardAddDays(to, 1)),
+    prevStartIso: dashboardBound(prevFrom),
+    prevEndIso: dashboardBound(from),
+  };
+}
+
+function dashboardTrend(current, previous) {
+  const value = Number(current) || 0;
+  const prev = Number(previous) || 0;
+  if (prev === 0) {
+    return { value, previous: prev, deltaPct: value > 0 ? null : 0, isNew: value > 0 };
+  }
+  return { value, previous: prev, deltaPct: ((value - prev) / prev) * 100, isNew: false };
+}
+function dashboardRate(numerator, denominator) {
+  const d = Number(denominator) || 0;
+  return d === 0 ? null : (Number(numerator) || 0) / d;
+}
+function dashboardRateTrend(curNum, curDen, prevNum, prevDen) {
+  const value = dashboardRate(curNum, curDen);
+  const previous = dashboardRate(prevNum, prevDen);
+  const deltaPoints = value !== null && previous !== null ? (value - previous) * 100 : null;
+  return { value, previous, deltaPoints };
+}
+
+const DASHBOARD_SCALARS_SQL = `
+  WITH ft AS (
+    SELECT DISTINCT ON (order_id) order_id, to_status, created_at
+    FROM order_status_events
+    WHERE company_id = $1 AND to_status = ANY($4::text[])
+    ORDER BY order_id, created_at ASC
+  )
+  SELECT
+    (SELECT count(*) FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS orders_created,
+    (SELECT count(*) FROM ft WHERE to_status = 'Livrée' AND created_at >= $2 AND created_at < $3) AS delivered,
+    (SELECT count(*) FROM ft WHERE to_status = 'Retournée' AND created_at >= $2 AND created_at < $3) AS returned,
+    (SELECT count(*) FROM ft WHERE to_status = 'Annulée' AND created_at >= $2 AND created_at < $3) AS cancelled,
+    (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS requests_received,
+    (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND validated_at >= $2 AND validated_at < $3) AS requests_converted,
+    (SELECT count(*) FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS incidents_opened,
+    (SELECT count(*) FROM delivery_incidents WHERE company_id = $1 AND resolved_at >= $2 AND resolved_at < $3) AS incidents_resolved,
+    (SELECT count(DISTINCT driver_id) FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS drivers_active,
+    (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND service_date >= $5::date AND service_date <= $6::date) AS runs_planned,
+    (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3) AS runs_completed,
+    (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status = 'cancelled' AND cancelled_at >= $2 AND cancelled_at < $3) AS runs_cancelled,
+    (SELECT EXTRACT(EPOCH FROM percentile_cont(0.5) WITHIN GROUP (ORDER BY (resolved_at - created_at)))
+       FROM delivery_incidents WHERE company_id = $1 AND resolved_at >= $2 AND resolved_at < $3 AND resolved_at >= created_at) AS incident_median_delay
+`;
+
+async function dashboardScalars(companyId, startIso, endIso, fromDate, toDate) {
+  const { rows } = await pool.query(DASHBOARD_SCALARS_SQL, [companyId, startIso, endIso, terminalOrderStatuses, fromDate, toDate]);
+  const r = rows[0] || {};
+  return {
+    ordersCreated: Number(r.orders_created) || 0,
+    delivered: Number(r.delivered) || 0,
+    returned: Number(r.returned) || 0,
+    cancelled: Number(r.cancelled) || 0,
+    requestsReceived: Number(r.requests_received) || 0,
+    requestsConverted: Number(r.requests_converted) || 0,
+    incidentsOpened: Number(r.incidents_opened) || 0,
+    incidentsResolved: Number(r.incidents_resolved) || 0,
+    driversActive: Number(r.drivers_active) || 0,
+    runsPlanned: Number(r.runs_planned) || 0,
+    runsCompleted: Number(r.runs_completed) || 0,
+    runsCancelled: Number(r.runs_cancelled) || 0,
+    incidentMedianDelay: r.incident_median_delay == null ? null : Number(r.incident_median_delay),
+  };
+}
+
+app.get('/api/app/dashboard', requireCompanyApi, asyncRoute(async (req, res) => {
+  const companyId = req.auth.company_id;
+  const win = dashboardWindow(req.query);
+  const term = terminalOrderStatuses;
+  const TZ = DASHBOARD_TZ;
+
+  const [
+    cur, prev, seriesResult, prevSeriesResult, orderStatusResult, requestStatusResult,
+    availabilityResult, incidentCategoryResult, incidentsByDayResult, perRunResult,
+    validationDelayResult, driversResult, recentOrdersResult, recentRequestsResult,
+    recentIncidentsResult, nowResult,
+  ] = await Promise.all([
+    dashboardScalars(companyId, win.startIso, win.endIso, win.from, win.to),
+    dashboardScalars(companyId, win.prevStartIso, win.prevEndIso, win.prevFrom, win.prevTo),
+    // Série courante par jour (commandes, livraisons, retours, demandes, conversions, incidents, tournées terminées)
+    pool.query(`
+      WITH ft AS (
+        SELECT DISTINCT ON (order_id) order_id, to_status, created_at
+        FROM order_status_events WHERE company_id = $1 AND to_status = ANY($4::text[])
+        ORDER BY order_id, created_at ASC
+      ),
+      days AS (SELECT generate_series($5::date, $6::date, interval '1 day')::date AS d),
+      oc AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1),
+      dl AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM ft WHERE to_status = 'Livrée' AND created_at >= $2 AND created_at < $3 GROUP BY 1),
+      rt AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM ft WHERE to_status = 'Retournée' AND created_at >= $2 AND created_at < $3 GROUP BY 1),
+      rr AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM customer_requests WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1),
+      rc AS (SELECT (validated_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM customer_requests WHERE company_id = $1 AND validated_at >= $2 AND validated_at < $3 GROUP BY 1),
+      ic AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1),
+      rcp AS (SELECT (completed_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3 GROUP BY 1)
+      SELECT to_char(days.d, 'YYYY-MM-DD') AS date,
+        COALESCE(oc.c,0)::int AS orders_created, COALESCE(dl.c,0)::int AS delivered, COALESCE(rt.c,0)::int AS returned,
+        COALESCE(rr.c,0)::int AS requests_received, COALESCE(rc.c,0)::int AS requests_converted,
+        COALESCE(ic.c,0)::int AS incidents, COALESCE(rcp.c,0)::int AS runs_completed
+      FROM days
+      LEFT JOIN oc ON oc.d = days.d LEFT JOIN dl ON dl.d = days.d LEFT JOIN rt ON rt.d = days.d
+      LEFT JOIN rr ON rr.d = days.d LEFT JOIN rc ON rc.d = days.d LEFT JOIN ic ON ic.d = days.d
+      LEFT JOIN rcp ON rcp.d = days.d
+      ORDER BY days.d
+    `, [companyId, win.startIso, win.endIso, term, win.from, win.to]),
+    // Série de la période précédente (pour la ligne « période précédente »), alignée par index de jour
+    pool.query(`
+      WITH ft AS (
+        SELECT DISTINCT ON (order_id) order_id, to_status, created_at
+        FROM order_status_events WHERE company_id = $1 AND to_status = ANY($4::text[])
+        ORDER BY order_id, created_at ASC
+      ),
+      days AS (SELECT generate_series($5::date, $6::date, interval '1 day')::date AS d),
+      dl AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM ft WHERE to_status = 'Livrée' AND created_at >= $2 AND created_at < $3 GROUP BY 1),
+      rcp AS (SELECT (completed_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3 GROUP BY 1)
+      SELECT COALESCE(dl.c,0)::int AS delivered, COALESCE(rcp.c,0)::int AS runs_completed
+      FROM days LEFT JOIN dl ON dl.d = days.d LEFT JOIN rcp ON rcp.d = days.d ORDER BY days.d
+    `, [companyId, win.prevStartIso, win.prevEndIso, term, win.prevFrom, win.prevTo]),
+    pool.query(`SELECT status, count(*)::int c FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY status ORDER BY c DESC`, [companyId, win.startIso, win.endIso]),
+    pool.query(`SELECT status, count(*)::int c FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL GROUP BY status ORDER BY c DESC`, [companyId]),
+    pool.query(`SELECT availability_status, count(*)::int c FROM drivers WHERE company_id = $1 AND active AND archived_at IS NULL GROUP BY availability_status ORDER BY c DESC`, [companyId]),
+    pool.query(`SELECT category, count(*)::int c FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY category ORDER BY c DESC`, [companyId, win.startIso, win.endIso]),
+    pool.query(`SELECT to_char((created_at AT TIME ZONE '${TZ}')::date, 'YYYY-MM-DD') AS date, category, count(*)::int c FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1, 2`, [companyId, win.startIso, win.endIso]),
+    pool.query(`
+      WITH per_run AS (
+        SELECT s.run_id, count(*) c FROM delivery_stops s
+        JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = $1
+        WHERE s.company_id = $1 AND s.removed_at IS NULL AND r.service_date >= $2::date AND r.service_date <= $3::date
+        GROUP BY s.run_id)
+      SELECT COALESCE(count(*) FILTER (WHERE c BETWEEN 1 AND 3),0)::int AS b1,
+             COALESCE(count(*) FILTER (WHERE c BETWEEN 4 AND 6),0)::int AS b2,
+             COALESCE(count(*) FILTER (WHERE c >= 7),0)::int AS b3 FROM per_run
+    `, [companyId, win.from, win.to]),
+    pool.query(`
+      SELECT COALESCE(count(*) FILTER (WHERE (validated_at AT TIME ZONE '${TZ}')::date = (created_at AT TIME ZONE '${TZ}')::date),0)::int AS same_day,
+             COALESCE(count(*) FILTER (WHERE (validated_at AT TIME ZONE '${TZ}')::date > (created_at AT TIME ZONE '${TZ}')::date),0)::int AS later
+      FROM customer_requests WHERE company_id = $1 AND validated_at >= $2 AND validated_at < $3
+    `, [companyId, win.startIso, win.endIso]),
+    // Statistiques riches par livreur (commandes assignées, livrées, retours, incidents, charge, tournées)
+    pool.query(`
+      WITH ft AS (
+        SELECT DISTINCT ON (order_id) order_id, to_status, created_at
+        FROM order_status_events WHERE company_id = $1 AND to_status = ANY($4::text[])
+        ORDER BY order_id, created_at ASC
+      ),
+      oa AS (SELECT driver_id, count(*)::int c FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY driver_id),
+      del AS (SELECT o.driver_id, count(*)::int c FROM ft JOIN orders o ON o.id = ft.order_id AND o.company_id = $1 WHERE ft.to_status = 'Livrée' AND ft.created_at >= $2 AND ft.created_at < $3 GROUP BY o.driver_id),
+      ret AS (SELECT o.driver_id, count(*)::int c FROM ft JOIN orders o ON o.id = ft.order_id AND o.company_id = $1 WHERE ft.to_status = 'Retournée' AND ft.created_at >= $2 AND ft.created_at < $3 GROUP BY o.driver_id),
+      inc AS (SELECT o.driver_id, count(*)::int c FROM delivery_incidents i JOIN orders o ON o.id = i.order_id AND o.company_id = $1 WHERE i.company_id = $1 AND i.created_at >= $2 AND i.created_at < $3 GROUP BY o.driver_id),
+      ld AS (SELECT o.driver_id, count(*)::int c FROM delivery_stops s JOIN orders o ON o.id = s.order_id AND o.company_id = $1 WHERE s.company_id = $1 AND s.assignment_active AND NOT (o.status = ANY($4::text[])) GROUP BY o.driver_id),
+      ra AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND service_date >= $5::date AND service_date <= $6::date GROUP BY driver_id),
+      rcc AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3 GROUP BY driver_id),
+      rip AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND status = 'active' GROUP BY driver_id),
+      rcx AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND status = 'cancelled' AND cancelled_at >= $2 AND cancelled_at < $3 GROUP BY driver_id)
+      SELECT d.id, d.name, d.availability_status, d.capacity,
+        COALESCE(oa.c,0) AS assigned, COALESCE(del.c,0) AS delivered, COALESCE(ret.c,0) AS returned,
+        COALESCE(inc.c,0) AS incidents, COALESCE(ld.c,0) AS load,
+        COALESCE(ra.c,0) AS runs_assigned, COALESCE(rcc.c,0) AS runs_completed,
+        COALESCE(rip.c,0) AS runs_in_progress, COALESCE(rcx.c,0) AS runs_cancelled
+      FROM drivers d
+      LEFT JOIN oa ON oa.driver_id = d.id LEFT JOIN del ON del.driver_id = d.id LEFT JOIN ret ON ret.driver_id = d.id
+      LEFT JOIN inc ON inc.driver_id = d.id LEFT JOIN ld ON ld.driver_id = d.id LEFT JOIN ra ON ra.driver_id = d.id
+      LEFT JOIN rcc ON rcc.driver_id = d.id LEFT JOIN rip ON rip.driver_id = d.id LEFT JOIN rcx ON rcx.driver_id = d.id
+      WHERE d.company_id = $1 AND d.active AND d.archived_at IS NULL
+      ORDER BY assigned DESC, delivered DESC, d.name ASC LIMIT 12
+    `, [companyId, win.startIso, win.endIso, term, win.from, win.to]),
+    pool.query(`
+      SELECT o.id, o.reference, o.customer_name, o.status, o.created_at, d.name AS driver_name
+      FROM orders o LEFT JOIN drivers d ON d.id = o.driver_id
+      WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 8
+    `, [companyId]),
+    pool.query(`
+      SELECT id, customer_name, status, neighborhood, created_at, (location_lat IS NOT NULL) AS has_location
+      FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL
+      ORDER BY created_at DESC LIMIT 8
+    `, [companyId]),
+    pool.query(`
+      SELECT i.id, i.category, i.status, i.created_at, o.reference
+      FROM delivery_incidents i LEFT JOIN orders o ON o.id = i.order_id AND o.company_id = $1
+      WHERE i.company_id = $1 ORDER BY i.created_at DESC LIMIT 8
+    `, [companyId]),
+    pool.query(`
+      SELECT
+        (SELECT count(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open')::int AS open_incidents,
+        (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status IN ('À vérifier','Informations à compléter'))::int AS to_process,
+        (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier')::int AS to_review,
+        (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL)::int AS active_requests,
+        (SELECT count(*) FROM drivers WHERE company_id = $1 AND active AND archived_at IS NULL)::int AS drivers_total,
+        (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status = 'active')::int AS runs_active,
+        (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status IN ('draft','planned','active'))::int AS open_runs,
+        (SELECT count(*) FROM delivery_stops s JOIN orders o ON o.id = s.order_id AND o.company_id = $1 WHERE s.company_id = $1 AND s.assignment_active AND NOT (o.status = ANY($2::text[])))::int AS open_load,
+        (SELECT count(*) FROM orders WHERE company_id = $1 AND NOT (status = ANY($2::text[])))::int AS open_deliveries
+    `, [companyId, term]),
+  ]);
+
+  const now = nowResult.rows[0] || {};
+  const nowNum = (key) => Number(now[key]) || 0;
+  const metrics = {
+    ordersCreated: dashboardTrend(cur.ordersCreated, prev.ordersCreated),
+    delivered: dashboardTrend(cur.delivered, prev.delivered),
+    returned: dashboardTrend(cur.returned, prev.returned),
+    cancelled: dashboardTrend(cur.cancelled, prev.cancelled),
+    closed: dashboardTrend(cur.delivered + cur.returned + cur.cancelled, prev.delivered + prev.returned + prev.cancelled),
+    requestsReceived: dashboardTrend(cur.requestsReceived, prev.requestsReceived),
+    requestsConverted: dashboardTrend(cur.requestsConverted, prev.requestsConverted),
+    incidentsOpened: dashboardTrend(cur.incidentsOpened, prev.incidentsOpened),
+    incidentsResolved: dashboardTrend(cur.incidentsResolved, prev.incidentsResolved),
+    driversActive: dashboardTrend(cur.driversActive, prev.driversActive),
+    runsPlanned: dashboardTrend(cur.runsPlanned, prev.runsPlanned),
+    runsCompleted: dashboardTrend(cur.runsCompleted, prev.runsCompleted),
+    runsCancelled: dashboardTrend(cur.runsCancelled, prev.runsCancelled),
+    incidentMedianDelay: {
+      value: cur.incidentMedianDelay, previous: prev.incidentMedianDelay,
+      deltaPct: (cur.incidentMedianDelay != null && prev.incidentMedianDelay) ? ((cur.incidentMedianDelay - prev.incidentMedianDelay) / prev.incidentMedianDelay) * 100 : null,
+    },
+    deliveryRate: dashboardRateTrend(cur.delivered, cur.delivered + cur.returned, prev.delivered, prev.delivered + prev.returned),
+    conversionRate: dashboardRateTrend(cur.requestsConverted, cur.requestsReceived, prev.requestsConverted, prev.requestsReceived),
+  };
+
+  const incidentsByDayMap = new Map();
+  for (const row of incidentsByDayResult.rows) {
+    if (!incidentsByDayMap.has(row.date)) incidentsByDayMap.set(row.date, {});
+    incidentsByDayMap.get(row.date)[row.category || 'autre'] = row.c;
+  }
+  const perRun = perRunResult.rows[0] || {};
+  const vDelay = validationDelayResult.rows[0] || {};
+
+  return res.json({
+    range: { from: win.from, to: win.to, days: win.days, timezone: DASHBOARD_TZ },
+    comparison: { from: win.prevFrom, to: win.prevTo, days: win.days },
+    metrics,
+    now: {
+      openIncidents: nowNum('open_incidents'),
+      toProcess: nowNum('to_process'),
+      toReview: nowNum('to_review'),
+      activeRequests: nowNum('active_requests'),
+      driversTotal: nowNum('drivers_total'),
+      runsActive: nowNum('runs_active'),
+      openRuns: nowNum('open_runs'),
+      openLoad: nowNum('open_load'),
+      openDeliveries: nowNum('open_deliveries'),
+    },
+    series: seriesResult.rows.map((row, i) => ({
+      date: row.date,
+      ordersCreated: row.orders_created,
+      delivered: row.delivered,
+      returned: row.returned,
+      requestsReceived: row.requests_received,
+      requestsConverted: row.requests_converted,
+      incidents: row.incidents,
+      runsCompleted: row.runs_completed,
+      incidentsByCategory: incidentsByDayMap.get(row.date) || {},
+      prevDelivered: prevSeriesResult.rows[i] ? prevSeriesResult.rows[i].delivered : 0,
+      prevRunsCompleted: prevSeriesResult.rows[i] ? prevSeriesResult.rows[i].runs_completed : 0,
+    })),
+    distributions: {
+      orderStatus: orderStatusResult.rows.map((r) => ({ label: r.status, value: r.c })),
+      requestStatus: requestStatusResult.rows.map((r) => ({ label: r.status, value: r.c })),
+      driverAvailability: availabilityResult.rows.map((r) => ({ label: r.availability_status, value: r.c })),
+      incidentCategory: incidentCategoryResult.rows.map((r) => ({ label: r.category || 'autre', value: r.c })),
+      deliveriesPerRun: [
+        { label: '1 – 3 livraisons', value: Number(perRun.b1) || 0 },
+        { label: '4 – 6 livraisons', value: Number(perRun.b2) || 0 },
+        { label: '7+ livraisons', value: Number(perRun.b3) || 0 },
+      ],
+      validationDelay: [
+        { label: 'Validées le jour même', value: Number(vDelay.same_day) || 0 },
+        { label: 'Validées plus tard', value: Number(vDelay.later) || 0 },
+      ],
+    },
+    tables: {
+      drivers: driversResult.rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        availability: r.availability_status,
+        capacity: Number(r.capacity) || 0,
+        assigned: Number(r.assigned) || 0,
+        delivered: Number(r.delivered) || 0,
+        returned: Number(r.returned) || 0,
+        incidents: Number(r.incidents) || 0,
+        load: Number(r.load) || 0,
+        runsAssigned: Number(r.runs_assigned) || 0,
+        runsCompleted: Number(r.runs_completed) || 0,
+        runsInProgress: Number(r.runs_in_progress) || 0,
+        runsCancelled: Number(r.runs_cancelled) || 0,
+      })),
+      recentOrders: recentOrdersResult.rows.map((r) => ({
+        id: r.id, reference: r.reference, customerName: r.customer_name,
+        status: r.status, driverName: r.driver_name, createdAt: r.created_at,
+      })),
+      recentRequests: recentRequestsResult.rows.map((r) => ({
+        id: r.id, customerName: r.customer_name, status: r.status,
+        neighborhood: r.neighborhood, createdAt: r.created_at, hasLocation: r.has_location,
+      })),
+      recentIncidents: recentIncidentsResult.rows.map((r) => ({
+        id: r.id, category: r.category, status: r.status,
+        orderReference: r.reference, createdAt: r.created_at,
+      })),
+    },
+  });
+}));
+
 app.post('/api/app/request-links', requireCompanyApi, asyncRoute(async (req, res) => {
   if (!(await companyDeliverySetting(req.auth.company_id, 'customerFormEnabled'))) {
     return res.status(403).json({ error: 'Le formulaire client est désactivé dans vos paramètres Livraisons.' });

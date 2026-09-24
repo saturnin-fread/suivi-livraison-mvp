@@ -3570,6 +3570,18 @@ async function recordExportLog(auth, contract, status, outcome = {}) {
   }
 }
 
+// Sérialise les lignes normalisées de l'export en CSV (RFC 4180), avec BOM
+// UTF-8 pour qu'Excel ouvre les accents correctement. En-têtes = clés de colonnes.
+function buildExportCsv(columns, rows) {
+  const esc = (value) => {
+    const s = value == null ? '' : String(value);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = columns.map(esc).join(',');
+  const body = rows.map((row) => columns.map((column) => esc(row[column])).join(',')).join('\r\n');
+  return `﻿${header}${body ? `\r\n${body}` : ''}`;
+}
+
 app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) => {
   const auth = req.auth;
   const body = req.body && typeof req.body === 'object' ? req.body : {};
@@ -3624,10 +3636,36 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
   }
 
   const normalizedRows = rows.map((row) => normalizeExportRow(row, OPERATIONS_NUMERIC_COLUMNS));
+  const format = body.format === 'csv' ? 'csv' : 'xlsx';
 
-  let workbook;
+  // Fabrique l'artefact selon le format demandé (XLSX via le générateur audité,
+  // ou CSV construit à partir des mêmes lignes/colonnes du contrat).
+  let artifact;
   try {
-    workbook = buildExportWorkbook(contract, normalizedRows);
+    if (format === 'csv') {
+      const csv = buildExportCsv(contract.columns, normalizedRows);
+      const buffer = Buffer.from(csv, 'utf8');
+      artifact = {
+        buffer,
+        contentType: 'text/csv; charset=utf-8',
+        ext: 'csv',
+        totalRows: normalizedRows.length,
+        worksheetCount: 1,
+        artifactBytes: buffer.length,
+        artifactSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+      };
+    } else {
+      const workbook = buildExportWorkbook(contract, normalizedRows);
+      artifact = {
+        buffer: workbook.buffer,
+        contentType: workbook.contentType,
+        ext: 'xlsx',
+        totalRows: workbook.totalRows,
+        worksheetCount: workbook.worksheetCount,
+        artifactBytes: workbook.artifactBytes,
+        artifactSha256: workbook.artifactSha256,
+      };
+    }
   } catch (error) {
     if (error instanceof ExportContractError) {
       await recordExportLog(auth, contract, 'failed', { failureCode: error.code });
@@ -3640,28 +3678,31 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
     EXPORT_DATASETS[contract.dataset].sensitiveColumns.includes(column)
   ));
   await recordExportLog(auth, contract, 'downloaded', {
-    rowCount: workbook.totalRows,
-    worksheetCount: workbook.worksheetCount,
-    artifactBytes: workbook.artifactBytes,
-    artifactSha256: workbook.artifactSha256,
+    rowCount: artifact.totalRows,
+    worksheetCount: artifact.worksheetCount,
+    artifactBytes: artifact.artifactBytes,
+    artifactSha256: artifact.artifactSha256,
   });
   await writeAudit(auth, 'export', null, 'crm_export_downloaded', {
     dataset: contract.dataset,
     role: contract.role,
     purpose: contract.purpose,
     period: contract.period,
-    rowCount: workbook.totalRows,
+    format,
+    rowCount: artifact.totalRows,
     sensitiveIncluded,
-    artifactSha256: workbook.artifactSha256,
+    artifactSha256: artifact.artifactSha256,
     requestFingerprint: contract.requestFingerprintSha256,
   });
 
-  const filename = `export-${contract.dataset}-${contract.period.from}_${contract.period.to}.xlsx`;
-  res.set('Content-Type', workbook.contentType);
+  const filename = `export-${contract.dataset}-${contract.period.from}_${contract.period.to}.${artifact.ext}`;
+  res.set('Content-Type', artifact.contentType);
   res.set('Content-Disposition', `attachment; filename="${filename}"`);
   res.set('Cache-Control', 'private, no-store');
   res.set('X-Content-Type-Options', 'nosniff');
-  return res.send(workbook.buffer);
+  res.set('X-Export-Row-Count', String(artifact.totalRows));
+  res.set('X-Export-Bytes', String(artifact.artifactBytes));
+  return res.send(artifact.buffer);
 }));
 
 app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) => {

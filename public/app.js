@@ -4040,6 +4040,13 @@ const REPORT_ICONS = {
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4M12 17h.01"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
 };
+// Illustrations isométriques « 3D » (SVG inline, aucune image) pour les cartes.
+const REPORT_ART = {
+  orders: '<svg viewBox="0 0 140 130" fill="none" aria-hidden="true"><ellipse cx="70" cy="114" rx="44" ry="8" fill="#0b1b3a" opacity=".06"/><path d="M70 26 112 50 70 74 28 50Z" fill="#f4f7fb"/><path d="M28 50 70 74 70 116 28 92Z" fill="#d9e0ea"/><path d="M112 50 70 74 70 116 112 92Z" fill="#c4cdda"/><path d="M49 38 70 50 91 38 70 26Z" fill="#e11d2a" opacity=".92"/><path d="M28 70 70 94 70 104 28 80Z" fill="#e11d2a"/><path d="M112 70 70 94 70 104 112 80Z" fill="#b3141f"/></svg>',
+  routes: '<svg viewBox="0 0 150 130" fill="none" aria-hidden="true"><ellipse cx="75" cy="116" rx="52" ry="8" fill="#0b1b3a" opacity=".06"/><path d="M18 34 54 24 54 100 18 110Z" fill="#eef2f7"/><path d="M54 24 96 34 96 110 54 100Z" fill="#e0e7f0"/><path d="M96 34 132 24 132 100 96 110Z" fill="#eef2f7"/><path d="M54 24V100M96 34v76" stroke="#cfd8e3" stroke-width="1.5"/><path d="M34 92Q40 60 66 66T108 50" stroke="#e11d2a" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="1 7"/><circle cx="34" cy="92" r="5" fill="#16233f"/><path d="M108 30c-8 0-14 6-14 13 0 9 14 21 14 21s14-12 14-21c0-7-6-13-14-13Z" fill="#e11d2a"/><circle cx="108" cy="43" r="5" fill="#fff"/></svg>',
+  incidents: '<svg viewBox="0 0 132 130" fill="none" aria-hidden="true"><ellipse cx="60" cy="116" rx="40" ry="7" fill="#0b1b3a" opacity=".06"/><path d="M30 16h46l18 18v74H30Z" fill="#f4f7fb" stroke="#e2e8f0" stroke-width="2"/><path d="M76 16v18h18Z" fill="#e2e8f0"/><path d="M42 52h30M42 64h38M42 76h22" stroke="#cfd8e3" stroke-width="3.4" stroke-linecap="round"/><path d="M96 58l24 44H72Z" fill="#e11d2a"/><path d="M96 74v13M96 94v.5" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/></svg>',
+  clients: '<svg viewBox="0 0 150 130" fill="none" aria-hidden="true"><ellipse cx="75" cy="116" rx="50" ry="8" fill="#0b1b3a" opacity=".06"/><circle cx="45" cy="54" r="15" fill="#cfd8e3"/><path d="M21 102a24 24 0 0 1 48 0Z" fill="#cfd8e3"/><circle cx="105" cy="54" r="15" fill="#dbe2ec"/><path d="M81 102a24 24 0 0 1 48 0Z" fill="#dbe2ec"/><circle cx="75" cy="46" r="19" fill="#e11d2a"/><path d="M44 106a31 31 0 0 1 62 0Z" fill="#e11d2a"/></svg>',
+};
 const REPORT_SOURCES = [
   { key: 'orders', dataset: 'operations', label: 'Commandes', icon: 'box', wired: true,
     desc: 'Exportez vos commandes, leur statut, leur affectation et leurs informations de livraison.', list: '/api/app/orders' },
@@ -4083,9 +4090,22 @@ const REPORT_COLUMNS = {
     sensitive: [],
   },
   routes: {
-    base: [{ key: 'run_reference', label: 'ID tournée' }, { key: 'driver_reference', label: 'Livreur' }, { key: 'status', label: 'Statut' }],
+    base: [
+      { key: 'run_reference', label: 'ID tournée' }, { key: 'service_date', label: 'Date' },
+      { key: 'driver_reference', label: 'Livreur' }, { key: 'status', label: 'Statut' },
+      { key: 'stop_count', label: 'Arrêts' }, { key: 'order_count', label: 'Commandes' },
+      { key: 'started_at', label: 'Début' }, { key: 'completed_at', label: 'Fin' },
+    ],
     sensitive: [],
   },
+};
+// Correspondance entre les filtres UI et les filtres réellement appliqués au
+// fichier exporté (via le contrat). Les autres filtres n'affinent que l'aperçu.
+const REPORT_EXPORT_FILTER_MAP = {
+  orders: { status: 'status', zone: 'destination_zone' },
+  clients: { status: 'activity_status' },
+  incidents: { status: 'status', type: 'category' },
+  routes: { status: 'status' },
 };
 // Filtres (menus déroulants) par source, alimentés par les valeurs réelles.
 const REPORT_FILTERS = {
@@ -4135,7 +4155,7 @@ function reportStepStart() {
           <small>${escapeHtml(s.desc)}</small>
           <span class="rep-source-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
         </span>
-        <span class="rep-source-art" aria-hidden="true">${REPORT_ICONS[s.icon]}</span>
+        <span class="rep-source-art" aria-hidden="true">${REPORT_ART[s.key] || ''}</span>
       </button>`).join('')}</div>
   </div>`;
   page.querySelectorAll('.rep-source').forEach((btn) => btn.addEventListener('click', () => reportSetSource(btn.dataset.source)));
@@ -4239,13 +4259,17 @@ async function reportStepConfigure(source) {
     if (!from || !to) { msg.hidden = false; msg.className = 'rep-msg err'; msg.textContent = 'Choisissez une période (du / au).'; return; }
     const exclusiveTo = new Date(new Date(`${to}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10);
     const sensitiveColumns = [...sensitiveState.entries()].filter(([, on]) => on).map(([k]) => k);
+    // Filtres réellement appliqués au fichier (ceux que le contrat prend en charge).
+    const fmap = REPORT_EXPORT_FILTER_MAP[source.key] || {};
+    const exportFilters = {};
+    for (const [k, v] of activeFilters()) if (fmap[k]) exportFilters[fmap[k]] = v;
     const label = btn.innerHTML;
     btn.disabled = true; btn.textContent = 'Génération…';
     msg.hidden = true;
     try {
       const response = await fetch('/api/app/crm/exports', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataset: source.dataset, purpose: `Export ${source.label} depuis Rapports`, period: { from, to: exclusiveTo }, sensitiveColumns, format }),
+        body: JSON.stringify({ dataset: source.dataset, purpose: `Export ${source.label} depuis Rapports`, period: { from, to: exclusiveTo }, filters: exportFilters, sensitiveColumns, format }),
       });
       if (response.status === 401) { location.href = '/app/login'; return; }
       if (!response.ok) {
@@ -4261,7 +4285,7 @@ async function reportStepConfigure(source) {
       const rowCount = Number(response.headers.get('X-Export-Row-Count') || preview.dataset.count || 0);
       const bytes = Number(response.headers.get('X-Export-Bytes') || blob.size || 0);
       const colCount = cols.base.length + sensitiveColumns.length;
-      reportStepResult(source, { blob, rowCount, bytes, colCount, from, to, format, filterCount: activeFilters().length });
+      reportStepResult(source, { blob, rowCount, bytes, colCount, from, to, format, filterCount: Object.keys(exportFilters).length });
     } catch (error) {
       btn.disabled = false; btn.innerHTML = label;
       msg.hidden = false; msg.className = 'rep-msg err'; msg.textContent = error.message || 'Export impossible.';

@@ -2893,10 +2893,19 @@ async function buildNotificationItems(cid) {
 // Inactif tant qu'aucun fournisseur n'est configuré. Pour activer : renseigner
 // les variables SMTP_* (Brevo, Amazon SES, Mailgun…) ou RESEND_API_KEY.
 const smtpConfigured = () => Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
-function emailConfigured() { return smtpConfigured() || Boolean(process.env.RESEND_API_KEY); }
+function emailConfigured() {
+  return smtpConfigured() || Boolean(process.env.BREVO_API_KEY) || Boolean(process.env.RESEND_API_KEY);
+}
 function emailFrom() { return process.env.EMAIL_FROM || 'TRAXO <notifications@gettraxo.app>'; }
 function escHtmlServer(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+// Sépare « Nom <email> » (ou un simple « email ») en { name, email }.
+function parseAddress(value) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^\s*(.*?)\s*<\s*([^>]+?)\s*>\s*$/);
+  if (match) return { name: match[1] || undefined, email: match[2] };
+  return { email: raw };
 }
 let mailTransport = null;
 function getMailTransport() {
@@ -2908,14 +2917,43 @@ function getMailTransport() {
     port,
     secure: process.env.SMTP_SECURE === 'true' || port === 465,
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    // Échoue vite si le port SMTP est filtré (fréquent sur les hébergeurs cloud)
+    // au lieu d'attendre 2 min ; on bascule alors sur l'API HTTP si disponible.
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 15000,
   });
   return mailTransport;
 }
-// Envoi : SMTP en priorité (n'importe quel fournisseur), Resend HTTP en repli ;
+// Envoi via l'API HTTP de Brevo (port 443, jamais bloqué par l'hébergeur).
+async function sendViaBrevoApi({ from, to, subject, html, text }) {
+  const sender = parseAddress(from);
+  const recipient = parseAddress(to);
+  await axios.post('https://api.brevo.com/v3/smtp/email', {
+    sender: { email: sender.email, name: sender.name || 'TRAXO' },
+    to: [{ email: recipient.email }],
+    subject,
+    htmlContent: html,
+    textContent: text,
+  }, {
+    headers: { 'api-key': process.env.BREVO_API_KEY, 'Content-Type': 'application/json', accept: 'application/json' },
+    timeout: 10000,
+  });
+}
+// Envoi : API Brevo en priorité si configurée (HTTP 443, fiable sur Railway où
+// les ports SMTP sont bloqués), sinon SMTP standard, sinon Resend ;
 // no-op « email_not_configured » si rien n'est configuré.
 async function sendEmail({ to, subject, html, text }) {
   if (!to) return { sent: false, reason: 'no_recipient' };
   const from = emailFrom();
+  if (process.env.BREVO_API_KEY) {
+    try {
+      await sendViaBrevoApi({ from, to, subject, html, text });
+      return { sent: true, via: 'brevo_api' };
+    } catch (error) {
+      return { sent: false, reason: 'send_failed', detail: error.response?.data || error.message };
+    }
+  }
   const transport = getMailTransport();
   if (transport) {
     try {

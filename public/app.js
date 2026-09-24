@@ -194,17 +194,17 @@ const DASH_ICONS = {
 };
 
 const DASH_ORDER_STATUS_COLOR = {
-  'Livrée': '#157347', 'Confirmée': '#2563eb', 'En préparation': '#94a3b8',
+  'Livrée': '#10b981', 'Confirmée': '#2563eb', 'En préparation': '#94a3b8',
   'Récupérée': '#0ea5e9', 'En tournée': '#6366f1', 'En livraison': '#3b82f6',
   'Arrivée': '#f59e0b', 'Échec': '#dc2626', 'Retour': '#f97316',
   'Retournée': '#b91c1c', 'Annulée': '#64748b',
 };
 const DASH_REQUEST_STATUS_COLOR = {
-  'À vérifier': '#f59e0b', 'Informations à compléter': '#0ea5e9', 'Confirmée': '#157347',
+  'À vérifier': '#f59e0b', 'Informations à compléter': '#0ea5e9', 'Confirmée': '#10b981',
   'Refusée': '#dc2626', 'En attente d’informations': '#94a3b8', 'Archivée': '#64748b',
 };
 const DASH_AVAILABILITY_COLOR = {
-  available: '#157347', busy: '#3b82f6', full: '#8b5cf6', pause: '#f59e0b',
+  available: '#10b981', busy: '#3b82f6', full: '#8b5cf6', pause: '#f59e0b',
   off_duty: '#f59e0b', incident: '#dc2626', offline: '#94a3b8', inactive: '#cbd5e1', stale: '#f59e0b',
 };
 const DASH_INCIDENT_COLOR = {
@@ -212,7 +212,7 @@ const DASH_INCIDENT_COLOR = {
   vehicule: '#64748b', gps: '#14b8a6', autre: '#e11d2a',
 };
 const DASH_INCIDENT_STATUS_LABEL = { open: 'Ouvert', resolved: 'Résolu', closed: 'Clôturé' };
-const DASH_PALETTE = ['#e11d2a', '#16233f', '#3b82f6', '#157347', '#f59e0b', '#8b5cf6', '#0ea5e9', '#64748b'];
+const DASH_PALETTE = ['#e11d2a', '#16233f', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#0ea5e9', '#64748b'];
 
 function dashNiceCeil(value) {
   const v = Math.max(1, value);
@@ -315,23 +315,63 @@ function dashLegend(items) {
   return `<div class="dash-legend">${items.map((it) => `<span><i class="${it.line ? 'line' : ''}" style="background:${it.color}"></i>${escapeHtml(it.label)}</span>`).join('')}</div>`;
 }
 
-// --- Graphiques SVG ---------------------------------------------------------
+// --- Graphiques SVG (style épuré : courbes lissées, dégradés doux, tooltips) --
 const DASH_W = 760;
 const DASH_H = 250;
-const DASH_PAD = { l: 40, r: 14, t: 22, b: 30 };
+const DASH_PAD = { l: 40, r: 16, t: 24, b: 30 };
+let dashUidSeq = 0;
+const dashUid = () => `dg${(dashUidSeq += 1)}`;
 function dashGeom(n) {
   const iw = DASH_W - DASH_PAD.l - DASH_PAD.r;
   const ih = DASH_H - DASH_PAD.t - DASH_PAD.b;
-  return { iw, ih, x: (i) => DASH_PAD.l + iw * ((i + 0.5) / n), xEdge: (i) => DASH_PAD.l + (iw * i) / n };
+  return { iw, ih, x: (i) => DASH_PAD.l + iw * ((i + 0.5) / n) };
+}
+// Attribut data-tip (info-bulle au survol). Le texte est déjà échappé/formaté.
+function dashTip(text) { return ` data-tip="${text}"`; }
+// Rectangle à coins supérieurs arrondis, base plate (look Metabase).
+function dashTopRect(x, w, yTop, yBase, r) {
+  const h = yBase - yTop;
+  const rr = Math.max(0, Math.min(r, w / 2, h));
+  return `M${x.toFixed(1)},${yBase.toFixed(1)} L${x.toFixed(1)},${(yTop + rr).toFixed(1)} Q${x.toFixed(1)},${yTop.toFixed(1)} ${(x + rr).toFixed(1)},${yTop.toFixed(1)} L${(x + w - rr).toFixed(1)},${yTop.toFixed(1)} Q${(x + w).toFixed(1)},${yTop.toFixed(1)} ${(x + w).toFixed(1)},${(yTop + rr).toFixed(1)} L${(x + w).toFixed(1)},${yBase.toFixed(1)} Z`;
+}
+// Courbe lissée monotone (Fritsch–Carlson) — pas de dépassement sous la ligne de base.
+function dashSmoothPath(pts) {
+  const n = pts.length;
+  if (n < 2) return n ? `M ${pts[0][0]} ${pts[0][1]}` : '';
+  const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
+  const dx = []; const dy = []; const ms = [];
+  for (let i = 0; i < n - 1; i += 1) { dx[i] = xs[i + 1] - xs[i]; dy[i] = ys[i + 1] - ys[i]; ms[i] = dy[i] / dx[i]; }
+  const m = new Array(n);
+  m[0] = ms[0]; m[n - 1] = ms[n - 2];
+  for (let i = 1; i < n - 1; i += 1) m[i] = (ms[i - 1] * ms[i] <= 0) ? 0 : (ms[i - 1] + ms[i]) / 2;
+  for (let i = 0; i < n - 1; i += 1) {
+    if (ms[i] === 0) { m[i] = 0; m[i + 1] = 0; } else {
+      const a = m[i] / ms[i]; const b = m[i + 1] / ms[i]; const s = a * a + b * b;
+      if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * ms[i]; m[i + 1] = t * b * ms[i]; }
+    }
+  }
+  let d = `M ${xs[0].toFixed(1)} ${ys[0].toFixed(1)}`;
+  for (let i = 0; i < n - 1; i += 1) {
+    const c1x = xs[i] + dx[i] / 3; const c1y = ys[i] + m[i] * dx[i] / 3;
+    const c2x = xs[i + 1] - dx[i] / 3; const c2y = ys[i + 1] - m[i + 1] * dx[i] / 3;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${xs[i + 1].toFixed(1)} ${ys[i + 1].toFixed(1)}`;
+  }
+  return d;
+}
+function dashBarGrad(id, color) {
+  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}"/><stop offset="1" stop-color="${color}" stop-opacity="0.78"/></linearGradient>`;
+}
+function dashAreaGrad(id, color) {
+  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity="0.24"/><stop offset="0.9" stop-color="${color}" stop-opacity="0.02"/></linearGradient>`;
 }
 function dashGrid(niceMax, opts = {}) {
-  const { ih } = dashGeom(1);
+  const { ih } = { ih: DASH_H - DASH_PAD.t - DASH_PAD.b };
   let g = '';
   for (let k = 0; k <= 4; k += 1) {
     const val = (niceMax / 4) * k;
     const y = DASH_PAD.t + ih - ih * (val / niceMax);
-    g += `<line x1="${DASH_PAD.l}" y1="${y.toFixed(1)}" x2="${DASH_W - DASH_PAD.r}" y2="${y.toFixed(1)}" stroke="#eef1f6"/>`;
-    g += `<text x="${DASH_PAD.l - 7}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="dash-axis">${opts.percent ? Math.round(val) + '%' : formatInteger(Math.round(val))}</text>`;
+    g += `<line x1="${DASH_PAD.l}" y1="${y.toFixed(1)}" x2="${DASH_W - DASH_PAD.r}" y2="${y.toFixed(1)}" stroke="#f0f3f8" stroke-width="1"${k === 0 ? '' : ' stroke-dasharray="2 4"'}/>`;
+    g += `<text x="${DASH_PAD.l - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="dash-axis">${opts.percent ? Math.round(val) + '%' : formatInteger(Math.round(val))}</text>`;
   }
   return g;
 }
@@ -341,35 +381,41 @@ function dashXLabels(series, n) {
   return series.map((d, i) => (i % step === 0 || i === n - 1)
     ? `<text x="${x(i).toFixed(1)}" y="${DASH_H - 9}" text-anchor="middle" class="dash-axis">${dashDayShort(d.date)}</text>` : '').join('');
 }
+function dashLinePlot(series, k, color, x, y, { labels, dashed, name } = {}) {
+  const pts = series.map((d, i) => [x(i), y(Number(d[k]) || 0)]);
+  const path = dashSmoothPath(pts);
+  const line = `<path d="${path}" fill="none" stroke="${color}" stroke-width="${dashed ? 2 : 2.6}" stroke-linejoin="round" stroke-linecap="round"${dashed ? ' stroke-dasharray="5 5" opacity="0.85"' : ''}/>`;
+  const dots = series.map((d, i) => `<circle class="dash-pt" cx="${pts[i][0].toFixed(1)}" cy="${pts[i][1].toFixed(1)}" r="${dashed ? 3 : 3.6}" fill="#fff" stroke="${color}" stroke-width="2"${dashTip(`${dashDayShort(d.date)} · <b>${formatInteger(Number(d[k]) || 0)}</b>${name ? ` ${escapeHtml(name)}` : ''}`)}/>`).join('');
+  const lab = labels ? series.map((d, i) => `<text x="${pts[i][0].toFixed(1)}" y="${(pts[i][1] - 10).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${formatInteger(Number(d[k]) || 0)}</text>`).join('') : '';
+  return { line, dots, lab };
+}
 
-// Barres verticales (une série) + libellés de valeur + ligne « période précédente » optionnelle.
+// Barres (une série) + libellés + ligne secondaire ou « période précédente ».
 function dashBarChart(series, opt) {
   if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
   const n = series.length;
   const { ih, x } = dashGeom(n);
-  const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.key]) || 0, opt.prevKey ? (Number(d[opt.prevKey]) || 0) : 0)));
+  const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.key]) || 0, opt.lineKey ? (Number(d[opt.lineKey]) || 0) : 0, opt.prevKey ? (Number(d[opt.prevKey]) || 0) : 0)));
   const niceMax = dashNiceCeil(maxV);
   const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
-  const bw = Math.max(4, Math.min(34, (dashGeom(n).iw / n) * 0.56));
+  const base = DASH_PAD.t + ih;
+  const bw = Math.max(6, Math.min(30, (dashGeom(n).iw / n) * 0.5));
+  const gid = dashUid();
   const bars = series.map((d, i) => {
     const v = Number(d[opt.key]) || 0;
-    const h = ih * (v / niceMax);
-    const label = v > 0 ? `<text x="${x(i).toFixed(1)}" y="${(DASH_PAD.t + ih - h - 6).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.color}">${formatInteger(v)}</text>` : '';
-    return `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${(DASH_PAD.t + ih - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="4" fill="${opt.color}"/>${label}`;
+    if (v <= 0) return '';
+    const yTop = y(v);
+    const path = `<path class="dash-barrect" d="${dashTopRect(x(i) - bw / 2, bw, yTop, base, 5)}" fill="url(#${gid})"${dashTip(`${dashDayShort(d.date)} · <b>${formatInteger(v)}</b> ${escapeHtml(opt.barName || '')}`)}/>`;
+    const label = `<text x="${x(i).toFixed(1)}" y="${(yTop - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.labelColor || opt.color}">${formatInteger(v)}</text>`;
+    return path + label;
   }).join('');
   let overlay = '';
-  const drawLine = (lk, color) => {
-    const pts = series.map((d, i) => `${x(i).toFixed(1)},${y(Number(d[lk]) || 0).toFixed(1)}`).join(' ');
-    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`
-      + series.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(Number(d[lk]) || 0).toFixed(1)}" r="3.4" fill="#fff" stroke="${color}" stroke-width="2"/>`).join('');
-  };
-  if (opt.prevKey) overlay += drawLine(opt.prevKey, opt.prevColor || '#94a3b8');
-  if (opt.lineKey) overlay += drawLine(opt.lineKey, opt.lineColor || '#157347')
-    + series.map((d, i) => `<text x="${x(i).toFixed(1)}" y="${(y(Number(d[opt.lineKey]) || 0) + 16).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.lineColor || '#157347'}">${formatInteger(Number(d[opt.lineKey]) || 0)}</text>`).join('');
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${bars}${overlay}${dashXLabels(series, n)}</svg>`;
+  if (opt.prevKey) { const p = dashLinePlot(series, opt.prevKey, '#c3ccd9', x, y, { dashed: true, name: opt.prevName }); overlay += p.line + p.dots; }
+  if (opt.lineKey) { const p = dashLinePlot(series, opt.lineKey, opt.lineColor || '#10b981', x, y, { labels: true, name: opt.lineName }); overlay += p.line + p.dots + p.lab; }
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet"><defs>${dashBarGrad(gid, opt.color)}</defs>${dashGrid(niceMax)}${bars}${overlay}${dashXLabels(series, n)}</svg>`;
 }
 
-// Deux lignes (période courante vs précédente).
+// Deux lignes lissées (période courante vs précédente).
 function dashDualLineChart(series, opt) {
   if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
   const n = series.length;
@@ -377,16 +423,12 @@ function dashDualLineChart(series, opt) {
   const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.aKey]) || 0, Number(d[opt.bKey]) || 0)));
   const niceMax = dashNiceCeil(maxV);
   const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
-  const line = (k, color, withLabels) => {
-    const pts = series.map((d, i) => `${x(i).toFixed(1)},${y(Number(d[k]) || 0).toFixed(1)}`).join(' ');
-    const dots = series.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(Number(d[k]) || 0).toFixed(1)}" r="3.6" fill="#fff" stroke="${color}" stroke-width="2"/>`).join('');
-    const labels = withLabels ? series.map((d, i) => `<text x="${x(i).toFixed(1)}" y="${(y(Number(d[k]) || 0) - 9).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${formatInteger(Number(d[k]) || 0)}</text>`).join('') : '';
-    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>${dots}${labels}`;
-  };
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${line(opt.bKey, opt.bColor || '#94a3b8', false)}${line(opt.aKey, opt.aColor || '#e11d2a', true)}${dashXLabels(series, n)}</svg>`;
+  const b = dashLinePlot(series, opt.bKey, '#c3ccd9', x, y, { dashed: true, name: opt.bName });
+  const a = dashLinePlot(series, opt.aKey, opt.aColor || '#e11d2a', x, y, { labels: true, name: opt.aName });
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${b.line}${b.dots}${a.line}${a.dots}${a.lab}${dashXLabels(series, n)}</svg>`;
 }
 
-// Aire + ligne (taux %, 0–100).
+// Aire lissée (taux %, 0–100).
 function dashAreaChart(points, opt) {
   const valid = (points || []).filter((p) => p.value != null);
   if (!valid.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
@@ -395,12 +437,14 @@ function dashAreaChart(points, opt) {
   const niceMax = 100;
   const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
   const color = opt.color || '#3b82f6';
-  const linePts = points.map((d, i) => (d.value == null ? null : `${x(i).toFixed(1)},${y(d.value).toFixed(1)}`)).filter(Boolean).join(' ');
-  const first = points.findIndex((d) => d.value != null);
-  const last = points.length - 1 - [...points].reverse().findIndex((d) => d.value != null);
-  const area = `${x(first).toFixed(1)},${(DASH_PAD.t + ih).toFixed(1)} ${linePts} ${x(last).toFixed(1)},${(DASH_PAD.t + ih).toFixed(1)}`;
-  const dots = points.map((d, i) => (d.value == null ? '' : `<circle cx="${x(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="3.4" fill="#fff" stroke="${color}" stroke-width="2"/><text x="${x(i).toFixed(1)}" y="${(y(d.value) - 9).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${Math.round(d.value)}%</text>`)).join('');
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax, { percent: true })}<polygon points="${area}" fill="${color}" opacity="0.12"/><polyline points="${linePts}" fill="none" stroke="${color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>${dots}${dashXLabels(points, n)}</svg>`;
+  const gid = dashUid();
+  const idx = points.map((d, i) => (d.value == null ? null : i)).filter((i) => i != null);
+  const pts = idx.map((i) => [x(i), y(points[i].value)]);
+  const linePath = dashSmoothPath(pts);
+  const base = DASH_PAD.t + ih;
+  const areaPath = `${linePath} L ${pts[pts.length - 1][0].toFixed(1)} ${base.toFixed(1)} L ${pts[0][0].toFixed(1)} ${base.toFixed(1)} Z`;
+  const dots = idx.map((i) => `<circle class="dash-pt" cx="${x(i).toFixed(1)}" cy="${y(points[i].value).toFixed(1)}" r="3.4" fill="#fff" stroke="${color}" stroke-width="2"${dashTip(`${dashDayShort(points[i].date)} · <b>${Math.round(points[i].value)}%</b>`)}/><text x="${x(i).toFixed(1)}" y="${(y(points[i].value) - 10).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${Math.round(points[i].value)}%</text>`).join('');
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet"><defs>${dashAreaGrad(gid, color)}</defs>${dashGrid(niceMax, { percent: true })}<path d="${areaPath}" fill="url(#${gid})"/><path d="${linePath}" fill="none" stroke="${color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>${dots}${dashXLabels(points, n)}</svg>`;
 }
 
 // Barres groupées (deux séries par catégorie) — ex. Livraisons par livreur.
@@ -411,24 +455,20 @@ function dashGroupedChart(items, opt) {
   const maxV = Math.max(1, ...items.map((d) => Math.max(Number(d[opt.aKey]) || 0, Number(d[opt.bKey]) || 0)));
   const niceMax = dashNiceCeil(maxV);
   const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
+  const base = DASH_PAD.t + ih;
   const groupW = iw / n;
-  const bw = Math.min(30, groupW * 0.28);
-  let bars = '';
-  let labels = '';
+  const bw = Math.min(26, groupW * 0.26);
+  const ga = dashUid(); const gb = dashUid();
+  let bars = ''; let labels = '';
   items.forEach((d, i) => {
     const cx = DASH_PAD.l + groupW * (i + 0.5);
-    const va = Number(d[opt.aKey]) || 0;
-    const vb = Number(d[opt.bKey]) || 0;
-    const ha = ih * (va / niceMax);
-    const hb = ih * (vb / niceMax);
-    bars += `<rect x="${(cx - bw - 3).toFixed(1)}" y="${y(va).toFixed(1)}" width="${bw}" height="${Math.max(0, ha).toFixed(1)}" rx="4" fill="${opt.aColor}"/>`;
-    bars += `<text x="${(cx - bw / 2 - 3).toFixed(1)}" y="${(y(va) - 6).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.aColor}">${formatInteger(va)}</text>`;
-    bars += `<rect x="${(cx + 3).toFixed(1)}" y="${y(vb).toFixed(1)}" width="${bw}" height="${Math.max(0, hb).toFixed(1)}" rx="4" fill="${opt.bColor}"/>`;
-    bars += `<text x="${(cx + bw / 2 + 3).toFixed(1)}" y="${(y(vb) - 6).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.bColor}">${formatInteger(vb)}</text>`;
-    labels += `<circle cx="${cx.toFixed(1)}" cy="${DASH_H - 16}" r="10" fill="#eef1f6"/><text x="${cx.toFixed(1)}" y="${DASH_H - 12.5}" text-anchor="middle" class="dash-initials">${escapeHtml(dashInitials(d.label))}</text>`;
-    labels += `<text x="${cx.toFixed(1)}" y="${DASH_H - 1}" text-anchor="middle" class="dash-axis">${escapeHtml((d.label || '').split(' ')[0])}</text>`;
+    const va = Number(d[opt.aKey]) || 0; const vb = Number(d[opt.bKey]) || 0;
+    if (va > 0) { bars += `<path class="dash-barrect" d="${dashTopRect(cx - bw - 3, bw, y(va), base, 5)}" fill="url(#${ga})"${dashTip(`${escapeHtml(d.label)} · <b>${formatInteger(va)}</b> ${escapeHtml(opt.aName || '')}`)}/><text x="${(cx - bw / 2 - 3).toFixed(1)}" y="${(y(va) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.aColor}">${formatInteger(va)}</text>`; }
+    if (vb > 0) { bars += `<path class="dash-barrect" d="${dashTopRect(cx + 3, bw, y(vb), base, 5)}" fill="url(#${gb})"${dashTip(`${escapeHtml(d.label)} · <b>${formatInteger(vb)}</b> ${escapeHtml(opt.bName || '')}`)}/><text x="${(cx + bw / 2 + 3).toFixed(1)}" y="${(y(vb) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.bColor}">${formatInteger(vb)}</text>`; }
+    labels += `<circle cx="${cx.toFixed(1)}" cy="${DASH_H - 15}" r="11" fill="#eef1f6"/><text x="${cx.toFixed(1)}" y="${DASH_H - 11.5}" text-anchor="middle" class="dash-initials">${escapeHtml(dashInitials(d.label))}</text>`;
+    labels += `<text x="${cx.toFixed(1)}" y="${DASH_H + 1}" text-anchor="middle" class="dash-axis">${escapeHtml((d.label || '').split(' ')[0])}</text>`;
   });
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H + 14}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${bars}${labels}</svg>`;
+  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H + 16}" preserveAspectRatio="xMidYMid meet"><defs>${dashBarGrad(ga, opt.aColor)}${dashBarGrad(gb, opt.bColor)}</defs>${dashGrid(niceMax)}${bars}${labels}</svg>`;
 }
 
 // Barres empilées par jour (catégories) — ex. Incidents par jour.
@@ -438,19 +478,23 @@ function dashStackedChart(series, categories) {
   const { ih, x } = dashGeom(n);
   const totals = series.map((d) => categories.reduce((s, c) => s + (Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0), 0));
   const niceMax = dashNiceCeil(Math.max(1, ...totals));
-  const bw = Math.max(6, Math.min(30, (dashGeom(n).iw / n) * 0.5));
+  const base = DASH_PAD.t + ih;
+  const bw = Math.max(8, Math.min(28, (dashGeom(n).iw / n) * 0.44));
   let bars = '';
   series.forEach((d, i) => {
+    const active = categories.map((c) => ({ c, v: Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0 })).filter((s) => s.v > 0);
     let acc = 0;
-    categories.forEach((c) => {
-      const v = Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0;
-      if (v <= 0) return;
-      const h = ih * (v / niceMax);
-      const yTop = DASH_PAD.t + ih - ih * (acc / niceMax) - h;
-      bars += `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c.color}"/>`;
-      acc += v;
+    active.forEach((s, k) => {
+      const yBase = base - ih * (acc / niceMax);
+      const yTop = base - ih * ((acc + s.v) / niceMax);
+      const isTop = k === active.length - 1;
+      const shape = isTop
+        ? `<path d="${dashTopRect(x(i) - bw / 2, bw, yTop, yBase, 4)}" fill="${s.c.color}"${dashTip(`${dashDayShort(d.date)} · ${escapeHtml(s.c.label)} <b>${formatInteger(s.v)}</b>`)}/>`
+        : `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${(yBase - yTop).toFixed(1)}" fill="${s.c.color}"${dashTip(`${dashDayShort(d.date)} · ${escapeHtml(s.c.label)} <b>${formatInteger(s.v)}</b>`)}/>`;
+      bars += shape;
+      acc += s.v;
     });
-    if (totals[i] > 0) bars += `<text x="${x(i).toFixed(1)}" y="${(DASH_PAD.t + ih - ih * (totals[i] / niceMax) - 6).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="#334155">${formatInteger(totals[i])}</text>`;
+    if (totals[i] > 0) bars += `<text x="${x(i).toFixed(1)}" y="${(base - ih * (totals[i] / niceMax) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="#475569">${formatInteger(totals[i])}</text>`;
   });
   return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${bars}${dashXLabels(series, n)}</svg>`;
 }
@@ -465,14 +509,17 @@ function dashDonut(rawSegments, opt = {}) {
   const segments = (rawSegments || []).filter((s) => (Number(s.value) || 0) > 0);
   const total = segments.reduce((s, x) => s + (Number(x.value) || 0), 0);
   if (!total) return '<div class="dash-empty">Aucune donnée sur la période</div>';
-  const cx = 90; const cy = 90; const r = 66; const th = 22;
+  const cx = 90; const cy = 90; const r = 68; const th = 17;
+  const gap = segments.length > 1 ? 3 : 0;
   let acc = 0;
   const arcs = segments.map((s, i) => {
     const frac = (Number(s.value) || 0) / total;
     const a0 = acc * 360; acc += frac; const a1 = acc * 360;
     const color = s.color || DASH_PALETTE[i % DASH_PALETTE.length];
-    if (frac >= 0.9999) return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${th}"/>`;
-    return `<path d="${dashRingArc(cx, cy, r, a0 + 1, Math.min(a1, a0 + 359) - 1)}" fill="none" stroke="${color}" stroke-width="${th}" stroke-linecap="round"/>`;
+    const pct = Math.round(frac * 100);
+    const tip = dashTip(`${escapeHtml(s.label)} · <b>${formatInteger(s.value)}</b> · ${pct}%`);
+    if (frac >= 0.9999) return `<circle class="dash-seg" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${th}"${tip}/>`;
+    return `<path class="dash-seg" d="${dashRingArc(cx, cy, r, a0 + gap / 2, a1 - gap / 2)}" fill="none" stroke="${color}" stroke-width="${th}" stroke-linecap="round"${tip}/>`;
   }).join('');
   const legend = segments.map((s, i) => {
     const color = s.color || DASH_PALETTE[i % DASH_PALETTE.length];
@@ -481,12 +528,37 @@ function dashDonut(rawSegments, opt = {}) {
   }).join('');
   return `<div class="dash-donut-wrap">
     <svg class="dash-donut" viewBox="0 0 180 180">${arcs}
-      <text x="90" y="84" text-anchor="middle" class="dash-donut-total">${formatInteger(opt.total != null ? opt.total : total)}</text>
-      <text x="90" y="103" text-anchor="middle" class="dash-donut-sub">${escapeHtml(opt.centerLabel || 'total')}</text>
+      <text x="90" y="85" text-anchor="middle" class="dash-donut-total">${formatInteger(opt.total != null ? opt.total : total)}</text>
+      <text x="90" y="104" text-anchor="middle" class="dash-donut-sub">${escapeHtml(opt.centerLabel || 'total')}</text>
     </svg>
     <ul class="dash-legend-list">${legend}</ul>
   </div>`;
 }
+
+// Info-bulle partagée (survol des points/barres/segments) — initialisée une fois.
+(function dashTooltipSetup() {
+  if (typeof document === 'undefined' || (typeof window !== 'undefined' && window.__dashTipInit)) return;
+  if (typeof window !== 'undefined') window.__dashTipInit = true;
+  let tip = null;
+  const ensure = () => { if (!tip) { tip = document.createElement('div'); tip.className = 'dash-tip'; tip.setAttribute('hidden', ''); document.body.appendChild(tip); } return tip; };
+  document.addEventListener('pointerover', (e) => {
+    const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+    if (!el) return;
+    const t = ensure(); t.innerHTML = el.getAttribute('data-tip'); t.removeAttribute('hidden');
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!tip || tip.hasAttribute('hidden')) return;
+    const pad = 14; const r = tip.getBoundingClientRect();
+    let x = e.clientX + pad; let y = e.clientY + pad;
+    if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
+    if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
+    tip.style.left = `${x}px`; tip.style.top = `${y}px`;
+  });
+  document.addEventListener('pointerout', (e) => {
+    const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+    if (el && tip) tip.setAttribute('hidden', '');
+  });
+}());
 
 function dashProgressRows(rows, opt = {}) {
   if (!rows.length) return '<div class="dash-empty">Aucune donnée</div>';
@@ -574,7 +646,7 @@ function dashTabContent(tab, data) {
       dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de livraison', value: rate(m.deliveryRate), delta: dashDeltaPoints(m.deliveryRate.deltaPoints), tone: 'orange' }),
     ];
     return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Commandes créées par jour', dashLegend([{ color: '#e11d2a', label: 'Créées' }, { color: '#157347', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', lineKey: 'delivered', lineColor: '#157347' }), perJour)}
+      ${dashCard('Commandes créées par jour', dashLegend([{ color: '#e11d2a', label: 'Créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
       ${dashCard('Répartition par statut', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
     </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes'));
   }
@@ -595,7 +667,7 @@ function dashTabContent(tab, data) {
     ];
     const driverRows = data.tables.drivers;
     return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Livraisons terminées par jour', dashLegend([{ color: '#3b82f6', label: 'Cette période (terminées)' }, { color: '#94a3b8', label: 'Période précédente', line: true }]) + dashBarChart(data.series, { key: 'delivered', color: '#3b82f6', prevKey: 'prevDelivered', prevColor: '#94a3b8' }), perJour)}
+      ${dashCard('Livraisons terminées par jour', dashLegend([{ color: '#3b82f6', label: 'Cette période (terminées)' }, { color: '#c3ccd9', label: 'Période précédente', line: true }]) + dashBarChart(data.series, { key: 'delivered', color: '#3b82f6', barName: 'livrées', prevKey: 'prevDelivered', prevName: '(préc.)' }), perJour)}
       ${dashCard('État des livraisons', dashDonut(seg, { centerLabel: 'livraisons totales', total: assigned }), cettePeriode)}
     </div><div class="dash-grid-2">
       ${dashCard('Taux de livraison par jour', dashAreaChart(ratePoints, { color: '#3b82f6' }))}
@@ -619,12 +691,12 @@ function dashTabContent(tab, data) {
     ];
     const workload = [
       { label: 'Assignées', value: assignedTotal, color: '#3b82f6' },
-      { label: 'Terminées', value: m.delivered.value, color: '#157347' },
+      { label: 'Terminées', value: m.delivered.value, color: '#10b981' },
       { label: 'En cours', value: now.openLoad, color: '#f59e0b' },
       { label: 'Annulées', value: m.cancelled.value, color: '#e11d2a' },
     ];
     return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Livraisons par livreur', dashLegend([{ color: '#3b82f6', label: 'Assignées' }, { color: '#157347', label: 'Terminées' }]) + dashGroupedChart(grouped, { aKey: 'assigned', aColor: '#3b82f6', bKey: 'delivered', bColor: '#157347' }), cettePeriode)}
+      ${dashCard('Livraisons par livreur', dashLegend([{ color: '#3b82f6', label: 'Assignées' }, { color: '#10b981', label: 'Terminées' }]) + dashGroupedChart(grouped, { aKey: 'assigned', aColor: '#3b82f6', aName: 'assignées', bKey: 'delivered', bColor: '#10b981', bName: 'terminées' }), cettePeriode)}
       ${dashCard('Disponibilité actuelle', dashDonut(availSeg, { centerLabel: 'livreurs totaux' }))}
     </div><div class="dash-grid-2">
       ${dashCard('Performance individuelle', dashPerfTable(data.tables.drivers, [
@@ -647,21 +719,21 @@ function dashTabContent(tab, data) {
     ];
     const processing = [
       { label: 'Demandes reçues', value: received, color: '#3b82f6' },
-      { label: 'Validées', value: m.requestsConverted.value, color: '#157347' },
+      { label: 'Validées', value: m.requestsConverted.value, color: '#10b981' },
       { label: 'À traiter', value: now.toProcess, color: '#f59e0b' },
     ];
     return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Demandes reçues par jour', dashLegend([{ color: '#3b82f6', label: 'Demandes reçues (total)' }, { color: '#157347', label: 'Validées', line: true }]) + dashBarChart(data.series, { key: 'requestsReceived', color: '#93c5fd', lineKey: 'requestsConverted', lineColor: '#157347' }), perJour)}
+      ${dashCard('Demandes reçues par jour', dashLegend([{ color: '#3b82f6', label: 'Demandes reçues (total)' }, { color: '#10b981', label: 'Validées', line: true }]) + dashBarChart(data.series, { key: 'requestsReceived', color: '#93c5fd', barName: 'reçues', labelColor: '#2563eb', lineKey: 'requestsConverted', lineColor: '#10b981', lineName: 'validées' }), perJour)}
       ${dashCard('Traitement des demandes', dashProgressRows(processing, { base: Math.max(1, received) }), cettePeriode)}
     </div><div class="dash-grid-2">
       ${dashCard('Demandes récentes', dashRecentRequests(data.tables.recentRequests), dashLink('Voir toutes'))}
-      ${dashCard('Délais de validation', dashProgressRows(data.distributions.validationDelay.map((d, i) => ({ label: d.label, value: d.value, color: i === 0 ? '#157347' : '#3b82f6' }))), cettePeriode)}
+      ${dashCard('Délais de validation', dashProgressRows(data.distributions.validationDelay.map((d, i) => ({ label: d.label, value: d.value, color: i === 0 ? '#10b981' : '#3b82f6' }))), cettePeriode)}
     </div>`;
   }
 
   if (tab === 'tournees') {
     const seg = [
-      { label: 'Terminées', value: m.runsCompleted.value, color: '#157347' },
+      { label: 'Terminées', value: m.runsCompleted.value, color: '#10b981' },
       { label: 'En cours', value: now.runsActive, color: '#3b82f6' },
       { label: 'Annulées', value: m.runsCancelled.value, color: '#e11d2a' },
     ];
@@ -673,7 +745,7 @@ function dashTabContent(tab, data) {
       dashKpi({ icon: DASH_ICONS.xcircle, label: 'Annulées', value: val(m.runsCancelled), delta: dashDelta(m.runsCancelled, true), tone: 'red' }),
     ];
     return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Tournées terminées par jour', dashLegend([{ color: '#e11d2a', label: 'Tournées terminées', line: true }, { color: '#94a3b8', label: 'Période précédente', line: true }]) + dashDualLineChart(data.series, { aKey: 'runsCompleted', aColor: '#e11d2a', bKey: 'prevRunsCompleted', bColor: '#94a3b8' }), perJour)}
+      ${dashCard('Tournées terminées par jour', dashLegend([{ color: '#e11d2a', label: 'Tournées terminées', line: true }, { color: '#c3ccd9', label: 'Période précédente', line: true }]) + dashDualLineChart(data.series, { aKey: 'runsCompleted', aColor: '#e11d2a', aName: 'terminées', bKey: 'prevRunsCompleted', bName: '(préc.)' }), perJour)}
       ${dashCard('État des tournées', dashDonut(seg, { centerLabel: 'tournées totales', total: totalRuns }), cettePeriode)}
     </div><div class="dash-grid-2">
       ${dashCard('Tournées par livreur', dashPerfTable(data.tables.drivers, [
@@ -683,7 +755,7 @@ function dashTabContent(tab, data) {
         { label: 'Annulées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsCancelled)}</td>` },
         { label: 'Taux de réalisation', render: (d) => dashRateCell(d.runsCompleted, d.runsAssigned) },
       ]))}
-      ${dashCard('Livraisons par tournée', dashProgressRows(data.distributions.deliveriesPerRun.map((d, i) => ({ label: d.label, value: d.value, color: ['#3b82f6', '#157347', '#f59e0b'][i] }))), dashLink('Voir toutes'))}
+      ${dashCard('Livraisons par tournée', dashProgressRows(data.distributions.deliveriesPerRun.map((d, i) => ({ label: d.label, value: d.value, color: ['#3b82f6', '#10b981', '#f59e0b'][i] }))), dashLink('Voir toutes'))}
     </div>`;
   }
 
@@ -691,7 +763,7 @@ function dashTabContent(tab, data) {
     const catSeg = data.distributions.incidentCategory.map((s) => ({ label: incidentCategoryLabels[s.label] || s.label, value: s.value, color: DASH_INCIDENT_COLOR[s.label] || '#e11d2a' }));
     const catKeys = data.distributions.incidentCategory.map((s) => ({ key: s.label, color: DASH_INCIDENT_COLOR[s.label] || '#e11d2a', label: incidentCategoryLabels[s.label] || s.label }));
     const resolution = [
-      { label: 'Résolus', value: m.incidentsResolved.value, color: '#157347' },
+      { label: 'Résolus', value: m.incidentsResolved.value, color: '#10b981' },
       { label: 'Ouverts', value: now.openIncidents, color: '#f59e0b' },
     ];
     const kpis = [
@@ -717,7 +789,7 @@ function dashTabContent(tab, data) {
     dashKpi({ icon: DASH_ICONS.alert, label: 'Incidents ouverts', value: formatInteger(now.openIncidents), tone: 'orange' }),
   ];
   return dashKpiRow(kpis) + `<div class="dash-grid-2">
-    ${dashCard('Activité par jour', dashLegend([{ color: '#e11d2a', label: 'Commandes créées' }, { color: '#157347', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', lineKey: 'delivered', lineColor: '#157347' }), perJour)}
+    ${dashCard('Activité par jour', dashLegend([{ color: '#e11d2a', label: 'Commandes créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
     ${dashCard('Répartition des commandes', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
   </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes'));
 }
@@ -2349,7 +2421,7 @@ async function renderDrivers() {
     const located = drivers.filter((driver) => driver.lastUpdate).length;
     const capacity = drivers.reduce((sum, driver) => sum + Number(driver.capacity || 0), 0);
     const segments = [
-      { label: 'Disponibles', value: available, color: '#157347' },
+      { label: 'Disponibles', value: available, color: '#10b981' },
       { label: 'En course', value: busy, color: '#475569' },
       { label: 'Hors ligne', value: offline, color: '#a15c00' },
       { label: 'Désactivés', value: inactive, color: '#b42318' },

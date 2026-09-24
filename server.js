@@ -28,6 +28,7 @@ const {
   ExportContractError,
   DATASETS: EXPORT_DATASETS,
   OPERATIONAL_LIMITS: EXPORT_LIMITS,
+  columnLabel: exportColumnLabel,
 } = require('./lib/crm-export-contract');
 const { buildWorkbook: buildExportWorkbook } = require('./lib/crm-xlsx');
 const {
@@ -3586,14 +3587,15 @@ async function recordExportLog(auth, contract, status, outcome = {}) {
 }
 
 // Sérialise les lignes normalisées de l'export en CSV (RFC 4180), avec BOM
-// UTF-8 pour qu'Excel ouvre les accents correctement. En-têtes = clés de colonnes.
-function buildExportCsv(columns, rows) {
+// UTF-8 pour qu'Excel ouvre les accents correctement. En-têtes localisés FR,
+// données lues par clé technique.
+function buildExportCsv(headerLabels, columnKeys, rows) {
   const esc = (value) => {
     const s = value == null ? '' : String(value);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const header = columns.map(esc).join(',');
-  const body = rows.map((row) => columns.map((column) => esc(row[column])).join(',')).join('\r\n');
+  const header = headerLabels.map(esc).join(',');
+  const body = rows.map((row) => columnKeys.map((column) => esc(row[column])).join(',')).join('\r\n');
   return `﻿${header}${body ? `\r\n${body}` : ''}`;
 }
 
@@ -3653,13 +3655,15 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
 
   const normalizedRows = rows.map((row) => normalizeExportRow(row, wiredDataset.numeric));
   const format = body.format === 'csv' ? 'csv' : 'xlsx';
+  // En-têtes en français (source unique : DATASET_COLUMN_DEFS du contrat).
+  const headerLabels = contract.columns.map((key) => exportColumnLabel(contract.dataset, key));
 
   // Fabrique l'artefact selon le format demandé (XLSX via le générateur audité,
   // ou CSV construit à partir des mêmes lignes/colonnes du contrat).
   let artifact;
   try {
     if (format === 'csv') {
-      const csv = buildExportCsv(contract.columns, normalizedRows);
+      const csv = buildExportCsv(headerLabels, contract.columns, normalizedRows);
       const buffer = Buffer.from(csv, 'utf8');
       artifact = {
         buffer,
@@ -3671,7 +3675,7 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
         artifactSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
       };
     } else {
-      const workbook = buildExportWorkbook(contract, normalizedRows);
+      const workbook = buildExportWorkbook(contract, normalizedRows, { headerLabels });
       artifact = {
         buffer: workbook.buffer,
         contentType: workbook.contentType,

@@ -2041,6 +2041,9 @@ app.get('/app/incidents/:id', requireCompanyPage, (_req, res) => {
 app.get('/app/tournees/:id', requireCompanyPage, (_req, res) => {
   sendShell(res, 'app.html');
 });
+app.get('/app/clients/:id', requireCompanyPage, (_req, res) => {
+  sendShell(res, 'app.html');
+});
 
 app.get(['/driver', '/driver/commandes/:id'], requireDriverPage, (_req, res) => {
   sendShell(res, 'driver.html');

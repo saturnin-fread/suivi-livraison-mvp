@@ -2956,7 +2956,7 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
 
 // Construit la liste des notifications actionnables d'une entreprise.
 async function buildNotificationItems(cid) {
-  const [reqs, unassigned, incidents, runs] = await Promise.all([
+  const [reqs, unassigned, incidents, runs, relaunch] = await Promise.all([
     pool.query(
       `SELECT id, customer_name, created_at FROM customer_requests
        WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier'
@@ -2982,12 +2982,39 @@ async function buildNotificationItems(cid) {
        ORDER BY created_at DESC LIMIT 12`,
       [cid]
     ),
+    // Clients « à relancer » : même dérivation d'étape que la liste CRM
+    // (surcharge manuelle prioritaire, sinon stade auto selon l'ancienneté
+    // de la dernière commande). Garder aligné avec l'API /crm/customers.
+    pool.query(
+      `WITH base AS (
+         SELECT c.id, c.display_name, c.pipeline_stage, c.created_at,
+           (SELECT MAX(o.created_at) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS last_order_at,
+           (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS order_count
+         FROM customers c
+         WHERE c.company_id = $1 AND c.status NOT IN ('archived', 'merged', 'anonymized')
+       ), staged AS (
+         SELECT id, display_name, last_order_at,
+           COALESCE(NULLIF(pipeline_stage, ''), CASE
+             WHEN last_order_at IS NULL AND created_at >= NOW() - INTERVAL '30 days' THEN 'nouveau'
+             WHEN last_order_at IS NULL THEN 'inactif'
+             WHEN created_at >= NOW() - INTERVAL '21 days' AND order_count <= 2 THEN 'nouveau'
+             WHEN last_order_at >= NOW() - INTERVAL '30 days' THEN 'actif'
+             WHEN last_order_at >= NOW() - INTERVAL '90 days' THEN 'a_relancer'
+             ELSE 'inactif' END) AS stage
+         FROM base
+       )
+       SELECT id, display_name, last_order_at FROM staged
+       WHERE stage = 'a_relancer'
+       ORDER BY last_order_at ASC NULLS LAST LIMIT 12`,
+      [cid]
+    ),
   ]);
   const items = [];
   for (const r of reqs.rows) items.push({ id: `request-${r.id}`, type: 'requests', title: 'Nouvelle demande à vérifier', summary: r.customer_name || 'Client à préciser', at: r.created_at, href: `/app/demandes/${r.id}` });
   for (const o of unassigned.rows) items.push({ id: `order-${o.id}`, type: 'unassigned', title: 'Commande à affecter', summary: [o.reference, o.customer_name].filter(Boolean).join(' · ') || `Commande n° ${o.id}`, at: o.created_at, href: `/app/commandes/${o.id}` });
   for (const i of incidents.rows) items.push({ id: `incident-${i.id}`, type: 'incidents', title: 'Incident ouvert', summary: i.customer_name ? `Commande de ${i.customer_name}` : `Incident n° ${i.id}`, at: i.created_at, href: `/app/incidents/${i.id}` });
   for (const r of runs.rows) items.push({ id: `run-${r.id}`, type: 'runs', title: 'Tournée à planifier', summary: r.name || `Tournée n° ${r.id}`, at: r.created_at, href: `/app/tournees/${r.id}` });
+  for (const c of relaunch.rows) items.push({ id: `relaunch-${c.id}`, type: 'relaunch', title: 'Client à relancer', summary: c.display_name || `Client n° ${c.id}`, at: c.last_order_at || new Date(0).toISOString(), href: `/app/clients/${c.id}` });
   items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   return items.slice(0, 20);
 }
@@ -3332,6 +3359,24 @@ app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req
     }
     values.push(status);
     sets.push(`status = $${values.length}`);
+  }
+  if ('displayName' in (req.body || {})) {
+    const name = String(req.body.displayName || '').trim();
+    if (name.length < 1 || name.length > 160) return res.status(400).json({ error: 'Le nom doit contenir entre 1 et 160 caractères.' });
+    values.push(name);
+    sets.push(`display_name = $${values.length}`);
+  }
+  if ('sector' in (req.body || {})) {
+    const sector = String(req.body.sector || '').trim();
+    if (sector.length > 120) return res.status(400).json({ error: 'Secteur trop long (120 caractères max).' });
+    values.push(sector || null);
+    sets.push(`sector = $${values.length}`);
+  }
+  if ('serviceNotes' in (req.body || {})) {
+    const notes = String(req.body.serviceNotes || '').trim();
+    if (notes.length > 2000) return res.status(400).json({ error: 'Notes trop longues (2000 caractères max).' });
+    values.push(notes || null);
+    sets.push(`service_notes = $${values.length}`);
   }
   if (!sets.length) return res.status(400).json({ error: 'Aucune modification fournie.' });
   values.push(req.auth.user_id || null);

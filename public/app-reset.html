@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>TRAXO — Mot de passe</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --black: #111111;
+        --red: #e11d2a;
+        --red-dark: #b3141f;
+        --muted: #6a7382;
+        --line: #e2e7ef;
+        --bg: #f4f6fa;
+        font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--black); display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+      .card { width: 100%; max-width: 430px; background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 32px clamp(22px, 4vw, 36px); box-shadow: 0 18px 48px #10203a12; }
+      .logo { display: inline-flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+      .logo .mark { width: 34px; height: 34px; color: var(--red); }
+      .logo .dot { fill: var(--red); }
+      .logo .word { font-weight: 900; letter-spacing: .06em; font-size: 23px; color: var(--black); }
+      h1 { margin: 0 0 4px; font-size: 23px; }
+      .sub { margin: 0 0 18px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+      label { display: block; margin: 14px 0 6px; font-size: 13px; font-weight: 700; }
+      input { width: 100%; min-height: 46px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 11px; font: inherit; background: #fff; }
+      input:focus { outline: 2px solid var(--red); outline-offset: 1px; border-color: transparent; }
+      .pw { position: relative; }
+      .pw input { padding-right: 78px; }
+      .pw button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; height: 36px; padding: 0 8px; border-radius: 8px; cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 700; }
+      .pw button svg { width: 17px; height: 17px; }
+      .hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+      .submit { width: 100%; min-height: 50px; margin-top: 22px; border: 0; border-radius: 12px; background: var(--black); color: #fff; font: inherit; font-weight: 800; letter-spacing: .02em; cursor: pointer; }
+      .submit:hover { background: #000; }
+      .banner { margin-bottom: 16px; padding: 11px 13px; border-radius: 11px; font-size: 13.5px; line-height: 1.45; display: flex; align-items: flex-start; gap: 9px; }
+      .banner svg { flex: 0 0 auto; margin-top: 1px; }
+      .banner.error { background: #fdecec; color: #99101a; border: 1px solid #f6c9cc; }
+      .banner.success { background: #e7f7ee; color: #166534; border: 1px solid #b7e4c7; }
+      .foot { margin-top: 20px; text-align: center; font-size: 13px; }
+      .link { color: var(--red); text-decoration: none; font-weight: 700; }
+      .link:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <span class="logo" aria-label="TRAXO">
+        <svg class="mark" viewBox="0 0 64 64" role="img" aria-hidden="true">
+          <path d="M32 5c-11 0-20 8.7-20 19.6 0 13.8 20 34.4 20 34.4s20-20.6 20-34.4C52 13.7 43 5 32 5Z" fill="currentColor"/>
+          <circle cx="32" cy="24" r="10.5" fill="#fff"/>
+          <circle cx="32" cy="24" r="5.6" class="dot"/>
+          <rect x="1.5" y="41" width="15" height="4.4" rx="2.2" fill="currentColor"/>
+          <rect x="5.5" y="49.5" width="15" height="4.4" rx="2.2" fill="currentColor"/>
+          <path d="M19 42.5l10.5 6.4L19 55.3" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="word">TRAXO</span>
+      </span>
+
+      <div class="banner" id="banner" hidden><span id="bannerIcon"></span><span id="bannerText"></span></div>
+
+      <!-- Demande de lien -->
+      <form id="requestForm" method="post" action="/app/forgot">
+        <h1>Mot de passe oublié ?</h1>
+        <p class="sub">Indiquez l'adresse e-mail de votre compte. Si elle existe, vous recevrez un lien pour choisir un nouveau mot de passe.</p>
+        <label for="email">Adresse e-mail</label>
+        <input id="email" name="email" type="email" inputmode="email" autocomplete="username" required />
+        <button class="submit" type="submit">Envoyer le lien</button>
+        <p class="foot"><a class="link" href="/app/login">Retour à la connexion</a></p>
+      </form>
+
+      <!-- Choix du nouveau mot de passe -->
+      <form id="resetForm" method="post" action="/app/reset" hidden>
+        <h1>Nouveau mot de passe</h1>
+        <p class="sub">Choisissez un nouveau mot de passe pour votre compte TRAXO.</p>
+        <input type="hidden" name="token" id="token" />
+        <label for="password">Nouveau mot de passe</label>
+        <div class="pw">
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+          <button type="button" class="toggle" data-target="password" aria-label="Afficher le mot de passe">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Voir</span>
+          </button>
+        </div>
+        <p class="hint">Au moins 8 caractères.</p>
+        <label for="confirm">Confirmer le mot de passe</label>
+        <input id="confirm" type="password" autocomplete="new-password" minlength="8" required />
+        <button class="submit" type="submit">Enregistrer le mot de passe</button>
+        <p class="foot"><a class="link" href="/app/login">Retour à la connexion</a></p>
+      </form>
+    </main>
+
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var banner = document.getElementById('banner');
+        var bannerText = document.getElementById('bannerText');
+        var bannerIcon = document.getElementById('bannerIcon');
+        var requestForm = document.getElementById('requestForm');
+        var resetForm = document.getElementById('resetForm');
+        var token = params.get('token');
+        var error = params.get('error');
+
+        var iconOk = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+        var iconErr = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>';
+        function showBanner(text, type) {
+          var ok = type === 'success';
+          banner.className = 'banner ' + (ok ? 'success' : 'error');
+          bannerIcon.innerHTML = ok ? iconOk : iconErr;
+          bannerText.textContent = text;
+          banner.hidden = false;
+        }
+
+        var errorMessages = {
+          password: 'Le mot de passe doit contenir entre 8 et 200 caractères.',
+          server: 'Impossible de réinitialiser le mot de passe pour le moment. Réessayez.',
+          invalid: 'Ce lien est invalide ou a expiré. Demandez-en un nouveau.',
+        };
+
+        if (token) {
+          // Mode « choix du nouveau mot de passe »
+          requestForm.hidden = true;
+          resetForm.hidden = false;
+          document.getElementById('token').value = token;
+          if (error && errorMessages[error]) showBanner(errorMessages[error], 'error');
+        } else {
+          // Mode « demande de lien »
+          if (params.get('sent') === '1') {
+            showBanner("Si un compte existe avec cette adresse, un e-mail contenant le lien vient d'être envoyé. Pensez à vérifier vos spams.", 'success');
+          } else if (error && errorMessages[error]) {
+            showBanner(errorMessages[error], 'error');
+          }
+        }
+
+        document.querySelectorAll('.toggle').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var input = document.getElementById(btn.dataset.target);
+            var showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            btn.querySelector('span').textContent = showing ? 'Voir' : 'Cacher';
+          });
+        });
+
+        // Vérifie la correspondance des deux mots de passe avant l'envoi.
+        resetForm.addEventListener('submit', function (event) {
+          var pw = document.getElementById('password').value;
+          var confirm = document.getElementById('confirm').value;
+          if (pw !== confirm) {
+            event.preventDefault();
+            showBanner('Les deux mots de passe ne correspondent pas.', 'error');
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

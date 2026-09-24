@@ -756,6 +756,15 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS password_resets (
+        token_hash TEXT PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id);
+
       CREATE TABLE IF NOT EXISTS drivers (
         id BIGSERIAL PRIMARY KEY,
         company_id BIGINT NOT NULL REFERENCES companies(id),
@@ -1892,6 +1901,100 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
   return res.redirect('/app/login?created=1');
 }));
 
+// --- Mot de passe oublié (OWASP Forgot Password) ---
+// Jeton aléatoire, stocké haché (SHA-256), expirant (1 h), à usage unique.
+// La réponse est toujours identique pour ne pas révéler l'existence d'un compte.
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+const forgotRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({
+      limiter: trackingLimiter('forgot', { capacity: 12, refillTokens: 12, refillIntervalMs: 3_600_000, maxEntries: 10_000 }),
+    }),
+  ],
+});
+
+app.get('/app/forgot', (_req, res) => sendShell(res, 'app-reset.html'));
+app.get('/app/reset', (_req, res) => sendShell(res, 'app-reset.html'));
+
+app.post('/app/forgot', forgotRateLimit, asyncRoute(async (req, res) => {
+  const email = normalizeEmail(req.body.email || req.body.user);
+  // Réponse générique quoi qu'il arrive (anti-énumération).
+  const done = () => res.redirect('/app/forgot?sent=1');
+  if (!pool || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return done();
+  try {
+    const found = await pool.query('SELECT id FROM users WHERE email = $1 AND disabled = FALSE', [email]);
+    const user = found.rows[0];
+    if (user) {
+      const token = randomToken(32);
+      const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+      // On invalide les anciens jetons non utilisés avant d'en émettre un nouveau.
+      await pool.query('DELETE FROM password_resets WHERE user_id = $1 AND used_at IS NULL', [user.id]);
+      await pool.query(
+        'INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
+        [digest(token), user.id, expiresAt]
+      );
+      const base = publicBaseUrl(req);
+      const resetUrl = `${base}/app/reset?token=${encodeURIComponent(token)}`;
+      const html = renderEmailShell({
+        baseUrl: base,
+        heading: 'Réinitialisation de votre mot de passe',
+        introHtml: 'Vous avez demandé à réinitialiser le mot de passe de votre compte TRAXO. Cliquez sur le bouton ci-dessous pour en choisir un nouveau. Ce lien expire dans 1 heure et ne peut être utilisé qu’une seule fois.',
+        bodyHtml: `<p style="font-family:Arial,sans-serif;font-size:12.5px;color:#98a2b3;margin:16px 0 0;word-break:break-all">Le bouton ne fonctionne pas ? Copiez ce lien dans votre navigateur :<br>${escHtmlServer(resetUrl)}</p>`,
+        ctaLabel: 'Réinitialiser mon mot de passe',
+        ctaUrl: resetUrl,
+        footerNote: 'Vous n’êtes pas à l’origine de cette demande ? Ignorez cet e-mail : votre mot de passe reste inchangé.',
+      });
+      const text = `Réinitialisez votre mot de passe TRAXO (lien valable 1 h) :\n${resetUrl}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`;
+      await sendEmail({ to: email, subject: 'TRAXO — Réinitialisation de votre mot de passe', html, text });
+    }
+  } catch (error) {
+    console.error('Forgot password error:', error.message);
+  }
+  return done();
+}));
+
+app.post('/app/reset', forgotRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).send('Base métier non configurée.');
+  const token = String(req.body.token || '');
+  const password = String(req.body.password || '');
+  const back = (err) => res.redirect(`/app/reset?token=${encodeURIComponent(token)}&error=${err}`);
+  if (!token) return res.redirect('/app/forgot?error=invalid');
+  if (password.length < 8 || password.length > 200) return back('password');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const row = await client.query(
+      `SELECT user_id FROM password_resets
+       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW() FOR UPDATE`,
+      [digest(token)]
+    );
+    const reset = row.rows[0];
+    if (!reset) {
+      await client.query('ROLLBACK');
+      return res.redirect('/app/forgot?error=invalid');
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    await client.query(
+      'UPDATE users SET password_salt = $1, password_hash = $2, password_changed_at = NOW() WHERE id = $3',
+      [salt, hashPassword(password, salt), reset.user_id]
+    );
+    await client.query('UPDATE password_resets SET used_at = NOW() WHERE token_hash = $1', [digest(token)]);
+    await client.query('DELETE FROM password_resets WHERE user_id = $1 AND used_at IS NULL', [reset.user_id]);
+    // Invalide toutes les sessions existantes : reconnexion obligatoire.
+    await client.query('DELETE FROM app_sessions WHERE user_id = $1', [reset.user_id]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Reset password error:', error.message);
+    return back('server');
+  } finally {
+    client.release();
+  }
+  return res.redirect('/app/login?reset=1');
+}));
+
 app.get('/admin/login', (_req, res) => sendShell(res, 'platform-login.html'));
 app.post('/admin/login', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Base métier non configurée.');
@@ -2976,21 +3079,59 @@ async function sendEmail({ to, subject, html, text }) {
   }
   return { sent: false, reason: 'email_not_configured' };
 }
+// URL publique de l'app (variable APP_BASE_URL, sinon dérivée de la requête).
+function publicBaseUrl(req) {
+  const fromEnv = String(process.env.APP_BASE_URL || '').trim();
+  const base = fromEnv || (req && req.get ? `${req.protocol}://${req.get('host')}` : '');
+  return base.replace(/\/+$/, '');
+}
+// Gabarit d'e-mail brandé, partagé par tous les envois (table-based, compatible
+// clients mail). En-tête avec le logo TRAXO, corps, bouton d'action, pied.
+function renderEmailShell({ baseUrl = '', heading = '', introHtml = '', bodyHtml = '', ctaLabel, ctaUrl, footerNote = '' }) {
+  const logo = baseUrl
+    ? `<img src="${escHtmlServer(baseUrl)}/brand/traxo-email.png" width="128" alt="TRAXO" style="display:block;border:0;height:auto;line-height:100%;outline:none;text-decoration:none">`
+    : `<span style="font-family:Arial,sans-serif;font-weight:900;font-size:24px;letter-spacing:.06em;color:#111827">TRAXO</span>`;
+  const cta = (ctaLabel && ctaUrl)
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 4px"><tr>
+         <td style="border-radius:12px;background:#111111"><a href="${escHtmlServer(ctaUrl)}" style="display:inline-block;padding:13px 26px;font-family:Arial,sans-serif;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:12px">${escHtmlServer(ctaLabel)}</a></td>
+       </tr></table>`
+    : '';
+  return `<!doctype html><html><body style="margin:0;padding:0;background:#f4f6fa">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fa;padding:28px 12px"><tr><td align="center">
+    <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:560px;max-width:100%;background:#ffffff;border:1px solid #e6eaf0;border-radius:16px;overflow:hidden">
+      <tr><td style="padding:22px 28px;border-bottom:1px solid #eef1f5">${logo}</td></tr>
+      <tr><td style="padding:26px 28px 8px">
+        <h1 style="margin:0 0 10px;font-family:Arial,sans-serif;font-size:20px;line-height:1.3;color:#111827">${escHtmlServer(heading)}</h1>
+        ${introHtml ? `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#475467">${introHtml}</div>` : ''}
+      </td></tr>
+      <tr><td style="padding:6px 28px 26px">${bodyHtml}${cta}</td></tr>
+      <tr><td style="padding:18px 28px;background:#fafbfc;border-top:1px solid #eef1f5">
+        <p style="margin:0;font-family:Arial,sans-serif;font-size:12px;line-height:1.6;color:#98a2b3">${footerNote ? escHtmlServer(footerNote) + '<br>' : ''}TRAXO — Suivi de livraison en temps réel. Cet e-mail provient de votre espace TRAXO.</p>
+      </td></tr>
+    </table>
+  </td></tr></table></body></html>`;
+}
 // Construit le digest e-mail des actions en attente d'une entreprise.
 async function buildCompanyDigest(cid, appBaseUrl = '') {
   const items = await buildNotificationItems(cid);
   if (!items.length) return null;
-  const rows = items.map((it) => `<tr><td style="padding:10px 14px;border-bottom:1px solid #eef1f5">
-    <strong style="color:#111827">${escHtmlServer(it.title)}</strong><br>
-    <span style="color:#667085;font-size:13px">${escHtmlServer(it.summary)}</span>
-    ${appBaseUrl ? `<br><a href="${escHtmlServer(appBaseUrl + it.href)}" style="color:#e11d2a;font-size:12px;text-decoration:none">Ouvrir →</a>` : ''}
-  </td></tr>`).join('');
-  const html = `<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:560px;margin:auto">
-    <h2 style="color:#111827">TRAXO — ${items.length} action(s) en attente</h2>
-    <table style="border-collapse:collapse;width:100%;border:1px solid #eef1f5;border-radius:10px;overflow:hidden">${rows}</table>
-    <p style="color:#98a2b3;font-size:12px;margin-top:16px">Résumé automatique des actions en attente dans votre espace TRAXO.</p></div>`;
+  const baseUrl = String(appBaseUrl || '').replace(/\/+$/, '');
+  const rows = items.map((it) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;border:1px solid #eef1f5;border-radius:12px"><tr><td style="padding:12px 14px">
+    <div style="font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#111827">${escHtmlServer(it.title)}</div>
+    <div style="font-family:Arial,sans-serif;font-size:13px;color:#667085;margin-top:2px">${escHtmlServer(it.summary)}</div>
+    ${baseUrl ? `<a href="${escHtmlServer(baseUrl + it.href)}" style="font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#e11d2a;text-decoration:none">Ouvrir →</a>` : ''}
+  </td></tr></table>`).join('');
+  const label = `${items.length} action${items.length > 1 ? 's' : ''} en attente`;
+  const html = renderEmailShell({
+    baseUrl,
+    heading: `Vous avez ${label}`,
+    introHtml: 'Voici le récapitulatif des actions à traiter dans votre espace TRAXO.',
+    bodyHtml: rows,
+    ctaLabel: baseUrl ? 'Ouvrir TRAXO' : undefined,
+    ctaUrl: baseUrl ? `${baseUrl}/app` : undefined,
+  });
   const text = items.map((it) => `- ${it.title} : ${it.summary}`).join('\n');
-  return { count: items.length, subject: `TRAXO — ${items.length} action(s) en attente`, html, text };
+  return { count: items.length, subject: `TRAXO — ${label}`, html, text };
 }
 
 app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -2999,10 +3140,10 @@ app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res)
 }));
 
 // Digest e-mail à la demande. Reste inactif (sent:false, reason:
-// email_not_configured) tant que RESEND_API_KEY n'est pas défini.
+// email_not_configured) tant qu'aucun fournisseur n'est configuré.
 app.post('/api/app/notifications/digest', requireCompanyApi, asyncRoute(async (req, res) => {
   if (!['owner', 'manager'].includes(req.auth.role)) return res.status(403).json({ error: 'Réservé aux responsables.' });
-  const digest = await buildCompanyDigest(req.auth.company_id, process.env.APP_BASE_URL || '');
+  const digest = await buildCompanyDigest(req.auth.company_id, publicBaseUrl(req));
   if (!digest) return res.json({ sent: false, reason: 'nothing_to_send', count: 0, configured: emailConfigured() });
   const company = await pool.query('SELECT admin_email FROM companies WHERE id = $1', [req.auth.company_id]);
   const to = company.rows[0]?.admin_email || null;

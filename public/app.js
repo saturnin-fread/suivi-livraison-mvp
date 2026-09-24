@@ -4195,6 +4195,7 @@ async function reportStepConfigure(source) {
       <div class="rep-format" role="group" aria-label="Format">
         <button type="button" class="rep-fmt active" data-fmt="csv">CSV</button>
         <button type="button" class="rep-fmt" data-fmt="xlsx">Excel</button>
+        <button type="button" class="rep-fmt" data-fmt="premium">Premium</button>
       </div>
       <div class="rep-fields-wrap">
         <button type="button" class="button secondary" id="repFieldsBtn">Choisir les champs</button>
@@ -4356,7 +4357,11 @@ function reportPreviewTable(key, rows) {
 
 // Étape 3 — export prêt.
 function reportStepResult(source, info) {
-  const fileName = `${source.key}-${info.from}_${info.to}.${info.format}`;
+  const ext = info.format === 'csv' ? 'csv' : 'xlsx';
+  const suffix = info.format === 'premium' ? '-premium' : '';
+  const fileName = `${source.key}-${info.from}_${info.to}${suffix}.${ext}`;
+  const formatLabel = info.format === 'csv' ? 'CSV' : (info.format === 'premium' ? 'Premium (Excel)' : 'Excel');
+  const fileTag = info.format === 'csv' ? 'CSV' : 'XLS';
   const sizeKo = Math.max(1, Math.round(info.bytes / 1024));
   const url = URL.createObjectURL(info.blob);
   const filterCount = info.filterCount || 0;
@@ -4370,7 +4375,7 @@ function reportStepResult(source, info) {
           <div><dt>Source</dt><dd>${escapeHtml(source.label)}</dd></div>
           <div><dt>Période</dt><dd>${escapeHtml(info.from)} → ${escapeHtml(info.to)}</dd></div>
           <div><dt>Filtres</dt><dd>${filterCount ? `${filterCount} filtre${filterCount > 1 ? 's' : ''} appliqué${filterCount > 1 ? 's' : ''}` : 'Aucun'}</dd></div>
-          <div><dt>Format</dt><dd>${info.format === 'csv' ? 'CSV' : 'Excel'}</dd></div>
+          <div><dt>Format</dt><dd>${formatLabel}</dd></div>
           <div><dt>Colonnes</dt><dd>${formatInteger(info.colCount)}</dd></div>
           <div><dt>Lignes</dt><dd>${formatInteger(info.rowCount)}</dd></div>
         </dl>
@@ -4378,7 +4383,7 @@ function reportStepResult(source, info) {
       <section class="rep-card">
         <div class="rep-card-head"><span class="rep-card-ic green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><h3>Votre fichier est prêt</h3></div>
         <p class="rep-sub">Téléchargez votre fichier pour l’enregistrer sur votre appareil.</p>
-        <div class="rep-file"><span class="rep-file-ic">${info.format === 'csv' ? 'CSV' : 'XLS'}</span><div><strong>${escapeHtml(fileName)}</strong><small>${formatInteger(info.rowCount)} lignes · ${sizeKo} Ko</small></div></div>
+        <div class="rep-file"><span class="rep-file-ic">${fileTag}</span><div><strong>${escapeHtml(fileName)}</strong><small>${formatInteger(info.rowCount)} lignes · ${sizeKo} Ko</small></div></div>
         <a class="button primary rep-dl" href="${url}" download="${escapeHtml(fileName)}">Télécharger le fichier</a>
         <button type="button" class="button secondary rep-again" id="repAgain">Créer un autre export</button>
         <p class="rep-note">Le téléchargement reste disponible tant que vous gardez cette page ouverte.</p>

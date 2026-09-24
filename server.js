@@ -44,6 +44,12 @@ const {
   buildRoutesExportQuery,
   ROUTES_NUMERIC_COLUMNS,
 } = require('./lib/crm-dataset-exports');
+const { buildPremiumWorkbook } = require('./lib/crm-premium-xlsx');
+const { DATASET_COLUMN_DEFS: EXPORT_COLUMN_DEFS } = require('./lib/crm-export-contract');
+const EXPORT_DATASET_TITLES = { operations: 'Commandes', customers: 'Clients', incidents: 'Incidents', routes: 'Tournées' };
+// Logo chargé une fois pour la couverture des exports premium (repli sans logo).
+let premiumLogoBuffer = null;
+try { premiumLogoBuffer = fs.readFileSync(path.join(__dirname, 'public', 'brand', 'traxo-email.png')); } catch (_) { premiumLogoBuffer = null; }
 // Jeux de données câblés pour l'export (requête + colonnes numériques).
 const EXPORT_QUERY_BUILDERS = {
   operations: { build: buildOperationsExportQuery, numeric: OPERATIONS_NUMERIC_COLUMNS },
@@ -3654,12 +3660,12 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
   }
 
   const normalizedRows = rows.map((row) => normalizeExportRow(row, wiredDataset.numeric));
-  const format = body.format === 'csv' ? 'csv' : 'xlsx';
+  const format = ['csv', 'premium'].includes(body.format) ? body.format : 'xlsx';
   // En-têtes en français (source unique : DATASET_COLUMN_DEFS du contrat).
   const headerLabels = contract.columns.map((key) => exportColumnLabel(contract.dataset, key));
 
-  // Fabrique l'artefact selon le format demandé (XLSX via le générateur audité,
-  // ou CSV construit à partir des mêmes lignes/colonnes du contrat).
+  // Fabrique l'artefact selon le format demandé (XLSX audité, CSV, ou
+  // « premium » : classeur brandé avec graphiques via ExcelJS).
   let artifact;
   try {
     if (format === 'csv') {
@@ -3671,6 +3677,36 @@ app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) 
         ext: 'csv',
         totalRows: normalizedRows.length,
         worksheetCount: 1,
+        artifactBytes: buffer.length,
+        artifactSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+      };
+    } else if (format === 'premium') {
+      const defs = EXPORT_COLUMN_DEFS[contract.dataset] || {};
+      const columns = contract.columns.map((key) => ({
+        key,
+        label: exportColumnLabel(contract.dataset, key),
+        type: (defs[key] && defs[key].type) || 'texte',
+      }));
+      const companyRow = await pool.query('SELECT name FROM companies WHERE id = $1', [auth.company_id]);
+      const buffer = await buildPremiumWorkbook({
+        datasetKey: contract.dataset,
+        rows: normalizedRows,
+        columns,
+        meta: {
+          companyName: companyRow.rows[0]?.name || '',
+          title: `Rapport ${EXPORT_DATASET_TITLES[contract.dataset] || contract.dataset}`,
+          periodFrom: contract.period.from,
+          periodTo: contract.period.to,
+          generatedAt: new Date().toISOString(),
+        },
+        options: premiumLogoBuffer ? { logoBuffer: premiumLogoBuffer } : {},
+      });
+      artifact = {
+        buffer,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ext: 'xlsx',
+        totalRows: normalizedRows.length,
+        worksheetCount: 3,
         artifactBytes: buffer.length,
         artifactSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
       };

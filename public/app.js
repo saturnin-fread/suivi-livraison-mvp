@@ -3678,7 +3678,8 @@ async function openOrderDrawer(orderId) {
 }
 
 // Panneau détail coulissant d'une demande client (aperçu rapide, comme la commande).
-async function openRequestDrawer(requestId) {
+// opts.onChange : rappelé après un changement de statut (refus / archivage) pour rafraîchir la liste.
+async function openRequestDrawer(requestId, opts = {}) {
   const existing = document.querySelector('.crm-drawer-wrap');
   if (existing) existing.remove();
   const wrap = document.createElement('div');
@@ -3701,9 +3702,19 @@ async function openRequestDrawer(requestId) {
       doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
       truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17V5H2v12"/><path d="M14 9h4l4 4v4h-6"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
     };
+    const canAct = !r.order_id && r.status !== 'Archivée' && r.status !== 'Refusée';
     const footer = r.order_id
       ? `<a class="button secondary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a><a class="button primary" href="/app/commandes/${escapeHtml(r.order_id)}">Voir la commande</a>`
-      : `<a class="button secondary" href="/app/demandes/${escapeHtml(r.id)}">Autres actions</a><a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Valider et affecter</a>`;
+      : canAct
+        ? `<div class="req-morewrap">
+            <button class="button secondary" type="button" id="reqMore" aria-haspopup="true" aria-expanded="false">Autres actions</button>
+            <div class="req-morepop" id="reqMorePop" hidden role="menu">
+              <button type="button" class="req-morepop-item danger" data-status="Refusée" role="menuitem">Refuser</button>
+              <button type="button" class="req-morepop-item" data-status="Archivée" role="menuitem">Archiver</button>
+            </div>
+          </div>
+          <a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Valider et affecter</a>`
+        : `<a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a>`;
     wrap.querySelector('.crm-drawer').innerHTML = `
       <div class="crm-drawer-head">
         <div><div class="crm-drawer-title">DEM-${escapeHtml(r.id)} ${crmChip(r.status)}</div>
@@ -3737,6 +3748,46 @@ async function openRequestDrawer(requestId) {
       </div>
       <div class="crm-drawer-foot">${footer}</div>`;
     wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+    // « Autres actions » : popover Refuser / Archiver.
+    const moreBtn = wrap.querySelector('#reqMore');
+    if (moreBtn) {
+      const pop = wrap.querySelector('#reqMorePop');
+      moreBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const willOpen = pop.hidden;
+        pop.hidden = !willOpen;
+        moreBtn.setAttribute('aria-expanded', String(willOpen));
+      });
+      // Referme le popover en cliquant ailleurs dans le tiroir (nettoyé avec le tiroir).
+      wrap.addEventListener('click', (event) => {
+        if (!pop.hidden && !event.target.closest('.req-morewrap')) {
+          pop.hidden = true;
+          moreBtn.setAttribute('aria-expanded', 'false');
+        }
+      });
+      pop.querySelectorAll('[data-status]').forEach((btn) => {
+        btn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          const status = btn.dataset.status;
+          const message = status === 'Refusée'
+            ? `Refuser la demande DEM-${r.id} ? Elle sera marquée comme refusée et quittera la file active.`
+            : `Archiver la demande DEM-${r.id} ? Elle quittera la file active (réversible via l’onglet Archives).`;
+          if (!confirm(message)) return;
+          pop.querySelectorAll('[data-status]').forEach((b) => { b.disabled = true; });
+          try {
+            await api(`/api/app/requests/${encodeURIComponent(r.id)}/status`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status }),
+            });
+            close();
+            if (typeof opts.onChange === 'function') opts.onChange();
+          } catch (error) {
+            pop.querySelectorAll('[data-status]').forEach((b) => { b.disabled = false; });
+            alert(error.message);
+          }
+        });
+      });
+    }
   } catch (error) {
     wrap.querySelector('.crm-drawer').innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
     wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
@@ -3905,7 +3956,7 @@ async function renderOperationsWorkspace(initialSegment) {
     },
     demandes: {
       title: 'Demandes', newLabel: 'Nouvelle demande', newHref: '/app/operations?vue=creer', placeholder: 'Rechercher une demande, un client…', countKey: 'active_requests',
-      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, drawerFn: openRequestDrawer, href: (r) => `/app/demandes/${r.id}`,
+      endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, drawerFn: (id) => openRequestDrawer(id, { onChange: loadSegment }), href: (r) => `/app/demandes/${r.id}`,
       rowArchive: { title: 'Archiver', confirm: (id) => `Archiver la demande DEM-${id} ? Elle quittera la file active (réversible via l'onglet Archives).`, endpoint: (id) => `/api/app/requests/${encodeURIComponent(id)}/status`, body: { status: 'Archivée' } },
       statusValues: [], filterTest: (r, v) => r.status === v,
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['position', 'Position client']],

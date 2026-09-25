@@ -2216,6 +2216,7 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
   const displayName = String(req.body.displayName || '').trim();
   const role = String(req.body.role || '').trim();
   const driverId = req.body.driverId ? String(req.body.driverId) : null;
+  const notifyByEmail = req.body.notify === 'email';
   if (!/^\S+@\S+\.\S+$/.test(email) || displayName.length < 2 || displayName.length > 100 || !invitationRoles.includes(role)) {
     return res.status(400).json({ error: 'Nom, adresse e-mail ou rôle invalide.' });
   }
@@ -2265,7 +2266,35 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
       [req.auth.company_id, req.auth.user_id, invitation.rows[0].id, role, email]
     );
     await client.query('COMMIT');
-    return res.status(201).json({ id: invitation.rows[0].id, path: `/invitation/${token}`, expiresAt: invitation.rows[0].expires_at });
+    const baseUrl = publicBaseUrl(req);
+    const inviteUrl = `${baseUrl}/invitation/${token}`;
+    let emailed = false;
+    if (notifyByEmail) {
+      try {
+        const companyRow = await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id]);
+        const companyName = companyRow.rows[0]?.name || 'votre équipe';
+        const roleLabelsServer = { manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
+        const html = renderEmailShell({
+          baseUrl,
+          heading: `Vous êtes invité·e à rejoindre ${companyName} sur TRAXO`,
+          introHtml: `Bonjour ${escHtmlServer(displayName)}, vous avez été invité·e comme <strong>${escHtmlServer(roleLabelsServer[role] || role)}</strong>.`,
+          bodyHtml: '<p style="margin:0;font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#475467">Cliquez sur le bouton ci-dessous pour créer votre accès. Le lien est valable 48 heures et à usage unique.</p>',
+          ctaLabel: 'Créer mon accès',
+          ctaUrl: inviteUrl,
+          footerNote: 'Si vous n’attendiez pas cette invitation, ignorez cet e-mail.',
+        });
+        const result = await sendEmail({
+          to: email,
+          subject: `Invitation à rejoindre ${companyName} sur TRAXO`,
+          html,
+          text: `Bonjour ${displayName}, créez votre accès TRAXO : ${inviteUrl} (valable 48 h).`,
+        });
+        emailed = Boolean(result && result.sent);
+      } catch (mailError) {
+        console.error('Invite email failed:', mailError.message);
+      }
+    }
+    return res.status(201).json({ id: invitation.rows[0].id, path: `/invitation/${token}`, url: inviteUrl, expiresAt: invitation.rows[0].expires_at, emailed });
   } catch (error) {
     await client.query('ROLLBACK');
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });

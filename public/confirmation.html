@@ -2,97 +2,243 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Demande reçue — Livraison</title>
-    <link rel="stylesheet" href="/app.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Votre demande de livraison</title>
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
-    <style>
-      body{background:#f3f6fa}.public-page{max-width:720px;margin:0 auto;padding:24px 16px 60px}.success-mark{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;background:#e8f6ee;color:#157347;font-size:28px;font-weight:800}.summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}.summary div{padding:13px;border:1px solid var(--line);border-radius:9px}.summary span{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}#map{height:260px;border-radius:11px;margin-top:16px}.edit-form{margin-top:22px;border-top:1px solid var(--line);padding-top:22px}@media(max-width:600px){.summary,.form-grid{grid-template-columns:1fr}}
-    </style>
+    <link rel="stylesheet" href="/client.css" />
   </head>
-  <body><main class="public-page"><section class="card">
-    <div class="success-mark">✓</div>
-    <h1 style="margin-top:16px">Merci, votre demande a été reçue</h1>
-    <p class="subtitle" id="intro">L’entreprise va vérifier vos informations avant de confirmer la livraison.</p>
-    <div id="content">Chargement…</div>
-  </section></main>
-  <script src="/vendor/leaflet/leaflet.js"></script>
-  <script>
-    const parts = location.pathname.split('/').filter(Boolean);
-    const token = parts[1];
-    const editToken = new URLSearchParams(location.search).get('edit') || '';
-    const content = document.getElementById('content');
-    let data; let map; let marker; let locationData;
-    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  <body>
+    <div class="cl-wrap">
+      <header class="cl-head" id="head"></header>
+      <main class="cl-main">
+        <div class="cl-grid" id="page">
+          <aside class="cl-aside"><div class="cl-skeleton" style="width:40%"></div><div class="cl-skeleton" style="height:48px;width:90%"></div><div class="cl-skeleton" style="width:70%"></div></aside>
+          <div><div class="cl-skeleton"></div><div class="cl-skeleton"></div><div class="cl-skeleton"></div></div>
+        </div>
+      </main>
+    </div>
+    <script src="/vendor/leaflet/leaflet.js"></script>
+    <script src="/client.js"></script>
+    <script>
+      (() => {
+        const C = window.TraxoClient;
+        const { esc, icon } = C;
+        const token = C.requestTokenFromPath();
+        const params = new URLSearchParams(location.search);
+        const editToken = params.get('edit') || '';
+        const pageEl = document.getElementById('page');
+        const REFRESH_MS = 20000;
+        const FINAL = ['delivered', 'refused', 'closed'];
+        const EN_ROUTE = ['En tournée', 'En livraison', 'Arrivée'];
+        const ORDER_LABELS = { 'Confirmée': 'Livreur affecté', 'En préparation': 'En préparation', 'Récupérée': 'Colis récupéré', 'En tournée': 'En tournée', 'En livraison': 'En livraison', 'Arrivée': 'Arrivé', 'Livrée': 'Livrée' };
+        let data = null;
+        let signature = '';
+        let editing = false;
+        let flash = params.get('photos') === 'partiel'
+          ? { text: 'Votre demande est envoyée, mais certaines photos n’ont pas pu l’être. Vous pouvez les ajouter en modifiant vos informations.', kind: 'warn' }
+          : null;
 
-    async function load() {
-      const response = await fetch(`/api/public/requests/${encodeURIComponent(token)}?edit=${encodeURIComponent(editToken)}`);
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Impossible de charger la demande.');
-      data = payload; locationData = data.location_lat == null ? null : { latitude: data.location_lat, longitude: data.location_lng, accuracy: data.location_accuracy };
-      renderSummary();
-    }
+        const photoUrl = (id) => `/api/public/requests/${encodeURIComponent(token)}/photos/${encodeURIComponent(id)}`;
+        const company = () => data.companyName || 'L’entreprise';
+        const flashHtml = () => (flash ? `<p class="cl-notice${flash.kind ? ` ${flash.kind}` : ''}" role="status">${esc(flash.text)}</p>` : '');
+        const gpsLabel = () => (data.location_lat != null ? 'Partagée' : 'Non partagée');
+        const row = (label, value) => `<div class="cl-info-row"><dt>${esc(label)}</dt><dd>${value}</dd></div>`;
+        const photosCell = () => (data.photoIds.length
+          ? `<div class="cl-info-thumbs">${data.photoIds.map((id, i) => `<a href="${photoUrl(id)}" target="_blank" rel="noopener"><img src="${photoUrl(id)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</div>`
+          : 'Aucune photo');
 
-    function renderSummary(message) {
-      const locked = !data.canEdit;
-      if (data.status === 'Confirmée') document.getElementById('intro').textContent = 'Votre demande a été confirmée par l’entreprise. Les modifications sont maintenant fermées.';
-      content.innerHTML = `${message ? `<div class="notice success">${esc(message)}</div>` : ''}<div class="summary">
-        <div><span>Nom</span><strong>${esc(data.customer_name || '—')}</strong></div>
-        <div><span>Téléphone</span><strong>${esc(data.customer_phone || '—')}</strong></div>
-        <div><span>Zone ou quartier</span><strong>${esc(data.neighborhood || '—')}</strong></div>
-        <div><span>Créneau souhaité</span><strong>${esc(data.requested_time || '—')}</strong></div>
-        <div><span>Repère</span><strong>${esc(data.landmark || '—')}</strong></div>
-        <div><span>Statut</span><strong>${esc(data.status)}</strong></div>
-      </div>${data.notes ? `<div class="notice"><strong>Instructions :</strong> ${esc(data.notes)}</div>` : ''}
-      ${locked ? '<p class="subtitle">Pour corriger une information, contactez maintenant l’entreprise.</p>' : '<div class="actions" style="margin-top:20px"><button class="secondary" id="editButton">Modifier mes informations</button></div>'}`;
-      if (!locked) document.getElementById('editButton').addEventListener('click', renderEditForm);
-    }
+        function step(state, title, text) {
+          return `<li class="cl-step ${state}"><span class="cl-step-ic">${state === 'done' ? icon('check') : ''}</span><div class="cl-step-body"><strong>${esc(title)}</strong>${text ? `<span>${esc(text)}</span>` : ''}</div><span></span></li>`;
+        }
+        function hstep(state, label) {
+          return `<li class="cl-hstep ${state}"><span class="cl-hstep-ic">${state === 'done' ? icon('check') : ''}</span><span class="cl-hstep-label">${esc(label)}</span></li>`;
+        }
 
-    function renderEditForm() {
-      content.innerHTML = `<form id="editForm" class="edit-form"><h2>Modifier mes informations</h2><div class="form-grid">
-        <div class="field"><label>Nom et prénom</label><input name="customerName" required value="${esc(data.customer_name || '')}" /></div>
-        <div class="field"><label>Numéro de téléphone</label><input name="customerPhone" required value="${esc(data.customer_phone || '')}" /></div>
-        <div class="field"><label>Zone ou quartier</label><input name="neighborhood" required value="${esc(data.neighborhood || '')}" /></div>
-        <div class="field"><label>Créneau souhaité</label><input name="requestedTime" value="${esc(data.requested_time || '')}" /></div>
-        <div class="field full"><label>Repère</label><input name="landmark" value="${esc(data.landmark || '')}" /></div>
-        <div class="field full"><label>Instructions complémentaires</label><textarea name="notes">${esc(data.notes || '')}</textarea></div>
-      </div><div class="actions" style="margin-top:18px"><button type="button" class="secondary" id="locate">Actualiser ma position</button><button class="primary">Enregistrer les modifications</button><button type="button" class="secondary" id="cancel">Annuler</button></div><div id="map" ${locationData ? '' : 'hidden'}></div><div id="message"></div></form>`;
-      document.getElementById('cancel').addEventListener('click', () => renderSummary());
-      document.getElementById('locate').addEventListener('click', locate);
-      document.getElementById('editForm').addEventListener('submit', save);
-      if (locationData) showMap();
-    }
+        // Demande reçue, encore modifiable (maquette « Votre demande est reçue »).
+        function receivedHtml() {
+          const needsInfo = data.status === 'Informations à compléter';
+          const aside = `<aside class="cl-aside">
+              <p class="cl-eyebrow">Demande #${esc(data.id)}</p>
+              <h1 class="cl-title">Votre demande est reçue.</h1>
+              <p class="cl-lead">${esc(company())} vérifie vos informations.${data.canEdit ? '<br />Vous pouvez encore les modifier.' : ''}</p>
+              <div class="cl-state"><span class="cl-dot" aria-hidden="true"></span>${needsInfo ? 'Précisions demandées' : 'En attente de validation'}</div>
+              <hr class="cl-rule" />
+              <ol class="cl-steps">
+                ${step('done', 'Informations reçues', 'Votre demande a été envoyée.')}
+                ${step('current', `Validation de ${company()}`, needsInfo ? 'Des précisions vous sont demandées.' : 'Nous vérifions vos informations.')}
+                ${step('upcoming', 'Livreur affecté', 'Vous serez informé une fois qu’un livreur sera affecté.')}
+              </ol>
+            </aside>`;
+          if (editing) return aside + `<div>${flashHtml()}<div class="cl-top"><h2>Modifier mes informations</h2></div><form id="editForm" novalidate>${C.requestFieldsHtml(data)}<div class="cl-sec"><div class="cl-actions"><button class="cl-btn" id="saveBtn" type="submit">Enregistrer les modifications</button><button class="cl-btn ghost" id="cancelBtn" type="button">Annuler</button></div><p class="cl-hint">Les photos ajoutées ou retirées sont enregistrées immédiatement.</p></div></form></div>`;
+          return aside + `<div>
+              ${flashHtml()}
+              <div class="cl-top"><h2>Vos informations</h2>${data.canEdit ? '<button class="cl-btn outline sm" id="editBtn" type="button">Modifier mes informations</button>' : ''}</div>
+              <dl class="cl-info" style="margin:0">
+                ${row('Destinataire', esc(data.customer_name || '—'))}
+                ${row('Téléphone', esc(data.customer_phone || '—'))}
+                ${row('Lieu', esc(data.neighborhood || '—'))}
+                ${row('Repère', esc(data.landmark || '—'))}
+                ${row('Créneau souhaité', esc(data.requested_time || '—'))}
+                ${row('Consigne', esc(data.notes || '—'))}
+                ${row('Position GPS', gpsLabel())}
+                ${row('Photos', photosCell())}
+              </dl>
+              <p class="cl-hint" style="margin-top:14px">${data.canEdit ? `Modifiables jusqu’à la validation par ${esc(company())}.` : 'Pour modifier ces informations, ouvrez le lien reçu juste après l’envoi du formulaire, ou contactez directement l’entreprise.'}</p>
+              <div style="margin-top:44px"><button class="cl-btn block big" type="button" disabled style="justify-content:center">Voir mon livreur</button><p class="cl-hint">Disponible après validation et affectation d’un livreur.</p></div>
+              <hr class="cl-sep" /><p class="cl-small">Cette page se met à jour automatiquement.</p>
+            </div>`;
+        }
 
-    function showMap() {
-      const mapElement = document.getElementById('map'); mapElement.hidden = false;
-      if (!map) { map = L.map('map').setView([locationData.latitude, locationData.longitude], 16); L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); }
-      else { map.invalidateSize(); map.setView([locationData.latitude, locationData.longitude], 16); }
-      if (!marker) { marker = L.marker([locationData.latitude, locationData.longitude], { draggable: true }).addTo(map); marker.on('dragend', () => { const point = marker.getLatLng(); locationData = { latitude: point.lat, longitude: point.lng, accuracy: null }; document.getElementById('message').innerHTML = '<div class="notice">Position ajustée sur la carte.</div>'; }); }
-      else marker.setLatLng([locationData.latitude, locationData.longitude]);
-      setTimeout(() => map.invalidateSize(), 50);
-    }
+        // Validée (avec ou sans livreur), puis livrée : informations verrouillées.
+        function lockedHtml() {
+          const order = data.order;
+          const driver = order && order.driver;
+          const delivered = data.stage === 'delivered';
+          const enRoute = order && EN_ROUTE.includes(order.status);
+          const title = delivered ? 'Votre livraison est terminée.' : enRoute ? 'Votre livraison est en cours.' : driver ? 'Votre livraison est en préparation.' : 'Votre commande est validée.';
+          const state = delivered ? 'Livrée' : order ? (ORDER_LABELS[order.status] || order.status) : 'Validée — livreur bientôt affecté';
+          const steps = delivered ? ['done', 'done', 'done'] : driver ? ['done', 'current', 'upcoming'] : ['done', 'upcoming', 'upcoming'];
+          const tracking = order && order.trackingPath;
+          const cta = tracking
+            ? `<a class="cl-btn block big" id="trackBtn" href="${esc(tracking)}">${delivered ? 'Voir le récapitulatif' : 'Voir mon livreur'} ${icon('arrowRight')}</a><p class="cl-hint">Ouvrir la carte et les étapes de livraison.</p>`
+            : `<button class="cl-btn block big" type="button" disabled style="justify-content:center">Voir mon livreur</button><p class="cl-hint">${driver ? 'Le suivi sera disponible dans un instant.' : 'Disponible dès qu’un livreur sera affecté.'}</p>`;
+          const vehicle = driver ? [driver.vehicleType, ORDER_LABELS[order.status] || order.status].filter(Boolean).join(' · ') : '';
+          return `<aside class="cl-aside">
+              <p class="cl-eyebrow">Livraison #${esc(data.id)}</p>
+              <h1 class="cl-title">${esc(title)}</h1>
+              <div class="cl-state"><span class="cl-dot green${enRoute ? ' live' : ''}" aria-hidden="true"></span>${esc(state)}</div>
+              <p class="cl-lead" style="color:var(--ink-2)">${esc(company())} a validé votre commande.</p>
+              <p class="cl-lead" style="margin-top:14px;font-size:17px">Vos informations sont maintenant verrouillées.</p>
+              <hr class="cl-rule" />
+              <ol class="cl-hsteps" aria-label="Étapes de la livraison">
+                ${hstep(steps[0], 'Commande validée')}${hstep(steps[1], 'En livraison')}${hstep(steps[2], 'Livrée')}
+              </ol>
+            </aside>
+            <div>
+              ${flashHtml()}
+              <section class="cl-sec">
+                <div class="cl-sec-head"><span class="cl-sec-num">01</span><h2 class="cl-sec-title">Votre livreur</h2></div>
+                ${driver
+                  ? `<div class="cl-driver"><span class="cl-avatar" aria-hidden="true">${esc(C.initials(driver.name))}</span><div><strong class="cl-driver-name">${esc(driver.name)}</strong><span class="cl-driver-sub">${esc(vehicle)}</span></div></div>`
+                  : `<p class="cl-sec-sub" style="margin-bottom:26px">Un livreur va être affecté à votre commande. Cette page se mettra à jour.</p>`}
+                ${cta}
+              </section>
+              <section class="cl-sec" style="margin-top:44px">
+                <div class="cl-sec-head"><span class="cl-sec-num">02</span><h2 class="cl-sec-title">Informations de livraison</h2></div>
+                <p class="cl-sec-sub">${icon('lock')} Lecture seule.</p>
+                <dl class="cl-info compact" style="margin:0 0 0 40px">
+                  ${row('Destinataire', esc(data.customer_name || '—'))}
+                  ${row('Téléphone', esc(data.customer_phone || '—'))}
+                  ${row('Lieu de livraison', esc(data.neighborhood || '—'))}
+                  ${row('Repère', esc(data.landmark || '—'))}
+                  ${row('Créneau souhaité', esc(data.requested_time || '—'))}
+                  ${data.notes ? row('Consigne', esc(data.notes)) : ''}
+                  ${row('Position GPS', gpsLabel())}
+                  ${data.photoIds.length ? row('Photos', photosCell()) : ''}
+                </dl>
+              </section>
+              ${delivered ? '' : '<hr class="cl-sep" /><p class="cl-small">Cette page se met à jour automatiquement.</p>'}
+            </div>`;
+        }
 
-    function locate() {
-      const message = document.getElementById('message');
-      if (!navigator.geolocation) { message.innerHTML = '<div class="notice error">La localisation n’est pas disponible.</div>'; return; }
-      message.innerHTML = '<div class="notice">Recherche de votre position…</div>';
-      navigator.geolocation.getCurrentPosition((position) => {
-        locationData = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy };
-        showMap(); message.innerHTML = `<div class="notice success">Position obtenue, précision approximative ${Math.round(position.coords.accuracy)} m.</div>`;
-      }, () => { message.innerHTML = '<div class="notice error">Position non obtenue. Vérifiez l’autorisation de localisation.</div>'; }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
-    }
+        function simpleHtml(title, text, eyebrow) {
+          return `<aside class="cl-aside"><p class="cl-eyebrow">${esc(eyebrow)}</p><h1 class="cl-title">${esc(title)}</h1><p class="cl-lead">${text}</p></aside><div></div>`;
+        }
 
-    async function save(event) {
-      event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
-      const payload = Object.fromEntries(new FormData(event.currentTarget));
-      Object.assign(payload, { editToken, version: data.version });
-      if (locationData) Object.assign(payload, { locationLat: locationData.latitude, locationLng: locationData.longitude, locationAccuracy: locationData.accuracy });
-      const response = await fetch(`/api/public/requests/${encodeURIComponent(token)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const result = await response.json();
-      if (!response.ok) { document.getElementById('message').innerHTML = `<div class="notice error">${esc(result.error || 'Erreur')}</div>`; button.disabled = false; return; }
-      data.version = result.version; Object.assign(data, { customer_name: payload.customerName, customer_phone: payload.customerPhone, neighborhood: payload.neighborhood, requested_time: payload.requestedTime, landmark: payload.landmark, notes: payload.notes });
-      renderSummary(result.message);
-    }
-    load().catch((error) => { content.innerHTML = `<div class="notice error">${esc(error.message)}</div>`; });
-  </script></body>
+        function render() {
+          C.renderHeader(document.getElementById('head'), data.companyName, 'Livraison');
+          document.title = `${data.stage === 'received' ? 'Demande' : 'Livraison'} #${data.id} — ${company()}`;
+          if (data.stage === 'received') pageEl.innerHTML = receivedHtml();
+          else if (['validated', 'assigned', 'delivered'].includes(data.stage)) pageEl.innerHTML = lockedHtml();
+          else if (data.stage === 'refused') pageEl.innerHTML = simpleHtml('Votre demande n’a pas été retenue.', `Pour plus d’informations, contactez directement ${esc(company())}.`, `Demande #${data.id}`);
+          else if (data.stage === 'closed') pageEl.innerHTML = simpleHtml('Cette demande est clôturée.', `Pour toute question, contactez directement ${esc(company())}.`, `Demande #${data.id}`);
+          else pageEl.innerHTML = simpleHtml('Votre demande n’est pas encore envoyée.', `<a class="cl-link" href="/demande/${encodeURIComponent(token)}">Compléter le formulaire ${icon('arrowRight')}</a>`, 'Demande');
+          wire();
+        }
+
+        function wire() {
+          const editBtn = document.getElementById('editBtn');
+          if (editBtn) editBtn.addEventListener('click', () => { editing = true; flash = null; render(); document.getElementById('f-name').focus(); });
+          const trackBtn = document.getElementById('trackBtn');
+          // « Ma livraison » sur la carte ramène ici (même onglet, sans exposer ce lien dans l'URL du suivi).
+          if (trackBtn) trackBtn.addEventListener('click', () => {
+            try { sessionStorage.setItem(`traxo.back:${new URL(trackBtn.href).pathname}`, location.pathname); } catch (_) { /* navigation privée */ }
+          });
+          const form = document.getElementById('editForm');
+          if (!form) return;
+          const gps = C.createGpsField(document.getElementById('gpsField'), {
+            initial: data.location_lat != null ? { latitude: data.location_lat, longitude: data.location_lng, accuracy: data.location_accuracy } : null,
+          });
+          C.createPhotoPicker(document.getElementById('photoField'), {
+            max: data.photoMax || 3,
+            items: data.photoIds.map((id) => ({ id, url: photoUrl(id) })),
+            onAdd: async (item) => { item.id = await C.uploadPhoto(token, editToken, item.blob); data.photoIds.push(item.id); },
+            onRemove: async (item) => { if (item.id) { await C.deletePhoto(token, editToken, item.id); data.photoIds = data.photoIds.filter((id) => id !== item.id); } },
+            onError: (text) => { flash = { text, kind: 'err' }; showFlash(); },
+          });
+          document.getElementById('cancelBtn').addEventListener('click', () => { editing = false; flash = null; render(); });
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const missing = C.firstMissing(form);
+            if (missing) { flash = { text: 'Merci de remplir les champs obligatoires.', kind: 'err' }; showFlash(); missing.focus(); return; }
+            const position = gps.get();
+            if (!position) { flash = { text: 'Votre position GPS est requise.', kind: 'err' }; showFlash(); gps.focus(); return; }
+            const button = document.getElementById('saveBtn');
+            button.disabled = true;
+            button.textContent = 'Enregistrement…';
+            const fields = C.readFields(form);
+            const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}`, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...fields, editToken, version: data.version, locationLat: position.latitude, locationLng: position.longitude, locationAccuracy: position.accuracy }),
+            }).catch(() => ({ ok: false, data: { error: 'Connexion impossible. Réessayez.' } }));
+            if (!result.ok) {
+              button.disabled = false;
+              button.textContent = 'Enregistrer les modifications';
+              flash = { text: result.data.error || 'Enregistrement impossible.', kind: 'err' };
+              showFlash();
+              if (result.status === 409) { editing = false; await load(true); }
+              return;
+            }
+            editing = false;
+            const saved = { text: result.data.message || 'Vos informations ont été mises à jour.' };
+            flash = saved;
+            await load(true);
+            setTimeout(() => { if (flash === saved && !editing) { flash = null; render(); } }, 6000);
+          });
+        }
+
+        function showFlash() {
+          const column = pageEl.children[1];
+          if (!column) return;
+          const existing = column.querySelector(':scope > .cl-notice');
+          if (existing) existing.remove();
+          column.insertAdjacentHTML('afterbegin', flashHtml());
+          column.firstElementChild.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+
+        async function load(force) {
+          const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}?edit=${encodeURIComponent(editToken)}`)
+            .catch(() => ({ ok: false, data: {} }));
+          if (!result.ok) {
+            if (!data) pageEl.innerHTML = `<aside class="cl-aside"><h1 class="cl-title">Demande introuvable.</h1><p class="cl-lead">${esc(result.data.error || 'Ce lien n’est plus valide.')}</p></aside><div></div>`;
+            return;
+          }
+          const next = JSON.stringify(result.data);
+          if (!force && next === signature) return;
+          signature = next;
+          data = result.data;
+          if (!data.canEdit) editing = false;
+          render();
+        }
+
+        load(true);
+        const timer = setInterval(() => {
+          if (!document.hidden && !editing && data && !FINAL.includes(data.stage)) load(false);
+        }, REFRESH_MS);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden && !editing && data) load(false); });
+        window.addEventListener('pagehide', () => clearInterval(timer), { once: true });
+      })();
+    </script>
+  </body>
 </html>

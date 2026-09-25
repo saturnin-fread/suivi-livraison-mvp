@@ -1673,3 +1673,9 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
   .team-invite-row { grid-template-columns: 1fr; }
   .team-invite-send { width: 100%; }
 }
+
+/* Photos du lieu envoyées par le client (fiche + tiroir demande) */
+.req-photos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.req-photos img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; }
+.crm-kv .req-photos { justify-content: flex-end; margin-top: 0; }
+.crm-kv .req-photos img { width: 48px; height: 48px; }

@@ -38,19 +38,17 @@ async function verifyPublicTrackingBrowser(path) {
     page.on('request', (request) => outgoing.push({ method: request.method(), url: request.url() }));
     const response = await page.goto(`${baseUrl}${path}`, { waitUntil: 'domcontentloaded' });
     ensure(response?.headers()['referrer-policy'] === 'origin', 'La page publique doit limiter le référent à l’origine sans exposer le token.');
-    await page.locator('#orderStatus').getByText('Confirmée', { exact: false }).waitFor({ state: 'visible' });
-    await page.locator('#map .leaflet-control-zoom').waitFor({ state: 'visible' });
-    ensure(await page.locator('#centerDriver').isDisabled(), 'Le recentrage livreur doit rester désactivé avant le départ.');
-    const pathsBefore = await page.locator('#map .leaflet-overlay-pane path').count();
-    ensure(pathsBefore >= 1, 'La destination du client doit être visible sur sa propre carte.');
-    await page.locator('#locateViewer').click();
-    await page.locator('#hideViewer').waitFor({ state: 'visible' });
-    ensure(await page.locator('#map .leaflet-overlay-pane path').count() > pathsBefore,
-      'La position locale du client ne s’affiche pas après son consentement.');
+    await page.locator('#statusText').getByText('Commande validée', { exact: false }).waitFor({ state: 'visible' });
+    await page.locator('#zoomIn').waitFor({ state: 'visible' });
+    await page.locator('#map .trk-dest').waitFor({ state: 'visible' });
+    ensure(await page.locator('#map .trk-drv').count() === 0, 'Le livreur ne doit pas apparaître sur la carte avant son départ.');
+    ensure(!(await page.locator('#recenter').isDisabled()), 'Le recentrage doit fonctionner sur la destination du client.');
+    await page.locator('#panelToggle').click();
+    ensure(await page.locator('#panelToggle').getAttribute('aria-expanded') === 'false', 'Le panneau de suivi doit être réductible.');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     ensure(!overflow, 'Le suivi public déborde horizontalement sur mobile.');
     ensure(!outgoing.some((request) => request.method !== 'GET' && request.url.includes('/api/tracking/')),
-      'La position locale du client ne doit jamais être envoyée à l’API de suivi.');
+      'La page de suivi ne doit jamais envoyer de données à l’API de suivi.');
   } finally {
     await browser.close();
   }
@@ -672,6 +670,8 @@ async function run() {
         customerName: 'Modification interdite',
         customerPhone: '22900000000',
         neighborhood: 'Zone de test',
+        locationLat: 6.38,
+        locationLng: 2.44,
       }),
     });
     ensure(locked.status === 409, `La modification après validation devait être bloquée, reçue ${locked.status}.`);

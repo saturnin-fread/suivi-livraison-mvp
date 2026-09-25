@@ -23,7 +23,7 @@ const formatMoney = (value, currency = 'XOF') => value == null ? '—' : new Int
 }).format(Number(value));
 
 function badge(status) {
-  const type = ['Livrée', 'Disponible', 'Confirmée', 'Terminée'].includes(status) ? 'success'
+  const type = ['Livrée', 'Disponible', 'Confirmée', 'Validée', 'Terminée'].includes(status) ? 'success'
     : ['Refusée', 'Annulée', 'Retournée', 'Incident', 'Échec'].includes(status) ? 'danger'
       : ['À vérifier', 'Arrivée', 'Retour', 'Position ancienne'].includes(status) ? 'warning' : '';
   return `<span class="badge ${type}">${escapeHtml(status || '—')}</span>`;
@@ -941,7 +941,10 @@ async function renderRequestDetail(id) {
   setHeader('Détail de la demande', 'Vérification avant affectation');
   const request = await api(`/api/app/requests/${encodeURIComponent(id)}`);
   const drivers = request.order_id ? [] : await api('/api/app/drivers');
-  const convertible = ['À vérifier', 'Informations à compléter'].includes(request.status) && !request.order_id;
+  const editable = ['À vérifier', 'Informations à compléter'].includes(request.status) && !request.order_id;
+  const convertible = (editable || request.status === 'Validée') && !request.order_id;
+  const photoIds = Array.isArray(request.photo_ids) ? request.photo_ids : [];
+  const photoSrc = (photoId) => `/api/app/requests/${encodeURIComponent(request.id)}/photos/${encodeURIComponent(photoId)}`;
   page.innerHTML = `
     <div class="page-header"><div><a href="/app/operations?vue=demandes">← Retour aux demandes</a><h1 style="margin-top:12px">${escapeHtml(request.customer_name || 'Demande en attente')}</h1><p class="subtitle">Demande n° ${escapeHtml(request.id)} · ${escapeHtml(formatDate(request.created_at))}</p></div>${badge(request.status)}</div>
     <section class="card"><h2>Informations du client</h2><div class="detail-grid">
@@ -952,9 +955,12 @@ async function renderRequestDetail(id) {
       <div class="detail"><span>Position GPS</span><strong>${request.location_lat == null ? 'Non partagée' : `${escapeHtml(request.location_lat)}, ${escapeHtml(request.location_lng)}`}</strong></div>
       <div class="detail"><span>Précision</span><strong>${request.location_accuracy == null ? '—' : `${Math.round(request.location_accuracy)} m`}</strong></div>
       <div class="detail" style="grid-column:1/-1"><span>Instructions</span><strong>${escapeHtml(request.notes || 'Aucune')}</strong></div>
+      <div class="detail" style="grid-column:1/-1"><span>Photos du lieu</span>${photoIds.length
+        ? `<div class="req-photos">${photoIds.map((photoId, i) => `<a href="${photoSrc(photoId)}" target="_blank" rel="noopener"><img src="${photoSrc(photoId)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</div>`
+        : '<strong>Aucune photo</strong>'}</div>
     </div></section>
     ${request.order_id ? `<section class="card" style="margin-top:18px"><h2>Commande créée</h2><div class="detail-grid"><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(request.order_id)}</strong></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(request.driver_name)}</strong></div><div class="detail"><span>Statut</span><strong>${escapeHtml(request.order_status)}</strong></div></div><div class="actions" style="margin-top:18px">${request.trackingLink?.path ? `<a class="button primary" target="_blank" rel="noopener" href="${escapeHtml(request.trackingLink.path)}">Ouvrir le suivi</a>` : ''}<a class="button secondary" href="/app/operations?vue=commandes">Voir les commandes</a></div></section>` : ''}
-    ${convertible ? `<section class="card" style="margin-top:18px"><h2>Valider et affecter</h2><p class="subtitle">La création de la commande verrouillera les modifications du client.</p><div class="field" style="margin-top:16px"><label>Livreur</label><select id="conversionDriver"><option value="">Sélectionner un livreur</option>${drivers.map((driver) => {
+    ${convertible ? `<section class="card" style="margin-top:18px"><h2>${editable ? 'Valider et affecter' : 'Affecter un livreur'}</h2><p class="subtitle">${editable ? 'Valider verrouille les modifications du client. Vous pouvez valider maintenant et affecter un livreur plus tard.' : `Demande validée le ${escapeHtml(formatDate(request.validated_at))} : les informations du client sont verrouillées.`}</p>${editable ? '<div class="actions" style="margin-top:14px"><button class="secondary" id="validateRequest">Valider sans affecter</button></div>' : ''}<div class="field" style="margin-top:16px"><label>Livreur</label><select id="conversionDriver"><option value="">Sélectionner un livreur</option>${drivers.map((driver) => {
       const unavailable = ['inactive', 'off_duty', 'incident'].includes(driver.operationalState);
       const state = driverStateLabels[driver.operationalState] || driver.operationalState;
       return `<option value="${escapeHtml(driver.id)}" ${unavailable ? 'disabled' : ''}>${escapeHtml(driver.name)} — ${escapeHtml(state)} — ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</option>`;
@@ -965,6 +971,18 @@ async function renderRequestDetail(id) {
       <button class="secondary statusAction" data-status="Archivée">Archiver</button>
     </div><div id="actionResult"></div></section>` : ''}`;
 
+  const validateButton = document.getElementById('validateRequest');
+  if (validateButton) validateButton.addEventListener('click', async () => {
+    if (!confirm('Valider cette demande ? Le client ne pourra plus modifier ses informations. Vous pourrez affecter un livreur ensuite.')) return;
+    validateButton.disabled = true;
+    try {
+      await api(`/api/app/requests/${encodeURIComponent(id)}/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      location.reload();
+    } catch (error) {
+      document.getElementById('conversionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      validateButton.disabled = false;
+    }
+  });
   if (convertible) document.getElementById('convertRequest').addEventListener('click', async () => {
     const driverId = document.getElementById('conversionDriver').value;
     if (!driverId) { document.getElementById('conversionResult').innerHTML = '<div class="notice error">Sélectionnez un livreur.</div>'; return; }
@@ -3703,17 +3721,21 @@ async function openRequestDrawer(requestId, opts = {}) {
       truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17V5H2v12"/><path d="M14 9h4l4 4v4h-6"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
     };
     const canAct = !r.order_id && r.status !== 'Archivée' && r.status !== 'Refusée';
+    const editable = !r.order_id && ['À vérifier', 'Informations à compléter'].includes(r.status);
+    const photoIds = Array.isArray(r.photo_ids) ? r.photo_ids : [];
+    const photoSrc = (photoId) => `/api/app/requests/${encodeURIComponent(r.id)}/photos/${encodeURIComponent(photoId)}`;
     const footer = r.order_id
       ? `<a class="button secondary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a><a class="button primary" href="/app/commandes/${escapeHtml(r.order_id)}">Voir la commande</a>`
       : canAct
         ? `<div class="req-morewrap">
             <button class="button secondary" type="button" id="reqMore" aria-haspopup="true" aria-expanded="false">Autres actions</button>
             <div class="req-morepop" id="reqMorePop" hidden role="menu">
+              ${editable ? '<button type="button" class="req-morepop-item" data-validate="1" role="menuitem">Valider sans affecter</button>' : ''}
               <button type="button" class="req-morepop-item danger" data-status="Refusée" role="menuitem">Refuser</button>
               <button type="button" class="req-morepop-item" data-status="Archivée" role="menuitem">Archiver</button>
             </div>
           </div>
-          <a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Valider et affecter</a>`
+          <a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">${editable ? 'Valider et affecter' : 'Affecter un livreur'}</a>`
         : `<a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a>`;
     wrap.querySelector('.crm-drawer').innerHTML = `
       <div class="crm-drawer-head">
@@ -3739,6 +3761,9 @@ async function openRequestDrawer(requestId, opts = {}) {
           <div class="crm-kv"><span>Source</span><strong>${r.submitted_at ? crmChip('Formulaire client', 'blue') : crmChip('Saisie interne', 'purple')}</strong></div>
           <div class="crm-kv"><span>Validation</span><strong>${validated ? crmChip('Validée', 'green') : crmChip('À valider', 'amber')}</strong></div>
           <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(r.notes || 'Aucune')}</strong></div>
+          <div class="crm-kv"><span>Photos</span><strong>${photoIds.length
+            ? `<span class="req-photos">${photoIds.map((photoId, i) => `<a href="${photoSrc(photoId)}" target="_blank" rel="noopener"><img src="${photoSrc(photoId)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</span>`
+            : 'Aucune'}</strong></div>
         </section>
         ${r.order_id ? `<section><h4><span class="crm-sec-ic">${secIc.truck}</span>Commande créée</h4>
           <div class="crm-kv"><span>Commande</span><strong>${escapeHtml(orderCode(r.order_reference, r.order_id))}</strong></div>
@@ -3763,6 +3788,20 @@ async function openRequestDrawer(requestId, opts = {}) {
         if (!pop.hidden && !event.target.closest('.req-morewrap')) {
           pop.hidden = true;
           moreBtn.setAttribute('aria-expanded', 'false');
+        }
+      });
+      const validateItem = pop.querySelector('[data-validate]');
+      if (validateItem) validateItem.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (!confirm(`Valider la demande DEM-${r.id} ? Le client ne pourra plus modifier ses informations. Vous pourrez affecter un livreur ensuite.`)) return;
+        pop.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        try {
+          await api(`/api/app/requests/${encodeURIComponent(r.id)}/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          close();
+          if (typeof opts.onChange === 'function') opts.onChange();
+        } catch (error) {
+          pop.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+          alert(error.message);
         }
       });
       pop.querySelectorAll('[data-status]').forEach((btn) => {

@@ -75,6 +75,11 @@ if (demoTrackingEnabled && (!process.env.DEMO_TRACKING_TOKEN || process.env.RAIL
 const demoToken = demoTrackingEnabled ? process.env.DEMO_TRACKING_TOKEN : null;
 const sessionDurationMs = 8 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
+// « Validée » : l'entreprise a validé la demande (infos client verrouillées)
+// sans avoir encore affecté de livreur. La conversion en commande reste possible.
+const convertibleRequestStatuses = [...editableRequestStatuses, 'Validée'];
+const REQUEST_PHOTO_MAX = 3;
+const REQUEST_PHOTO_MAX_BYTES = 700 * 1024;
 const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
 const publicTrackingPositionStatuses = ['En tournée', 'En livraison', 'Arrivée'];
 const orderTransitions = {
@@ -324,6 +329,19 @@ const publicTrackingRateLimit = createRateLimitMiddleware({
     }),
   ],
 });
+// Formulaire / page de demande client (lecture, modification, photos).
+const publicRequestRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({
+      limiter: trackingLimiter('request-ip', { capacity: 120, refillTokens: 120, refillIntervalMs: 60_000, maxEntries: 10_000 }),
+    }),
+    createTokenPolicy({
+      limiter: trackingLimiter('request-token', { capacity: 40, refillTokens: 40, refillIntervalMs: 60_000, maxEntries: 20_000 }),
+      key: (req) => req.params.token,
+    }),
+  ],
+});
 app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules', 'leaflet', 'dist'), {
   immutable: true,
   maxAge: '30d',
@@ -358,7 +376,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -734,9 +752,6 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS delivery_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_code TEXT;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'monthly';
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS login_alerts BOOLEAN NOT NULL DEFAULT TRUE;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
-      ALTER TABLE app_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
 
       UPDATE companies
       SET slug = 'chicago-consulting-group', updated_at = NOW()
@@ -758,6 +773,8 @@ async function initDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS login_alerts BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
 
       CREATE TABLE IF NOT EXISTS company_memberships (
         id BIGSERIAL PRIMARY KEY,
@@ -777,6 +794,7 @@ async function initDatabase() {
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE app_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
 
       CREATE TABLE IF NOT EXISTS password_resets (
         token_hash TEXT PRIMARY KEY,
@@ -947,6 +965,18 @@ async function initDatabase() {
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
       CREATE UNIQUE INDEX IF NOT EXISTS customer_requests_edit_token_unique
         ON customer_requests(edit_token_hash) WHERE edit_token_hash IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS customer_request_photos (
+        id BIGSERIAL PRIMARY KEY,
+        request_id BIGINT NOT NULL REFERENCES customer_requests(id) ON DELETE CASCADE,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        mime TEXT NOT NULL,
+        data BYTEA NOT NULL,
+        byte_size INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS customer_request_photos_request_idx
+        ON customer_request_photos(request_id, id);
 
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_request_id BIGINT REFERENCES customer_requests(id);
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS requested_time TEXT;
@@ -4273,7 +4303,9 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
             o.id AS order_id, o.status AS order_status, o.reference AS order_reference, d.name AS driver_name,
             t.token_ciphertext AS tracking_token_ciphertext, t.expires_at AS tracking_expires_at,
             t.revoked_at AS tracking_revoked_at, t.created_at AS tracking_created_at,
-            t.version AS tracking_link_version
+            t.version AS tracking_link_version,
+            (SELECT COALESCE(json_agg(p.id ORDER BY p.id), '[]'::json)
+               FROM customer_request_photos p WHERE p.request_id = r.id) AS photo_ids
      FROM customer_requests r
      LEFT JOIN orders o ON o.customer_request_id = r.id
      LEFT JOIN drivers d ON d.id = o.driver_id
@@ -4286,6 +4318,18 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
   const trackingLink = request.order_id ? trackingLinkBusinessView({ ...request, status: request.order_status }) : null;
   delete request.tracking_token_ciphertext;
   return res.json({ ...request, trackingLink });
+}));
+
+app.get('/api/app/requests/:id/photos/:photoId', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!numericIdPattern.test(req.params.id) || !numericIdPattern.test(req.params.photoId)) return res.status(404).end();
+  const result = await pool.query(
+    `SELECT p.mime, p.data FROM customer_request_photos p
+     WHERE p.id = $1 AND p.request_id = $2 AND p.company_id = $3`,
+    [req.params.photoId, req.params.id, req.auth.company_id]
+  );
+  const photo = result.rows[0];
+  if (!photo) return res.status(404).end();
+  return sendRequestPhoto(res, photo);
 }));
 
 app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -4303,6 +4347,24 @@ app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (re
   );
   if (!result.rows[0]) return res.status(404).json({ error: 'Demande introuvable ou déjà archivée.' });
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'status_changed', { status: req.body.status });
+  return res.json(result.rows[0]);
+}));
+
+// Validation sans livreur : verrouille les informations du client. L'affectation
+// d'un livreur (conversion en commande) peut se faire ensuite.
+app.post('/api/app/requests/:id/validate', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE customer_requests
+     SET status = 'Validée', validated_at = NOW(), version = version + 1, updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND archived_at IS NULL AND status = ANY($3::text[])
+       AND customer_name IS NOT NULL AND customer_phone IS NOT NULL AND neighborhood IS NOT NULL
+     RETURNING id, status, version, validated_at`,
+    [req.params.id, req.auth.company_id, editableRequestStatuses]
+  );
+  if (!result.rows[0]) {
+    return res.status(409).json({ error: 'Cette demande ne peut pas être validée (déjà traitée ou informations incomplètes).' });
+  }
+  await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'validated');
   return res.json(result.rows[0]);
 }));
 
@@ -4330,7 +4392,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       await client.query('COMMIT');
       return res.json({ orderId: existing.rows[0].id, path: trackingLink.path, trackingLink, alreadyConverted: true });
     }
-    if (!editableRequestStatuses.includes(request.status)) {
+    if (!convertibleRequestStatuses.includes(request.status)) {
       throw Object.assign(new Error('Cette demande ne peut plus être convertie.'), { statusCode: 409 });
     }
     if (!request.customer_name || !request.customer_phone || !request.neighborhood) {
@@ -4389,7 +4451,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
     );
     await client.query(
       `UPDATE customer_requests
-       SET status = 'Confirmée', validated_at = NOW(), version = version + 1, updated_at = NOW()
+       SET status = 'Confirmée', validated_at = COALESCE(validated_at, NOW()), version = version + 1, updated_at = NOW()
        WHERE id = $1`,
       [request.id]
     );
@@ -7240,12 +7302,77 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   }
 }));
 
-app.post('/api/public/requests/:token', asyncRoute(async (req, res) => {
+// Coordonnées GPS obligatoires pour envoyer ou modifier une demande client.
+function requestGpsFromBody(body) {
+  const lat = optionalNumber(body.locationLat);
+  const lng = optionalNumber(body.locationLng);
+  if (lat == null || lng == null || lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  const accuracy = optionalNumber(body.locationAccuracy);
+  return { lat, lng, accuracy: accuracy != null && accuracy >= 0 ? accuracy : null };
+}
+
+// Type réel de l'image d'après sa signature : le Content-Type n'est pas fiable.
+function detectImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function sendRequestPhoto(res, photo) {
+  res.set({
+    'Content-Type': photo.mime,
+    'Cache-Control': 'private, max-age=300',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'",
+  });
+  return res.end(photo.data);
+}
+
+const numericIdPattern = /^\d{1,18}$/;
+
+// Étape affichée au client, calculée ici pour rester cohérente entre les pages.
+function publicRequestStage(row) {
+  if (row.order_id) {
+    if (row.order_status === 'Livrée') return 'delivered';
+    if (['Retournée', 'Annulée'].includes(row.order_status)) return 'closed';
+    return 'assigned';
+  }
+  if (row.status === 'Refusée') return 'refused';
+  if (row.status === 'Archivée' || row.archived_at) return 'closed';
+  if (row.status === 'Validée' || row.status === 'Confirmée') return 'validated';
+  if (editableRequestStatuses.includes(row.status)) return 'received';
+  return 'pending';
+}
+
+const rawPhotoParser = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: REQUEST_PHOTO_MAX_BYTES });
+function requestPhotoBody(req, res, next) {
+  rawPhotoParser(req, res, (error) => {
+    if (!error) return next();
+    const tooLarge = error.status === 413 || error.type === 'entity.too.large';
+    return res.status(tooLarge ? 413 : 400).json({ error: tooLarge ? 'Photo trop lourde (700 Ko maximum).' : 'Envoi de la photo invalide.' });
+  });
+}
+
+async function editableRequestForPhotos(token, editToken) {
+  if (!editToken) return null;
+  const result = await pool.query(
+    `SELECT id, company_id FROM customer_requests
+     WHERE token = $1 AND edit_token_hash = $2 AND status = ANY($3::text[]) AND archived_at IS NULL`,
+    [token, digest(editToken), editableRequestStatuses]
+  );
+  return result.rows[0] || null;
+}
+
+app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
-  const { customerName, customerPhone, requestedTime, locationLat, locationLng, locationAccuracy, neighborhood, landmark, notes } = req.body;
+  const { customerName, customerPhone, requestedTime, neighborhood, landmark, notes } = req.body;
   if (!customerName || !customerPhone || !neighborhood) {
     return res.status(400).json({ error: 'Nom, téléphone et zone sont obligatoires.' });
   }
+  const gps = requestGpsFromBody(req.body);
+  if (!gps) return res.status(400).json({ error: 'Partagez votre position GPS pour envoyer votre demande.' });
   const owning = await pool.query('SELECT company_id FROM customer_requests WHERE token = $1', [req.params.token]);
   if (owning.rows[0] && !(await companyDeliverySetting(owning.rows[0].company_id, 'customerFormEnabled'))) {
     return res.status(403).json({ error: 'Ce formulaire n’est plus actif.' });
@@ -7255,63 +7382,111 @@ app.post('/api/public/requests/:token', asyncRoute(async (req, res) => {
     `UPDATE customer_requests
      SET status = 'À vérifier', customer_name = $1, customer_phone = $2,
          requested_time = $3, location_lat = $4, location_lng = $5, location_accuracy = $6,
-         location_at = CASE WHEN $4::double precision IS NULL OR $5::double precision IS NULL THEN NULL ELSE NOW() END,
+         location_at = NOW(),
          neighborhood = $7, landmark = $8, notes = $9,
          edit_token_hash = $10, submitted_at = NOW(), updated_at = NOW(), version = version + 1
      WHERE token = $11 AND status = 'En attente d’informations'
        AND (expires_at IS NULL OR expires_at > NOW())
-     RETURNING id, version`,
+     RETURNING id, company_id, version`,
     [
       String(customerName).trim(), String(customerPhone).trim(), requestedTime || null,
-      optionalNumber(locationLat), optionalNumber(locationLng), optionalNumber(locationAccuracy),
+      gps.lat, gps.lng, gps.accuracy,
       String(neighborhood).trim(), landmark || null, notes || null, digest(editToken), req.params.token,
     ]
   );
   if (!result.rows[0]) return res.status(409).json({ error: 'Ce formulaire a déjà été envoyé ou a expiré.' });
-  const requestCompany = await pool.query('SELECT company_id FROM customer_requests WHERE id = $1', [result.rows[0].id]);
-  await writeAudit({ company_id: requestCompany.rows[0]?.company_id, user_id: null }, 'customer_request', result.rows[0].id, 'submitted');
+  await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, 'submitted');
   const redirect = `/demande/${encodeURIComponent(req.params.token)}/confirmation?edit=${encodeURIComponent(editToken)}`;
-  return res.json({ status: 'received', message: 'Merci. L’entreprise va vérifier votre demande.', redirect });
+  return res.json({ status: 'received', message: 'Merci. L’entreprise va vérifier votre demande.', redirect, editToken });
 }));
 
-app.get('/api/public/requests/:token', asyncRoute(async (req, res) => {
+app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const result = await pool.query(
-    `SELECT status, customer_name, customer_phone, requested_time, location_lat, location_lng,
-            location_accuracy, neighborhood, landmark, notes, submitted_at, updated_at,
-            edit_token_hash, version
-     FROM customer_requests WHERE token = $1`,
+    `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time, r.location_lat, r.location_lng,
+            r.location_accuracy, r.neighborhood, r.landmark, r.notes, r.submitted_at, r.updated_at,
+            r.validated_at, r.archived_at, r.edit_token_hash, r.version, c.name AS company_name,
+            o.id AS order_id, o.status AS order_status, o.status_changed_at AS order_status_changed_at,
+            d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
+            t.token AS tracking_token, t.token_ciphertext AS tracking_token_ciphertext,
+            t.expires_at AS tracking_expires_at, t.revoked_at AS tracking_revoked_at,
+            t.created_at AS tracking_created_at, t.version AS tracking_link_version,
+            (SELECT COALESCE(json_agg(p.id ORDER BY p.id), '[]'::json)
+               FROM customer_request_photos p WHERE p.request_id = r.id) AS photo_ids
+     FROM customer_requests r
+     JOIN companies c ON c.id = r.company_id
+     LEFT JOIN orders o ON o.customer_request_id = r.id
+     LEFT JOIN drivers d ON d.id = o.driver_id
+     LEFT JOIN tracking_links t ON t.order_id = o.id
+     WHERE r.token = $1`,
     [req.params.token]
   );
-  const request = result.rows[0];
-  if (!request) return res.status(404).json({ error: 'Demande introuvable.' });
+  const row = result.rows[0];
+  if (!row) return res.status(404).json({ error: 'Demande introuvable.' });
   const suppliedEditToken = String(req.query.edit || '');
   const canEdit = Boolean(
-    suppliedEditToken && request.edit_token_hash && digest(suppliedEditToken) === request.edit_token_hash
-    && editableRequestStatuses.includes(request.status)
+    suppliedEditToken && row.edit_token_hash && digest(suppliedEditToken) === row.edit_token_hash
+    && editableRequestStatuses.includes(row.status) && !row.archived_at
   );
-  delete request.edit_token_hash;
-  return res.json({ ...request, canEdit });
+  // Le client garde le même lien : dès qu'un livreur est affecté, sa page de
+  // demande lui donne accès au suivi (détenir ce lien suffit déjà à voir la demande).
+  let trackingPath = null;
+  if (row.order_id) {
+    const link = trackingLinkBusinessView({ ...row, status: row.order_status }, true);
+    if (['active', 'terminal'].includes(link.state)) trackingPath = link.path;
+  }
+  res.set('Cache-Control', 'private, no-store');
+  return res.json({
+    id: row.id,
+    status: row.status,
+    customer_name: row.customer_name,
+    customer_phone: row.customer_phone,
+    requested_time: row.requested_time,
+    location_lat: row.location_lat,
+    location_lng: row.location_lng,
+    location_accuracy: row.location_accuracy,
+    neighborhood: row.neighborhood,
+    landmark: row.landmark,
+    notes: row.notes,
+    submitted_at: row.submitted_at,
+    updated_at: row.updated_at,
+    validated_at: row.validated_at,
+    version: row.version,
+    companyName: row.company_name,
+    stage: publicRequestStage(row),
+    canEdit,
+    photoIds: row.photo_ids || [],
+    photoMax: REQUEST_PHOTO_MAX,
+    order: row.order_id ? {
+      status: row.order_status,
+      statusChangedAt: row.order_status_changed_at,
+      driver: row.driver_name ? { name: row.driver_name, vehicleType: row.driver_vehicle_type } : null,
+      trackingPath,
+    } : null,
+  });
 }));
 
-app.put('/api/public/requests/:token', asyncRoute(async (req, res) => {
+app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const editToken = String(req.body.editToken || '');
-  const { customerName, customerPhone, requestedTime, locationLat, locationLng, locationAccuracy, neighborhood, landmark, notes, version } = req.body;
+  const { customerName, customerPhone, requestedTime, neighborhood, landmark, notes, version } = req.body;
   if (!editToken || !customerName || !customerPhone || !neighborhood || !Number.isInteger(Number(version))) {
     return res.status(400).json({ error: 'Informations de modification incomplètes.' });
   }
+  const gps = requestGpsFromBody(req.body);
+  if (!gps) return res.status(400).json({ error: 'Votre position GPS est requise.' });
   const result = await pool.query(
     `UPDATE customer_requests
      SET customer_name = $1, customer_phone = $2, requested_time = $3,
+         location_at = CASE WHEN location_lat IS DISTINCT FROM $4::double precision
+                              OR location_lng IS DISTINCT FROM $5::double precision THEN NOW() ELSE location_at END,
          location_lat = $4, location_lng = $5, location_accuracy = $6,
-         location_at = CASE WHEN $4::double precision IS NULL OR $5::double precision IS NULL THEN location_at ELSE NOW() END,
          neighborhood = $7, landmark = $8, notes = $9, version = version + 1, updated_at = NOW()
-     WHERE token = $10 AND edit_token_hash = $11 AND version = $12 AND status = ANY($13::text[])
+     WHERE token = $10 AND edit_token_hash = $11 AND version = $12 AND status = ANY($13::text[]) AND archived_at IS NULL
      RETURNING id, company_id, version`,
     [
       String(customerName).trim(), String(customerPhone).trim(), requestedTime || null,
-      optionalNumber(locationLat), optionalNumber(locationLng), optionalNumber(locationAccuracy),
+      gps.lat, gps.lng, gps.accuracy,
       String(neighborhood).trim(), landmark || null, notes || null,
       req.params.token, digest(editToken), Number(version), editableRequestStatuses,
     ]
@@ -7321,8 +7496,118 @@ app.put('/api/public/requests/:token', asyncRoute(async (req, res) => {
   return res.json({ message: 'Vos informations ont été mises à jour.', version: result.rows[0].version });
 }));
 
+// Photos du lieu (facultatives, 3 maximum), envoyées une à une en binaire.
+app.post('/api/public/requests/:token/photos', publicRequestRateLimit, requestPhotoBody, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const request = await editableRequestForPhotos(req.params.token, String(req.get('X-Edit-Token') || ''));
+  if (!request) return res.status(403).json({ error: 'Les photos ne sont plus modifiables pour cette demande.' });
+  const buffer = req.body;
+  const mime = detectImageMime(buffer);
+  if (!mime) return res.status(400).json({ error: 'Image invalide (JPEG, PNG ou WebP attendu).' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Verrou sur la demande : deux envois simultanés ne dépassent pas le plafond.
+    await client.query('SELECT id FROM customer_requests WHERE id = $1 FOR UPDATE', [request.id]);
+    const count = await client.query('SELECT COUNT(*)::int AS n FROM customer_request_photos WHERE request_id = $1', [request.id]);
+    if (count.rows[0].n >= REQUEST_PHOTO_MAX) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `${REQUEST_PHOTO_MAX} photos maximum.` });
+    }
+    const inserted = await client.query(
+      `INSERT INTO customer_request_photos (request_id, company_id, mime, data, byte_size)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [request.id, request.company_id, mime, buffer, buffer.length]
+    );
+    await client.query('UPDATE customer_requests SET updated_at = NOW() WHERE id = $1', [request.id]);
+    await client.query('COMMIT');
+    await writeAudit({ company_id: request.company_id, user_id: null }, 'customer_request', request.id, 'photo_added');
+    return res.status(201).json({ id: inserted.rows[0].id });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.delete('/api/public/requests/:token/photos/:photoId', publicRequestRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  if (!numericIdPattern.test(req.params.photoId)) return res.status(404).json({ error: 'Photo introuvable.' });
+  const request = await editableRequestForPhotos(req.params.token, String(req.get('X-Edit-Token') || ''));
+  if (!request) return res.status(403).json({ error: 'Les photos ne sont plus modifiables pour cette demande.' });
+  const result = await pool.query(
+    'DELETE FROM customer_request_photos WHERE id = $1 AND request_id = $2 RETURNING id',
+    [req.params.photoId, request.id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Photo introuvable.' });
+  await writeAudit({ company_id: request.company_id, user_id: null }, 'customer_request', request.id, 'photo_removed');
+  return res.json({ deleted: true });
+}));
+
+app.get('/api/public/requests/:token/photos/:photoId', publicRequestRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).end();
+  if (!numericIdPattern.test(req.params.photoId)) return res.status(404).end();
+  const result = await pool.query(
+    `SELECT p.mime, p.data FROM customer_request_photos p
+     JOIN customer_requests r ON r.id = p.request_id
+     WHERE p.id = $1 AND r.token = $2`,
+    [req.params.photoId, req.params.token]
+  );
+  if (!result.rows[0]) return res.status(404).end();
+  return sendRequestPhoto(res, result.rows[0]);
+}));
+
+
+// Étapes horodatées affichées au client (première occurrence de chaque statut).
+async function publicTrackingSteps(row) {
+  const events = await pool.query(
+    `SELECT to_status, MIN(created_at) AS at FROM order_status_events
+     WHERE order_id = $1 AND to_status = ANY($2::text[])
+     GROUP BY to_status`,
+    [row.order_id, ['Confirmée', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée']]
+  );
+  const at = Object.fromEntries(events.rows.map((event) => [event.to_status, event.at]));
+  const earliest = (...values) => values.filter(Boolean).sort((a, b) => new Date(a) - new Date(b))[0] || null;
+  return {
+    validatedAt: row.request_validated_at || at['Confirmée'] || row.order_created_at || null,
+    pickedUpAt: at['Récupérée'] || null,
+    enRouteAt: earliest(at['En tournée'], at['En livraison']),
+    arrivedAt: at['Arrivée'] || null,
+    deliveredAt: at['Livrée'] || null,
+  };
+}
+
+// Tracé livreur → destination pour la carte client, calculé côté serveur à
+// partir de la position connue du livreur (le client n'envoie aucune
+// coordonnée). Recalculé au plus toutes les 60 s par lien, ou si le livreur a
+// bougé de plus de 150 m.
+const publicRouteCache = new Map();
+async function publicTrackingRoute(key, driver, destination) {
+  if (!key || !destination) return null;
+  const cached = publicRouteCache.get(key);
+  if (cached && Date.now() - cached.at < 60_000 && haversineKm(cached.driver, driver) * 1000 < 150) return cached.value;
+  let value = null;
+  try {
+    const result = await routingAdapter.route({
+      profile: 'motorcycle',
+      coordinates: [driver, { lat: destination.latitude, lng: destination.longitude }],
+    });
+    const coordinates = result?.status === 'ok' ? result.geometry?.value?.coordinates : null;
+    if (Array.isArray(coordinates) && coordinates.length >= 2) {
+      value = { coordinates, distanceMeters: result.distanceMeters, durationSeconds: result.durationSeconds };
+    }
+  } catch (_error) {
+    value = null;
+  }
+  if (publicRouteCache.size >= 2000) publicRouteCache.delete(publicRouteCache.keys().next().value);
+  publicRouteCache.set(key, { at: Date.now(), driver, value });
+  return value;
+}
+
 app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, res) => {
   let deviceId = process.env.TRACCAR_DEVICE_ID;
+  let routeKey = null;
   let tracking = {
     orderStatus: null,
     statusChangedAt: null,
@@ -7332,6 +7617,9 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
     destination: null,
     driverName: null,
     driverVehicleType: null,
+    companyName: null,
+    displayNumber: null,
+    steps: null,
   };
   const isDemo = Boolean(demoToken && req.params.token === demoToken);
   if (!isDemo && !/^[A-Za-z0-9_-]{32,128}$/.test(req.params.token)) {
@@ -7341,12 +7629,16 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
   if (pool && !isDemo) {
     const link = await pool.query(
       `SELECT d.traccar_unique_id, d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
+               o.id AS order_id, o.reference AS order_reference, o.customer_request_id,
                o.status, o.status_changed_at, o.requested_time, o.neighborhood, o.landmark,
-               o.destination_lat, o.destination_lng, o.destination_accuracy,
-               t.expires_at, t.created_at, t.revoked_at
+               o.destination_lat, o.destination_lng, o.destination_accuracy, o.created_at AS order_created_at,
+               c.name AS company_name, r.validated_at AS request_validated_at,
+               t.id AS tracking_link_id, t.expires_at, t.created_at, t.revoked_at
         FROM tracking_links t
         JOIN orders o ON o.id = t.order_id AND o.company_id = t.company_id
         JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+        JOIN companies c ON c.id = o.company_id
+        LEFT JOIN customer_requests r ON r.id = o.customer_request_id
         WHERE t.token_hash = $1 OR t.token = $2`,
       [digest(req.params.token), req.params.token]
     );
@@ -7362,6 +7654,7 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
     }
     const row = link.rows[0];
     deviceId = row.traccar_unique_id;
+    routeKey = `link:${row.tracking_link_id}`;
     tracking = {
       orderStatus: row.status,
       statusChangedAt: row.status_changed_at,
@@ -7371,6 +7664,10 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
       destination: publicDestination(row),
       driverName: row.driver_name,
       driverVehicleType: row.driver_vehicle_type,
+      companyName: row.company_name,
+      // Même numéro que la demande côté client (« Demande #55 » → « Livraison #55 »).
+      displayNumber: row.customer_request_id ? String(row.customer_request_id) : (row.order_reference || String(row.order_id)),
+      steps: await publicTrackingSteps(row),
     };
   } else if (!isDemo && !pool) {
     const unavailable = publicTrackingLinkMessage('unavailable');
@@ -7382,6 +7679,9 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
     neighborhood: tracking.neighborhood,
     landmark: tracking.landmark,
     driver: tracking.driverName ? { name: tracking.driverName, vehicleType: tracking.driverVehicleType } : null,
+    companyName: tracking.companyName,
+    displayNumber: tracking.displayNumber,
+    steps: tracking.steps,
     mapConfig: mapConfiguration(),
   };
   if (terminalOrderStatuses.includes(tracking.orderStatus)) {
@@ -7420,9 +7720,11 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
   const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
   const isStale = !Number.isFinite(timestampMs) || Date.now() - timestampMs > 10 * 60 * 1000;
   const finiteOrNull = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
+  const route = await publicTrackingRoute(routeKey, { lat: latitude, lng: longitude }, tracking.destination);
   return res.json({
     status: isStale ? 'stale' : 'online',
     ...activeDetails,
+    route,
     latitude,
     longitude,
     speed: finiteOrNull(position.speed),

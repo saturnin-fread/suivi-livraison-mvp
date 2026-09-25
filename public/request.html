@@ -2,65 +2,111 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Préparer ma livraison</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Préparer votre livraison</title>
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
-    <style>
-      body { margin: 0; background: #f4f7fb; color: #162033; font-family: Inter, system-ui, sans-serif; }
-      main { max-width: 680px; margin: 0 auto; padding: 18px; }
-      .card { background: white; border-radius: 16px; padding: 22px; box-shadow: 0 8px 28px #193b6514; }
-      h1 { margin: 0 0 7px; font-size: 24px; } .intro { color: #65738a; font-size: 14px; line-height: 1.5; }
-      label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 700; }
-      input, textarea { width: 100%; padding: 11px; border: 1px solid #ccd5e2; border-radius: 8px; font: inherit; }
-      textarea { min-height: 76px; resize: vertical; } button { padding: 12px 16px; border: 0; border-radius: 8px; background: #123b70; color: white; font-weight: 700; cursor: pointer; }
-      button.secondary { background: #e8eef7; color: #123b70; } .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-      #map { height: 230px; margin-top: 12px; border-radius: 10px; display: none; } #message { margin-top: 16px; font-weight: 600; }
-    </style>
+    <link rel="stylesheet" href="/client.css" />
   </head>
-  <body><main><section class="card">
-    <h1>Préparer ma livraison</h1>
-    <p class="intro">Indiquez vos informations et partagez votre position pour aider le livreur à vous trouver, même si votre lieu n’a pas d’adresse précise.</p>
-    <form id="form">
-      <label>Nom et prénom</label><input name="customerName" required />
-      <label>Numéro de téléphone</label><input name="customerPhone" inputmode="tel" required />
-      <label>Zone ou quartier</label><input name="neighborhood" placeholder="Ex. Akpakpa, derrière le marché…" required />
-      <label>Heure ou créneau souhaité</label><input name="requestedTime" placeholder="Ex. entre 15h et 17h" />
-      <label>Repère pour vous trouver</label><input name="landmark" placeholder="Ex. portail bleu, près de…" />
-      <label>Instructions complémentaires</label><textarea name="notes" placeholder="Étage, boutique, appel avant arrivée…"></textarea>
-      <div class="actions"><button type="button" class="secondary" id="locate">Partager ma position</button><button type="submit">Envoyer mes informations</button></div>
-      <div id="map"></div><p id="message"></p>
-    </form>
-  </section></main>
-  <script src="/vendor/leaflet/leaflet.js"></script>
-  <script>
-    const token = location.pathname.split('/').pop();
-    const form = document.getElementById('form'); const message = document.getElementById('message'); const mapEl = document.getElementById('map');
-    let locationData = null; let map; let marker; let mapReady = false;
-    document.getElementById('locate').addEventListener('click', () => {
-      if (!navigator.geolocation) { message.textContent = 'La localisation n’est pas disponible sur cet appareil.'; return; }
-      message.textContent = 'Demande d’autorisation de localisation…';
-      navigator.geolocation.getCurrentPosition((position) => {
-        locationData = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy };
-        mapEl.style.display = 'block';
-        if (!map) map = L.map('map').setView([locationData.latitude, locationData.longitude], 16);
-        if (!mapReady) { L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map); mapReady = true; }
-        if (!marker) marker = L.marker([locationData.latitude, locationData.longitude], { draggable: true }).addTo(map);
-        else marker.setLatLng([locationData.latitude, locationData.longitude]);
-        marker.on('dragend', () => { const p = marker.getLatLng(); locationData.latitude = p.lat; locationData.longitude = p.lng; locationData.accuracy = null; message.textContent = 'Position ajustée sur la carte.'; });
-        message.textContent = `Position obtenue (précision approximative : ${Math.round(locationData.accuracy)} m).`;
-      }, () => { message.textContent = 'Position non obtenue. Autorisez la localisation ou utilisez le repère texte.'; }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
-    });
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(form));
-      if (locationData) { data.locationLat = locationData.latitude; data.locationLng = locationData.longitude; data.locationAccuracy = locationData.accuracy; }
-      else { message.textContent = 'Votre position n’a pas été partagée ; le quartier et le repère seront utilisés.'; }
-      form.querySelectorAll('button').forEach((el) => el.disabled = true);
-      const response = await fetch(`/api/public/requests/${encodeURIComponent(token)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-      const payload = await response.json();
-      message.textContent = payload.message || payload.error || 'Une erreur est survenue.';
-      if (response.ok && payload.redirect) window.location.assign(payload.redirect);
-      else form.querySelectorAll('button').forEach((el) => el.disabled = false);
-    });
-  </script></body>
+  <body>
+    <div class="cl-wrap">
+      <header class="cl-head" id="head"></header>
+      <main class="cl-main">
+        <div class="cl-grid">
+          <aside class="cl-aside">
+            <h1 class="cl-title">Préparer votre livraison</h1>
+            <p class="cl-lead">Indiquez où notre livreur doit vous retrouver.</p>
+            <hr class="cl-rule" />
+            <p class="cl-strong" id="asideCompany">&nbsp;</p>
+            <p class="cl-note">Vos informations restent modifiables jusqu’à la validation de votre demande.</p>
+            <p class="cl-small" style="margin-top:12px">Aucun compte nécessaire.</p>
+          </aside>
+          <div>
+            <div id="formMessage" role="alert"></div>
+            <form id="form" novalidate></form>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="/vendor/leaflet/leaflet.js"></script>
+    <script src="/client.js"></script>
+    <script>
+      (() => {
+        const C = window.TraxoClient;
+        const token = C.requestTokenFromPath();
+        const form = document.getElementById('form');
+        const message = document.getElementById('formMessage');
+        let gps = null;
+        let photos = null;
+        let sending = false;
+
+        const say = (text, kind) => { message.innerHTML = text ? `<p class="cl-notice${kind ? ` ${kind}` : ''}">${C.esc(text)}</p>` : ''; };
+
+        function refreshSubmit() {
+          const button = document.getElementById('submitBtn');
+          const ready = Boolean(gps && gps.get());
+          button.disabled = sending || !ready;
+          document.getElementById('submitHint').textContent = ready ? 'Vous pourrez encore modifier vos informations après l’envoi.' : 'Partagez votre position pour continuer.';
+        }
+
+        function render(companyName) {
+          C.renderHeader(document.getElementById('head'), companyName, 'Livraison');
+          document.getElementById('asideCompany').textContent = companyName || '';
+          if (companyName) document.title = `Préparer votre livraison — ${companyName}`;
+          form.innerHTML = `${C.requestFieldsHtml()}
+            <div class="cl-sec">
+              <button class="cl-btn block" id="submitBtn" type="submit" disabled>Envoyer ma demande</button>
+              <p class="cl-hint" id="submitHint"></p>
+            </div>`;
+          gps = C.createGpsField(document.getElementById('gpsField'), { onChange: refreshSubmit });
+          photos = C.createPhotoPicker(document.getElementById('photoField'), { max: 3, onError: (text) => say(text, 'err') });
+          refreshSubmit();
+        }
+
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          say('');
+          const missing = C.firstMissing(form);
+          if (missing) { say('Merci de remplir les champs obligatoires.', 'err'); missing.focus(); return; }
+          const position = gps.get();
+          if (!position) { say('Partagez votre position GPS pour continuer.', 'err'); gps.focus(); return; }
+          sending = true;
+          refreshSubmit();
+          const button = document.getElementById('submitBtn');
+          button.textContent = 'Envoi en cours…';
+          const payload = { ...C.readFields(form), locationLat: position.latitude, locationLng: position.longitude, locationAccuracy: position.accuracy };
+          const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          }).catch(() => ({ ok: false, data: { error: 'Connexion impossible. Vérifiez votre réseau et réessayez.' } }));
+          if (!result.ok) {
+            sending = false;
+            button.textContent = 'Envoyer ma demande';
+            refreshSubmit();
+            say(result.data.error || 'Une erreur est survenue.', 'err');
+            return;
+          }
+          // La demande est enregistrée : les photos suivent, une à une.
+          const pending = photos.items();
+          let failed = 0;
+          for (let i = 0; i < pending.length; i += 1) {
+            button.textContent = `Envoi des photos (${i + 1}/${pending.length})…`;
+            try { await C.uploadPhoto(token, result.data.editToken, pending[i].blob); } catch (_) { failed += 1; }
+          }
+          const target = new URL(result.data.redirect, location.origin);
+          if (failed) target.searchParams.set('photos', 'partiel');
+          location.assign(target.pathname + target.search);
+        });
+
+        (async () => {
+          const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}`).catch(() => ({ ok: false, data: {} }));
+          if (result.ok && result.data.stage && result.data.stage !== 'pending') {
+            location.replace(`/demande/${encodeURIComponent(token)}/confirmation`);
+            return;
+          }
+          render(result.ok ? result.data.companyName : '');
+          if (!result.ok) say(result.data.error || 'Ce formulaire est introuvable ou a expiré.', 'err');
+        })();
+      })();
+    </script>
+  </body>
 </html>

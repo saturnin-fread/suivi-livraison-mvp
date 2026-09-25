@@ -173,24 +173,25 @@ const DASH_TABS = [
   { key: 'tournees', label: 'Tournées' },
   { key: 'incidents', label: 'Incidents' },
 ];
-const dashboardState = { period: 7, tab: 'general', data: null };
+const dashboardState = { period: 7, tab: 'general', from: null, to: null, data: null };
+const isDashDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
 const DASH_ICONS = {
-  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg>',
-  truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M14 9h4l3 3v5h-2"/><circle cx="7.5" cy="17.5" r="2"/><circle cx="17.5" cy="17.5" r="2"/></svg>',
-  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.1V12a10 10 0 1 1-5.9-9.1"/><path d="m9 11 3 3L22 4"/></svg>',
-  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
-  xcircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>',
-  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
-  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
-  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
-  percent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>',
-  route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>',
-  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
-  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>',
-  calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
-  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" /><path d="M12 22V12" /><polyline points="3.29 7 12 12 20.71 7" /><path d="m7.5 4.27 9 5.15" /></svg>',
+  truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" /><path d="M15 18H9" /><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" /><circle cx="17" cy="18" r="2" /><circle cx="7" cy="18" r="2" /></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21.801 10A10 10 0 1 1 17 3.335" /><path d="m9 11 3 3L22 4" /></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>',
+  xcircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 6v6l4 2" /><circle cx="12" cy="12" r="10" /></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><path d="M16 3.128a4 4 0 0 1 0 7.744" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" /></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" /></svg>',
+  percent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><line x1="19" x2="5" y1="5" y2="19" /><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></svg>',
+  route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" /><circle cx="12" cy="10" r="3" /></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 15V3" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /></svg>',
+  calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M8 2v4" /><path d="M16 2v4" /><rect width="18" height="18" x="3" y="4" rx="2" /><path d="M3 10h18" /></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg>',
 };
 
 const DASH_ORDER_STATUS_COLOR = {
@@ -305,11 +306,8 @@ function dashCard(title, body, control) {
     ${body}
   </section>`;
 }
-function dashChip(text) {
-  return `<span class="dash-chip">${escapeHtml(text)} ${DASH_ICONS.chevron}</span>`;
-}
-function dashLink(text) {
-  return `<span class="dash-cardlink">${escapeHtml(text)}</span>`;
+function dashLink(text, href) {
+  return `<a class="dash-cardlink" href="${escapeHtml(href || '#')}">${escapeHtml(text)}</a>`;
 }
 function dashLegend(items) {
   return `<div class="dash-legend">${items.map((it) => `<span><i class="${it.line ? 'line' : ''}" style="background:${it.color}"></i>${escapeHtml(it.label)}</span>`).join('')}</div>`;
@@ -635,8 +633,8 @@ function dashTabContent(tab, data) {
   const val = (t) => formatInteger(t ? t.value : 0);
   const rate = (t) => (t && t.value != null ? formatPercent(t.value) : '—');
   const orderStatusSeg = data.distributions.orderStatus.map((s) => ({ ...s, color: DASH_ORDER_STATUS_COLOR[s.label] }));
-  const perJour = dashChip('Par jour');
-  const cettePeriode = dashChip('Cette période');
+  const perJour = '';
+  const cettePeriode = '';
 
   if (tab === 'commandes') {
     const kpis = [
@@ -648,7 +646,7 @@ function dashTabContent(tab, data) {
     return dashKpiRow(kpis) + `<div class="dash-grid-2">
       ${dashCard('Commandes créées par jour', dashLegend([{ color: '#e11d2a', label: 'Créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
       ${dashCard('Répartition par statut', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
-    </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes'));
+    </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes', '/app/operations?vue=commandes'));
   }
 
   if (tab === 'livraisons') {
@@ -675,7 +673,7 @@ function dashTabContent(tab, data) {
         { label: 'Livraisons assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.assigned)}</td>` },
         { label: 'Livraisons terminées', num: true, render: (d) => `<td class="num">${formatInteger(d.delivered)}</td>` },
         { label: 'Taux de livraison', render: (d) => dashRateCell(d.delivered, d.assigned) },
-      ]), dashLink('Voir tous'))}
+      ]), dashLink('Voir tous', '/app/livreurs'))}
     </div>`;
   }
 
@@ -703,7 +701,7 @@ function dashTabContent(tab, data) {
         { label: 'Assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.assigned)}</td>` },
         { label: 'Livrées', num: true, render: (d) => `<td class="num">${formatInteger(d.delivered)}</td>` },
         { label: 'Taux de livraison', render: (d) => dashRateCell(d.delivered, d.assigned) },
-      ]), dashLink('Voir tous'))}
+      ]), dashLink('Voir tous', '/app/livreurs'))}
       ${dashCard('Charge de travail', dashProgressRows(workload, { base: Math.max(1, assignedTotal) }))}
     </div>`;
   }
@@ -726,7 +724,7 @@ function dashTabContent(tab, data) {
       ${dashCard('Demandes reçues par jour', dashLegend([{ color: '#3b82f6', label: 'Demandes reçues (total)' }, { color: '#10b981', label: 'Validées', line: true }]) + dashBarChart(data.series, { key: 'requestsReceived', color: '#93c5fd', barName: 'reçues', labelColor: '#2563eb', lineKey: 'requestsConverted', lineColor: '#10b981', lineName: 'validées' }), perJour)}
       ${dashCard('Traitement des demandes', dashProgressRows(processing, { base: Math.max(1, received) }), cettePeriode)}
     </div><div class="dash-grid-2">
-      ${dashCard('Demandes récentes', dashRecentRequests(data.tables.recentRequests), dashLink('Voir toutes'))}
+      ${dashCard('Demandes récentes', dashRecentRequests(data.tables.recentRequests), dashLink('Voir toutes', '/app/operations?vue=demandes'))}
       ${dashCard('Délais de validation', dashProgressRows(data.distributions.validationDelay.map((d, i) => ({ label: d.label, value: d.value, color: i === 0 ? '#10b981' : '#3b82f6' }))), cettePeriode)}
     </div>`;
   }
@@ -755,7 +753,7 @@ function dashTabContent(tab, data) {
         { label: 'Annulées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsCancelled)}</td>` },
         { label: 'Taux de réalisation', render: (d) => dashRateCell(d.runsCompleted, d.runsAssigned) },
       ]))}
-      ${dashCard('Livraisons par tournée', dashProgressRows(data.distributions.deliveriesPerRun.map((d, i) => ({ label: d.label, value: d.value, color: ['#3b82f6', '#10b981', '#f59e0b'][i] }))), dashLink('Voir toutes'))}
+      ${dashCard('Livraisons par tournée', dashProgressRows(data.distributions.deliveriesPerRun.map((d, i) => ({ label: d.label, value: d.value, color: ['#3b82f6', '#10b981', '#f59e0b'][i] }))), dashLink('Voir toutes', '/app/operations?vue=tournees'))}
     </div>`;
   }
 
@@ -776,7 +774,7 @@ function dashTabContent(tab, data) {
       ${dashCard('Incidents signalés par jour', dashLegend(catKeys.slice(0, 4).map((c) => ({ color: c.color, label: c.label }))) + dashStackedChart(data.series, catKeys), perJour)}
       ${dashCard('Types d’incident', dashProgressRows(catSeg, { base: catSeg.reduce((s, x) => s + x.value, 0) || 1 }), cettePeriode)}
     </div><div class="dash-grid-2">
-      ${dashCard('Incidents récents', dashRecentIncidents(data.tables.recentIncidents), dashLink('Voir tous'))}
+      ${dashCard('Incidents récents', dashRecentIncidents(data.tables.recentIncidents), dashLink('Voir tous', '/app/operations?vue=incidents'))}
       ${dashCard('Résolution', dashProgressRows(resolution, { base: (m.incidentsResolved.value + now.openIncidents) || 1 }))}
     </div>`;
   }
@@ -791,7 +789,7 @@ function dashTabContent(tab, data) {
   return dashKpiRow(kpis) + `<div class="dash-grid-2">
     ${dashCard('Activité par jour', dashLegend([{ color: '#e11d2a', label: 'Commandes créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
     ${dashCard('Répartition des commandes', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
-  </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes'));
+  </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes', '/app/operations?vue=commandes'));
 }
 
 function dashKpiRow(kpis) { return `<div class="dash-kpis">${kpis.join('')}</div>`; }
@@ -814,8 +812,12 @@ function dashUpdateMeta() {
 async function dashLoadData() {
   const content = document.getElementById('dashContent');
   if (content) content.innerHTML = '<div class="dash-loading"><span class="dash-spinner"></span>Chargement des indicateurs…</div>';
+  const custom = dashboardState.from && dashboardState.to;
+  const query = custom
+    ? `from=${encodeURIComponent(dashboardState.from)}&to=${encodeURIComponent(dashboardState.to)}`
+    : `period=${dashboardState.period}`;
   try {
-    dashboardState.data = await api(`/api/app/dashboard?period=${dashboardState.period}`);
+    dashboardState.data = await api(`/api/app/dashboard?${query}`);
     dashUpdateMeta();
     dashRenderTab();
   } catch (error) {
@@ -824,8 +826,12 @@ async function dashLoadData() {
 }
 function dashSyncUrl() {
   const params = new URLSearchParams(location.search);
-  params.set('periode', String(dashboardState.period));
   params.set('vue', dashboardState.tab);
+  if (dashboardState.from && dashboardState.to) {
+    params.set('from', dashboardState.from); params.set('to', dashboardState.to); params.delete('periode');
+  } else {
+    params.set('periode', String(dashboardState.period)); params.delete('from'); params.delete('to');
+  }
   history.replaceState(null, '', `${location.pathname}?${params.toString()}`);
 }
 
@@ -834,8 +840,13 @@ async function renderDashboard() {
   const params = new URLSearchParams(location.search);
   const periodParam = Number(params.get('periode'));
   dashboardState.period = [7, 30].includes(periodParam) ? periodParam : dashboardState.period;
+  const fromParam = params.get('from'); const toParam = params.get('to');
+  if (isDashDate(fromParam) && isDashDate(toParam) && fromParam <= toParam) {
+    dashboardState.from = fromParam; dashboardState.to = toParam;
+  } else { dashboardState.from = null; dashboardState.to = null; }
   const tabParam = params.get('vue');
   dashboardState.tab = DASH_TABS.some((t) => t.key === tabParam) ? tabParam : dashboardState.tab;
+  const custom = Boolean(dashboardState.from && dashboardState.to);
 
   page.innerHTML = `
     <div class="dash-topbar">
@@ -844,18 +855,28 @@ async function renderDashboard() {
         <p class="dash-subtitle">Analysez vos opérations par période</p>
       </div>
       <div class="dash-controls">
-        <span class="dash-daterange">${DASH_ICONS.calendar}<span id="dashRange">—</span>${DASH_ICONS.chevron}</span>
-        <div class="dash-period" role="group" aria-label="Période">
-          <button type="button" class="dash-period-btn ${dashboardState.period === 7 ? 'active' : ''}" data-period="7">7 jours</button>
-          <button type="button" class="dash-period-btn ${dashboardState.period === 30 ? 'active' : ''}" data-period="30">30 jours</button>
+        <div class="dash-daterange-wrap">
+          <button type="button" class="dash-daterange ${custom ? 'active' : ''}" id="dashRangeBtn" aria-haspopup="true" aria-expanded="false">${DASH_ICONS.calendar}<span id="dashRange">—</span>${DASH_ICONS.chevron}</button>
+          <div class="dash-range-pop" id="dashRangePop" hidden>
+            <div class="dash-range-title">Plage personnalisée</div>
+            <label class="dash-range-field"><span>Du</span><input type="date" id="dashFrom"></label>
+            <label class="dash-range-field"><span>Au</span><input type="date" id="dashTo"></label>
+            <div class="dash-range-actions">
+              <button type="button" class="dash-range-reset" id="dashRangeReset">Réinitialiser</button>
+              <button type="button" class="dash-range-apply" id="dashRangeApply">Appliquer</button>
+            </div>
+          </div>
         </div>
-        <a class="button secondary dash-export" href="/app/rapports">${DASH_ICONS.download}<span>Exporter</span>${DASH_ICONS.chevron}</a>
+        <div class="dash-period" role="group" aria-label="Période">
+          <button type="button" class="dash-period-btn ${!custom && dashboardState.period === 7 ? 'active' : ''}" data-period="7">7 jours</button>
+          <button type="button" class="dash-period-btn ${!custom && dashboardState.period === 30 ? 'active' : ''}" data-period="30">30 jours</button>
+        </div>
+        <a class="button secondary dash-export" href="/app/rapports">${DASH_ICONS.download}<span>Exporter</span></a>
         <p id="dashCompare" class="dash-compare">—</p>
       </div>
     </div>
     <nav class="dash-tabs" aria-label="Vues">
       ${DASH_TABS.map((t) => `<button type="button" class="dash-tab ${t.key === dashboardState.tab ? 'active' : ''}" data-tab="${t.key}">${escapeHtml(t.label)}</button>`).join('')}
-      <button type="button" class="dash-tab dash-tab-new" id="dashNewView" title="Vues personnalisées à venir">+ Nouvelle vue</button>
     </nav>
     <div id="dashContent" class="dash-content"></div>`;
 
@@ -867,15 +888,49 @@ async function renderDashboard() {
   }));
   document.querySelectorAll('.dash-period-btn').forEach((btn) => btn.addEventListener('click', () => {
     const p = Number(btn.dataset.period);
-    if (dashboardState.period === p) return;
-    dashboardState.period = p;
+    const wasCustom = Boolean(dashboardState.from);
+    if (!wasCustom && dashboardState.period === p) return;
+    dashboardState.period = p; dashboardState.from = null; dashboardState.to = null;
     document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    document.getElementById('dashRangeBtn')?.classList.remove('active');
     dashSyncUrl();
     dashLoadData();
   }));
-  document.getElementById('dashNewView')?.addEventListener('click', () => {
-    const content = document.getElementById('dashContent');
-    if (content) content.insertAdjacentHTML('afterbegin', '<div class="notice">Les vues personnalisées (filtres enregistrés) arriveront dans une prochaine version.</div>');
+
+  // Sélecteur de plage personnalisée
+  const rangeBtn = document.getElementById('dashRangeBtn');
+  const rangePop = document.getElementById('dashRangePop');
+  const closeRange = () => { rangePop?.setAttribute('hidden', ''); rangeBtn?.setAttribute('aria-expanded', 'false'); };
+  rangeBtn?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const opening = rangePop.hasAttribute('hidden');
+    if (opening) {
+      const r = dashboardState.data && dashboardState.data.range;
+      const f = document.getElementById('dashFrom'); const t = document.getElementById('dashTo');
+      const today = new Date(Date.now() + 60 * 60000).toISOString().slice(0, 10);
+      if (f) { f.value = dashboardState.from || (r && r.from) || ''; f.max = today; }
+      if (t) { t.value = dashboardState.to || (r && r.to) || ''; t.max = today; }
+      rangePop.removeAttribute('hidden'); rangeBtn.setAttribute('aria-expanded', 'true');
+    } else closeRange();
+  });
+  rangePop?.addEventListener('click', (event) => event.stopPropagation());
+  document.getElementById('dashRangeApply')?.addEventListener('click', () => {
+    const f = document.getElementById('dashFrom').value; const t = document.getElementById('dashTo').value;
+    if (!isDashDate(f) || !isDashDate(t)) return;
+    const from = f <= t ? f : t; const to = f <= t ? t : f;
+    dashboardState.from = from; dashboardState.to = to;
+    document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.remove('active'));
+    rangeBtn.classList.add('active');
+    closeRange(); dashSyncUrl(); dashLoadData();
+  });
+  document.getElementById('dashRangeReset')?.addEventListener('click', () => {
+    dashboardState.from = null; dashboardState.to = null;
+    rangeBtn.classList.remove('active');
+    document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.toggle('active', Number(b.dataset.period) === dashboardState.period));
+    closeRange(); dashSyncUrl(); dashLoadData();
+  });
+  document.addEventListener('click', (event) => {
+    if (rangePop && !rangePop.hasAttribute('hidden') && !event.target.closest('.dash-daterange-wrap')) closeRange();
   });
 
   dashSyncUrl();
@@ -5180,15 +5235,17 @@ async function initNotifications() {
   const pop = document.getElementById('notifPop');
   const dot = document.getElementById('notifDot');
   if (!btn || !pop || !dot) return;
-  const SEEN_KEY = 'traxo.notif.lastSeen';
-  const readSeen = () => { try { return Number(localStorage.getItem(SEEN_KEY) || 0); } catch { return 0; } };
-  const writeSeen = (ts) => { try { localStorage.setItem(SEEN_KEY, String(ts)); } catch { /* stockage indisponible */ } };
+  // Suivi lu/non-lu par identifiant (localStorage). On borne le stockage aux
+  // notifications encore présentes pour éviter une croissance illimitée.
+  const READ_KEY = 'traxo.notif.read';
+  const readReadSet = () => { try { const a = JSON.parse(localStorage.getItem(READ_KEY) || '[]'); return new Set(Array.isArray(a) ? a : []); } catch { return new Set(); } };
+  const writeReadSet = (set, currentIds) => { try { localStorage.setItem(READ_KEY, JSON.stringify([...set].filter((id) => currentIds.has(id)))); } catch { /* stockage indisponible */ } };
   const notifIcons = {
-    requests: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
-    unassigned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></svg>',
-    incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4M12 17h.01"/></svg>',
-    runs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h6a4 4 0 0 0 0-8H8a4 4 0 0 1 0-8h4"/></svg>',
-    relaunch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+    requests: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="8" height="4" x="8" y="2" rx="1" ry="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M12 11h4" /><path d="M12 16h4" /><path d="M8 11h.01" /><path d="M8 16h.01" /></svg>',
+    unassigned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" /><path d="m7.5 4.27 9 5.15" /><polyline points="3.29 7 12 12 20.71 7" /><line x1="12" x2="12" y1="22" y2="12" /><circle cx="18.5" cy="15.5" r="2.5" /><path d="M20.27 17.27 22 19" /></svg>',
+    incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>',
+    runs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></svg>',
+    relaunch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>',
   };
   const relTime = (iso) => {
     const t = new Date(iso).getTime();
@@ -5214,16 +5271,20 @@ async function initNotifications() {
   let notifTab = 'all';
   let lastData = { items: [] };
   const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-  const itemHtml = (it, isUnread) => `<a class="notif-item ${isUnread ? 'unread' : ''}" href="${escapeHtml(it.href)}">
+  const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+  const itemHtml = (it, isUnread) => `<div class="notif-item ${isUnread ? 'unread' : ''}" data-href="${escapeHtml(it.href)}" role="link" tabindex="0">
       <span class="notif-item-ic notif-${escapeHtml(it.type)}">${notifIcons[it.type] || ''}</span>
       <span class="notif-item-main"><strong>${escapeHtml(it.title)}</strong><small>${escapeHtml(it.summary)}</small></span>
-      <span class="notif-item-side"><span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>${isUnread ? '<span class="notif-item-udot" aria-label="Non lue"></span>' : ''}</span>
-    </a>`;
+      <span class="notif-item-side"><span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>${isUnread
+        ? `<span class="notif-item-udot" aria-label="Non lue"></span><button type="button" class="notif-read-btn" data-read="${escapeHtml(it.id)}" title="Marquer comme lu" aria-label="Marquer comme lu">${checkIcon}</button>`
+        : ''}</span>
+    </div>`;
   const render = (data) => {
     lastData = data || { items: [] };
     const items = Array.isArray(lastData.items) ? lastData.items : [];
-    const seen = readSeen();
-    const isUnread = (it) => new Date(it.at).getTime() > seen;
+    const ids = new Set(items.map((it) => it.id));
+    const readSet = readReadSet();
+    const isUnread = (it) => !readSet.has(it.id);
     const unread = items.filter(isUnread).length;
     if (unread > 0) { dot.hidden = false; dot.textContent = unread > 99 ? '99+' : String(unread); }
     else dot.hidden = true;
@@ -5271,8 +5332,22 @@ async function initNotifications() {
     });
     pop.querySelector('.notif-readall')?.addEventListener('click', (event) => {
       event.stopPropagation();
-      writeSeen(Date.now());
+      items.forEach((it) => readSet.add(it.id));
+      writeReadSet(readSet, ids);
       render(lastData);
+    });
+    // Marquer une notification comme lue (bouton ✓), sans naviguer.
+    pop.querySelectorAll('.notif-read-btn').forEach((b) => b.addEventListener('click', (event) => {
+      event.stopPropagation();
+      readSet.add(b.dataset.read);
+      writeReadSet(readSet, ids);
+      render(lastData);
+    }));
+    // Navigation de la ligne (div role=link) — hors clic sur le bouton ✓.
+    pop.querySelectorAll('.notif-item').forEach((row) => {
+      const go = () => { if (row.dataset.href) location.href = row.dataset.href; };
+      row.addEventListener('click', (event) => { if (!event.target.closest('.notif-read-btn')) go(); });
+      row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); go(); } });
     });
     const digestBtn = pop.querySelector('.notif-digest');
     digestBtn?.addEventListener('click', async (event) => {

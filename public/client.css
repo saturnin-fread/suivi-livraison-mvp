@@ -197,3 +197,19 @@ textarea.cl-input { min-height: 74px; resize: vertical; line-height: 1.45; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Téléphone : indicatif pays */
+.cl-phone { position: relative; display: flex; }
+.cl-cc { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 10px 0 12px; border: 1px solid var(--line-strong); border-right: 0; border-radius: 3px 0 0 3px; background: #fbfbf9; font-size: 15.5px; cursor: pointer; }
+.cl-cc:hover { background: #f1f1ec; }
+.cl-cc:focus-visible { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(31, 84, 70, .14); position: relative; z-index: 1; }
+.cl-cc svg.ic { width: 15px; height: 15px; color: var(--muted); }
+.cl-phone .cl-input { border-radius: 0 3px 3px 0; min-width: 0; }
+.cl-flag { width: 22px; height: 16px; border-radius: 2px; object-fit: cover; box-shadow: 0 0 0 1px rgba(0, 0, 0, .08); flex: 0 0 auto; }
+.cl-cc-list { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: min(320px, 100%); max-height: 300px; overflow-y: auto; margin: 0; padding: 6px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 14px 36px rgba(20, 20, 20, .14); }
+.cl-cc-list li { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 4px; cursor: pointer; font-size: 15px; }
+.cl-cc-list li:hover, .cl-cc-list li:focus { background: #f1f4f1; outline: none; }
+.cl-cc-list li[aria-selected="true"] { background: var(--green-soft); color: var(--green); font-weight: 500; }
+.cl-cc-name { flex: 1; }
+.cl-cc-dial { color: var(--muted); font-variant-numeric: tabular-nums; }
+.cl-hint.err { color: var(--red); }

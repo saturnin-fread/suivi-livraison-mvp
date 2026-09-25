@@ -26,10 +26,12 @@
         const { esc, icon } = C;
         const token = C.requestTokenFromPath();
         const params = new URLSearchParams(location.search);
-        const editToken = params.get('edit') || '';
+        // Ancien lien « ?edit=… » : échangé une seule fois contre un cookie de
+        // l'appareil, puis retiré de la barre d'adresse (lien copié = inutile).
+        let legacyEdit = params.get('edit') || '';
         const pageEl = document.getElementById('page');
         const REFRESH_MS = 20000;
-        const FINAL = ['delivered', 'refused', 'closed'];
+        const FINAL = ['delivered', 'refused', 'closed', 'other_device'];
         const EN_ROUTE = ['En tournée', 'En livraison', 'Arrivée'];
         const ORDER_LABELS = { 'Confirmée': 'Livreur affecté', 'En préparation': 'En préparation', 'Récupérée': 'Colis récupéré', 'En tournée': 'En tournée', 'En livraison': 'En livraison', 'Arrivée': 'Arrivé', 'Livrée': 'Livrée' };
         let data = null;
@@ -148,11 +150,12 @@
 
         function render() {
           C.renderHeader(document.getElementById('head'), data.companyName, 'Livraison');
-          document.title = `${data.stage === 'received' ? 'Demande' : 'Livraison'} #${data.id} — ${company()}`;
+          document.title = data.id ? `${data.stage === 'received' ? 'Demande' : 'Livraison'} #${data.id} — ${company()}` : `Demande — ${company()}`;
           if (data.stage === 'received') pageEl.innerHTML = receivedHtml();
           else if (['validated', 'assigned', 'delivered'].includes(data.stage)) pageEl.innerHTML = lockedHtml();
           else if (data.stage === 'refused') pageEl.innerHTML = simpleHtml('Votre demande n’a pas été retenue.', `Pour plus d’informations, contactez directement ${esc(company())}.`, `Demande #${data.id}`);
           else if (data.stage === 'closed') pageEl.innerHTML = simpleHtml('Cette demande est clôturée.', `Pour toute question, contactez directement ${esc(company())}.`, `Demande #${data.id}`);
+          else if (data.stage === 'other_device') pageEl.innerHTML = simpleHtml('Cette demande a déjà été envoyée.', `Pour protéger les informations du client, elles ne s’affichent que sur le téléphone et le navigateur qui ont rempli le formulaire.<br /><br />Si c’est vous, rouvrez ce lien depuis cet appareil. Sinon, contactez directement ${esc(company())}.`, 'Demande');
           else pageEl.innerHTML = simpleHtml('Votre demande n’est pas encore envoyée.', `<a class="cl-link" href="/demande/${encodeURIComponent(token)}">Compléter le formulaire ${icon('arrowRight')}</a>`, 'Demande');
           wire();
         }
@@ -167,14 +170,15 @@
           });
           const form = document.getElementById('editForm');
           if (!form) return;
+          C.wirePhoneField(form);
           const gps = C.createGpsField(document.getElementById('gpsField'), {
             initial: data.location_lat != null ? { latitude: data.location_lat, longitude: data.location_lng, accuracy: data.location_accuracy } : null,
           });
           C.createPhotoPicker(document.getElementById('photoField'), {
             max: data.photoMax || 3,
             items: data.photoIds.map((id) => ({ id, url: photoUrl(id) })),
-            onAdd: async (item) => { item.id = await C.uploadPhoto(token, editToken, item.blob); data.photoIds.push(item.id); },
-            onRemove: async (item) => { if (item.id) { await C.deletePhoto(token, editToken, item.id); data.photoIds = data.photoIds.filter((id) => id !== item.id); } },
+            onAdd: async (item) => { item.id = await C.uploadPhoto(token, item.blob); data.photoIds.push(item.id); },
+            onRemove: async (item) => { if (item.id) { await C.deletePhoto(token, item.id); data.photoIds = data.photoIds.filter((id) => id !== item.id); } },
             onError: (text) => { flash = { text, kind: 'err' }; showFlash(); },
           });
           document.getElementById('cancelBtn').addEventListener('click', () => { editing = false; flash = null; render(); });
@@ -183,20 +187,21 @@
             const missing = C.firstMissing(form);
             if (missing) { flash = { text: 'Merci de remplir les champs obligatoires.', kind: 'err' }; showFlash(); missing.focus(); return; }
             const position = gps.get();
-            if (!position) { flash = { text: 'Votre position GPS est requise.', kind: 'err' }; showFlash(); gps.focus(); return; }
+            if (!position) { flash = { text: gps.imprecise() ? 'Votre position est trop imprécise : placez l’épingle sur votre lieu de livraison.' : 'Votre position GPS est requise.', kind: 'err' }; showFlash(); gps.focus(); return; }
             const button = document.getElementById('saveBtn');
             button.disabled = true;
             button.textContent = 'Enregistrement…';
             const fields = C.readFields(form);
             const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}`, {
               method: 'PUT', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ...fields, editToken, version: data.version, locationLat: position.latitude, locationLng: position.longitude, locationAccuracy: position.accuracy }),
+              body: JSON.stringify({ ...fields, version: data.version, locationLat: position.latitude, locationLng: position.longitude, locationAccuracy: position.accuracy }),
             }).catch(() => ({ ok: false, data: { error: 'Connexion impossible. Réessayez.' } }));
             if (!result.ok) {
               button.disabled = false;
               button.textContent = 'Enregistrer les modifications';
               flash = { text: result.data.error || 'Enregistrement impossible.', kind: 'err' };
               showFlash();
+              if (result.data.field) C.markFieldError(form, result.data.field, result.data.error);
               if (result.status === 409) { editing = false; await load(true); }
               return;
             }
@@ -218,8 +223,15 @@
         }
 
         async function load(force) {
-          const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}?edit=${encodeURIComponent(editToken)}`)
+          const query = legacyEdit ? `?edit=${encodeURIComponent(legacyEdit)}` : '';
+          const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}${query}`)
             .catch(() => ({ ok: false, data: {} }));
+          if (legacyEdit) {
+            legacyEdit = '';
+            params.delete('edit');
+            const rest = params.toString();
+            history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+          }
           if (!result.ok) {
             if (!data) pageEl.innerHTML = `<aside class="cl-aside"><h1 class="cl-title">Demande introuvable.</h1><p class="cl-lead">${esc(result.data.error || 'Ce lien n’est plus valide.')}</p></aside><div></div>`;
             return;

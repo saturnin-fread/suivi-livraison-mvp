@@ -60,11 +60,16 @@
   }
 
   // ---- Champ GPS (obligatoire) avec épingle ajustable -------------------
+  // Au-delà de 150 m (position par IP ou réseau, typique d'un ordinateur),
+  // le point n'aide pas le livreur : il faut placer l'épingle soi-même.
+  const GPS_MAX_ACCURACY_M = 150;
   function createGpsField(root, { initial, onChange } = {}) {
     let position = initial && Number.isFinite(Number(initial.latitude)) ? {
       latitude: Number(initial.latitude), longitude: Number(initial.longitude),
       accuracy: initial.accuracy == null ? null : Number(initial.accuracy),
     } : null;
+    const imprecise = () => Boolean(position && position.accuracy != null && position.accuracy > GPS_MAX_ACCURACY_M);
+    const usable = () => (position && !imprecise() ? position : null);
     let map = null;
     let marker = null;
     let busy = false;
@@ -83,27 +88,33 @@
     const hint = root.querySelector('#gpsHint');
 
     function paint() {
-      box.classList.toggle('ok', Boolean(position) && !error);
-      box.classList.toggle('err', Boolean(error));
+      box.classList.toggle('ok', Boolean(usable()) && !error);
+      box.classList.toggle('err', Boolean(error) || imprecise());
       if (busy) sub.textContent = 'Recherche de votre position…';
       else if (error) sub.textContent = error;
-      else if (position) {
+      else if (imprecise()) {
+        const km = position.accuracy >= 1000 ? `${Math.round(position.accuracy / 1000)} km` : `${Math.round(position.accuracy)} m`;
+        sub.textContent = `Position trop imprécise (± ${km}). Placez l’épingle exactement sur votre lieu de livraison, ou réessayez depuis votre téléphone.`;
+      } else if (position) {
         sub.textContent = position.accuracy != null
           ? `Position partagée · précision d’environ ${Math.round(position.accuracy)} m`
           : 'Position partagée · ajustée sur la carte';
       } else sub.textContent = 'Partagez votre position depuis le lieu de livraison.';
       button.textContent = busy ? 'Localisation…' : position ? 'Actualiser' : 'Partager ma position';
       button.disabled = busy;
-      hint.textContent = position ? 'Si l’épingle n’est pas au bon endroit, déplacez-la sur la carte.' : 'Requis pour envoyer votre demande.';
+      hint.textContent = imprecise() ? 'Déplacez l’épingle sur la carte pour confirmer l’endroit exact.'
+        : position ? 'Si l’épingle n’est pas au bon endroit, déplacez-la sur la carte.' : 'Requis pour envoyer votre demande.';
       mapEl.hidden = !position;
     }
 
     function showMap() {
       if (!position || typeof window.L === 'undefined') return;
       const latLng = [position.latitude, position.longitude];
+      // Zoom adapté à la précision : large si la position est approximative.
+      const zoom = !position.accuracy ? 17 : position.accuracy > 3000 ? 12 : position.accuracy > GPS_MAX_ACCURACY_M ? 15 : 17;
       mapEl.hidden = false;
       if (!map) {
-        map = L.map(mapEl, { zoomControl: true, attributionControl: true, scrollWheelZoom: false }).setView(latLng, 17);
+        map = L.map(mapEl, { zoomControl: true, attributionControl: true, scrollWheelZoom: false }).setView(latLng, zoom);
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
         marker = L.marker(latLng, { draggable: true, keyboard: true, title: 'Point de livraison' }).addTo(map);
         marker.on('dragend', () => {
@@ -115,7 +126,7 @@
         });
       } else {
         marker.setLatLng(latLng);
-        map.setView(latLng, 17);
+        map.setView(latLng, zoom);
       }
       setTimeout(() => map.invalidateSize(), 60);
     }
@@ -134,7 +145,7 @@
         position = { latitude: result.coords.latitude, longitude: result.coords.longitude, accuracy: result.coords.accuracy };
         paint();
         showMap();
-        if (onChange) onChange(position);
+        if (onChange) onChange(usable());
       }, (failure) => {
         busy = false;
         error = failure && failure.code === 1
@@ -149,7 +160,7 @@
     button.addEventListener('click', locate);
     paint();
     if (position) showMap();
-    return { get: () => position, focus: () => button.focus() };
+    return { get: usable, imprecise, focus: () => (imprecise() ? mapEl.scrollIntoView({ block: 'center' }) : button.focus()) };
   }
 
   // ---- Photos : compression locale puis envoi binaire ------------------
@@ -189,18 +200,19 @@
     throw new Error('Cette photo est trop lourde, même après compression.');
   }
 
-  function uploadPhoto(token, editToken, blob) {
+  // L'autorisation vient du cookie HttpOnly posé à l'envoi (même appareil).
+  function uploadPhoto(token, blob) {
     return fetchJson(`/api/public/requests/${encodeURIComponent(token)}/photos`, {
-      method: 'POST', headers: { 'Content-Type': 'image/jpeg', 'X-Edit-Token': editToken }, body: blob,
+      method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob,
     }).then((result) => {
       if (!result.ok) throw new Error(result.data.error || 'Envoi de la photo impossible.');
       return result.data.id;
     });
   }
 
-  function deletePhoto(token, editToken, id) {
+  function deletePhoto(token, id) {
     return fetchJson(`/api/public/requests/${encodeURIComponent(token)}/photos/${encodeURIComponent(id)}`, {
-      method: 'DELETE', headers: { 'X-Edit-Token': editToken },
+      method: 'DELETE',
     }).then((result) => {
       if (!result.ok) throw new Error(result.data.error || 'Suppression impossible.');
     });
@@ -265,6 +277,85 @@
     return { items: () => list };
   }
 
+  // ---- Téléphone : indicatif pays avec drapeau --------------------------
+  // Drapeaux SVG (flag-icons, MIT) : les émojis drapeaux ne s'affichent pas sous Windows.
+  const COUNTRIES = [
+    ['BJ', 'Bénin', '229'], ['TG', 'Togo', '228'], ['NG', 'Nigeria', '234'], ['NE', 'Niger', '227'],
+    ['BF', 'Burkina Faso', '226'], ['CI', 'Côte d’Ivoire', '225'], ['GH', 'Ghana', '233'], ['SN', 'Sénégal', '221'],
+    ['ML', 'Mali', '223'], ['GN', 'Guinée', '224'], ['CM', 'Cameroun', '237'], ['GA', 'Gabon', '241'],
+    ['CG', 'Congo', '242'], ['CD', 'RD Congo', '243'], ['TD', 'Tchad', '235'], ['MA', 'Maroc', '212'],
+    ['FR', 'France', '33'], ['BE', 'Belgique', '32'], ['CH', 'Suisse', '41'], ['CA', 'Canada', '1'],
+    ['US', 'États-Unis', '1'], ['GB', 'Royaume-Uni', '44'], ['CN', 'Chine', '86'],
+  ];
+  const PHONE_EXAMPLES = { BJ: '01 97 12 34 56', TG: '90 12 34 56', CI: '07 07 07 07 07', SN: '77 123 45 67', NG: '803 123 4567', FR: '6 12 34 56 78' };
+  const country = (code) => COUNTRIES.find((c) => c[0] === code) || COUNTRIES[0];
+  const flag = (code) => `<img class="cl-flag" src="/vendor/flags/${code.toLowerCase()}.svg" alt="" width="22" height="16" loading="lazy" />`;
+
+  function phoneFieldHtml(d) {
+    const [code, name, dial] = country(d.phone_country || 'BJ');
+    return `<div class="cl-phone" id="phoneField">
+        <button type="button" class="cl-cc" id="ccBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Indicatif : ${esc(name)} +${esc(dial)}">${flag(code)}<span>+${esc(dial)}</span>${icon('chevronDown')}</button>
+        <input class="cl-input" id="f-phone" name="customerPhone" type="tel" inputmode="tel" autocomplete="tel-national" required placeholder="${esc(PHONE_EXAMPLES[code] || 'Numéro de téléphone')}" value="${esc(d.phone_national || '')}" />
+        <input type="hidden" name="customerPhoneCountry" id="f-phone-cc" value="${esc(code)}" />
+        <ul class="cl-cc-list" id="ccList" role="listbox" aria-label="Choisir l’indicatif du pays" hidden>
+          ${COUNTRIES.map(([c, n, dl]) => `<li role="option" tabindex="-1" data-cc="${c}" aria-selected="${c === code}">${flag(c)}<span class="cl-cc-name">${esc(n)}</span><span class="cl-cc-dial">+${dl}</span></li>`).join('')}
+        </ul>
+      </div>`;
+  }
+
+  function wirePhoneField(root) {
+    const button = root.querySelector('#ccBtn');
+    const list = root.querySelector('#ccList');
+    const input = root.querySelector('#f-phone');
+    const hidden = root.querySelector('#f-phone-cc');
+    const hint = root.querySelector('#phoneHint');
+    if (!button || !list) return;
+    const paintHint = () => { hint.textContent = hidden.value === 'BJ' ? 'Pour vous joindre à l’arrivée. Au Bénin : 10 chiffres commençant par 01.' : 'Pour vous joindre à l’arrivée.'; };
+    const close = () => { list.hidden = true; button.setAttribute('aria-expanded', 'false'); };
+    const open = () => {
+      list.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      const selected = list.querySelector('[aria-selected="true"]') || list.firstElementChild;
+      selected.focus();
+    };
+    const choose = (code) => {
+      const [c, n, dl] = country(code);
+      hidden.value = c;
+      button.innerHTML = `${flag(c)}<span>+${esc(dl)}</span>${icon('chevronDown')}`;
+      button.setAttribute('aria-label', `Indicatif : ${n} +${dl}`);
+      input.placeholder = PHONE_EXAMPLES[c] || 'Numéro de téléphone';
+      list.querySelectorAll('[data-cc]').forEach((li) => li.setAttribute('aria-selected', String(li.dataset.cc === c)));
+      paintHint();
+      close();
+      input.focus();
+    };
+    button.addEventListener('click', (event) => { event.stopPropagation(); if (list.hidden) open(); else close(); });
+    list.addEventListener('click', (event) => { const li = event.target.closest('[data-cc]'); if (li) choose(li.dataset.cc); });
+    list.addEventListener('keydown', (event) => {
+      const items = [...list.querySelectorAll('[data-cc]')];
+      const index = items.indexOf(document.activeElement);
+      if (event.key === 'ArrowDown') { event.preventDefault(); (items[index + 1] || items[0]).focus(); }
+      else if (event.key === 'ArrowUp') { event.preventDefault(); (items[index - 1] || items[items.length - 1]).focus(); }
+      else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (items[index]) choose(items[index].dataset.cc); }
+      else if (event.key === 'Escape') { close(); button.focus(); }
+    });
+    document.addEventListener('click', (event) => { if (!list.hidden && !event.target.closest('#phoneField')) close(); });
+    // « 00229… » collé → « +229… » (le serveur reconnaît alors l'indicatif).
+    input.addEventListener('blur', () => { input.value = input.value.trim().replace(/^00(?=\d)/, '+'); });
+    paintHint();
+  }
+
+  // Erreur renvoyée par le serveur sur un champ précis.
+  function markFieldError(form, field, message) {
+    const input = field === 'customerPhone' ? form.querySelector('#f-phone') : null;
+    if (!input) return;
+    input.setAttribute('aria-invalid', 'true');
+    const hint = form.querySelector('#phoneHint');
+    if (hint) { hint.textContent = message; hint.classList.add('err'); }
+    input.focus();
+    input.addEventListener('input', () => { input.setAttribute('aria-invalid', 'false'); if (hint) hint.classList.remove('err'); }, { once: true });
+  }
+
   // ---- Champs du formulaire (création et modification) -----------------
   function requestFieldsHtml(d = {}) {
     const v = (key) => esc(d[key] || '');
@@ -273,7 +364,7 @@
         <div class="cl-sec-head"><span class="cl-sec-num">01</span><h2 class="cl-sec-title">Vos coordonnées</h2></div>
         <div class="cl-row">
           <div class="cl-field"><label for="f-name">Nom et prénom *</label><input class="cl-input" id="f-name" name="customerName" autocomplete="name" required value="${v('customer_name')}" /></div>
-          <div class="cl-field"><label for="f-phone">Téléphone *</label><input class="cl-input" id="f-phone" name="customerPhone" type="tel" inputmode="tel" autocomplete="tel" required value="${v('customer_phone')}" /><p class="cl-hint">Pour vous joindre à l’arrivée.</p></div>
+          <div class="cl-field"><label for="f-phone">Téléphone *</label>${phoneFieldHtml(d)}<p class="cl-hint" id="phoneHint">Pour vous joindre à l’arrivée.</p></div>
         </div>
       </section>
       <section class="cl-sec">
@@ -307,6 +398,6 @@
   window.TraxoClient = {
     icon, esc, initials, isCar, formatTime, renderHeader, fetchJson, requestTokenFromPath,
     createGpsField, createPhotoPicker, compressImage, uploadPhoto, deletePhoto,
-    requestFieldsHtml, readFields, firstMissing,
+    requestFieldsHtml, readFields, firstMissing, wirePhoneField, markFieldError,
   };
 })();

@@ -1,6 +1,12 @@
 const page = document.getElementById('page');
 const sidebar = document.getElementById('sidebar');
 let context;
+// Lien partagé à un client / membre : toujours sur le domaine canonique
+// (APP_BASE_URL côté serveur), même si l'onglet est ouvert sur un autre domaine.
+function publicLink(pathname) {
+  const base = String(context?.publicBaseUrl || location.origin).replace(/\/+$/, '');
+  return `${base}${pathname}`;
+}
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
@@ -1036,7 +1042,7 @@ async function renderNewOrder() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
       });
-      const url = `${location.origin}${result.path}`;
+      const url = publicLink(result.path);
       document.getElementById('orderResult').innerHTML = `<div class="notice success">Commande créée. <a href="${escapeHtml(url)}" target="_blank" rel="noopener">Ouvrir le suivi</a></div>`;
       event.currentTarget.reset();
     } catch (error) {
@@ -1225,7 +1231,7 @@ async function renderOrderDetail(id) {
     revealTrackingLink.disabled = true;
     try {
       const result = await api(`/api/app/orders/${encodeURIComponent(id)}/tracking-link/reveal`, { method: 'POST' });
-      const fullUrl = new URL(result.trackingLink.path, location.origin).href;
+      const fullUrl = publicLink(result.trackingLink.path);
       try { await navigator.clipboard.writeText(fullUrl); } catch (_error) { /* Le lien reste affiché ci-dessous. */ }
       document.getElementById('trackingLinkResult').innerHTML = `<div class="notice success">Lien prêt${navigator.clipboard ? ' et copie demandée' : ''} : <a href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">ouvrir le suivi client</a>.</div>`;
     } catch (error) {
@@ -2644,7 +2650,7 @@ async function renderDrivers() {
         if (email) {
           try {
             const invite = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, displayName: data.name, role: 'driver', driverId: driver.id }) });
-            showInviteLink(`${location.origin}${invite.path}`);
+            showInviteLink(publicLink(invite.path));
           } catch (inviteError) {
             notify(`<div class="notice warning">Livreur créé, mais l’accès n’a pas pu être généré : ${escapeHtml(inviteError.message)}.</div>`);
           }
@@ -2794,7 +2800,7 @@ async function renderDrivers() {
       try {
         const invite = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, displayName: driver.name, role: 'driver', driverId: driver.id }) });
         modal.close();
-        showInviteLink(`${location.origin}${invite.path}`);
+        showInviteLink(publicLink(invite.path));
         await reload();
       } catch (error) {
         modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
@@ -3053,7 +3059,7 @@ async function renderTeam() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ displayName: data.displayName, email: data.email, role: data.role, driverId: data.driverId || undefined, notify }),
       });
-      const url = `${location.origin}${result.path}`;
+      const url = publicLink(result.path);
       if (notify === 'email' && result.emailed) {
         setResult(`<div class="notice success"><strong>Invitation envoyée</strong> à ${escapeHtml(data.email)}. <span class="team-muted">Vous pouvez aussi partager le lien :</span><div class="team-linkbox"><input readonly value="${escapeHtml(url)}" id="inviteLinkField"/><button class="button secondary small" type="button" id="copyInvite">Copier</button></div></div>`);
       } else {
@@ -3711,6 +3717,9 @@ async function openRequestDrawer(requestId, opts = {}) {
   requestAnimationFrame(() => wrap.classList.add('open'));
   try {
     const r = await api(`/api/app/requests/${encodeURIComponent(requestId)}`);
+    const assignable = !r.order_id && ['À vérifier', 'Informations à compléter', 'Validée'].includes(r.status);
+    // Livreurs chargés seulement si l'on peut affecter depuis ce tiroir.
+    const drivers = assignable ? await api('/api/app/drivers').catch(() => []) : [];
     const phone = String(r.customer_phone || '').replace(/[^+\d]/g, '');
     const shared = r.location_lat != null && r.location_lng != null;
     const validated = r.status === 'Confirmée' || r.validated_at != null;
@@ -3735,8 +3744,22 @@ async function openRequestDrawer(requestId, opts = {}) {
               <button type="button" class="req-morepop-item" data-status="Archivée" role="menuitem">Archiver</button>
             </div>
           </div>
-          <a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">${editable ? 'Valider et affecter' : 'Affecter un livreur'}</a>`
+          ${assignable
+            ? `<button class="button primary" type="button" id="reqAssign" disabled>${editable ? 'Valider et affecter' : 'Affecter le livreur'}</button>`
+            : `<a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a>`}`
         : `<a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a>`;
+    const usableDrivers = drivers.filter((d) => d.active && !['inactive', 'off_duty', 'incident'].includes(d.operationalState));
+    const assignHtml = assignable ? `<div class="req-assign">
+        <label for="reqDriver">Livreur à affecter</label>
+        <select id="reqDriver"${usableDrivers.length ? '' : ' disabled'}>
+          <option value="">${usableDrivers.length ? 'Sélectionner un livreur' : 'Aucun livreur disponible'}</option>
+          ${drivers.map((d) => {
+            const off = !d.active || ['inactive', 'off_duty', 'incident'].includes(d.operationalState);
+            return `<option value="${escapeHtml(d.id)}"${off ? ' disabled' : ''}>${escapeHtml(d.name)} — ${escapeHtml(driverStateLabels[d.operationalState] || d.operationalState)} — ${escapeHtml(d.activeOrders)}/${escapeHtml(d.capacity)} colis</option>`;
+          }).join('')}
+        </select>
+        <p class="req-assign-msg" id="reqAssignMsg" role="status" aria-live="polite">${editable ? 'Valider verrouille les informations du client.' : 'Demande déjà validée : informations du client verrouillées.'}</p>
+      </div>` : '';
     wrap.querySelector('.crm-drawer').innerHTML = `
       <div class="crm-drawer-head">
         <div><div class="crm-drawer-title">DEM-${escapeHtml(r.id)} ${crmChip(r.status)}</div>
@@ -3755,7 +3778,9 @@ async function openRequestDrawer(requestId, opts = {}) {
           <div class="crm-kv"><span>Zone / quartier</span><strong>${escapeHtml(r.neighborhood || '—')}</strong></div>
           <div class="crm-kv"><span>Repère</span><strong>${escapeHtml(r.landmark || '—')}</strong></div>
           <div class="crm-kv"><span>Position GPS</span><strong>${shared ? crmChip('Partagée', 'green') : crmChip('Non partagée', 'red')}</strong></div>
-          <div class="crm-kv"><span>Précision</span><strong>${r.location_accuracy != null ? `± ${escapeHtml(Math.round(r.location_accuracy))} m` : '—'}</strong></div>
+          <div class="crm-kv"><span>Précision</span><strong>${r.location_accuracy != null
+            ? `± ${escapeHtml(Math.round(r.location_accuracy).toLocaleString('fr-FR'))} m${r.location_accuracy > 150 ? ` ${crmChip('Imprécise', 'red')}` : ''}`
+            : (shared ? 'Placée par le client' : '—')}</strong></div>
         </section>
         <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Traitement</h4>
           <div class="crm-kv"><span>Source</span><strong>${r.submitted_at ? crmChip('Formulaire client', 'blue') : crmChip('Saisie interne', 'purple')}</strong></div>
@@ -3771,8 +3796,40 @@ async function openRequestDrawer(requestId, opts = {}) {
           <div class="crm-kv"><span>Statut</span><strong>${crmChip(r.order_status, crmOrderStatusColor(r.order_status))}</strong></div>
         </section>` : ''}
       </div>
-      <div class="crm-drawer-foot">${footer}</div>`;
+      <div class="crm-drawer-foot${assignable ? ' req-foot' : ''}">${assignHtml}<div class="req-foot-actions">${footer}</div></div>`;
     wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+    // Affectation directe depuis le tiroir (sans passer par la fiche).
+    const assignBtn = wrap.querySelector('#reqAssign');
+    const driverSelect = wrap.querySelector('#reqDriver');
+    if (assignBtn && driverSelect) {
+      driverSelect.addEventListener('change', () => { assignBtn.disabled = !driverSelect.value; });
+      assignBtn.addEventListener('click', async () => {
+        const driverId = driverSelect.value;
+        if (!driverId) return;
+        const driverName = driverSelect.selectedOptions[0]?.textContent.split(' — ')[0] || 'ce livreur';
+        const question = editable
+          ? `Valider la demande DEM-${r.id} et l’affecter à ${driverName} ? Les informations du client seront verrouillées.`
+          : `Affecter la demande DEM-${r.id} à ${driverName} ?`;
+        if (!confirm(question)) return;
+        const msg = wrap.querySelector('#reqAssignMsg');
+        assignBtn.disabled = true;
+        driverSelect.disabled = true;
+        assignBtn.textContent = 'Affectation…';
+        try {
+          await api(`/api/app/requests/${encodeURIComponent(r.id)}/convert`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ driverId }),
+          });
+          if (typeof opts.onChange === 'function') opts.onChange();
+          openRequestDrawer(r.id, opts);
+        } catch (error) {
+          msg.textContent = error.message;
+          msg.classList.add('err');
+          driverSelect.disabled = false;
+          assignBtn.disabled = !driverSelect.value;
+          assignBtn.textContent = editable ? 'Valider et affecter' : 'Affecter le livreur';
+        }
+      });
+    }
     // « Autres actions » : popover Refuser / Archiver.
     const moreBtn = wrap.querySelector('#reqMore');
     if (moreBtn) {
@@ -3896,7 +3953,7 @@ function renderOperationsCreate() {
     panel.innerHTML = '<div class="card ops-linkpanel"><div class="loading-state">Génération du lien…</div></div>';
     try {
       const result = await api('/api/app/request-links', { method: 'POST', body: JSON.stringify({ idempotencyKey: actionKey('request-link') }) });
-      const fullUrl = new URL(result.path, location.origin).href;
+      const fullUrl = publicLink(result.path);
       const waText = encodeURIComponent(`Bonjour, pour organiser votre livraison, merci de remplir vos informations ici : ${fullUrl}`);
       panel.innerHTML = `<div class="card ops-linkpanel">
         <strong class="ops-linkpanel-title">Lien prêt à envoyer</strong>
@@ -4312,6 +4369,15 @@ async function renderOperationsWorkspace(initialSegment) {
   try { counts = await api('/api/app/summary'); } catch { counts = {}; }
   shell();
   await loadSegment();
+  // Arrivée depuis une notification (…?vue=demandes&demande=56) : ouvre le
+  // tiroir de cette demande, puis retire le paramètre de l'URL.
+  const focusParams = new URLSearchParams(location.search);
+  const focusRequest = focusParams.get('demande');
+  if (segment === 'demandes' && /^\d{1,18}$/.test(focusRequest || '')) {
+    focusParams.delete('demande');
+    history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
+    openRequestDrawer(focusRequest, { onChange: loadSegment });
+  }
 }
 
 function customerStatusBadge(status) {
@@ -5562,7 +5628,7 @@ async function initNotifications() {
     const isUnread = (it) => !readSet.has(it.id);
     const unread = items.filter(isUnread).length;
     if (unread > 0) { dot.hidden = false; dot.textContent = unread > 99 ? '99+' : String(unread); }
-    else dot.hidden = true;
+    else { dot.hidden = true; dot.textContent = ''; }
     const head = `<div class="notif-pop-head">
         <strong>Notifications</strong>
         <div class="notif-head-actions">${items.length ? '<button type="button" class="notif-readall">Tout marquer comme lu</button>' : ''}<button type="button" class="notif-close" aria-label="Fermer">${closeIcon}</button></div>
@@ -5620,7 +5686,12 @@ async function initNotifications() {
     }));
     // Navigation de la ligne (div role=link) — hors clic sur le bouton ✓.
     pop.querySelectorAll('.notif-item').forEach((row) => {
-      const go = () => { if (row.dataset.href) location.href = row.dataset.href; };
+      // Ouvrir une notification la marque comme lue.
+      const go = () => {
+        const readBtn = row.querySelector('.notif-read-btn');
+        if (readBtn) { readSet.add(readBtn.dataset.read); writeReadSet(readSet, ids); }
+        if (row.dataset.href) location.href = row.dataset.href;
+      };
       row.addEventListener('click', (event) => { if (!event.target.closest('.notif-read-btn')) go(); });
       row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); go(); } });
     });

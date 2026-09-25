@@ -8,6 +8,7 @@ const axios = require('axios');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
 const { Pool } = require('pg');
+const { parsePhoneNumberFromString } = require('libphonenumber-js/max');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
 const {
@@ -2119,6 +2120,7 @@ app.get('/demande/:token', asyncRoute(async (req, res) => {
   if (!request || (request.expires_at && new Date(request.expires_at) <= new Date())) {
     return res.status(404).send('Ce formulaire est introuvable ou expiré.');
   }
+  res.set(PUBLIC_REQUEST_PAGE_HEADERS);
   if (request.status !== 'En attente d’informations') {
     return res.redirect(`/demande/${encodeURIComponent(req.params.token)}/confirmation`);
   }
@@ -2129,6 +2131,7 @@ app.get('/demande/:token/confirmation', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Service momentanément indisponible.');
   const result = await pool.query('SELECT id FROM customer_requests WHERE token = $1', [req.params.token]);
   if (!result.rows[0]) return res.status(404).send('Cette demande est introuvable.');
+  res.set(PUBLIC_REQUEST_PAGE_HEADERS);
   return sendShell(res, 'confirmation.html');
 }));
 
@@ -2352,6 +2355,9 @@ app.post('/api/app/invitations/:id/revoke', requireCompanyApi, requireCompanyRol
 app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
   user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
   company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug, activationStatus: req.auth.activation_status || 'active' },
+  // Domaine canonique des liens partagés aux clients (APP_BASE_URL), quel que
+  // soit le domaine par lequel l'entreprise consulte l'application.
+  publicBaseUrl: publicBaseUrl(req),
 }));
 
 app.get('/api/driver/context', requireDriverApi, asyncRoute(async (req, res) => {
@@ -3094,7 +3100,7 @@ async function buildNotificationItems(cid) {
     ),
   ]);
   const items = [];
-  for (const r of reqs.rows) items.push({ id: `request-${r.id}`, type: 'requests', title: 'Nouvelle demande à vérifier', summary: r.customer_name || 'Client à préciser', at: r.created_at, href: `/app/demandes/${r.id}` });
+  for (const r of reqs.rows) items.push({ id: `request-${r.id}`, type: 'requests', title: 'Nouvelle demande à vérifier', summary: r.customer_name || 'Client à préciser', at: r.created_at, href: `/app/operations?vue=demandes&demande=${r.id}` });
   for (const o of unassigned.rows) items.push({ id: `order-${o.id}`, type: 'unassigned', title: 'Commande à affecter', summary: [o.reference, o.customer_name].filter(Boolean).join(' · ') || `Commande n° ${o.id}`, at: o.created_at, href: `/app/commandes/${o.id}` });
   for (const i of incidents.rows) items.push({ id: `incident-${i.id}`, type: 'incidents', title: 'Incident ouvert', summary: i.customer_name ? `Commande de ${i.customer_name}` : `Incident n° ${i.id}`, at: i.created_at, href: `/app/incidents/${i.id}` });
   for (const r of runs.rows) items.push({ id: `run-${r.id}`, type: 'runs', title: 'Tournée à planifier', summary: r.name || `Tournée n° ${r.id}`, at: r.created_at, href: `/app/tournees/${r.id}` });
@@ -4277,7 +4283,7 @@ app.post('/api/app/request-links', requireCompanyApi, asyncRoute(async (req, res
     [req.auth.company_id, token, expiresAt]
   );
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'link_created', { expiresAt });
-  return res.status(201).json({ token, path: `/demande/${token}`, expiresAt });
+  return res.status(201).json({ token, path: `/demande/${token}`, url: `${publicBaseUrl(req)}/demande/${token}`, expiresAt });
 }));
 
 app.get('/api/app/requests', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -7302,6 +7308,44 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   }
 }));
 
+// ---- Accès à une demande client, lié à l'appareil qui l'a remplie ---------
+// Le lien /demande/:token ne sert qu'à REMPLIR le formulaire une fois. À l'envoi,
+// le navigateur reçoit un secret dans un cookie HttpOnly + SameSite=Strict,
+// limité au chemin de cette demande ; aucun secret ne transite plus par l'URL.
+// Un autre appareil qui ouvre le même lien ne voit donc aucune donnée.
+// (W3C TAG « Good Practices for Capability URLs », OWASP Session Management.)
+const REQUEST_DEVICE_COOKIE = 'traxo_req';
+const REQUEST_DEVICE_MAX_AGE_S = 60 * 24 * 3600;
+const PUBLIC_REQUEST_PAGE_HEADERS = { 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow' };
+
+function setRequestDeviceCookie(req, res, token, secret) {
+  const secure = req.secure || req.get('x-forwarded-proto') === 'https';
+  res.append('Set-Cookie', `${REQUEST_DEVICE_COOKIE}=${encodeURIComponent(secret)}; Path=/api/public/requests/${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Max-Age=${REQUEST_DEVICE_MAX_AGE_S}${secure ? '; Secure' : ''}`);
+}
+
+function requestDeviceSecret(req) {
+  return String(parseCookies(req)[REQUEST_DEVICE_COOKIE] || '');
+}
+
+// Téléphone : indicatif choisi + numéro → format international validé
+// (métadonnées libphonenumber : Bénin à 10 chiffres « 01… » depuis 2024).
+function normalizeCustomerPhone(body) {
+  const raw = String(body.customerPhone || '').trim();
+  const country = /^[A-Z]{2}$/.test(String(body.customerPhoneCountry || '')) ? String(body.customerPhoneCountry) : 'BJ';
+  if (!raw) return null;
+  const parsed = parsePhoneNumberFromString(raw, country);
+  if (!parsed || !parsed.isValid()) return null;
+  return parsed.formatInternational();
+}
+const INVALID_PHONE_MESSAGE = 'Numéro de téléphone invalide. Vérifiez l’indicatif et le numéro (au Bénin : 10 chiffres commençant par 01).';
+
+function phoneParts(stored) {
+  const parsed = parsePhoneNumberFromString(String(stored || ''), 'BJ');
+  return parsed && parsed.country
+    ? { country: parsed.country, national: parsed.formatNational() }
+    : { country: 'BJ', national: String(stored || '') };
+}
+
 // Coordonnées GPS obligatoires pour envoyer ou modifier une demande client.
 function requestGpsFromBody(body) {
   const lat = optionalNumber(body.locationLat);
@@ -7355,12 +7399,12 @@ function requestPhotoBody(req, res, next) {
   });
 }
 
-async function editableRequestForPhotos(token, editToken) {
-  if (!editToken) return null;
+async function editableRequestForPhotos(token, deviceSecret) {
+  if (!deviceSecret) return null;
   const result = await pool.query(
     `SELECT id, company_id FROM customer_requests
      WHERE token = $1 AND edit_token_hash = $2 AND status = ANY($3::text[]) AND archived_at IS NULL`,
-    [token, digest(editToken), editableRequestStatuses]
+    [token, digest(deviceSecret), editableRequestStatuses]
   );
   return result.rows[0] || null;
 }
@@ -7371,6 +7415,8 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
   if (!customerName || !customerPhone || !neighborhood) {
     return res.status(400).json({ error: 'Nom, téléphone et zone sont obligatoires.' });
   }
+  const phone = normalizeCustomerPhone(req.body);
+  if (!phone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
   const gps = requestGpsFromBody(req.body);
   if (!gps) return res.status(400).json({ error: 'Partagez votre position GPS pour envoyer votre demande.' });
   const owning = await pool.query('SELECT company_id FROM customer_requests WHERE token = $1', [req.params.token]);
@@ -7389,15 +7435,17 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
        AND (expires_at IS NULL OR expires_at > NOW())
      RETURNING id, company_id, version`,
     [
-      String(customerName).trim(), String(customerPhone).trim(), requestedTime || null,
+      String(customerName).trim(), phone, requestedTime || null,
       gps.lat, gps.lng, gps.accuracy,
       String(neighborhood).trim(), landmark || null, notes || null, digest(editToken), req.params.token,
     ]
   );
   if (!result.rows[0]) return res.status(409).json({ error: 'Ce formulaire a déjà été envoyé ou a expiré.' });
   await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, 'submitted');
-  const redirect = `/demande/${encodeURIComponent(req.params.token)}/confirmation?edit=${encodeURIComponent(editToken)}`;
-  return res.json({ status: 'received', message: 'Merci. L’entreprise va vérifier votre demande.', redirect, editToken });
+  // Le secret reste dans ce navigateur (cookie HttpOnly), jamais dans l'URL.
+  setRequestDeviceCookie(req, res, req.params.token, editToken);
+  const redirect = `/demande/${encodeURIComponent(req.params.token)}/confirmation`;
+  return res.json({ status: 'received', message: 'Merci. L’entreprise va vérifier votre demande.', redirect });
 }));
 
 app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
@@ -7423,11 +7471,29 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   );
   const row = result.rows[0];
   if (!row) return res.status(404).json({ error: 'Demande introuvable.' });
-  const suppliedEditToken = String(req.query.edit || '');
-  const canEdit = Boolean(
-    suppliedEditToken && row.edit_token_hash && digest(suppliedEditToken) === row.edit_token_hash
-    && editableRequestStatuses.includes(row.status) && !row.archived_at
-  );
+  res.set('Cache-Control', 'private, no-store');
+  const stage = publicRequestStage(row);
+  // Formulaire pas encore rempli : rien de personnel à protéger.
+  if (stage === 'pending') return res.json({ stage, companyName: row.company_name });
+  let deviceOk = Boolean(row.edit_token_hash && requestDeviceSecret(req)
+    && digest(requestDeviceSecret(req)) === row.edit_token_hash);
+  // Anciens liens « ?edit=… » (avant ce changement) : échange UNIQUE contre un
+  // cookie, avec un nouveau secret. Le lien copié devient ensuite inutile.
+  const legacyToken = String(req.query.edit || '');
+  if (!deviceOk && legacyToken && row.edit_token_hash && digest(legacyToken) === row.edit_token_hash) {
+    const fresh = randomToken(24);
+    const swapped = await pool.query(
+      'UPDATE customer_requests SET edit_token_hash = $1 WHERE id = $2 AND edit_token_hash = $3 RETURNING id',
+      [digest(fresh), row.id, digest(legacyToken)]
+    );
+    if (swapped.rows[0]) {
+      setRequestDeviceCookie(req, res, req.params.token, fresh);
+      deviceOk = true;
+    }
+  }
+  // Autre appareil : la demande existe, mais ses données ne sont pas montrées.
+  if (!deviceOk) return res.json({ stage: 'other_device', companyName: row.company_name });
+  const canEdit = editableRequestStatuses.includes(row.status) && !row.archived_at;
   // Le client garde le même lien : dès qu'un livreur est affecté, sa page de
   // demande lui donne accès au suivi (détenir ce lien suffit déjà à voir la demande).
   let trackingPath = null;
@@ -7435,12 +7501,14 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     const link = trackingLinkBusinessView({ ...row, status: row.order_status }, true);
     if (['active', 'terminal'].includes(link.state)) trackingPath = link.path;
   }
-  res.set('Cache-Control', 'private, no-store');
+  const phoneSplit = phoneParts(row.customer_phone);
   return res.json({
     id: row.id,
     status: row.status,
     customer_name: row.customer_name,
     customer_phone: row.customer_phone,
+    phone_country: phoneSplit.country,
+    phone_national: phoneSplit.national,
     requested_time: row.requested_time,
     location_lat: row.location_lat,
     location_lng: row.location_lng,
@@ -7453,7 +7521,7 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     validated_at: row.validated_at,
     version: row.version,
     companyName: row.company_name,
-    stage: publicRequestStage(row),
+    stage,
     canEdit,
     photoIds: row.photo_ids || [],
     photoMax: REQUEST_PHOTO_MAX,
@@ -7468,11 +7536,14 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
 
 app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
-  const editToken = String(req.body.editToken || '');
+  const editToken = requestDeviceSecret(req);
+  if (!editToken) return res.status(403).json({ error: 'Cette demande ne peut être modifiée que depuis l’appareil qui l’a envoyée.' });
   const { customerName, customerPhone, requestedTime, neighborhood, landmark, notes, version } = req.body;
-  if (!editToken || !customerName || !customerPhone || !neighborhood || !Number.isInteger(Number(version))) {
+  if (!customerName || !customerPhone || !neighborhood || !Number.isInteger(Number(version))) {
     return res.status(400).json({ error: 'Informations de modification incomplètes.' });
   }
+  const phone = normalizeCustomerPhone(req.body);
+  if (!phone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
   const gps = requestGpsFromBody(req.body);
   if (!gps) return res.status(400).json({ error: 'Votre position GPS est requise.' });
   const result = await pool.query(
@@ -7485,7 +7556,7 @@ app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
      WHERE token = $10 AND edit_token_hash = $11 AND version = $12 AND status = ANY($13::text[]) AND archived_at IS NULL
      RETURNING id, company_id, version`,
     [
-      String(customerName).trim(), String(customerPhone).trim(), requestedTime || null,
+      String(customerName).trim(), phone, requestedTime || null,
       gps.lat, gps.lng, gps.accuracy,
       String(neighborhood).trim(), landmark || null, notes || null,
       req.params.token, digest(editToken), Number(version), editableRequestStatuses,
@@ -7499,7 +7570,7 @@ app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
 // Photos du lieu (facultatives, 3 maximum), envoyées une à une en binaire.
 app.post('/api/public/requests/:token/photos', publicRequestRateLimit, requestPhotoBody, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
-  const request = await editableRequestForPhotos(req.params.token, String(req.get('X-Edit-Token') || ''));
+  const request = await editableRequestForPhotos(req.params.token, requestDeviceSecret(req));
   if (!request) return res.status(403).json({ error: 'Les photos ne sont plus modifiables pour cette demande.' });
   const buffer = req.body;
   const mime = detectImageMime(buffer);
@@ -7534,7 +7605,7 @@ app.post('/api/public/requests/:token/photos', publicRequestRateLimit, requestPh
 app.delete('/api/public/requests/:token/photos/:photoId', publicRequestRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   if (!numericIdPattern.test(req.params.photoId)) return res.status(404).json({ error: 'Photo introuvable.' });
-  const request = await editableRequestForPhotos(req.params.token, String(req.get('X-Edit-Token') || ''));
+  const request = await editableRequestForPhotos(req.params.token, requestDeviceSecret(req));
   if (!request) return res.status(403).json({ error: 'Les photos ne sont plus modifiables pour cette demande.' });
   const result = await pool.query(
     'DELETE FROM customer_request_photos WHERE id = $1 AND request_id = $2 RETURNING id',
@@ -7548,11 +7619,13 @@ app.delete('/api/public/requests/:token/photos/:photoId', publicRequestRateLimit
 app.get('/api/public/requests/:token/photos/:photoId', publicRequestRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).end();
   if (!numericIdPattern.test(req.params.photoId)) return res.status(404).end();
+  const secret = requestDeviceSecret(req);
+  if (!secret) return res.status(404).end();
   const result = await pool.query(
     `SELECT p.mime, p.data FROM customer_request_photos p
      JOIN customer_requests r ON r.id = p.request_id
-     WHERE p.id = $1 AND r.token = $2`,
-    [req.params.photoId, req.params.token]
+     WHERE p.id = $1 AND r.token = $2 AND r.edit_token_hash = $3`,
+    [req.params.photoId, req.params.token, digest(secret)]
   );
   if (!result.rows[0]) return res.status(404).end();
   return sendRequestPhoto(res, result.rows[0]);

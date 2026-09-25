@@ -58,6 +58,7 @@
               <button class="cl-btn block" id="submitBtn" type="submit" disabled>Envoyer ma demande</button>
               <p class="cl-hint" id="submitHint"></p>
             </div>`;
+          C.wirePhoneField(form);
           gps = C.createGpsField(document.getElementById('gpsField'), { onChange: refreshSubmit });
           photos = C.createPhotoPicker(document.getElementById('photoField'), { max: 3, onError: (text) => say(text, 'err') });
           refreshSubmit();
@@ -69,7 +70,7 @@
           const missing = C.firstMissing(form);
           if (missing) { say('Merci de remplir les champs obligatoires.', 'err'); missing.focus(); return; }
           const position = gps.get();
-          if (!position) { say('Partagez votre position GPS pour continuer.', 'err'); gps.focus(); return; }
+          if (!position) { say(gps.imprecise() ? 'Votre position est trop imprécise : placez l’épingle sur votre lieu de livraison.' : 'Partagez votre position GPS pour continuer.', 'err'); gps.focus(); return; }
           sending = true;
           refreshSubmit();
           const button = document.getElementById('submitBtn');
@@ -83,6 +84,7 @@
             button.textContent = 'Envoyer ma demande';
             refreshSubmit();
             say(result.data.error || 'Une erreur est survenue.', 'err');
+            if (result.data.field) C.markFieldError(form, result.data.field, result.data.error);
             return;
           }
           // La demande est enregistrée : les photos suivent, une à une.
@@ -90,7 +92,7 @@
           let failed = 0;
           for (let i = 0; i < pending.length; i += 1) {
             button.textContent = `Envoi des photos (${i + 1}/${pending.length})…`;
-            try { await C.uploadPhoto(token, result.data.editToken, pending[i].blob); } catch (_) { failed += 1; }
+            try { await C.uploadPhoto(token, pending[i].blob); } catch (_) { failed += 1; }
           }
           const target = new URL(result.data.redirect, location.origin);
           if (failed) target.searchParams.set('photos', 'partiel');

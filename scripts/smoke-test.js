@@ -173,7 +173,8 @@ async function run() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         customerName: 'Test automatique',
-        customerPhone: '22900000000',
+        customerPhone: '0197123456',
+        customerPhoneCountry: 'BJ',
         neighborhood: 'Zone de test',
         requestedTime: '15 h - 17 h',
         landmark: 'Repère de test',
@@ -184,21 +185,22 @@ async function run() {
       }),
     }));
     ensure(submitted.response.ok && submitted.payload.redirect, 'Soumission publique impossible.');
-    const confirmationUrl = new URL(submitted.payload.redirect, baseUrl);
-    const editToken = confirmationUrl.searchParams.get('edit');
-    ensure(editToken, 'Token de modification absent.');
+    ensure(!submitted.payload.redirect.includes('edit='), 'Aucun secret ne doit figurer dans l’URL de confirmation.');
+    // L'accès à la demande est lié à l'appareil : cookie HttpOnly posé à l'envoi.
+    const requestCookie = submitted.response.headers.get('set-cookie')?.split(';')[0];
+    ensure(requestCookie && requestCookie.startsWith('traxo_req='), 'Cookie d’appareil absent après l’envoi.');
 
-    const details = await json(await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}?edit=${encodeURIComponent(editToken)}`));
+    const details = await json(await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, { headers: { Cookie: requestCookie } }));
     ensure(details.response.ok && details.payload.canEdit, 'La demande soumise devrait être modifiable.');
 
     const updated = await json(await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: requestCookie },
       body: JSON.stringify({
-        editToken,
         version: details.payload.version,
         customerName: 'Test automatique modifié',
-        customerPhone: '22900000000',
+        customerPhone: '0197123456',
+        customerPhoneCountry: 'BJ',
         neighborhood: 'Zone de test',
         requestedTime: '16 h - 18 h',
         landmark: 'Repère corrigé',
@@ -663,12 +665,12 @@ async function run() {
 
     const locked = await fetch(`${baseUrl}/api/public/requests/${encodeURIComponent(requestToken)}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: requestCookie },
       body: JSON.stringify({
-        editToken,
         version: updated.payload.version,
         customerName: 'Modification interdite',
-        customerPhone: '22900000000',
+        customerPhone: '0197123456',
+        customerPhoneCountry: 'BJ',
         neighborhood: 'Zone de test',
         locationLat: 6.38,
         locationLng: 2.44,

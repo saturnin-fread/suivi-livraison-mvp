@@ -2464,7 +2464,7 @@ async function renderDrivers() {
 
   page.innerHTML = `<div class="page-header fleet-head">
       <div><h1>Livreurs</h1><p class="subtitle">Équipe et disponibilité</p></div>
-      ${canManage ? `<button class="button primary" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
+      ${canManage ? `<button class="button accent" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
     </div>
     <div class="fleet-summary"><div id="fleetStats" class="fleet-stats"></div>${canManage ? `<button type="button" class="fleet-toconfig" id="fleetToConfig" hidden></button>` : ''}</div>
     <div class="fleet-toolbar2">
@@ -2950,65 +2950,145 @@ async function renderDrivers() {
 }
 
 async function renderTeam() {
-  setHeader('Équipe et accès', 'Comptes, rôles et invitations');
+  setHeader('Équipe et accès', 'Gérez les personnes qui utilisent TRAXO.');
   const [team, drivers] = await Promise.all([api('/api/app/team'), api('/api/app/drivers')]);
   const linkedDriverIds = new Set([
     ...team.members.filter((member) => member.driver_id).map((member) => String(member.driver_id)),
     ...team.invitations.filter((invitation) => invitation.driver_id).map((invitation) => String(invitation.driver_id)),
   ]);
   const availableDrivers = drivers.filter((driver) => driver.active && !linkedDriverIds.has(String(driver.id)));
-  page.innerHTML = `<div class="page-header"><div><h1>Équipe et accès</h1><p class="subtitle">Chaque personne possède son propre compte. Ne partagez jamais le compte propriétaire.</p></div></div>
-    <section class="card"><h2>Membres actifs</h2>${team.members.length ? `<div class="table-wrap"><table><thead><tr><th>Personne</th><th>Rôle</th><th>Profil livreur</th><th>État</th></tr></thead><tbody>${team.members.map((member) => `<tr><td><strong>${escapeHtml(member.display_name)}</strong><br><small>${escapeHtml(member.email)}</small></td><td>${escapeHtml(roleLabels[member.role] || member.role)}</td><td>${escapeHtml(member.driver_name || '—')}</td><td>${badge(member.disabled ? 'Désactivé' : 'Actif')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucun membre.</div>'}</section>
-    <section class="card" style="margin-top:18px"><h2>Inviter une personne</h2><p class="subtitle">Le lien expire après 48 heures et ne fonctionne qu’une seule fois.</p>
-      <form id="invitationForm" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Nom</label><input name="displayName" minlength="2" maxlength="100" required /></div><div class="field"><label>Adresse e-mail</label><input name="email" type="email" required /></div><div class="field"><label>Rôle</label><select name="role" id="invitationRole"><option value="operator">Opérateur</option>${context.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}<option value="driver">Livreur</option></select></div><div class="field" id="driverField" hidden><label>Profil livreur associé</label><select name="driverId" id="invitationDriver"><option value="">Sélectionner</option>${availableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join('')}</select></div></div><button class="primary" style="margin-top:16px">Créer l’invitation</button></form><div id="invitationResult"></div>
-    </section>
-    <section class="card" style="margin-top:18px"><h2>Invitations en attente</h2><div id="pendingInvitations">${team.invitations.length ? `<div class="table-wrap"><table><thead><tr><th>Personne</th><th>Rôle</th><th>Expiration</th><th>Action</th></tr></thead><tbody>${team.invitations.map((invitation) => `<tr><td><strong>${escapeHtml(invitation.display_name)}</strong><br><small>${escapeHtml(invitation.email)}</small></td><td>${escapeHtml(roleLabels[invitation.role] || invitation.role)}${invitation.driver_name ? `<br><small>${escapeHtml(invitation.driver_name)}</small>` : ''}</td><td>${escapeHtml(formatDate(invitation.expires_at))}</td><td><button class="danger revokeInvitation" data-id="${escapeHtml(invitation.id)}">Révoquer</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Aucune invitation en attente.</div>'}</div></section>`;
+  const myEmail = (context.user && context.user.email) ? String(context.user.email).toLowerCase() : '';
+  const roleLabel = (r) => roleLabels[r] || traxoRoleLabels[r] || r;
 
-  const role = document.getElementById('invitationRole');
+  const membersRows = team.members.map((m) => {
+    const isMe = myEmail && String(m.email || '').toLowerCase() === myEmail;
+    return `<tr>
+      <td><div class="team-person"><strong>${isMe ? 'Vous' : escapeHtml(m.display_name)}</strong><small>${isMe ? 'Compte principal' : escapeHtml(m.email)}</small></div></td>
+      <td>${escapeHtml(roleLabel(m.role))}${m.driver_name ? ` <span class="team-muted">· ${escapeHtml(m.driver_name)}</span>` : ''}</td>
+      <td>${badge(m.disabled ? 'Désactivé' : 'Actif')}</td>
+    </tr>`;
+  }).join('');
+
+  const pendingHtml = team.invitations.length
+    ? `<div class="team-block-head"><h2>Invitations en attente</h2><span class="team-count">${team.invitations.length}</span></div>
+       <div class="team-table-wrap"><table class="team-table"><thead><tr><th>Personne</th><th>Rôle</th><th>Expire</th><th></th></tr></thead><tbody>${team.invitations.map((inv) => `<tr>
+         <td><div class="team-person"><strong>${escapeHtml(inv.display_name)}</strong><small>${escapeHtml(inv.email)}</small></div></td>
+         <td>${escapeHtml(roleLabel(inv.role))}${inv.driver_name ? ` <span class="team-muted">· ${escapeHtml(inv.driver_name)}</span>` : ''}</td>
+         <td class="team-muted">${escapeHtml(formatDate(inv.expires_at))}</td>
+         <td class="team-actions"><button class="team-revoke revokeInvitation" data-id="${escapeHtml(inv.id)}" type="button">Révoquer</button></td>
+       </tr>`).join('')}</tbody></table></div>`
+    : '<p class="team-empty">Invitations en attente : aucune</p>';
+
+  page.innerHTML = `<div class="page-header"><div><h1>Équipe et accès</h1><p class="subtitle">Gérez les personnes qui utilisent TRAXO.</p></div></div>
+    <section class="team-block">
+      <div class="team-block-head"><h2>Membres</h2><span class="team-count">${team.members.length} membre${team.members.length > 1 ? 's' : ''}</span></div>
+      <div class="team-table-wrap"><table class="team-table"><thead><tr><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody>${membersRows}</tbody></table></div>
+    </section>
+    <hr class="team-sep"/>
+    <section class="team-block">
+      <h2>Inviter une personne</h2>
+      <form id="invitationForm" class="team-invite">
+        <div class="team-invite-row">
+          <div class="field"><label>Nom</label><input name="displayName" minlength="2" maxlength="100" placeholder="Nom de la personne" required autocomplete="off"/></div>
+          <div class="field"><label>Téléphone ou e-mail</label><input name="email" type="text" placeholder="06 12 34 56 78 ou nom@exemple.com" required autocomplete="off"/></div>
+          <div class="field team-role-field"><label>Rôle</label><select name="role" id="invitationRole"><option value="operator">Opérateur</option>${context.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}<option value="driver">Livreur</option></select></div>
+          <button class="button accent team-invite-send" id="inviteSend" type="submit">Envoyer l’invitation</button>
+        </div>
+        <div class="field team-driver-field" id="driverField" hidden><label>Profil livreur associé</label><select name="driverId" id="invitationDriver"><option value="">Sélectionner</option>${availableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join('')}</select></div>
+      </form>
+      <div class="team-invite-foot"><button type="button" class="team-link" id="shareLinkBtn">Créer un lien à partager</button><span class="team-sepbar">|</span><span class="team-muted">Le lien expire après 48 h.</span></div>
+      <div id="invitationResult"></div>
+    </section>
+    <hr class="team-sep"/>
+    <section class="team-block" id="pendingInvitations">${pendingHtml}</section>`;
+
+  const roleSel = document.getElementById('invitationRole');
   const driverField = document.getElementById('driverField');
   const driverSelect = document.getElementById('invitationDriver');
   const updateDriverField = () => {
-    const isDriver = role.value === 'driver';
+    const isDriver = roleSel.value === 'driver';
     driverField.hidden = !isDriver;
     driverSelect.required = isDriver;
     if (!isDriver) driverSelect.value = '';
   };
-  role.addEventListener('change', updateDriverField);
+  roleSel.addEventListener('change', updateDriverField);
   updateDriverField();
-  document.getElementById('invitationForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
-    button.disabled = true;
+
+  const form = document.getElementById('invitationForm');
+  const isEmail = (v) => /^\S+@\S+\.\S+$/.test(String(v || '').trim());
+  const setResult = (html) => { document.getElementById('invitationResult').innerHTML = html; };
+
+  async function submitInvite(notify) {
+    const data = Object.fromEntries(new FormData(form));
+    if (!String(data.displayName || '').trim()) { setResult('<div class="notice error">Indiquez le nom de la personne.</div>'); return; }
+    if (roleSel.value === 'driver' && !data.driverId) { setResult('<div class="notice error">Sélectionnez le livreur associé à ce compte.</div>'); return; }
+    if (!isEmail(data.email)) {
+      setResult('<div class="notice warning">Une adresse e-mail est nécessaire pour créer l’accès (le compte se connecte par e-mail). Le lien pourra ensuite être partagé par téléphone / WhatsApp.</div>');
+      return;
+    }
+    const sendBtn = document.getElementById('inviteSend');
+    const shareBtn = document.getElementById('shareLinkBtn');
+    sendBtn.disabled = true; shareBtn.disabled = true;
+    setResult('<div class="notice">Création de l’invitation…</div>');
     try {
-      const payload = Object.fromEntries(new FormData(event.currentTarget));
       const result = await api('/api/app/invitations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: data.displayName, email: data.email, role: data.role, driverId: data.driverId || undefined, notify }),
       });
       const url = `${location.origin}${result.path}`;
-      document.getElementById('invitationResult').innerHTML = `<div class="notice success"><strong>Invitation créée.</strong><br><a target="_blank" rel="noopener" href="${escapeHtml(url)}">${escapeHtml(url)}</a><div class="actions" style="margin-top:10px"><button class="secondary" id="copyInvitation" type="button">Copier le lien</button></div></div>`;
-      event.currentTarget.reset();
-      updateDriverField();
-      button.disabled = false;
-      document.getElementById('copyInvitation').addEventListener('click', async () => {
-        await navigator.clipboard.writeText(url);
-        document.getElementById('copyInvitation').textContent = 'Lien copié';
+      if (notify === 'email' && result.emailed) {
+        setResult(`<div class="notice success"><strong>Invitation envoyée</strong> à ${escapeHtml(data.email)}. <span class="team-muted">Vous pouvez aussi partager le lien :</span><div class="team-linkbox"><input readonly value="${escapeHtml(url)}" id="inviteLinkField"/><button class="button secondary small" type="button" id="copyInvite">Copier</button></div></div>`);
+      } else {
+        const note = notify === 'email' ? '<div class="notice-sub">L’envoi automatique n’a pas pu se faire — partagez le lien manuellement.</div>' : '';
+        setResult(`<div class="notice success"><strong>Lien d’accès créé</strong> pour ${escapeHtml(data.displayName)}. À partager (WhatsApp, e-mail…). Valable 48 h.${note}<div class="team-linkbox"><input readonly value="${escapeHtml(url)}" id="inviteLinkField"/><button class="button secondary small" type="button" id="copyInvite">Copier</button></div></div>`);
+      }
+      form.reset(); updateDriverField();
+      document.getElementById('copyInvite')?.addEventListener('click', (event) => {
+        const field = document.getElementById('inviteLinkField');
+        field.select(); navigator.clipboard?.writeText(field.value); event.currentTarget.textContent = 'Copié';
       });
+      // Rafraîchir la liste des invitations en attente.
+      try { const fresh = await api('/api/app/team'); renderPending(fresh.invitations); } catch { /* ignore */ }
     } catch (error) {
-      document.getElementById('invitationResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      button.disabled = false;
+      setResult(`<div class="notice error">${escapeHtml(error.message)}</div>`);
+    } finally {
+      sendBtn.disabled = false; shareBtn.disabled = false;
     }
-  });
-  document.querySelectorAll('.revokeInvitation').forEach((button) => button.addEventListener('click', async () => {
-    if (!confirm('Révoquer cette invitation ? Le lien ne fonctionnera plus.')) return;
-    button.disabled = true;
-    try {
-      await api(`/api/app/invitations/${encodeURIComponent(button.dataset.id)}/revoke`, { method: 'POST' });
-      await renderTeam();
-    } catch (error) {
-      button.disabled = false;
-      document.getElementById('pendingInvitations').insertAdjacentHTML('afterbegin', `<div class="notice error">${escapeHtml(error.message)}</div>`);
-    }
-  }));
+  }
+
+  function renderPending(invitations) {
+    const box = document.getElementById('pendingInvitations');
+    if (!box) return;
+    box.innerHTML = invitations.length
+      ? `<div class="team-block-head"><h2>Invitations en attente</h2><span class="team-count">${invitations.length}</span></div>
+         <div class="team-table-wrap"><table class="team-table"><thead><tr><th>Personne</th><th>Rôle</th><th>Expire</th><th></th></tr></thead><tbody>${invitations.map((inv) => `<tr>
+           <td><div class="team-person"><strong>${escapeHtml(inv.display_name)}</strong><small>${escapeHtml(inv.email)}</small></div></td>
+           <td>${escapeHtml(roleLabel(inv.role))}${inv.driver_name ? ` <span class="team-muted">· ${escapeHtml(inv.driver_name)}</span>` : ''}</td>
+           <td class="team-muted">${escapeHtml(formatDate(inv.expires_at))}</td>
+           <td class="team-actions"><button class="team-revoke revokeInvitation" data-id="${escapeHtml(inv.id)}" type="button">Révoquer</button></td>
+         </tr>`).join('')}</tbody></table></div>`
+      : '<p class="team-empty">Invitations en attente : aucune</p>';
+    wireRevoke();
+  }
+
+  function wireRevoke() {
+    document.querySelectorAll('.revokeInvitation').forEach((button) => button.addEventListener('click', async () => {
+      if (!confirm('Révoquer cette invitation ? Le lien ne fonctionnera plus.')) return;
+      button.disabled = true;
+      try {
+        await api(`/api/app/invitations/${encodeURIComponent(button.dataset.id)}/revoke`, { method: 'POST' });
+        const fresh = await api('/api/app/team');
+        renderPending(fresh.invitations);
+      } catch (error) {
+        button.disabled = false;
+        setResult(`<div class="notice error">${escapeHtml(error.message)}</div>`);
+      }
+    }));
+  }
+
+  form.addEventListener('submit', (event) => { event.preventDefault(); submitInvite('email'); });
+  document.getElementById('shareLinkBtn').addEventListener('click', () => submitInvite('link'));
+  wireRevoke();
 }
 
 const setIcons = {

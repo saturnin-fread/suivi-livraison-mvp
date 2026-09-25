@@ -4766,6 +4766,31 @@ app.patch('/api/app/drivers/:id/availability', requireCompanyApi, asyncRoute(asy
   return res.json(result.rows[0]);
 }));
 
+// Activité récente d'un livreur : dernières commandes qui lui sont affectées
+// (pour la fiche livreur — « Dernières mises à jour »).
+app.get('/api/app/drivers/:id/activity', requireCompanyApi, asyncRoute(async (req, res) => {
+  const driver = await pool.query(
+    `SELECT id, name FROM drivers WHERE id = $1 AND company_id = $2 AND archived_at IS NULL`,
+    [req.params.id, req.auth.company_id]
+  );
+  if (!driver.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+  const orders = await pool.query(
+    `SELECT id, reference, customer_name, status, status_changed_at, created_at
+     FROM orders
+     WHERE company_id = $1 AND driver_id = $2
+     ORDER BY COALESCE(status_changed_at, created_at) DESC
+     LIMIT 6`,
+    [req.auth.company_id, req.params.id]
+  );
+  return res.json({
+    driverId: driver.rows[0].id,
+    updates: orders.rows.map((o) => ({
+      id: o.id, reference: o.reference, customerName: o.customer_name,
+      status: o.status, at: o.status_changed_at || o.created_at,
+    })),
+  });
+}));
+
 // Création d'un livreur depuis le SaaS (owner/manager). Génère un identifiant GPS
 // aléatoire non devinable par défaut ; un identifiant Traccar existant peut être
 // fourni pour relier un appareil déjà enrôlé.

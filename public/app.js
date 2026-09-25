@@ -2385,164 +2385,178 @@ function openModal(title, bodyHtml, footHtml = '') {
 }
 
 async function renderDrivers() {
-  setHeader('Livreurs', 'Flotte, accès et disponibilité');
+  setHeader('Livreurs', 'Équipe et disponibilité');
   const canManage = ['owner', 'manager'].includes(context.user.role);
   let drivers = await api('/api/app/drivers');
   let filter = 'all';
   let query = '';
-  let view = (() => { try { return localStorage.getItem('traxo.fleetView'); } catch { return null; } })() || (window.innerWidth < 720 ? 'cards' : 'table');
   let openMenu = null;
+  let openPop = null;
+  const selected = new Set();
+  const extraFilter = { compte: 'all', vehicle: 'all' };
+  const COLS_KEY = 'traxo.fleetCols';
+  const allColumns = [
+    { key: 'activite', label: 'Activité' },
+    { key: 'disponibilite', label: 'Disponibilité' },
+    { key: 'charge', label: 'Charge' },
+    { key: 'position', label: 'Position' },
+    { key: 'compte', label: 'Compte' },
+  ];
+  let visibleCols = (() => { try { const a = JSON.parse(localStorage.getItem(COLS_KEY) || 'null'); return Array.isArray(a) && a.length ? new Set(a) : new Set(allColumns.map((c) => c.key)); } catch { return new Set(allColumns.map((c) => c.key)); } })();
+  const colVisible = (key) => visibleCols.has(key);
+  const filterIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>';
+  const columnsIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>';
+  const chevIc = DASH_ICONS.chevron;
+  const warnIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>';
 
   const vehicleOptions = (selected) => driverVehicleOptions.map((option) => `<option value="${option}" ${option === selected ? 'selected' : ''}>${option}</option>`).join('');
   const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
   const driverPhotoUrl = (driver) => driver.hasPhoto && driver.id ? `/api/app/drivers/${encodeURIComponent(driver.id)}/photo?v=${driver.photoVersion || 0}` : null;
-  const avatarHtml = (driver) => {
+  const avatarHtml = (driver, cls = '') => {
     const url = driverPhotoUrl(driver);
     return url
-      ? `<span class="avatar has-photo"><img src="${url}" alt="" loading="lazy"></span>`
-      : `<span class="avatar">${escapeHtml(initials(driver.name))}</span>`;
+      ? `<span class="avatar ${cls} has-photo"><img src="${url}" alt="" loading="lazy"></span>`
+      : `<span class="avatar ${cls}">${escapeHtml(initials(driver.name))}</span>`;
   };
-  const bucketOf = (driver) => {
-    if (!driver.active) return 'inactive';
-    if (['incident', 'off_duty', 'inactive'].includes(driver.operationalState)) return 'inactive';
-    if (['offline', 'stale', 'pause'].includes(driver.operationalState)) return 'offline';
-    if (['busy', 'full'].includes(driver.operationalState)) return 'busy';
-    return 'available';
+  const driverCode = (driver) => `LIV-${String(driver.id).padStart(3, '0')}`;
+
+  // États dérivés (mêmes règles pour la liste et la fiche).
+  const OFFLINE = ['inactive', 'offline', 'stale', 'unknown', 'off_duty', 'incident'];
+  const activityOf = (d) => {
+    if (!d.active || OFFLINE.includes(d.operationalState)) return { key: 'offline', label: 'Hors ligne', color: '#94a3b8' };
+    if (['busy', 'full'].includes(d.operationalState)) return { key: 'busy', label: 'En livraison', color: '#3b82f6' };
+    if (d.operationalState === 'pause') return { key: 'pause', label: 'En pause', color: '#f59e0b' };
+    return { key: 'online', label: 'Connectée', color: '#10b981' };
   };
-  const tabs = [
-    { key: 'all', label: 'Tous' },
-    { key: 'available', label: 'Disponibles' },
-    { key: 'busy', label: 'En course' },
-    { key: 'offline', label: 'Hors ligne' },
-    { key: 'inactive', label: 'Désactivés' },
-  ];
-  const countFor = (key) => key === 'all' ? drivers.length : drivers.filter((driver) => bucketOf(driver) === key).length;
-  const matches = (driver) => (filter === 'all' || bucketOf(driver) === filter)
-    && (!query || `${driver.name} ${driver.vehicleType} ${driver.phone || ''} ${driver.uniqueId}`.toLowerCase().includes(query));
-  const accountChip = (driver) => driver.hasAccount
-    ? `<span class="account-chip ok">${fleetIcons.check} Compte actif</span>`
-    : driver.invitePending
-      ? `<span class="account-chip pending">${fleetIcons.clock} Invitation envoyée</span>`
-      : `<span class="account-chip none">${fleetIcons.userx} Sans compte</span>`;
+  const availabilityOf = (d) => {
+    if (!d.active || OFFLINE.includes(d.operationalState)) return { key: 'unavailable', label: 'Indisponible', tone: '' };
+    if (['busy', 'full'].includes(d.operationalState)) return { key: 'busy', label: 'Occupé', tone: 'danger' };
+    if (d.operationalState === 'pause') return { key: 'pause', label: 'En pause', tone: 'warning' };
+    return { key: 'available', label: 'Disponible', tone: 'success' };
+  };
+  const accountOf = (d) => (d.hasAccount
+    ? { label: 'Actif', tone: 'success', configured: true }
+    : { label: 'À configurer', tone: 'warning', configured: false });
   const availSelect = (driver) => `<select class="availability avail-select av-${escapeHtml(driver.availabilityStatus)}" data-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'} aria-label="Disponibilité">
       <option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option>
       <option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option>
       <option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option>
       <option value="incident" ${driver.availabilityStatus === 'incident' ? 'selected' : ''}>Incident</option>
     </select>`;
-  const rowMenu = (driver) => canManage ? `<div class="row-menu"><button class="row-menu-btn" data-menu="${escapeHtml(driver.id)}" aria-label="Actions">${fleetIcons.dots}</button></div>` : '';
+  const rowMenu = (driver) => canManage ? `<button class="row-menu-btn" data-menu="${escapeHtml(driver.id)}" aria-label="Actions">${fleetIcons.dots}</button>` : '';
 
-  page.innerHTML = `<div class="page-header">
-      <div><h1>Livreurs</h1><p class="subtitle">Gérez votre flotte, les accès et la disponibilité.</p></div>
+  const tabs = [
+    { key: 'all', label: 'Tous', count: () => drivers.length },
+    { key: 'available', label: 'Disponibles', count: () => drivers.filter((d) => availabilityOf(d).key === 'available').length },
+    { key: 'busy', label: 'En livraison', count: () => drivers.filter((d) => activityOf(d).key === 'busy').length },
+    { key: 'offline', label: 'Hors ligne', count: () => drivers.filter((d) => activityOf(d).key === 'offline').length },
+  ];
+  const tabMatch = (d) => {
+    if (filter === 'available') return availabilityOf(d).key === 'available';
+    if (filter === 'busy') return activityOf(d).key === 'busy';
+    if (filter === 'offline') return activityOf(d).key === 'offline';
+    return true;
+  };
+  const matches = (d) => tabMatch(d)
+    && (extraFilter.compte === 'all' || (extraFilter.compte === 'ok' ? d.hasAccount : !d.hasAccount))
+    && (extraFilter.vehicle === 'all' || d.vehicleType === extraFilter.vehicle)
+    && (!query || `${d.name} ${d.vehicleType} ${d.phone || ''} ${driverCode(d)} ${d.uniqueId}`.toLowerCase().includes(query));
+
+  page.innerHTML = `<div class="page-header fleet-head">
+      <div><h1>Livreurs</h1><p class="subtitle">Équipe et disponibilité</p></div>
       ${canManage ? `<button class="button primary" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
     </div>
-    <section class="fleet-overview" id="fleetKpis"></section>
-    <div class="fleet-toolbar">
-      <div class="fleet-tabs" id="fleetTabs"></div>
+    <div class="fleet-summary"><div id="fleetStats" class="fleet-stats"></div>${canManage ? `<button type="button" class="fleet-toconfig" id="fleetToConfig" hidden></button>` : ''}</div>
+    <div class="fleet-toolbar2">
       <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="fleetSearch" placeholder="Rechercher un livreur…" autocomplete="off"/></div>
-      <div class="view-toggle" id="viewToggle">
-        <button data-view="table" title="Vue tableau" aria-label="Vue tableau">${fleetIcons.table}</button>
-        <button data-view="cards" title="Vue cartes" aria-label="Vue cartes">${fleetIcons.grid}</button>
+      <div class="fleet-tabs2" id="fleetTabs"></div>
+      <div class="fleet-tools">
+        <div class="fleet-tool-wrap"><button type="button" class="fleet-toolbtn" id="filtersBtn">${filterIc} Filtres</button><div class="fleet-pop" id="filtersPop" hidden></div></div>
+        <div class="fleet-tool-wrap"><button type="button" class="fleet-toolbtn" id="colsBtn">${columnsIc} Colonnes ${chevIc}</button><div class="fleet-pop" id="colsPop" hidden></div></div>
       </div>
     </div>
     <div id="driverResult"></div>
-    <section class="card" id="fleetList"></section>`;
+    <div class="fleet-bulk" id="fleetBulk" hidden></div>
+    <section class="card fleet-tablecard" id="fleetList"></section>`;
 
-  function donutSvg(segments, total) {
-    const radius = 54; const center = 64; const stroke = 16; const circumference = 2 * Math.PI * radius; const gap = total > 1 ? 3 : 0;
-    let offset = 0;
-    const arcs = segments.filter((segment) => segment.value > 0).map((segment) => {
-      const fraction = total ? segment.value / total : 0;
-      const length = Math.max(0, fraction * circumference - gap);
-      const arc = `<circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="${segment.color}" stroke-width="${stroke}" stroke-dasharray="${length} ${circumference - length}" stroke-dashoffset="${-offset}" stroke-linecap="round" transform="rotate(-90 ${center} ${center})"/>`;
-      offset += fraction * circumference;
-      return arc;
-    }).join('');
-    return `<svg viewBox="0 0 128 128" role="img" aria-label="Composition de la flotte">
-      <circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="#eceef1" stroke-width="${stroke}"/>
-      ${total ? arcs : ''}
-      <text x="64" y="60" text-anchor="middle" class="donut-total">${total}</text>
-      <text x="64" y="80" text-anchor="middle" class="donut-sub">livreur${total > 1 ? 's' : ''}</text>
-    </svg>`;
-  }
-
-  function renderKpis() {
-    const el = document.getElementById('fleetKpis');
-    const available = drivers.filter((driver) => bucketOf(driver) === 'available').length;
-    const busy = drivers.filter((driver) => bucketOf(driver) === 'busy').length;
-    const offline = drivers.filter((driver) => bucketOf(driver) === 'offline').length;
-    const inactive = drivers.filter((driver) => bucketOf(driver) === 'inactive').length;
-    const withAccount = drivers.filter((driver) => driver.hasAccount).length;
-    const located = drivers.filter((driver) => driver.lastUpdate).length;
-    const capacity = drivers.reduce((sum, driver) => sum + Number(driver.capacity || 0), 0);
-    const segments = [
-      { label: 'Disponibles', value: available, color: '#10b981' },
-      { label: 'En course', value: busy, color: '#475569' },
-      { label: 'Hors ligne', value: offline, color: '#a15c00' },
-      { label: 'Désactivés', value: inactive, color: '#b42318' },
-    ];
-    const boxIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>';
-    el.innerHTML = `
-      <article class="card fleet-hero">
-        <div class="fleet-donut">${donutSvg(segments, drivers.length)}</div>
-        <div class="fleet-hero-legend">
-          <h2>Composition de la flotte</h2>
-          <ul>${segments.map((segment) => `<li><span class="lg-dot" style="background:${segment.color}"></span><span class="lg-label">${segment.label}</span><span class="lg-val">${segment.value}</span></li>`).join('')}</ul>
-        </div>
-      </article>
-      <div class="fleet-kpis grid">
-        <article class="stat fleet-kpi tone-green"><span class="kpi-ic">${fleetIcons.check}</span><div><strong>${withAccount}</strong><span>Comptes actifs</span></div></article>
-        <article class="stat fleet-kpi tone-amber"><span class="kpi-ic">${fleetIcons.userx}</span><div><strong>${drivers.length - withAccount}</strong><span>Sans compte</span></div></article>
-        <article class="stat fleet-kpi"><span class="kpi-ic">${fleetIcons.route}</span><div><strong>${located}</strong><span>GPS reçu</span></div></article>
-        <article class="stat fleet-kpi"><span class="kpi-ic">${boxIcon}</span><div><strong>${capacity}</strong><span>Capacité totale</span></div></article>
-      </div>`;
+  function renderStats() {
+    const total = drivers.length;
+    const dispo = drivers.filter((d) => availabilityOf(d).key === 'available').length;
+    const enLiv = drivers.filter((d) => activityOf(d).key === 'busy').length;
+    const horsLigne = drivers.filter((d) => activityOf(d).key === 'offline').length;
+    const toConfig = drivers.filter((d) => !d.hasAccount).length;
+    const el = document.getElementById('fleetStats');
+    if (el) el.innerHTML = `<span class="fs-total">${total}</span> livreur${total > 1 ? 's' : ''}
+      <span class="fs-sep">·</span> <strong>${dispo}</strong> disponible${dispo > 1 ? 's' : ''}
+      <span class="fs-sep">·</span> <strong>${enLiv}</strong> en livraison
+      <span class="fs-sep">·</span> <strong>${horsLigne}</strong> hors ligne`;
+    const cfg = document.getElementById('fleetToConfig');
+    if (cfg) {
+      if (toConfig > 0) { cfg.hidden = false; cfg.innerHTML = `${warnIc} <strong>${toConfig}</strong> accès à configurer ${chevIc}`; }
+      else cfg.hidden = true;
+    }
   }
 
   function renderTabs() {
-    document.getElementById('fleetTabs').innerHTML = tabs.map((tab) => `<button class="fleet-tab ${filter === tab.key ? 'active' : ''}" data-tab="${tab.key}">${tab.label}<span class="count">${countFor(tab.key)}</span></button>`).join('');
+    const el = document.getElementById('fleetTabs');
+    if (el) el.innerHTML = tabs.map((tab) => `<button class="fleet-tab2 ${filter === tab.key ? 'active' : ''}" data-tab="${tab.key}">${tab.label}<span class="count">${tab.count()}</span></button>`).join('');
   }
+
+  const activityCell = (d) => { const a = activityOf(d); return `<span class="fleet-activity"><span class="fleet-dot" style="background:${a.color}"></span>${a.label}</span>`; };
+  const availabilityCell = (d) => { const a = availabilityOf(d); return `<span class="badge ${a.tone}">${a.label}</span>`; };
+  const accountCell = (d) => (accountOf(d).configured
+    ? '<span class="badge success">Actif</span>'
+    : `<button type="button" class="badge warning fleet-cfgbtn" data-config="${escapeHtml(d.id)}">À configurer</button>`);
 
   function renderList() {
     const list = drivers.filter(matches);
     const container = document.getElementById('fleetList');
     if (!list.length) {
-      container.className = 'card';
       container.innerHTML = `<div class="fleet-empty">${drivers.length ? 'Aucun livreur ne correspond à ce filtre.' : 'Aucun livreur enregistré. Cliquez sur « Ajouter un livreur ».'}</div>`;
       return;
     }
-    if (view === 'cards') {
-      container.className = '';
-      container.innerHTML = `<div class="fleet-cards">${list.map((driver) => `<div class="fleet-card">
-        <div class="fleet-card-top">
-          ${avatarHtml(driver)}
-          <div class="fleet-name"><div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div>
-          ${rowMenu(driver)}
-        </div>
-        <div>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'} &nbsp; ${accountChip(driver)}</div>
-        <div class="fleet-card-stats">
-          <div class="fleet-card-stat"><span>Charge</span><strong>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</strong></div>
-          <div class="fleet-card-stat"><span>Identifiant GPS</span><strong class="mono">${escapeHtml(driver.uniqueId)}</strong></div>
-          <div class="fleet-card-stat"><span>Dernière position</span><strong>${escapeHtml(formatAge(driver.lastUpdate))}</strong></div>
-          <div class="fleet-card-stat"><span>GPS</span><strong>${escapeHtml(driver.trackerStatus)}</strong></div>
-        </div>
-        <div class="fleet-card-foot">${availSelect(driver)}</div>
-      </div>`).join('')}</div>`;
-      return;
-    }
-    container.className = 'card';
-    container.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Livreur</th><th>État</th><th>Charge</th><th>Identifiant GPS</th><th>Dernière position</th><th>Compte</th><th>Disponibilité</th>${canManage ? '<th></th>' : ''}</tr></thead><tbody>${list.map((driver) => `<tr>
-      <td><div class="fleet-name">${avatarHtml(driver)}<div class="fleet-id"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType)}${driver.phone ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div></div></td>
-      <td>${badge(driverStateLabels[driver.operationalState] || driver.operationalState)}${driver.active ? '' : ' <span class="badge">Désactivé</span>'}</td>
-      <td>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</td>
-      <td><span class="mono">${escapeHtml(driver.uniqueId)}</span></td>
-      <td>${escapeHtml(formatAge(driver.lastUpdate))}</td>
-      <td>${accountChip(driver)}</td>
-      <td>${availSelect(driver)}</td>
-      ${canManage ? `<td>${rowMenu(driver)}</td>` : ''}
-    </tr>`).join('')}</tbody></table></div>`;
+    const allChecked = list.every((d) => selected.has(String(d.id)));
+    const th = (key, label, cls = '') => (colVisible(key) ? `<th class="${cls}">${label}</th>` : '');
+    container.innerHTML = `<div class="table-wrap"><table class="fleet-table">
+      <thead><tr>
+        ${canManage ? `<th class="fleet-check"><input type="checkbox" id="fleetCheckAll" ${allChecked ? 'checked' : ''} aria-label="Tout sélectionner"></th>` : ''}
+        <th>Livreur</th>
+        ${th('activite', 'Activité')}
+        ${th('disponibilite', 'Disponibilité')}
+        ${th('charge', 'Charge', 'num')}
+        ${th('position', 'Position')}
+        ${th('compte', 'Compte')}
+        <th class="fleet-actions-h"></th>
+      </tr></thead>
+      <tbody>${list.map((d) => {
+        const id = String(d.id);
+        return `<tr class="fleet-row ${selected.has(id) ? 'selected' : ''}" data-row="${escapeHtml(d.id)}">
+        ${canManage ? `<td class="fleet-check"><input type="checkbox" class="fleet-rowcheck" data-check="${escapeHtml(d.id)}" ${selected.has(id) ? 'checked' : ''} aria-label="Sélectionner"></td>` : ''}
+        <td><div class="fleet-name">${avatarHtml(d)}<div class="fleet-id"><strong>${escapeHtml(d.name)}</strong><small>${escapeHtml(d.vehicleType)} · ${escapeHtml(driverCode(d))}</small></div></div></td>
+        ${colVisible('activite') ? `<td>${activityCell(d)}</td>` : ''}
+        ${colVisible('disponibilite') ? `<td>${availabilityCell(d)}</td>` : ''}
+        ${colVisible('charge') ? `<td class="num">${escapeHtml(d.activeOrders)} / ${escapeHtml(d.capacity)}</td>` : ''}
+        ${colVisible('position') ? `<td class="fleet-pos ${d.lastUpdate ? '' : 'muted'}">${d.lastUpdate ? escapeHtml(formatAge(d.lastUpdate)) : 'Position inconnue'}</td>` : ''}
+        ${colVisible('compte') ? `<td>${accountCell(d)}</td>` : ''}
+        <td class="fleet-actions">${rowMenu(d)}</td>
+      </tr>`; }).join('')}</tbody></table></div>`;
   }
 
-  function refreshView() { renderKpis(); renderTabs(); renderList(); }
+  function renderBulk() {
+    const bar = document.getElementById('fleetBulk');
+    if (!bar || !canManage) return;
+    const n = selected.size;
+    if (!n) { bar.hidden = true; bar.innerHTML = ''; return; }
+    bar.hidden = false;
+    bar.innerHTML = `<span class="fleet-bulk-n">${n} sélectionné${n > 1 ? 's' : ''}</span>
+      <div class="fleet-bulk-actions">
+        <button type="button" class="button small secondary" data-bulk="disable">Désactiver</button>
+        <button type="button" class="button small secondary" data-bulk="enable">Réactiver</button>
+        <button type="button" class="fleet-bulk-clear" data-bulk="clear">Effacer</button>
+      </div>`;
+  }
+
+  function refreshView() { renderStats(); renderTabs(); renderList(); renderBulk(); }
 
   async function reload() {
     drivers = await api('/api/app/drivers');
@@ -2819,6 +2833,77 @@ async function renderDrivers() {
       select.disabled = false;
     }
   });
+  function closePop() { if (openPop) { openPop.setAttribute('hidden', ''); openPop = null; } }
+  const toggleSelect = (id, on) => { const k = String(id); if (on) selected.add(k); else selected.delete(k); };
+
+  async function bulkSetActive(active) {
+    const ids = [...selected];
+    if (!ids.length) return;
+    notify(`<div class="notice">Mise à jour de ${ids.length} livreur${ids.length > 1 ? 's' : ''}…</div>`);
+    const results = await Promise.allSettled(ids.map((id) => api(`/api/app/drivers/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) })));
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    selected.clear();
+    await reload();
+    notify(failed ? `<div class="notice warning">${ids.length - failed} mis à jour, ${failed} en échec.</div>` : `<div class="notice success">${ids.length} livreur${ids.length > 1 ? 's' : ''} ${active ? 'réactivé' : 'désactivé'}${ids.length > 1 ? 's' : ''}.</div>`);
+  }
+
+  function renderFiltersPop() {
+    const pop = document.getElementById('filtersPop');
+    if (!pop) return;
+    const vehicles = [...new Set(drivers.map((d) => d.vehicleType).filter(Boolean))];
+    pop.innerHTML = `<div class="fleet-pop-title">Filtres</div>
+      <label class="fleet-pop-field"><span>Compte</span><select id="fltCompte"><option value="all"${extraFilter.compte === 'all' ? ' selected' : ''}>Tous</option><option value="ok"${extraFilter.compte === 'ok' ? ' selected' : ''}>Actif</option><option value="ko"${extraFilter.compte === 'ko' ? ' selected' : ''}>À configurer</option></select></label>
+      <label class="fleet-pop-field"><span>Véhicule</span><select id="fltVehicle"><option value="all"${extraFilter.vehicle === 'all' ? ' selected' : ''}>Tous</option>${vehicles.map((v) => `<option value="${escapeHtml(v)}"${extraFilter.vehicle === v ? ' selected' : ''}>${escapeHtml(v)}</option>`).join('')}</select></label>
+      <div class="fleet-pop-actions"><button type="button" class="fleet-pop-reset" id="fltReset">Réinitialiser</button></div>`;
+    pop.querySelector('#fltCompte').addEventListener('change', (e) => { extraFilter.compte = e.target.value; renderList(); });
+    pop.querySelector('#fltVehicle').addEventListener('change', (e) => { extraFilter.vehicle = e.target.value; renderList(); });
+    pop.querySelector('#fltReset').addEventListener('click', () => { extraFilter.compte = 'all'; extraFilter.vehicle = 'all'; renderFiltersPop(); renderList(); });
+  }
+
+  function renderColsPop() {
+    const pop = document.getElementById('colsPop');
+    if (!pop) return;
+    pop.innerHTML = `<div class="fleet-pop-title">Colonnes affichées</div>${allColumns.map((c) => `<label class="fleet-pop-check"><input type="checkbox" data-col="${c.key}" ${visibleCols.has(c.key) ? 'checked' : ''}>${escapeHtml(c.label)}</label>`).join('')}`;
+    pop.querySelectorAll('[data-col]').forEach((cb) => cb.addEventListener('change', () => {
+      if (cb.checked) visibleCols.add(cb.dataset.col);
+      else if (visibleCols.size > 1) visibleCols.delete(cb.dataset.col);
+      else { cb.checked = true; return; }
+      try { localStorage.setItem(COLS_KEY, JSON.stringify([...visibleCols])); } catch { /* ignore */ }
+      renderList();
+    }));
+  }
+
+  async function openDriverDetail(driver) {
+    const act = activityOf(driver); const avail = availabilityOf(driver); const acc = accountOf(driver);
+    const timeShort = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); };
+    const body = `<div class="dd-sub">${escapeHtml(driver.vehicleType)} · ${escapeHtml(driverCode(driver))}</div>
+      <div class="dd-status"><span class="fleet-activity"><span class="fleet-dot" style="background:${act.color}"></span>${act.label}</span><span class="badge ${avail.tone}">${avail.label}</span></div>
+      <div class="dd-rows">
+        <div class="dd-row"><span>Charge</span><strong>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</strong></div>
+        <div class="dd-row"><span>Dernière position</span><strong>${driver.lastUpdate ? escapeHtml(formatAge(driver.lastUpdate)) : 'Inconnue'}</strong></div>
+        <div class="dd-row"><span>Compte</span><strong>${acc.configured ? '<span class="badge success">Actif</span>' : '<span class="badge warning">À configurer</span>'}</strong></div>
+      </div>
+      <div id="ddActivity" class="dd-activity">${acc.configured ? '<div class="dd-loading">Chargement…</div>' : `<div class="dd-note">${warnIc}<span>Aucun suivi disponible tant que l’accès n’est pas configuré.</span></div>`}</div>`;
+    const foot = acc.configured
+      ? `<button class="button secondary" data-modal-close type="button">Fermer</button><a class="button primary" href="/app/carte">Voir sur la carte</a>`
+      : `<button class="button secondary" data-modal-close type="button">Fermer</button>${canManage ? '<button class="button primary" id="ddConfigure" type="button">Configurer l’accès</button>' : ''}`;
+    const modal = openModal(driver.name, body, foot);
+    modal.backdrop.querySelector('[data-modal-close]')?.addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#ddConfigure')?.addEventListener('click', () => { modal.close(); openAccessModal(driver); });
+    if (acc.configured) {
+      try {
+        const data = await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/activity`);
+        const box = modal.backdrop.querySelector('#ddActivity');
+        if (box) box.innerHTML = (data.updates && data.updates.length)
+          ? `<div class="dd-activity-title">Dernières mises à jour</div>${data.updates.map((u) => `<a class="dd-update" href="/app/commandes/${u.id}"><span class="dd-up-ref">${escapeHtml(u.reference || ('#' + u.id))}</span><span class="dd-up-sep">·</span><span class="dd-up-status">${escapeHtml(u.status)}</span><span class="dd-up-time">${escapeHtml(timeShort(u.at))}</span></a>`).join('')}`
+          : '<div class="dd-note"><span>Aucune commande récente.</span></div>';
+      } catch (error) {
+        const box = modal.backdrop.querySelector('#ddActivity');
+        if (box) box.innerHTML = '<div class="dd-note"><span>Impossible de charger l’activité.</span></div>';
+      }
+    }
+  }
+
   page.addEventListener('click', (event) => {
     const menuBtn = event.target.closest('[data-menu]');
     if (menuBtn) {
@@ -2829,18 +2914,38 @@ async function renderDrivers() {
       return;
     }
     if (!event.target.closest('.menu-pop')) closeMenu();
+    if (!event.target.closest('.fleet-tool-wrap')) closePop();
+
+    if (event.target.closest('#filtersBtn')) { event.stopPropagation(); const p = document.getElementById('filtersPop'); const opening = p.hasAttribute('hidden'); closePop(); if (opening) { renderFiltersPop(); p.removeAttribute('hidden'); openPop = p; } return; }
+    if (event.target.closest('#colsBtn')) { event.stopPropagation(); const p = document.getElementById('colsPop'); const opening = p.hasAttribute('hidden'); closePop(); if (opening) { renderColsPop(); p.removeAttribute('hidden'); openPop = p; } return; }
+    if (event.target.closest('.fleet-pop')) { event.stopPropagation(); return; }
+
+    const checkAll = event.target.closest('#fleetCheckAll');
+    if (checkAll) { const on = checkAll.checked; drivers.filter(matches).forEach((d) => toggleSelect(d.id, on)); renderList(); renderBulk(); return; }
+    const rowCheck = event.target.closest('.fleet-rowcheck');
+    if (rowCheck) { event.stopPropagation(); toggleSelect(rowCheck.dataset.check, rowCheck.checked); const tr = rowCheck.closest('.fleet-row'); if (tr) tr.classList.toggle('selected', rowCheck.checked); renderBulk(); const all = document.getElementById('fleetCheckAll'); if (all) all.checked = drivers.filter(matches).every((d) => selected.has(String(d.id))); return; }
+
+    const bulk = event.target.closest('[data-bulk]');
+    if (bulk) { const act = bulk.dataset.bulk; if (act === 'clear') { selected.clear(); renderList(); renderBulk(); } else if (act === 'disable') bulkSetActive(false); else if (act === 'enable') bulkSetActive(true); return; }
+
+    const cfgBtn = event.target.closest('[data-config]');
+    if (cfgBtn) { event.stopPropagation(); const driver = drivers.find((item) => String(item.id) === String(cfgBtn.dataset.config)); if (driver) openAccessModal(driver); return; }
+    if (event.target.closest('#fleetToConfig')) { filter = 'all'; extraFilter.compte = 'ko'; renderTabs(); renderList(); return; }
+
     const tab = event.target.closest('[data-tab]');
-    if (tab) { filter = tab.dataset.tab; renderTabs(); renderList(); }
-    const viewBtn = event.target.closest('[data-view]');
-    if (viewBtn) { view = viewBtn.dataset.view; try { localStorage.setItem('traxo.fleetView', view); } catch { /* ignore */ } syncViewToggle(); renderList(); }
-    if (event.target.closest('#addDriverBtn')) openAddModal();
+    if (tab) { filter = tab.dataset.tab; renderTabs(); renderList(); return; }
+
+    if (event.target.closest('#addDriverBtn')) { openAddModal(); return; }
+
+    const row = event.target.closest('.fleet-row');
+    if (row && !event.target.closest('input, button, a, select, .menu-pop')) {
+      const driver = drivers.find((item) => String(item.id) === String(row.dataset.row));
+      if (driver) openDriverDetail(driver);
+    }
   });
   const search = document.getElementById('fleetSearch');
   search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
 
-  function syncViewToggle() { document.querySelectorAll('#viewToggle button').forEach((button) => button.classList.toggle('active', button.dataset.view === view)); }
-
-  syncViewToggle();
   refreshView();
 }
 

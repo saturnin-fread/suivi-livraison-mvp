@@ -1690,3 +1690,29 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .req-assign select:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgba(22, 35, 63, .1); }
 .req-assign-msg { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
 .req-assign-msg.err { color: var(--red); }
+
+/* Tiroir commande : résumé + toutes les actions, défilement + menu de sections */
+.crm-drawer.wide { width: min(640px, 100%); }
+.od-nav { display: flex; gap: 5px; padding: 10px 22px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; background: #fff; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
+.od-nav::-webkit-scrollbar { display: none; }
+.od-nav button { flex: 0 0 auto; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.od-nav button:hover { color: var(--ink); border-color: #cfd6e2; }
+.od-nav button.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+.od-actions > section.card { background: none; border: 0; box-shadow: none; border-radius: 0; margin: 0 0 18px !important; padding: 0 0 20px; border-bottom: 1px solid #f1f4f8; }
+.od-actions > section.card > h2 { margin: 0 0 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #8a94a6; }
+.od-actions > section.card > .subtitle { margin: 0 0 14px; font-size: 13px; line-height: 1.5; }
+.od-actions h3 { margin: 16px 0 10px; font-size: 14px; }
+.od-actions .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.od-actions .form-grid { gap: 12px 14px; }
+.od-actions .actions { flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.od-actions .incident-list { margin-top: 16px; display: grid; gap: 10px; }
+.od-actions .evidence-grid { gap: 12px; }
+.od-actions .loading-state { padding: 18px 0; }
+.crm-drawer.wide .crm-drawer-body { scroll-padding-top: 12px; }
+@media (max-width: 640px) {
+  .od-actions .form-grid, .od-actions .detail-grid { grid-template-columns: 1fr; }
+  .od-nav { padding: 8px 16px; }
+}
+/* Pied de tiroir : les boutons passent l'un sous l'autre sur écran étroit. */
+.crm-drawer-foot { flex-wrap: wrap; }
+.crm-drawer-foot > .button { flex: 1 1 180px; min-width: 0; }

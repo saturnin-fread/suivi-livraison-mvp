@@ -30,7 +30,7 @@
         // l'appareil, puis retiré de la barre d'adresse (lien copié = inutile).
         let legacyEdit = params.get('edit') || '';
         const pageEl = document.getElementById('page');
-        const REFRESH_MS = 20000;
+        const REFRESH_MS = 15000;
         const FINAL = ['delivered', 'refused', 'closed', 'other_device'];
         const EN_ROUTE = ['En tournée', 'En livraison', 'Arrivée'];
         const ORDER_LABELS = { 'Confirmée': 'Livreur affecté', 'En préparation': 'En préparation', 'Récupérée': 'Colis récupéré', 'En tournée': 'En tournée', 'En livraison': 'En livraison', 'Arrivée': 'Arrivé', 'Livrée': 'Livrée' };
@@ -50,9 +50,13 @@
           ? `<div class="cl-info-thumbs">${data.photoIds.map((id, i) => `<a href="${photoUrl(id)}" target="_blank" rel="noopener"><img src="${photoUrl(id)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</div>`
           : 'Aucune photo');
 
-        function step(state, title, text) {
-          return `<li class="cl-step ${state}"><span class="cl-step-ic">${state === 'done' ? icon('check') : ''}</span><div class="cl-step-body"><strong>${esc(title)}</strong>${text ? `<span>${esc(text)}</span>` : ''}</div><span></span></li>`;
+        // extra.flow : trait animé vers l'étape suivante ; extra.working : « … » animés.
+        function step(state, title, text, extra = {}) {
+          const dots = extra.working ? '<span class="cl-dots" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
+          return `<li class="cl-step ${state}${extra.flow ? ' flow' : ''}"><span class="cl-step-ic">${state === 'done' ? icon('check') : ''}</span><div class="cl-step-body"><strong>${esc(title)}</strong>${text ? `<span>${esc(text)}${dots}</span>` : ''}</div><span></span></li>`;
         }
+        // Indicateur « vérifié il y a … » (mis à jour chaque seconde).
+        const liveHtml = () => `<hr class="cl-sep" /><p class="cl-live" id="liveLine" aria-live="off">${icon('refresh')}<span id="liveText">Mise à jour automatique</span></p>`;
         function hstep(state, label) {
           return `<li class="cl-hstep ${state}"><span class="cl-hstep-ic">${state === 'done' ? icon('check') : ''}</span><span class="cl-hstep-label">${esc(label)}</span></li>`;
         }
@@ -61,19 +65,19 @@
         function receivedHtml() {
           const needsInfo = data.status === 'Informations à compléter';
           const aside = `<aside class="cl-aside">
-              <p class="cl-eyebrow">Demande #${esc(data.id)}</p>
-              <h1 class="cl-title">Votre demande est reçue.</h1>
-              <p class="cl-lead">${esc(company())} vérifie vos informations.${data.canEdit ? '<br />Vous pouvez encore les modifier.' : ''}</p>
-              <div class="cl-state"><span class="cl-dot" aria-hidden="true"></span>${needsInfo ? 'Précisions demandées' : 'En attente de validation'}</div>
+              <p class="cl-eyebrow cl-enter">Demande #${esc(data.id)}</p>
+              <h1 class="cl-title cl-enter d1">Votre demande est reçue.</h1>
+              <p class="cl-lead cl-enter d2">${esc(company())} vérifie vos informations.${data.canEdit ? '<br />Vous pouvez encore les modifier.' : ''}</p>
+              <div class="cl-state cl-enter d2"><span class="cl-dot pulse" aria-hidden="true"></span>${needsInfo ? 'Précisions demandées' : 'En attente de validation'}</div>
               <hr class="cl-rule" />
-              <ol class="cl-steps">
-                ${step('done', 'Informations reçues', 'Votre demande a été envoyée.')}
-                ${step('current', `Validation de ${company()}`, needsInfo ? 'Des précisions vous sont demandées.' : 'Nous vérifions vos informations.')}
+              <ol class="cl-steps cl-enter d3">
+                ${step('done', 'Informations reçues', 'Votre demande a été envoyée.', { flow: true })}
+                ${step('current', `Validation de ${company()}`, needsInfo ? 'Des précisions vous sont demandées' : 'Nous vérifions vos informations', { working: true })}
                 ${step('upcoming', 'Livreur affecté', 'Vous serez informé une fois qu’un livreur sera affecté.')}
               </ol>
             </aside>`;
           if (editing) return aside + `<div>${flashHtml()}<div class="cl-top"><h2>Modifier mes informations</h2></div><form id="editForm" novalidate>${C.requestFieldsHtml(data)}<div class="cl-sec"><div class="cl-actions"><button class="cl-btn" id="saveBtn" type="submit">Enregistrer les modifications</button><button class="cl-btn ghost" id="cancelBtn" type="button">Annuler</button></div><p class="cl-hint">Les photos ajoutées ou retirées sont enregistrées immédiatement.</p></div></form></div>`;
-          return aside + `<div>
+          return aside + `<div class="cl-enter d2">
               ${flashHtml()}
               <div class="cl-top"><h2>Vos informations</h2>${data.canEdit ? '<button class="cl-btn outline sm" id="editBtn" type="button">Modifier mes informations</button>' : ''}</div>
               <dl class="cl-info" style="margin:0">
@@ -88,7 +92,7 @@
               </dl>
               <p class="cl-hint" style="margin-top:14px">${data.canEdit ? `Modifiables jusqu’à la validation par ${esc(company())}.` : 'Pour modifier ces informations, ouvrez le lien reçu juste après l’envoi du formulaire, ou contactez directement l’entreprise.'}</p>
               <div style="margin-top:44px"><button class="cl-btn block big" type="button" disabled style="justify-content:center">Voir mon livreur</button><p class="cl-hint">Disponible après validation et affectation d’un livreur.</p></div>
-              <hr class="cl-sep" /><p class="cl-small">Cette page se met à jour automatiquement.</p>
+              ${liveHtml()}
             </div>`;
         }
 
@@ -107,8 +111,8 @@
             : `<button class="cl-btn block big" type="button" disabled style="justify-content:center">Voir mon livreur</button><p class="cl-hint">${driver ? 'Le suivi sera disponible dans un instant.' : 'Disponible dès qu’un livreur sera affecté.'}</p>`;
           const vehicle = driver ? [driver.vehicleType, ORDER_LABELS[order.status] || order.status].filter(Boolean).join(' · ') : '';
           return `<aside class="cl-aside">
-              <p class="cl-eyebrow">Livraison #${esc(data.id)}</p>
-              <h1 class="cl-title">${esc(title)}</h1>
+              <p class="cl-eyebrow cl-enter">Livraison #${esc(data.id)}</p>
+              <h1 class="cl-title cl-enter d1">${esc(title)}</h1>
               <div class="cl-state"><span class="cl-dot green${enRoute ? ' live' : ''}" aria-hidden="true"></span>${esc(state)}</div>
               <p class="cl-lead" style="color:var(--ink-2)">${esc(company())} a validé votre commande.</p>
               <p class="cl-lead" style="margin-top:14px;font-size:17px">Vos informations sont maintenant verrouillées.</p>
@@ -140,7 +144,7 @@
                   ${data.photoIds.length ? row('Photos', photosCell()) : ''}
                 </dl>
               </section>
-              ${delivered ? '' : '<hr class="cl-sep" /><p class="cl-small">Cette page se met à jour automatiquement.</p>'}
+              ${delivered ? '' : liveHtml()}
             </div>`;
         }
 
@@ -222,7 +226,21 @@
           column.firstElementChild.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         }
 
+        let lastChecked = 0;
+        const paintLive = () => {
+          const text = document.getElementById('liveText');
+          if (!text || !lastChecked) return;
+          const seconds = Math.max(0, Math.round((Date.now() - lastChecked) / 1000));
+          text.textContent = seconds < 5 ? 'Vérifié à l’instant · mise à jour automatique'
+            : seconds < 60 ? `Vérifié il y a ${seconds} s · mise à jour automatique`
+              : `Vérifié il y a ${Math.floor(seconds / 60)} min · mise à jour automatique`;
+        };
+        setInterval(paintLive, 1000);
+
         async function load(force) {
+          const liveLine = document.getElementById('liveLine');
+          const startedAt = Date.now();
+          if (liveLine) liveLine.classList.add('busy');
           const query = legacyEdit ? `?edit=${encodeURIComponent(legacyEdit)}` : '';
           const result = await C.fetchJson(`/api/public/requests/${encodeURIComponent(token)}${query}`)
             .catch(() => ({ ok: false, data: {} }));
@@ -232,6 +250,11 @@
             const rest = params.toString();
             history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
           }
+          // L'icône tourne au moins un instant : la vérification se voit.
+          const settle = () => { const line = document.getElementById('liveLine'); if (line) line.classList.remove('busy'); };
+          setTimeout(settle, Math.max(0, 700 - (Date.now() - startedAt)));
+          if (result.ok) lastChecked = Date.now();
+          paintLive();
           if (!result.ok) {
             if (!data) pageEl.innerHTML = `<aside class="cl-aside"><h1 class="cl-title">Demande introuvable.</h1><p class="cl-lead">${esc(result.data.error || 'Ce lien n’est plus valide.')}</p></aside><div></div>`;
             return;
@@ -242,6 +265,7 @@
           data = result.data;
           if (!data.canEdit) editing = false;
           render();
+          paintLive();
         }
 
         load(true);

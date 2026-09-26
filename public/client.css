@@ -213,3 +213,29 @@ textarea.cl-input { min-height: 74px; resize: vertical; line-height: 1.45; }
 .cl-cc-name { flex: 1; }
 .cl-cc-dial { color: var(--muted); font-variant-numeric: tabular-nums; }
 .cl-hint.err { color: var(--red); }
+
+/* Demande en cours de validation : animations discrètes (coupées si
+   « réduire les animations » est activé — voir la règle globale). */
+@keyframes cl-ring { 0% { transform: scale(1); opacity: .6; } 100% { transform: scale(2); opacity: 0; } }
+@keyframes cl-flow { from { background-position: 0 0; } to { background-position: 0 28px; } }
+@keyframes cl-dot-bounce { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+@keyframes cl-spin { to { transform: rotate(360deg); } }
+@keyframes cl-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes cl-pop { 0% { transform: scale(.5); } 70% { transform: scale(1.12); } 100% { transform: scale(1); } }
+@keyframes cl-amber-pulse { 0% { box-shadow: 0 0 0 0 rgba(229, 160, 25, .5); } 70% { box-shadow: 0 0 0 9px rgba(229, 160, 25, 0); } 100% { box-shadow: 0 0 0 0 rgba(229, 160, 25, 0); } }
+.cl-dot.pulse { animation: cl-amber-pulse 1.8s ease-out infinite; }
+.cl-step.current:not(.green) .cl-step-ic { position: relative; }
+.cl-step.current:not(.green) .cl-step-ic::before { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--amber); animation: cl-ring 1.8s ease-out infinite; }
+.cl-step.flow:not(:last-child)::before { left: 15px; width: 2px; background: repeating-linear-gradient(to bottom, var(--green) 0 7px, rgba(31, 84, 70, .15) 7px 14px); background-size: 2px 28px; animation: cl-flow 1.1s linear infinite; }
+.cl-dots { display: inline-flex; gap: 3px; margin-left: 3px; }
+.cl-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: cl-dot-bounce 1.2s infinite; }
+.cl-dots i:nth-child(2) { animation-delay: .15s; }
+.cl-dots i:nth-child(3) { animation-delay: .3s; }
+.cl-live { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.cl-live svg.ic { width: 15px; height: 15px; }
+.cl-live.busy svg.ic { animation: cl-spin .8s linear infinite; color: var(--green); }
+.cl-enter { animation: cl-rise .55s cubic-bezier(.2, .7, .2, 1) both; }
+.cl-enter.d1 { animation-delay: .06s; }
+.cl-enter.d2 { animation-delay: .14s; }
+.cl-enter.d3 { animation-delay: .22s; }
+.cl-step.done .cl-step-ic, .cl-hstep.done .cl-hstep-ic { animation: cl-pop .5s cubic-bezier(.2, .8, .3, 1.4) .3s both; }

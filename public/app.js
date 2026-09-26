@@ -1180,10 +1180,20 @@ async function renderRunDetail(id) {
   });
 }
 
-async function renderOrderDetail(id) {
-  setHeader('Commande', 'Exécution, preuve de remise et incidents');
+// Ancienne page « /app/commandes/:id » : tout est désormais dans le tiroir
+// Opérations › Commandes (liens, favoris et notifications y sont redirigés).
+function renderOrderDetail(id) {
+  location.replace(`/app/operations?vue=commandes&commande=${encodeURIComponent(id)}`);
+}
+
+// Actions d'une commande (étape, réaffectation, lien de suivi, encaissement,
+// preuves, code de remise, incidents), montées dans `root` — le tiroir de la
+// commande. `refresh` redessine le tiroir après chaque action.
+async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) {
+  const $ = (elementId) => root.querySelector(`#${elementId}`);
+  const reload = refresh || (() => mountOrderActions(root, id, {}));
   const canManage = ['owner', 'manager', 'operator'].includes(context.user.role);
-  const order = await api(`/api/app/orders/${encodeURIComponent(id)}`);
+  const order = prefetched || await api(`/api/app/orders/${encodeURIComponent(id)}`);
   const reassignDrivers = (!order.isTerminal && canManage) ? await api('/api/app/drivers').catch(() => []) : [];
   const destination = [order.neighborhood, order.landmark, order.delivery_address].filter(Boolean).join(' — ') || '—';
   const incidentOptions = Object.entries(incidentCategoryLabels)
@@ -1198,15 +1208,8 @@ async function renderOrderDetail(id) {
     active: 'Actif', terminal: 'Livraison terminée', revoked: 'Révoqué', expired: 'Expiré', unavailable: 'Indisponible',
   };
   const trackingLinkUsable = ['active', 'terminal'].includes(trackingLink.state);
-  page.innerHTML = `
-    <div class="page-header"><div><a href="/app/operations?vue=commandes">← Retour aux commandes</a><h1 style="margin-top:12px">${escapeHtml(orderCode(order.reference, order.id))}</h1><p class="subtitle">Mise à jour ${escapeHtml(formatDate(order.updated_at))}</p></div>${badge(order.status)}</div>
-    <section class="card"><h2>Livraison</h2><div class="detail-grid">
-      <div class="detail"><span>Client</span><strong>${escapeHtml(order.customer_name || '—')}</strong></div>
-      <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
-      <div class="detail"><span>Créneau</span><strong>${escapeHtml(order.requested_time || '—')}</strong></div>
-      <div class="detail"><span>Livreur</span><strong>${escapeHtml(order.driver_name)} · ${escapeHtml(order.driver_vehicle_type || '')}</strong></div>
-      <div class="detail" style="grid-column:span 2"><span>Destination et instructions</span><strong>${escapeHtml(destination)}</strong></div>
-    </div></section>
+  root.innerHTML = `
+    ${!order.isTerminal && order.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la livraison</h2><p class="subtitle">Seules les étapes compatibles avec l’état actuel sont proposées.</p><form id="transitionForm" style="margin-top:16px"><div class="form-grid"><div class="field"><label>Nouvelle étape</label><select name="toStatus" required><option value="">Choisir une étape</option>${order.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('')}</select></div><div class="field"><label>Motif ou observation</label><textarea name="reason" placeholder="Obligatoire pour un échec, retour ou une annulation"></textarea></div></div><div class="actions" style="margin-top:16px"><button class="primary">Enregistrer l’étape</button></div></form><div id="transitionResult"></div></section>` : ''}
 
     ${(!order.isTerminal && canManage) ? `<section class="card" style="margin-top:18px"><h2>Réassigner le livreur</h2><p class="subtitle">Change le livreur affecté ; la commande passe automatiquement dans la tournée du jour du nouveau livreur.</p><form id="reassignForm" style="margin-top:14px"><div class="form-grid"><div class="field full"><label>Livreur</label><select name="driverId" required>${reassignDrivers.map((d) => `<option value="${escapeHtml(d.id)}" ${String(d.id) === String(order.driver_id) ? 'selected' : ''} ${(!d.active || ['inactive', 'off_duty', 'incident'].includes(d.operationalState)) && String(d.id) !== String(order.driver_id) ? 'disabled' : ''}>${escapeHtml(d.name)}${d.vehicleType ? ` · ${escapeHtml(d.vehicleType)}` : ''}${String(d.id) === String(order.driver_id) ? ' (actuel)' : ''}</option>`).join('')}</select></div></div><div class="actions" style="margin-top:14px"><button class="primary">Réassigner</button></div></form><div id="reassignResult"></div></section>` : ''}
 
@@ -1214,36 +1217,33 @@ async function renderOrderDetail(id) {
 
     ${renderPaymentSection(order)}
 
-    ${!order.isTerminal && order.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la livraison</h2><p class="subtitle">Seules les étapes compatibles avec l’état actuel sont proposées.</p><form id="transitionForm" style="margin-top:16px"><div class="form-grid"><div class="field"><label>Nouvelle étape</label><select name="toStatus" required><option value="">Choisir une étape</option>${order.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('')}</select></div><div class="field"><label>Motif ou observation</label><textarea name="reason" placeholder="Obligatoire pour un échec, retour ou une annulation"></textarea></div></div><div class="actions" style="margin-top:16px"><button class="primary">Enregistrer l’étape</button></div></form><div id="transitionResult"></div></section>` : ''}
 
     ${(order.photo_proof_mode !== 'off' || order.signature_proof_mode !== 'off' || order.evidence?.length) ? `<section class="card" style="margin-top:18px"><h2>Preuves complémentaires</h2><p class="subtitle">Visibles uniquement par l’entreprise et le livreur affecté. Elles ne sont pas publiées sur le lien client.</p><div class="evidence-grid">${['photo', 'signature'].filter((type) => order[`${type}_proof_mode`] !== 'off' || evidenceByType[type]).map((type) => { const item = evidenceByType[type]; const label = type === 'photo' ? 'Photo de remise' : 'Signature'; const mode = order[`${type}_proof_mode`]; return `<article class="evidence-card"><strong>${label}</strong><small>${mode === 'required' ? 'Obligatoire' : 'Facultative'}</small>${item ? `<a target="_blank" rel="noopener" href="/api/app/evidence/${escapeHtml(item.id)}"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="${label}" /></a><small>Ajoutée le ${escapeHtml(formatDate(item.created_at))}</small>` : '<div class="evidence-empty">Pas encore ajoutée</div>'}</article>`; }).join('')}</div></section>` : ''}
     ${order.requiresOtpForDelivery ? `<section class="card" style="margin-top:18px"><h2>Confirmer la remise avec un code</h2><p class="subtitle">Le code est valable 30 minutes et ne peut être utilisé qu’une fois. Communiquez-le au destinataire par un canal fiable.</p>${order.paymentBlocksDelivery ? '<div class="notice error">Finalisez l’encaissement ou son rapprochement avant de confirmer la livraison.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<div class="actions" style="margin-top:16px"><button class="secondary" id="generateOtp">Générer un code de remise</button></div><div id="otpGenerated"></div><form id="verifyOtp" style="margin-top:18px"><div class="field"><label>Code communiqué par le destinataire</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><div class="actions" style="margin-top:12px"><button class="primary" ${order.paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Confirmer la livraison</button></div></form><div id="otpResult"></div></section>` : ''}
     ${order.proof_id ? `<section class="card" style="margin-top:18px"><h2>Preuve de remise</h2><div class="notice success">Remise confirmée par code à usage unique le ${escapeHtml(formatDate(order.proof_verified_at))}.</div></section>` : ''}
 
     <section class="card" style="margin-top:18px"><h2>Incidents</h2><form id="incidentForm"><div class="form-grid"><div class="field"><label>Type</label><select name="category">${incidentOptions}</select></div><div class="field"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div><div class="field full"><label>Description factuelle</label><textarea name="description" maxlength="2000" required placeholder="Décrivez ce qui s’est passé, sans supprimer les faits précédents."></textarea></div></div><div class="actions" style="margin-top:14px"><button class="secondary">Déclarer l’incident</button></div></form><div id="incidentResult"></div>
-      <div class="incident-list">${order.incidents.length ? order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong> ${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}<p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))} · ${escapeHtml(incident.opened_by)} · gravité ${escapeHtml(incident.severity)}</small>${incident.resolution ? `<p><strong>Résolution :</strong> ${escapeHtml(incident.resolution)}</p>` : ''}</div><a class="button secondary" href="/app/incidents/${escapeHtml(incident.id)}">Ouvrir le dossier</a></article>`).join('') : '<p class="subtitle">Aucun incident déclaré.</p>'}</div>
-    </section>
+      <div class="incident-list">${order.incidents.length ? order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong> ${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}<p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))} · ${escapeHtml(incident.opened_by)} · gravité ${escapeHtml((incidentSeverityLabels[incident.severity] || incident.severity).toLowerCase())}</small>${incident.resolution ? `<p><strong>Résolution :</strong> ${escapeHtml(incident.resolution)}</p>` : ''}</div><a class="button secondary" href="/app/incidents/${escapeHtml(incident.id)}">Ouvrir le dossier</a></article>`).join('') : '<p class="subtitle">Aucun incident déclaré.</p>'}</div>
+    </section>`;
 
-    <section class="card" style="margin-top:18px"><h2>Chronologie</h2><ol class="timeline">${order.events.map((event) => `<li><div>${badge(event.to_status)}${event.from_status ? `<span class="timeline-from"> depuis ${escapeHtml(event.from_status)}</span>` : ''}</div><strong>${escapeHtml(event.actor_name)}</strong><small>${escapeHtml(formatDate(event.created_at))}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
-
-  const revealTrackingLink = document.getElementById('revealTrackingLink');
+  const revealTrackingLink = $('revealTrackingLink');
   if (revealTrackingLink) revealTrackingLink.addEventListener('click', async () => {
     revealTrackingLink.disabled = true;
     try {
       const result = await api(`/api/app/orders/${encodeURIComponent(id)}/tracking-link/reveal`, { method: 'POST' });
       const fullUrl = publicLink(result.trackingLink.path);
       try { await navigator.clipboard.writeText(fullUrl); } catch (_error) { /* Le lien reste affiché ci-dessous. */ }
-      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice success">Lien prêt${navigator.clipboard ? ' et copie demandée' : ''} : <a href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">ouvrir le suivi client</a>.</div>`;
+      $('trackingLinkResult').innerHTML = `<div class="notice success">Lien prêt${navigator.clipboard ? ' et copie demandée' : ''} : <a href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">ouvrir le suivi client</a>.</div>`;
     } catch (error) {
-      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
     } finally {
       revealTrackingLink.disabled = false;
     }
   });
 
-  const rotateTrackingLink = document.getElementById('rotateTrackingLink');
+  const rotateTrackingLink = $('rotateTrackingLink');
   if (rotateTrackingLink) rotateTrackingLink.addEventListener('click', async () => {
-    const expiresInDays = Number(document.getElementById('trackingTtl').value);
+    const expiresInDays = Number($('trackingTtl').value);
     if (!confirm('Créer un nouveau lien ? L’ancien lien cessera immédiatement de fonctionner.')) return;
     rotateTrackingLink.disabled = true;
     try {
@@ -1251,19 +1251,19 @@ async function renderOrderDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expiresInDays, expectedVersion: trackingLink.version, idempotencyKey: actionKey('tracking-link-rotate') }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       rotateTrackingLink.disabled = false;
     }
   });
 
-  const revokeTrackingLink = document.getElementById('revokeTrackingLink');
+  const revokeTrackingLink = $('revokeTrackingLink');
   if (revokeTrackingLink) revokeTrackingLink.addEventListener('click', async () => {
     const reason = prompt('Pourquoi révoquer ce lien ? (au moins 8 caractères)');
     if (!reason) return;
     if (reason.trim().length < 8) {
-      document.getElementById('trackingLinkResult').innerHTML = '<div class="notice error">Le motif doit contenir au moins 8 caractères.</div>';
+      $('trackingLinkResult').innerHTML = '<div class="notice error">Le motif doit contenir au moins 8 caractères.</div>';
       return;
     }
     revokeTrackingLink.disabled = true;
@@ -1272,14 +1272,14 @@ async function renderOrderDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason: reason.trim(), expectedVersion: trackingLink.version, idempotencyKey: actionKey('tracking-link-revoke') }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('trackingLinkResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       revokeTrackingLink.disabled = false;
     }
   });
 
-  const paymentConfigure = document.getElementById('paymentConfigure');
+  const paymentConfigure = $('paymentConfigure');
   if (paymentConfigure) paymentConfigure.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
@@ -1290,14 +1290,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/configure`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  const removePaymentRequirement = document.getElementById('removePaymentRequirement');
+  const removePaymentRequirement = $('removePaymentRequirement');
   if (removePaymentRequirement) removePaymentRequirement.addEventListener('click', async () => {
     const reason = prompt('Pourquoi cet encaissement n’est-il plus requis ?');
     if (!reason) return;
@@ -1307,14 +1307,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/remove`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       removePaymentRequirement.disabled = false;
     }
   });
 
-  const paymentCollect = document.getElementById('paymentCollect');
+  const paymentCollect = $('paymentCollect');
   if (paymentCollect) paymentCollect.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
@@ -1325,14 +1325,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/collect`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  const paymentReconcile = document.getElementById('paymentReconcile');
+  const paymentReconcile = $('paymentReconcile');
   if (paymentReconcile) paymentReconcile.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
@@ -1343,14 +1343,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/reconcile`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  const reversePayment = document.getElementById('reversePayment');
+  const reversePayment = $('reversePayment');
   if (reversePayment) reversePayment.addEventListener('click', async () => {
     const reason = prompt('Pourquoi cette saisie d’encaissement doit-elle être annulée ?');
     if (!reason) return;
@@ -1360,14 +1360,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/reverse`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       reversePayment.disabled = false;
     }
   });
 
-  const paymentAdjustment = document.getElementById('paymentAdjustment');
+  const paymentAdjustment = $('paymentAdjustment');
   if (paymentAdjustment) paymentAdjustment.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1380,14 +1380,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/adjustments`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  document.querySelectorAll('.reverse-adjustment').forEach((button) => button.addEventListener('click', async () => {
+  root.querySelectorAll('.reverse-adjustment').forEach((button) => button.addEventListener('click', async () => {
     const reason = prompt('Pourquoi cette écriture doit-elle être corrigée ? (10 caractères minimum)') || '';
     if (reason.trim().length < 10) return;
     const effectiveDate = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
@@ -1399,14 +1399,14 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/payment/adjustments/${encodeURIComponent(button.dataset.adjustmentId)}/reverse`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: values.reason, effectiveDate, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('paymentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   }));
 
-  const reassignForm = document.getElementById('reassignForm');
+  const reassignForm = $('reassignForm');
   if (reassignForm) reassignForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const driverId = Number(new FormData(event.currentTarget).get('driverId'));
@@ -1416,19 +1416,19 @@ async function renderOrderDetail(id) {
       await api(`/api/app/orders/${encodeURIComponent(id)}/reassign`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ driverId }),
       });
-      location.reload();
+      await reload();
     } catch (error) {
-      document.getElementById('reassignResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('reassignResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  const transitionForm = document.getElementById('transitionForm');
+  const transitionForm = $('transitionForm');
   if (transitionForm) transitionForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
     if (reasonRequiredStatuses.includes(values.toStatus) && String(values.reason || '').trim().length < 5) {
-      document.getElementById('transitionResult').innerHTML = '<div class="notice error">Expliquez la raison de cette étape.</div>';
+      $('transitionResult').innerHTML = '<div class="notice error">Expliquez la raison de cette étape.</div>';
       return;
     }
     const button = event.currentTarget.querySelector('button');
@@ -1439,14 +1439,14 @@ async function renderOrderDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...values, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('transitionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('transitionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  const generateOtp = document.getElementById('generateOtp');
+  const generateOtp = $('generateOtp');
   if (generateOtp) generateOtp.addEventListener('click', async () => {
     generateOtp.disabled = true;
     try {
@@ -1456,17 +1456,17 @@ async function renderOrderDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idempotencyKey }),
       });
-      document.getElementById('otpGenerated').innerHTML = `<div class="otp-code"><span>Code à transmettre au destinataire</span><strong>${escapeHtml(result.code)}</strong><small>Expire le ${escapeHtml(formatDate(result.expiresAt))} · ${escapeHtml(result.attemptsRemaining)} essais</small></div>`;
+      $('otpGenerated').innerHTML = `<div class="otp-code"><span>Code à transmettre au destinataire</span><strong>${escapeHtml(result.code)}</strong><small>Expire le ${escapeHtml(formatDate(result.expiresAt))} · ${escapeHtml(result.attemptsRemaining)} essais</small></div>`;
       generateOtp.textContent = 'Régénérer et invalider l’ancien code';
       delete generateOtp.dataset.idempotencyKey;
       generateOtp.disabled = false;
     } catch (error) {
-      document.getElementById('otpGenerated').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('otpGenerated').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       generateOtp.disabled = false;
     }
   });
 
-  const verifyOtp = document.getElementById('verifyOtp');
+  const verifyOtp = $('verifyOtp');
   if (verifyOtp) verifyOtp.addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector('button');
@@ -1478,14 +1478,14 @@ async function renderOrderDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('otpResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('otpResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
 
-  document.getElementById('incidentForm').addEventListener('submit', async (event) => {
+  $('incidentForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector('button');
     button.disabled = true;
@@ -1496,9 +1496,9 @@ async function renderOrderDetail(id) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...values, idempotencyKey }),
       });
-      await renderOrderDetail(id);
+      await reload();
     } catch (error) {
-      document.getElementById('incidentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      $('incidentResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
       button.disabled = false;
     }
   });
@@ -3622,22 +3622,39 @@ function crmMiniSteps(done, total, tone) {
 }
 
 // Panneau détail coulissant d'une commande (données réelles).
-async function openOrderDrawer(orderId) {
+// Tiroir d'une commande : résumé + TOUTES les actions (plus de page séparée).
+// Le contenu défile ; un menu collant permet de sauter à chaque section.
+// opts.onChange : rappelé après une action (rafraîchit la liste).
+async function openOrderDrawer(orderId, opts = {}) {
   const existing = document.querySelector('.crm-drawer-wrap');
   if (existing) existing.remove();
   const wrap = document.createElement('div');
   wrap.className = 'crm-drawer-wrap';
-  wrap.innerHTML = '<div class="crm-drawer-backdrop"></div><aside class="crm-drawer"><div class="loading-state" style="padding:40px">Chargement…</div></aside>';
+  wrap.innerHTML = '<div class="crm-drawer-backdrop"></div><aside class="crm-drawer wide" role="dialog" aria-modal="true" aria-label="Commande"><div class="loading-state" style="padding:40px">Chargement…</div></aside>';
+  const drawer = wrap.querySelector('.crm-drawer');
   const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
-  const onKey = (event) => { if (event.key === 'Escape') close(); };
+  const onKey = (event) => { if (event.key === 'Escape' && !event.target.closest('input, textarea, select')) close(); };
   wrap.querySelector('.crm-drawer-backdrop').addEventListener('click', close);
   document.addEventListener('keydown', onKey);
   document.body.appendChild(wrap);
   requestAnimationFrame(() => wrap.classList.add('open'));
-  try {
+
+  const secIc = {
+    client: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17V5H2v12"/><path d="M14 9h4l4 4v4h-6"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
+    track: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+    note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  };
+
+  const paint = async (scrollTop = 0) => {
     const o = await api(`/api/app/orders/${encodeURIComponent(orderId)}`);
     const zone = o.neighborhood || o.landmark || '—';
-    const address = [o.neighborhood, o.landmark, o.delivery_address].filter(Boolean).join(' · ') || '—';
+    // delivery_address reprend déjà zone + repère (+ consigne) pour les commandes
+    // issues d'une demande : on ne le concatène plus, pour éviter les doublons.
+    const place = [o.neighborhood, o.landmark].filter(Boolean).join(' · ');
+    const address = place || o.delivery_address || '—';
+    const instructions = o.notes || '—';
     const rank = crmOrderSeq.indexOf(o.status);
     const eventFor = (status) => (o.events || []).find((e) => e.to_status === status);
     const steps = [
@@ -3647,57 +3664,107 @@ async function openOrderDrawer(orderId) {
       { label: 'Livrée', at: eventFor('Livrée') },
     ];
     const stepRank = [1, 2, 4, 6];
-    const stepsHtml = steps.map((s, idx) => {
+    const stepsHtml = steps.map((step, idx) => {
       const done = rank >= stepRank[idx];
-      return `<div class="crm-step ${done ? 'done' : ''}"><span class="crm-step-dot">${done ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : ''}</span><strong>${escapeHtml(s.label)}</strong><small>${s.at ? escapeHtml(formatDate(s.at.created_at)) : '—'}</small></div>`;
+      return `<div class="crm-step ${done ? 'done' : ''}"><span class="crm-step-dot">${done ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : ''}</span><strong>${escapeHtml(step.label)}</strong><small>${step.at ? escapeHtml(formatDate(step.at.created_at)) : '—'}</small></div>`;
     }).join('');
-    const history = (o.events || []).slice().reverse().map((e) => `<li><span class="crm-hist-dot ${e.to_status === 'Livrée' ? 'ok' : ''}"></span><div><strong>${escapeHtml(formatDate(e.created_at))}</strong><span>${escapeHtml(e.to_status || '')}${e.reason ? ` — ${escapeHtml(e.reason)}` : ''}</span><small>${escapeHtml(e.actor_name || 'Système')}</small></div></li>`).join('') || '<li class="crm-muted">Aucun événement.</li>';
+    const history = (o.events || []).slice().reverse().map((e) => `<li><span class="crm-hist-dot ${e.to_status === 'Livrée' ? 'ok' : ''}"></span><div><strong>${escapeHtml(formatDate(e.created_at))}</strong><span>${escapeHtml(e.to_status || '')}${e.from_status ? ` <em class="crm-muted">depuis ${escapeHtml(e.from_status)}</em>` : ''}${e.reason ? ` — ${escapeHtml(e.reason)}` : ''}</span><small>${escapeHtml(e.actor_name || 'Système')}</small></div></li>`).join('') || '<li class="crm-muted">Aucun événement.</li>';
     const evidence = (o.evidence || []).length ? (o.evidence || []).map((f) => `<span class="crm-file">${escapeHtml(f.evidence_type === 'signature' ? 'Signature' : 'Photo')}</span>`).join(' ') : '—';
     const phone = String(o.customer_phone || '').replace(/[^+\d]/g, '');
     const creator = (o.events && o.events.length) ? o.events[0].actor_name : null;
-    const secIc = {
-      client: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-      truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17V5H2v12"/><path d="M14 9h4l4 4v4h-6"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
-      track: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-      doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
-      note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
-    };
-    wrap.querySelector('.crm-drawer').innerHTML = `
+    const canAdvance = !o.isTerminal && (o.allowedTransitions || []).length > 0;
+    const linkUsable = ['active', 'terminal'].includes(o.trackingLink?.state);
+    drawer.innerHTML = `
       <div class="crm-drawer-head">
         <div><div class="crm-drawer-title">${escapeHtml(orderCode(o.reference, o.id))} ${crmChip(o.status, crmOrderStatusColor(o.status))}</div>
           <small>Créée le ${escapeHtml(formatDate(o.created_at))}${creator ? ` par ${escapeHtml(creator)}` : ''}</small></div>
         <div class="crm-drawer-headact">
-          ${o.trackingLink && o.trackingLink.path ? `<a class="crm-icobtn" href="${escapeHtml(o.trackingLink.path)}" target="_blank" rel="noopener" title="Ouvrir le suivi client"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>` : ''}
           <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
       </div>
+      <nav class="od-nav" aria-label="Sections de la commande"></nav>
       <div class="crm-drawer-body">
-        <section><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.client}</span>Client</h4><a class="crm-seclink" href="/app/clients">Voir le client</a></div>
+        <section data-od="Résumé"><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.client}</span>Client</h4><a class="crm-seclink" href="/app/clients">Voir le client</a></div>
           <div class="crm-kv"><span>Nom</span><strong>${escapeHtml(o.customer_name || '—')}</strong></div>
           <div class="crm-kv"><span>Téléphone</span><strong>${phone ? `<a href="tel:${escapeHtml(phone)}">${escapeHtml(o.customer_phone)}</a>` : '—'}</strong></div>
           <div class="crm-kv"><span>Adresse</span><strong>${escapeHtml(address)}</strong></div>
         </section>
         <section><h4><span class="crm-sec-ic">${secIc.truck}</span>Livraison</h4>
           <div class="crm-kv"><span>Zone</span><strong>${escapeHtml(zone)}</strong></div>
-          <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name, { photoUrl: o.driver_photo, online: o.driver_online }) : '—'}</strong></div>
+          <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name, { photoUrl: o.driver_photo, online: o.driver_online }) : '—'}${o.driver_vehicle_type ? ` <span class="crm-muted">· ${escapeHtml(o.driver_vehicle_type)}</span>` : ''}</strong></div>
           <div class="crm-kv"><span>Créneau</span><strong>${escapeHtml(o.requested_time || '—')}</strong></div>
         </section>
         <section><h4><span class="crm-sec-ic">${secIc.track}</span>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
         <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Détails de la commande</h4>
-          <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(o.delivery_address || '—')}</strong></div>
+          <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(instructions)}</strong></div>
           <div class="crm-kv"><span>Pièces jointes</span><strong>${evidence}</strong></div>
-          ${o.expected_amount_minor != null ? `<div class="crm-kv"><span>Paiement</span><strong>${escapeHtml((Number(o.expected_amount_minor) / 100).toLocaleString('fr-FR'))} ${escapeHtml(o.payment_currency || '')} · ${escapeHtml(o.payment_status || '')}</strong></div>` : ''}
         </section>
-        <section><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.note}</span>Notes et historique</h4><a class="crm-seclink" href="/app/commandes/${escapeHtml(o.id)}">Voir tout</a></div><ul class="crm-hist">${history}</ul></section>
+        <div class="od-actions" id="odActions"><div class="loading-state">Chargement des actions…</div></div>
+        <section data-od="Historique" id="odHistory"><h4><span class="crm-sec-ic">${secIc.note}</span>Notes et historique</h4><ul class="crm-hist">${history}</ul></section>
       </div>
       <div class="crm-drawer-foot">
-        <a class="button secondary" href="/app/commandes/${escapeHtml(o.id)}">Plus d'actions</a>
-        <a class="button primary" href="/app/commandes/${escapeHtml(o.id)}">Modifier la commande</a>
+        ${linkUsable ? '<button class="button secondary" type="button" id="odCopyLink">Copier le lien de suivi</button>' : '<button class="button secondary" type="button" id="odGoIncident">Déclarer un incident</button>'}
+        ${canAdvance ? '<button class="button primary" type="button" id="odAdvance">Faire avancer la livraison</button>' : '<button class="button primary" type="button" id="odGoHistory">Voir l’historique</button>'}
       </div>`;
-    wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+    drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
+    const body = drawer.querySelector('.crm-drawer-body');
+    await mountOrderActions(drawer.querySelector('#odActions'), o.id, {
+      order: o,
+      refresh: async () => {
+        await paint(body.scrollTop);
+        if (typeof opts.onChange === 'function') opts.onChange();
+      },
+    });
+    // Sections d'action : titre = entrée du menu.
+    drawer.querySelectorAll('#odActions > section.card').forEach((section) => {
+      const title = section.querySelector('h2')?.textContent || '';
+      const short = /avancer/i.test(title) ? 'Étape' : /Réassigner/i.test(title) ? 'Livreur' : /suivi/i.test(title) ? 'Lien client'
+        : /Encaissement/i.test(title) ? 'Encaissement' : /Incidents/i.test(title) ? 'Incidents' : /code|Preuve/i.test(title) ? 'Remise' : '';
+      if (short && !drawer.querySelector(`[data-od="${short}"]`)) section.dataset.od = short;
+    });
+    const sections = [...body.querySelectorAll('[data-od]')];
+    const nav = drawer.querySelector('.od-nav');
+    nav.innerHTML = sections.map((section, i) => `<button type="button" data-i="${i}">${escapeHtml(section.dataset.od)}</button>`).join('');
+    const goTo = (section, focus) => {
+      if (!section) return;
+      body.scrollTo({ top: section.offsetTop - body.offsetTop - 8, behavior: 'smooth' });
+      if (focus) setTimeout(() => section.querySelector(focus)?.focus({ preventScroll: true }), 350);
+    };
+    // Menu : met en évidence la section visible (ligne de repère au tiers
+    // du panneau, pour que les dernières sections soient aussi reconnues).
+    let pinnedUntil = 0;
+    const setActive = (current) => nav.querySelectorAll('button').forEach((button, i) => button.classList.toggle('on', i === current));
+    const markActive = () => {
+      if (Date.now() < pinnedUntil) return;
+      const line = body.scrollTop + body.clientHeight * 0.3;
+      let current = 0;
+      sections.forEach((section, i) => { if (section.offsetTop - body.offsetTop <= line) current = i; });
+      setActive(current);
+    };
+    nav.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {
+      const i = Number(button.dataset.i);
+      pinnedUntil = Date.now() + 900;
+      setActive(i);
+      goTo(sections[i]);
+    }));
+    body.addEventListener('scroll', markActive, { passive: true });
+    const byName = (name) => sections.find((section) => section.dataset.od === name);
+    drawer.querySelector('#odAdvance')?.addEventListener('click', () => goTo(byName('Étape'), 'select'));
+    drawer.querySelector('#odGoHistory')?.addEventListener('click', () => goTo(byName('Historique')));
+    drawer.querySelector('#odGoIncident')?.addEventListener('click', () => goTo(byName('Incidents'), 'textarea'));
+    drawer.querySelector('#odCopyLink')?.addEventListener('click', () => {
+      goTo(byName('Lien client'));
+      drawer.querySelector('#revealTrackingLink')?.click();
+    });
+    body.scrollTop = scrollTop;
+    markActive();
+  };
+
+  try {
+    await paint();
   } catch (error) {
-    wrap.querySelector('.crm-drawer').innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
-    wrap.querySelector('.crm-drawer-close').addEventListener('click', close);
+    drawer.innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
+    drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
   }
 }
 
@@ -3997,7 +4064,7 @@ async function renderOperationsWorkspace(initialSegment) {
     commandes: {
       title: 'Commandes', newLabel: 'Nouvelle commande', newHref: '/app/nouvelle-commande',
       placeholder: 'Rechercher une commande, un client…', countKey: 'orders',
-      endpoint: () => '/api/app/orders', drawerFn: openOrderDrawer, href: (r) => `/app/commandes/${r.id}`,
+      endpoint: () => '/api/app/orders', drawerFn: (id) => openOrderDrawer(id, { onChange: loadSegment }), href: (r) => `/app/commandes/${r.id}`,
       statusValues: ['Confirmée', 'En préparation', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? r.status : k === 'zone' ? (r.neighborhood || r.landmark || '—') : (r.driver_name || '—'),
@@ -4373,10 +4440,15 @@ async function renderOperationsWorkspace(initialSegment) {
   // tiroir de cette demande, puis retire le paramètre de l'URL.
   const focusParams = new URLSearchParams(location.search);
   const focusRequest = focusParams.get('demande');
+  const focusOrder = focusParams.get('commande');
   if (segment === 'demandes' && /^\d{1,18}$/.test(focusRequest || '')) {
     focusParams.delete('demande');
     history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
     openRequestDrawer(focusRequest, { onChange: loadSegment });
+  } else if (segment === 'commandes' && /^\d{1,18}$/.test(focusOrder || '')) {
+    focusParams.delete('commande');
+    history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
+    openOrderDrawer(focusOrder, { onChange: loadSegment });
   }
 }
 

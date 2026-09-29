@@ -1,15 +1,20 @@
-# Tuiles Bénin (fond de carte auto-hébergé)
+# Tuiles Traxo (fond de carte auto-hébergé)
 
 Remplace `tile.openstreetmap.org`, dont la politique d'usage interdit un usage
 commercial intensif (blocage possible sans préavis).
 
-- **Données** : extrait Bénin de la build quotidienne Protomaps (OpenStreetMap,
-  ODbL — l'attribution « © OpenStreetMap » doit rester visible sur la carte).
-- **Format** : un seul fichier `benin.pmtiles` (tuiles vectorielles, zoom 0–15),
+- **Données** : extrait des pays couverts (`region.geojson` : Bénin et Côte
+  d'Ivoire) de la build quotidienne Protomaps (OpenStreetMap, ODbL —
+  l'attribution « © OpenStreetMap » doit rester visible sur la carte).
+  Ajouter un pays = ajouter son polygone (avec une marge) dans `region.geojson`.
+- **Format** : un seul fichier `zones.pmtiles` (tuiles vectorielles, zoom 0–15),
   figé dans l'image au build.
-- **Service** : `pmtiles serve` expose `/benin/{z}/{x}/{y}.mvt`.
-- **Rendu** : côté navigateur par `protomaps-leaflet` (Canvas), style clair,
-  libellés en français quand OSM les a.
+- **Service** : `pmtiles serve` expose `/zones/{z}/{x}/{y}.mvt`.
+- **Rendu** : côté navigateur par MapLibre (WebGL) intégré à Leaflet, style
+  Protomaps clair + repères locaux (pharmacies, hôpitaux, stations, banques,
+  marchés, lieux de culte, police, hôtels). Icônes et polices servies par
+  delivery-app (`public/vendor/basemaps-assets`). Sans WebGL : repli
+  protomaps-leaflet (Canvas, plus sobre).
 
 ## Déploiement Railway
 

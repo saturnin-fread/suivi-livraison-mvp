@@ -1638,7 +1638,13 @@ async function renderOperationsMap() {
   </div>`;
 
   if (typeof L === 'undefined') throw new Error('La carte n’a pas pu être chargée. Rechargez la page.');
-  const map = L.map('operationsMap', { zoomControl: false, attributionControl: true }).setView([6.37, 2.43], 11);
+  // Vue initiale (avant recadrage sur la flotte) : Abidjan si le navigateur
+  // est à l'heure ivoirienne, Cotonou sinon.
+  const defaultCenter = (() => {
+    try { if (Intl.DateTimeFormat().resolvedOptions().timeZone === 'Africa/Abidjan') return [5.35, -4.01]; } catch (_) { /* fuseau inconnu */ }
+    return [6.37, 2.43];
+  })();
+  const map = L.map('operationsMap', { zoomControl: false, attributionControl: true }).setView(defaultCenter, 11);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
 

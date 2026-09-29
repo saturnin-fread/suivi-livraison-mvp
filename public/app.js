@@ -1053,133 +1053,6 @@ async function renderNewOrder() {
   });
 }
 
-async function renderRunDetail(id) {
-  setHeader('Tournée', 'Préparation et ordre des arrêts');
-  const run = await api(`/api/app/runs/${encodeURIComponent(id)}`);
-  let localStops = [...run.stops];
-  const eventDescription = (event) => {
-    if (event.event_type === 'status_changed') return `${runStatusLabels[event.details.fromStatus] || event.details.fromStatus} → ${runStatusLabels[event.details.toStatus] || event.details.toStatus}${event.details.reason ? ` · ${event.details.reason}` : ''}`;
-    if (event.event_type === 'order_added') return `Commande n° ${event.details.orderId} ajoutée à l’arrêt ${event.details.sequence}`;
-    if (event.event_type === 'order_removed') return `Commande n° ${event.details.orderId} retirée`;
-    if (event.event_type === 'stops_reordered') return `${event.details.stopIds?.length || 0} arrêts réorganisés`;
-    return `${run.driver_name} · ${formatDateOnly(run.service_date)}`;
-  };
-  page.innerHTML = `<div class="page-header"><div><a href="/app/operations?vue=tournees">← Retour aux tournées</a><h1 style="margin-top:12px">${escapeHtml(run.name)}</h1><p class="subtitle">${escapeHtml(formatDateOnly(run.service_date))} · ${escapeHtml(run.driver_name)} · ${escapeHtml(run.stops.length)} colis</p></div>${badge(runStatusLabels[run.status] || run.status)}</div>
-    <div class="notice info" style="margin-bottom:16px">Cette tournée regroupe <strong>automatiquement</strong> les commandes du jour de ${escapeHtml(run.driver_name)}. Un colis s’y ajoute dès qu’une commande lui est affectée à la création — rien à saisir ici.</div>
-    <section class="card"><div class="actions" style="justify-content:space-between"><div><h2 style="margin:0">Ordre de passage</h2><p class="subtitle">${run.canReorderStops ? 'Optimisez l’itinéraire sur les routes réelles, ou ajustez l’ordre à la main.' : 'L’ordre est verrouillé pendant l’exécution.'}</p></div><span>${escapeHtml(run.stops.length)} colis</span></div><div id="runNotice"></div><div id="runStops" style="margin-top:18px"></div>
-      ${run.canReorderStops && run.stops.length > 1 ? `<div class="actions" style="margin-top:18px"><button class="primary" id="optimizeRun">Optimiser l’itinéraire (routes réelles)</button><button class="secondary" id="saveRunOrder">Enregistrer l’ordre manuel</button></div>` : ''}
-    </section>
-    ${run.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la tournée</h2><form id="runStatusForm"><div class="form-grid"><div class="field"><label>Nouvel état</label><select name="toStatus" required><option value="">Sélectionner</option>${run.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(runStatusLabels[status] || status)}</option>`).join('')}</select></div><div class="field"><label>Motif</label><textarea name="reason" maxlength="1000" placeholder="Obligatoire pour une annulation (10 caractères minimum)"></textarea></div></div><div class="actions" style="margin-top:14px"><button class="primary">Confirmer le changement</button></div></form><div id="runStatusResult"></div></section>` : ''}
-    <section class="card" style="margin-top:18px"><h2>Historique</h2>${run.events.length ? `<ol class="timeline">${run.events.map((event) => `<li><strong>${escapeHtml(runEventLabels[event.event_type] || event.event_type)}</strong><span>${escapeHtml(eventDescription(event))}</span><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small></li>`).join('')}</ol>` : '<div class="empty">Aucun événement.</div>'}</section>`;
-
-  const renderStopList = () => {
-    const container = document.getElementById('runStops');
-    if (!localStops.length) {
-      container.innerHTML = '<div class="empty">Ajoutez les colis confiés à ce livreur.</div>';
-      return;
-    }
-    container.innerHTML = `<div class="stop-list">${localStops.map((stop, index) => {
-      const destination = stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser';
-      return `<article class="stop-card"><div class="stop-number">${index + 1}</div><div class="stop-main"><strong>${escapeHtml(orderCode(stop.order_reference, stop.order_id))} · ${escapeHtml(stop.customer_name || 'Client')}</strong><span>${escapeHtml(destination)}</span><small>${escapeHtml(stop.requested_time || 'Créneau non renseigné')} · ${stop.destination_lat == null ? 'Position GPS manquante' : 'Position GPS disponible'} · ${escapeHtml(stop.order_status)}</small></div>${run.canReorderStops ? `<div class="stop-actions"><button class="secondary move-stop" data-direction="up" data-id="${escapeHtml(stop.id)}" ${index === 0 ? 'disabled' : ''} aria-label="Monter cet arrêt">↑</button><button class="secondary move-stop" data-direction="down" data-id="${escapeHtml(stop.id)}" ${index === localStops.length - 1 ? 'disabled' : ''} aria-label="Descendre cet arrêt">↓</button>${run.canEditStops ? `<button class="danger remove-stop" data-id="${escapeHtml(stop.id)}">Retirer</button>` : ''}</div>` : ''}</article>`;
-    }).join('')}</div>`;
-    container.querySelectorAll('.move-stop').forEach((button) => button.addEventListener('click', () => {
-      const index = localStops.findIndex((stop) => String(stop.id) === button.dataset.id);
-      const target = button.dataset.direction === 'up' ? index - 1 : index + 1;
-      if (index < 0 || target < 0 || target >= localStops.length) return;
-      [localStops[index], localStops[target]] = [localStops[target], localStops[index]];
-      renderStopList();
-    }));
-    container.querySelectorAll('.remove-stop').forEach((button) => button.addEventListener('click', async () => {
-      const stop = localStops.find((item) => String(item.id) === button.dataset.id);
-      if (!stop || !confirm(`Retirer la commande n° ${stop.order_id} de ce brouillon ? Elle restera disponible et son historique sera conservé.`)) return;
-      button.disabled = true;
-      try {
-        await api(`/api/app/runs/${encodeURIComponent(id)}/stops/${encodeURIComponent(stop.id)}/remove`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ expectedVersion: run.version, idempotencyKey: actionKey('run-remove') }),
-        });
-        location.reload();
-      } catch (error) {
-        document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-        button.disabled = false;
-      }
-    }));
-  };
-  renderStopList();
-
-  const optimizeButton = document.getElementById('optimizeRun');
-  if (optimizeButton) optimizeButton.addEventListener('click', async () => {
-    optimizeButton.disabled = true;
-    document.getElementById('runNotice').innerHTML = '<div class="notice">Calcul de l’itinéraire optimal…</div>';
-    try {
-      const suggestion = await api(`/api/app/runs/${encodeURIComponent(id)}/suggestion`);
-      if (!suggestion.available) {
-        document.getElementById('runNotice').innerHTML = `<div class="notice warning">${escapeHtml(suggestion.reason)}${suggestion.missingOrderIds?.length ? ` Commandes concernées : ${escapeHtml(suggestion.missingOrderIds.join(', '))}.` : ''}</div>`;
-        optimizeButton.disabled = false;
-        return;
-      }
-      await api(`/api/app/runs/${encodeURIComponent(id)}/reorder`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stopIds: suggestion.stopIds, expectedVersion: run.version, idempotencyKey: actionKey('run-optimize') }),
-      });
-      const road = suggestion.method === 'osrm_road_network';
-      const detail = road
-        ? `Itinéraire optimisé sur routes réelles : ~${escapeHtml(suggestion.distanceKm)} km${suggestion.durationMin != null ? `, ~${escapeHtml(suggestion.durationMin)} min de conduite` : ''}.`
-        : `Ordre indicatif à vol d’oiseau : ~${escapeHtml(suggestion.distanceKm)} km (routage réel indisponible).`;
-      sessionStorage.setItem('traxo.runNotice', detail);
-      location.reload();
-    } catch (error) {
-      document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      optimizeButton.disabled = false;
-    }
-  });
-  try {
-    const carried = sessionStorage.getItem('traxo.runNotice');
-    if (carried) { sessionStorage.removeItem('traxo.runNotice'); document.getElementById('runNotice').innerHTML = `<div class="notice success">${escapeHtml(carried)}</div>`; }
-  } catch {}
-
-  const saveOrderButton = document.getElementById('saveRunOrder');
-  if (saveOrderButton) saveOrderButton.addEventListener('click', async () => {
-    const stopIds = localStops.map((stop) => Number(stop.id));
-    if (!confirm('Enregistrer cet ordre comme ordre opérationnel de la tournée ?')) return;
-    saveOrderButton.disabled = true;
-    try {
-      await api(`/api/app/runs/${encodeURIComponent(id)}/reorder`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stopIds, expectedVersion: run.version, idempotencyKey: idempotencyKeyFor(saveOrderButton, 'run-reorder', { stopIds }) }),
-      });
-      location.reload();
-    } catch (error) {
-      document.getElementById('runNotice').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      saveOrderButton.disabled = false;
-    }
-  });
-
-  const statusForm = document.getElementById('runStatusForm');
-  if (statusForm) statusForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector('button');
-    const values = Object.fromEntries(new FormData(form));
-    if (values.toStatus === 'cancelled' && String(values.reason || '').trim().length < 10) {
-      document.getElementById('runStatusResult').innerHTML = '<div class="notice error">Expliquez brièvement la raison de l’annulation.</div>';
-      return;
-    }
-    if (!confirm(`Passer cette tournée à l’état « ${runStatusLabels[values.toStatus] || values.toStatus} » ?`)) return;
-    button.disabled = true;
-    try {
-      await api(`/api/app/runs/${encodeURIComponent(id)}/status`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...values, expectedVersion: run.version, idempotencyKey: idempotencyKeyFor(form, 'run-status', values) }),
-      });
-      location.reload();
-    } catch (error) {
-      document.getElementById('runStatusResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      button.disabled = false;
-    }
-  });
-}
-
 // Ancienne page « /app/commandes/:id » : tout est désormais dans le tiroir
 // Opérations › Commandes (liens, favoris et notifications y sont redirigés).
 function renderOrderDetail(id) {
@@ -1788,9 +1661,9 @@ async function renderOperationsMap() {
       ? Number(driver.position.speedKnots) * 1.852 : null;
     const phone = String(driver.phone || '').replace(/[^+\d]/g, '');
     const runCards = (driver.runs || []).map((run) => `<section class="ops-run"><div class="ops-run-head"><div><strong>${escapeHtml(run.name)}</strong><small>${escapeHtml(formatDateOnly(run.serviceDate))} · ${escapeHtml(run.completedStops)}/${escapeHtml(run.totalStops)} arrêt(s)</small></div>${badge(runStatusLabels[run.status] || run.status)}</div>
-      ${run.stops.length ? `<ol class="ops-stops">${run.stops.map((stop) => `<li><span class="stop-number">${escapeHtml(stop.sequence)}</span><div class="ops-stop-main"><strong>${escapeHtml(stop.customerName || `Commande n° ${stop.id}`)}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(stop.status)}</small>${stop.openIncidents ? `<span class="ops-inc">${escapeHtml(stop.openIncidents)} incident(s)</span>` : ''}</div><a href="/app/commandes/${escapeHtml(stop.id)}">Voir</a></li>`).join('')}</ol>` : '<p class="ops-empty">Aucun arrêt restant.</p>'}
-      <a class="button secondary" href="/app/tournees/${escapeHtml(run.id)}">Ouvrir la tournée</a></section>`).join('');
-    const unplanned = (driver.unplannedOrders || []).length ? `<section class="ops-run"><strong class="ops-run-title">Hors tournée</strong><ol class="ops-stops">${driver.unplannedOrders.map((order) => `<li><span class="stop-number">•</span><div class="ops-stop-main"><strong>${escapeHtml(order.customerName || `Commande n° ${order.id}`)}</strong><small>${escapeHtml(order.neighborhood || order.landmark || order.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(order.status)}</small></div><a href="/app/commandes/${escapeHtml(order.id)}">Voir</a></li>`).join('')}</ol></section>` : '';
+      ${run.stops.length ? `<ol class="ops-stops">${run.stops.map((stop) => `<li><span class="stop-number">${escapeHtml(stop.sequence)}</span><div class="ops-stop-main"><strong>${escapeHtml(stop.customerName || `Commande n° ${stop.id}`)}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(stop.status)}</small>${stop.openIncidents ? `<span class="ops-inc">${escapeHtml(stop.openIncidents)} incident(s)</span>` : ''}</div><button type="button" class="ops-link" data-action="open-order" data-id="${escapeHtml(stop.id)}">Voir</button></li>`).join('')}</ol>` : '<p class="ops-empty">Aucun arrêt restant.</p>'}
+      <button type="button" class="button secondary" data-action="open-run" data-id="${escapeHtml(run.id)}">Ouvrir la tournée</button></section>`).join('');
+    const unplanned = (driver.unplannedOrders || []).length ? `<section class="ops-run"><strong class="ops-run-title">Hors tournée</strong><ol class="ops-stops">${driver.unplannedOrders.map((order) => `<li><span class="stop-number">•</span><div class="ops-stop-main"><strong>${escapeHtml(order.customerName || `Commande n° ${order.id}`)}</strong><small>${escapeHtml(order.neighborhood || order.landmark || order.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(order.status)}</small></div><button type="button" class="ops-link" data-action="open-order" data-id="${escapeHtml(order.id)}">Voir</button></li>`).join('')}</ol></section>` : '';
     const b = statusBucket(driver.operationalState);
     const meta = bucketMeta[b];
     const icon = vehicleIsCar(driver) ? truckIcon : bikeSvg;
@@ -2286,6 +2159,12 @@ async function renderOperationsMap() {
     if (action === 'select') { if (replay.active) closeReplay(); clearLiveRoute(); selectedDriverId = trigger.dataset.id; isolate = false; redrawMap(); renderPanel(); const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], Math.max(map.getZoom(), 14)); refreshLiveRoute(); }
     else if (action === 'back') { if (replay.active) closeReplay(); clearLiveRoute(); selectedDriverId = ''; isolate = false; redrawMap(); renderPanel(); }
     else if (action === 'center') { const d = selectedDriver(); if (d?.position) map.setView([d.position.latitude, d.position.longitude], 15); }
+    else if (action === 'open-run' || action === 'open-order') {
+      // Tiroirs ouverts sur place : on reste sur la carte.
+      const onChange = () => document.getElementById('refreshMap')?.click();
+      if (action === 'open-run') openRunDrawer(trigger.dataset.id, { onChange });
+      else openOrderDrawer(trigger.dataset.id, { onChange });
+    }
     else if (action === 'isolate') { isolate = !isolate; redrawMap({ fit: true }); renderPanel(); refreshLiveRoute(); }
     else if (action === 'replay') {
       if (replay.active && String(replay.driverId) === String(selectedDriverId)) { closeReplay(); }
@@ -3686,6 +3565,7 @@ async function openOrderDrawer(orderId, opts = {}) {
         <div><div class="crm-drawer-title">${escapeHtml(orderCode(o.reference, o.id))} ${crmChip(o.status, crmOrderStatusColor(o.status))}</div>
           <small>Créée le ${escapeHtml(formatDate(o.created_at))}${creator ? ` par ${escapeHtml(creator)}` : ''}</small></div>
         <div class="crm-drawer-headact">
+          ${opts.onBack ? `<button class="crm-icobtn od-back" type="button" id="odBack" title="${escapeHtml(opts.backLabel || 'Retour')}" aria-label="${escapeHtml(opts.backLabel || 'Retour')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>` : ''}
           <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
       </div>
@@ -3714,6 +3594,7 @@ async function openOrderDrawer(orderId, opts = {}) {
         ${canAdvance ? '<button class="button primary" type="button" id="odAdvance">Faire avancer la livraison</button>' : '<button class="button primary" type="button" id="odGoHistory">Voir l’historique</button>'}
       </div>`;
     drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
+    drawer.querySelector('#odBack')?.addEventListener('click', () => { close(); opts.onBack(); });
     const body = drawer.querySelector('.crm-drawer-body');
     await mountOrderActions(drawer.querySelector('#odActions'), o.id, {
       order: o,
@@ -3763,6 +3644,323 @@ async function openOrderDrawer(orderId, opts = {}) {
       goTo(byName('Lien client'));
       drawer.querySelector('#revealTrackingLink')?.click();
     });
+    body.scrollTop = scrollTop;
+    markActive();
+  };
+
+  try {
+    await paint();
+  } catch (error) {
+    drawer.innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
+    drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
+  }
+}
+
+// Tiroir d'une tournée : aperçu (avancement, carte des arrêts), ordre de passage
+// (glisser-déposer enregistré aussitôt, optimisation sur routes réelles),
+// colis du livreur restés hors tournée, historique ; l'état se change depuis le
+// pied du tiroir. Remplace l'ancienne page /app/tournees/:id.
+// opts.onChange : rappelé après une action (rafraîchit la liste).
+const runTerminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
+const runActionLabels = {
+  planned: 'Planifier la tournée', active: 'Démarrer la tournée', completed: 'Terminer la tournée',
+  draft: 'Repasser en préparation', cancelled: 'Annuler la tournée',
+};
+const runStatusTone = { draft: 'grey', planned: 'indigo', active: 'blue', completed: 'green', cancelled: 'grey' };
+
+async function openRunDrawer(runId, opts = {}) {
+  const existing = document.querySelector('.crm-drawer-wrap');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'crm-drawer-wrap';
+  wrap.innerHTML = '<div class="crm-drawer-backdrop"></div><aside class="crm-drawer wide" role="dialog" aria-modal="true" aria-label="Tournée"><div class="loading-state" style="padding:40px">Chargement…</div></aside>';
+  const drawer = wrap.querySelector('.crm-drawer');
+  let miniMap = null;
+  const close = () => { if (miniMap) { miniMap.remove(); miniMap = null; } wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (event) => { if (event.key === 'Escape' && !event.target.closest('input, textarea, select')) close(); };
+  wrap.querySelector('.crm-drawer-backdrop').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+
+  const ic = {
+    overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>',
+    stops: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H12"/></svg>',
+    add: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M12 12v6M9 15h6"/></svg>',
+    note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+    grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
+    up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>',
+    down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+    remove: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    wand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 4-1 3M20 9l-3 1M18 4l-2 2M3 21l11-11"/><path d="m12 7 5 5"/></svg>',
+  };
+  let notice = null;
+  const refreshList = () => { if (typeof opts.onChange === 'function') opts.onChange(); };
+
+  const eventText = (run, event) => {
+    const d = event.details || {};
+    if (event.event_type === 'status_changed') return `${runStatusLabels[d.fromStatus] || d.fromStatus} → ${runStatusLabels[d.toStatus] || d.toStatus}${d.reason ? ` · ${d.reason}` : ''}`;
+    if (event.event_type === 'order_added') return `Commande n° ${d.orderId} ajoutée (arrêt ${d.sequence})`;
+    if (event.event_type === 'order_removed') return `Commande n° ${d.orderId} retirée`;
+    if (event.event_type === 'stops_reordered') return d.method === 'osrm_road_network' ? 'Itinéraire optimisé sur routes réelles' : `${d.stopIds?.length || 0} arrêts réordonnés`;
+    return `${run.driver_name} · ${formatDateOnly(run.service_date)}`;
+  };
+
+  const paint = async (scrollTop = 0) => {
+    const run = await api(`/api/app/runs/${encodeURIComponent(runId)}`);
+    const stops = run.stops || [];
+    const done = stops.filter((stop) => runTerminalOrderStatuses.includes(stop.order_status)).length;
+    const noGps = stops.filter((stop) => stop.destination_lat == null || stop.destination_lng == null).length;
+    const pct = stops.length ? Math.round((done / stops.length) * 100) : 0;
+    const canReorder = run.canReorderStops && stops.length > 1;
+    const eligible = run.canEditStops ? (run.eligibleOrders || []) : [];
+    const phone = String(run.driver_phone || '').replace(/[^+\d]/g, '');
+    const transitions = run.allowedTransitions || [];
+    const forward = ['active', 'completed', 'planned'].find((status) => transitions.includes(status));
+    const others = transitions.filter((status) => status !== forward && status !== 'cancelled');
+
+    const stopRow = (stop, index) => {
+      const terminal = runTerminalOrderStatuses.includes(stop.order_status);
+      const place = stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser';
+      return `<li class="rd-stop${terminal ? ' done' : ''}" data-id="${escapeHtml(stop.id)}">
+        ${canReorder ? `<span class="rd-grip" title="Glisser pour déplacer" aria-hidden="true">${ic.grip}</span>` : ''}
+        <span class="rd-num">${terminal ? ic.check : index + 1}</span>
+        <button type="button" class="rd-main" data-order="${escapeHtml(stop.order_id)}" title="Ouvrir la commande">
+          <strong>${escapeHtml(stop.customer_name || 'Client')}</strong>
+          <small>${escapeHtml(orderCode(stop.order_reference, stop.order_id))} · ${escapeHtml(place)}${stop.requested_time ? ` · ${escapeHtml(stop.requested_time)}` : ''}</small>
+        </button>
+        <span class="rd-tags">${stop.destination_lat == null ? crmChip('Sans GPS', 'red') : ''}${crmChip(stop.order_status, crmOrderStatusColor(stop.order_status))}</span>
+        ${canReorder || run.canEditStops ? `<span class="rd-acts">
+          ${canReorder ? `<button type="button" class="crm-icobtn" data-move="up" ${index === 0 ? 'disabled' : ''} aria-label="Monter">${ic.up}</button><button type="button" class="crm-icobtn" data-move="down" ${index === stops.length - 1 ? 'disabled' : ''} aria-label="Descendre">${ic.down}</button>` : ''}
+          ${run.canEditStops ? `<button type="button" class="crm-icobtn rd-remove" data-remove="${escapeHtml(stop.id)}" aria-label="Retirer de la tournée" title="Retirer de la tournée">${ic.remove}</button>` : ''}
+        </span>` : ''}
+      </li>`;
+    };
+
+    drawer.innerHTML = `
+      <div class="crm-drawer-head">
+        <div><div class="crm-drawer-title">${escapeHtml(run.name)} ${crmChip(runStatusLabels[run.status] || run.status, runStatusTone[run.status])}</div>
+          <small>Commandes du jour du livreur, regroupées automatiquement</small></div>
+        <div class="crm-drawer-headact"><button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+      </div>
+      <nav class="od-nav" aria-label="Sections de la tournée"></nav>
+      <div class="crm-drawer-body">
+        <div id="rdNotice">${notice ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}</div>` : ''}</div>
+        <section data-od="Aperçu">
+          <h4><span class="crm-sec-ic">${ic.overview}</span>Aperçu</h4>
+          <div class="rd-driver">${crmAvatar(run.driver_name, {})}<span class="crm-muted">${escapeHtml(run.vehicle_type || 'Véhicule')}</span>${phone ? `<a class="rd-call" href="tel:${escapeHtml(phone)}">Appeler</a>` : ''}</div>
+          <div class="rd-progress"><div><strong>${escapeHtml(done)} / ${escapeHtml(stops.length)}</strong> colis terminés</div>${crmProgressBar(pct, run.status === 'cancelled' ? 'grey' : '')}</div>
+          <div class="rd-kpis">
+            <div><span>Arrêts</span><strong>${escapeHtml(stops.length)}</strong></div>
+            <div><span>Restants</span><strong>${escapeHtml(stops.length - done)}</strong></div>
+            <div class="${noGps ? 'warn' : ''}"><span>Sans position GPS</span><strong>${escapeHtml(noGps)}</strong></div>
+          </div>
+          ${stops.length - noGps > 0 ? '<div class="rd-map" id="rdMap" aria-label="Carte des arrêts"></div>' : ''}
+        </section>
+        <section data-od="Arrêts">
+          <div class="crm-sec-head"><h4><span class="crm-sec-ic">${ic.stops}</span>Ordre de passage</h4>
+            ${canReorder ? `<button type="button" class="button secondary rd-optimize" id="rdOptimize">${ic.wand} Optimiser</button>` : ''}</div>
+          <p class="rd-hint">${!stops.length ? '' : canReorder ? 'Glissez un arrêt (ou utilisez les flèches) : l’ordre est enregistré aussitôt.' : run.canReorderStops ? '' : 'L’ordre est verrouillé pendant l’exécution.'}</p>
+          ${stops.length ? `<ol class="rd-stops" id="rdStops">${stops.map(stopRow).join('')}</ol>` : '<div class="empty">Aucun colis pour l’instant. Une commande affectée à ce livreur pour ce jour s’ajoute ici automatiquement.</div>'}
+        </section>
+        ${eligible.length ? `<section data-od="À ajouter">
+          <h4><span class="crm-sec-ic">${ic.add}</span>Colis du livreur hors tournée</h4>
+          <p class="rd-hint">${escapeHtml(eligible.length)} commande(s) de ${escapeHtml(run.driver_name)} ne sont dans aucune tournée.</p>
+          <ul class="rd-eligible">${eligible.map((order) => `<li><div><strong>${escapeHtml(order.customer_name || 'Client')}</strong><small>N° ${escapeHtml(order.id)} · ${escapeHtml(order.neighborhood || order.landmark || order.delivery_address || 'Destination à préciser')} · ${escapeHtml(order.status)}</small></div><button type="button" class="button secondary" data-add="${escapeHtml(order.id)}">Ajouter</button></li>`).join('')}</ul>
+        </section>` : ''}
+        <section data-od="Historique">
+          <h4><span class="crm-sec-ic">${ic.note}</span>Historique</h4>
+          <ul class="crm-hist">${(run.events || []).slice().reverse().map((event) => `<li><span class="crm-hist-dot ${event.event_type === 'status_changed' && event.details?.toStatus === 'completed' ? 'ok' : ''}"></span><div><strong>${escapeHtml(runEventLabels[event.event_type] || event.event_type)}</strong><span>${escapeHtml(eventText(run, event))}</span><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small></div></li>`).join('') || '<li class="crm-muted">Aucun événement.</li>'}</ul>
+        </section>
+      </div>
+      ${transitions.length ? `<div class="crm-drawer-foot rd-foot" id="rdFoot">
+        ${transitions.includes('cancelled') ? '<button type="button" class="button danger" id="rdCancel">Annuler</button>' : ''}
+        ${others.map((status) => `<button type="button" class="button secondary" data-to="${status}">${escapeHtml(runActionLabels[status] || runStatusLabels[status])}</button>`).join('')}
+        ${forward ? `<button type="button" class="button primary" data-to="${forward}">${escapeHtml(runActionLabels[forward])}</button>` : ''}
+      </div>` : ''}`;
+
+    const body = drawer.querySelector('.crm-drawer-body');
+    drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
+    const say = (type, text) => { notice = { type, text }; const el = drawer.querySelector('#rdNotice'); el.innerHTML = `<div class="notice ${type}">${escapeHtml(text)}</div>`; };
+    const repaint = async (next) => { notice = next || null; await paint(body.scrollTop); refreshList(); };
+
+    // Menu de sections (même comportement que le tiroir commande).
+    const sections = [...body.querySelectorAll('[data-od]')];
+    const nav = drawer.querySelector('.od-nav');
+    nav.innerHTML = sections.map((section, i) => `<button type="button" data-i="${i}">${escapeHtml(section.dataset.od)}</button>`).join('');
+    let pinnedUntil = 0;
+    const setActive = (current) => nav.querySelectorAll('button').forEach((button, i) => button.classList.toggle('on', i === current));
+    const markActive = () => {
+      if (Date.now() < pinnedUntil) return;
+      const line = body.scrollTop + body.clientHeight * 0.3;
+      let current = 0;
+      sections.forEach((section, i) => { if (section.offsetTop - body.offsetTop <= line) current = i; });
+      setActive(current);
+    };
+    nav.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {
+      const i = Number(button.dataset.i);
+      pinnedUntil = Date.now() + 900;
+      setActive(i);
+      body.scrollTo({ top: sections[i].offsetTop - body.offsetTop - 8, behavior: 'smooth' });
+    }));
+    body.addEventListener('scroll', markActive, { passive: true });
+
+    // Carte des arrêts : numéros dans l'ordre de passage, reliés à vol d'oiseau.
+    if (miniMap) { miniMap.remove(); miniMap = null; }
+    const mapEl = drawer.querySelector('#rdMap');
+    if (mapEl && typeof L !== 'undefined') {
+      const points = [];
+      miniMap = L.map(mapEl, { zoomControl: false, attributionControl: true, scrollWheelZoom: false });
+      const created = miniMap;
+      if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => { if (miniMap === created) window.TraxoMapBase.baseLayer(config.base).addTo(created); });
+      stops.forEach((stop, index) => {
+        const lat = Number(stop.destination_lat);
+        const lng = Number(stop.destination_lng);
+        if (stop.destination_lat == null || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
+        const terminal = runTerminalOrderStatuses.includes(stop.order_status);
+        points.push([lat, lng]);
+        L.marker([lat, lng], {
+          icon: L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 13], html: `<span class="rd-pin${terminal ? ' done' : ''}">${index + 1}</span>` }),
+          title: stop.customer_name || '',
+        }).addTo(created);
+      });
+      if (points.length > 1) L.polyline(points, { color: '#17181c', weight: 2, opacity: 0.55, dashArray: '5 6' }).addTo(created);
+      // Recadrage après l'ouverture animée du tiroir ; ignoré si la carte a
+      // été retirée entre-temps (tiroir redessiné ou fermé).
+      const frame = () => {
+        if (miniMap !== created) return;
+        created.invalidateSize({ animate: false });
+        if (points.length === 1) created.setView(points[0], 15, { animate: false });
+        else created.fitBounds(points, { padding: [26, 26], maxZoom: 16, animate: false });
+      };
+      frame();
+      setTimeout(frame, 280);
+    }
+
+    // Ouvrir une commande (avec retour vers la tournée).
+    body.querySelectorAll('.rd-main').forEach((button) => button.addEventListener('click', () => {
+      close();
+      openOrderDrawer(button.dataset.order, { onChange: opts.onChange, onBack: () => openRunDrawer(runId, opts), backLabel: 'Retour à la tournée' });
+    }));
+
+    // Ordre de passage : enregistré dès qu'il change.
+    const saveOrder = async (stopIds, message) => {
+      try {
+        await api(`/api/app/runs/${encodeURIComponent(runId)}/reorder`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stopIds, expectedVersion: run.version, idempotencyKey: actionKey('run-reorder') }),
+        });
+        await repaint({ type: 'success', text: message || 'Ordre de passage enregistré.' });
+      } catch (error) {
+        await repaint({ type: 'error', text: error.message });
+      }
+    };
+    const list = body.querySelector('#rdStops');
+    const currentIds = () => [...list.querySelectorAll('.rd-stop')].map((li) => Number(li.dataset.id));
+    if (list && canReorder) {
+      list.querySelectorAll('[data-move]').forEach((button) => button.addEventListener('click', () => {
+        const ids = stops.map((stop) => Number(stop.id));
+        const id = Number(button.closest('.rd-stop').dataset.id);
+        const index = ids.indexOf(id);
+        const target = button.dataset.move === 'up' ? index - 1 : index + 1;
+        if (index < 0 || target < 0 || target >= ids.length) return;
+        [ids[index], ids[target]] = [ids[target], ids[index]];
+        body.querySelectorAll('[data-move]').forEach((b) => { b.disabled = true; });
+        saveOrder(ids);
+      }));
+      if (typeof Sortable !== 'undefined') {
+        Sortable.create(list, {
+          handle: '.rd-grip', animation: 160, ghostClass: 'rd-ghost',
+          onEnd: (event) => { if (event.oldIndex !== event.newIndex) saveOrder(currentIds()); },
+        });
+      }
+    }
+    body.querySelector('#rdOptimize')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      say('info', 'Calcul de l’itinéraire le plus court sur les routes…');
+      try {
+        const suggestion = await api(`/api/app/runs/${encodeURIComponent(runId)}/suggestion`);
+        if (!suggestion.available) {
+          say('warning', `${suggestion.reason}${suggestion.missingOrderIds?.length ? ` Commandes concernées : ${suggestion.missingOrderIds.join(', ')}.` : ''}`);
+          button.disabled = false;
+          return;
+        }
+        const road = suggestion.method === 'osrm_road_network';
+        await saveOrder(suggestion.stopIds, road
+          ? `Itinéraire optimisé sur routes réelles : ~${suggestion.distanceKm} km${suggestion.durationMin != null ? `, ~${suggestion.durationMin} min de conduite` : ''}.`
+          : `Ordre indicatif à vol d’oiseau : ~${suggestion.distanceKm} km (routage réel indisponible).`);
+      } catch (error) {
+        say('error', error.message);
+        button.disabled = false;
+      }
+    });
+    body.querySelectorAll('[data-remove]').forEach((button) => button.addEventListener('click', async () => {
+      const stop = stops.find((item) => String(item.id) === button.dataset.remove);
+      if (!stop || !confirm(`Retirer ${orderCode(stop.order_reference, stop.order_id)} de cette tournée ? La commande reste affectée au livreur et son historique est conservé.`)) return;
+      button.disabled = true;
+      try {
+        await api(`/api/app/runs/${encodeURIComponent(runId)}/stops/${encodeURIComponent(stop.id)}/remove`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expectedVersion: run.version, idempotencyKey: actionKey('run-remove') }),
+        });
+        await repaint({ type: 'success', text: 'Colis retiré de la tournée.' });
+      } catch (error) {
+        await repaint({ type: 'error', text: error.message });
+      }
+    }));
+    body.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/app/runs/${encodeURIComponent(runId)}/orders`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: Number(button.dataset.add), expectedVersion: run.version, idempotencyKey: actionKey('run-add') }),
+        });
+        await repaint({ type: 'success', text: 'Colis ajouté à la tournée.' });
+      } catch (error) {
+        await repaint({ type: 'error', text: error.message });
+      }
+    }));
+
+    // Changement d'état depuis le pied du tiroir.
+    const foot = drawer.querySelector('#rdFoot');
+    const changeStatus = async (toStatus, reason, button) => {
+      if (button) button.disabled = true;
+      try {
+        await api(`/api/app/runs/${encodeURIComponent(runId)}/status`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ toStatus, reason: reason || '', expectedVersion: run.version, idempotencyKey: actionKey('run-status') }),
+        });
+        await repaint({ type: 'success', text: `Tournée : ${runStatusLabels[toStatus] || toStatus}.` });
+      } catch (error) {
+        say('error', error.message);
+        body.scrollTo({ top: 0, behavior: 'smooth' });
+        if (button) button.disabled = false;
+      }
+    };
+    foot?.querySelectorAll('[data-to]').forEach((button) => button.addEventListener('click', () => {
+      const toStatus = button.dataset.to;
+      if (!confirm(`${runActionLabels[toStatus] || runStatusLabels[toStatus]} ?`)) return;
+      changeStatus(toStatus, '', button);
+    }));
+    foot?.querySelector('#rdCancel')?.addEventListener('click', () => {
+      foot.innerHTML = `<form class="rd-cancel" id="rdCancelForm">
+        <label for="rdReason">Motif de l’annulation</label>
+        <textarea id="rdReason" maxlength="1000" required placeholder="Ex. : livreur indisponible, colis reportés à demain (10 caractères minimum)"></textarea>
+        <div class="rd-cancel-actions"><button type="button" class="button secondary" id="rdCancelBack">Retour</button><button type="submit" class="button danger">Confirmer l’annulation</button></div>
+      </form>`;
+      const form = foot.querySelector('#rdCancelForm');
+      foot.querySelector('#rdReason').focus();
+      foot.querySelector('#rdCancelBack').addEventListener('click', () => paint(body.scrollTop));
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const reason = foot.querySelector('#rdReason').value.trim();
+        if (reason.length < 10) { say('error', 'Expliquez brièvement la raison de l’annulation (10 caractères minimum).'); return; }
+        changeStatus('cancelled', reason, form.querySelector('button[type="submit"]'));
+      });
+    });
+
     body.scrollTop = scrollTop;
     markActive();
   };
@@ -4109,7 +4307,7 @@ async function renderOperationsWorkspace(initialSegment) {
     },
     tournees: {
       title: 'Tournées', newLabel: '', newHref: null, placeholder: 'Rechercher une tournée, un livreur…', countKey: 'open_runs',
-      endpoint: () => '/api/app/runs', href: (r) => `/app/tournees/${r.id}`,
+      endpoint: () => '/api/app/runs', drawerFn: (id) => openRunDrawer(id, { onChange: loadSegment }), href: (r) => `/app/tournees/${r.id}`,
       statusValues: ['draft', 'planned', 'active', 'completed', 'cancelled'],
       groupCols: [['status', 'État'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? (runStatusLabels[r.status] || r.status) : (r.driver_name || '—'),
@@ -4448,6 +4646,7 @@ async function renderOperationsWorkspace(initialSegment) {
   const focusParams = new URLSearchParams(location.search);
   const focusRequest = focusParams.get('demande');
   const focusOrder = focusParams.get('commande');
+  const focusRun = focusParams.get('tournee');
   if (segment === 'demandes' && /^\d{1,18}$/.test(focusRequest || '')) {
     focusParams.delete('demande');
     history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
@@ -4456,6 +4655,10 @@ async function renderOperationsWorkspace(initialSegment) {
     focusParams.delete('commande');
     history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
     openOrderDrawer(focusOrder, { onChange: loadSegment });
+  } else if (segment === 'tournees' && /^\d{1,18}$/.test(focusRun || '')) {
+    focusParams.delete('tournee');
+    history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
+    openRunDrawer(focusRun, { onChange: loadSegment });
   }
 }
 
@@ -5593,7 +5796,7 @@ async function start() {
     const incidentDetail = path.match(/^\/app\/incidents\/(\d+)$/);
     if (incidentDetail) return await renderIncidentDetail(incidentDetail[1]);
     const runDetail = path.match(/^\/app\/tournees\/(\d+)$/);
-    if (runDetail) return await renderRunDetail(runDetail[1]);
+    if (runDetail) { location.replace(`/app/operations?vue=tournees&tournee=${encodeURIComponent(runDetail[1])}`); return; }
     const customerDetail = path.match(/^\/app\/clients\/(\d+)$/);
     if (customerDetail) return await renderCustomerDetail(customerDetail[1]);
     if (path === '/app') return await renderDashboard();

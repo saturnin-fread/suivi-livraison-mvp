@@ -240,14 +240,22 @@ const vectorTiles = { healthy: false, checkedAt: 0, cache: new Map(), cacheBytes
 
 async function checkVectorTiles() {
   if (!VECTOR_TILES_URL) { vectorTiles.healthy = false; return false; }
+  const before = vectorTiles.healthy;
+  let reason = '';
   try {
-    const response = await fetch(`${VECTOR_TILES_URL}/${encodeURIComponent(VECTOR_TILES_NAME)}.json`, { signal: AbortSignal.timeout(4000) });
+    const response = await fetch(`${VECTOR_TILES_URL}/${encodeURIComponent(VECTOR_TILES_NAME)}/0/0/0.mvt`, { signal: AbortSignal.timeout(4000) });
     vectorTiles.healthy = response.ok;
+    if (!response.ok) reason = `HTTP ${response.status}`;
     await response.arrayBuffer().catch(() => null);
-  } catch {
+  } catch (error) {
     vectorTiles.healthy = false;
+    reason = error.cause?.code || error.name || 'erreur réseau';
   }
   vectorTiles.checkedAt = Date.now();
+  if (before !== vectorTiles.healthy || (!vectorTiles.healthy && !vectorTiles.reported)) {
+    console.log(vectorTiles.healthy ? 'Tuiles vectorielles disponibles' : `Tuiles vectorielles injoignables (${reason}) : fond raster de secours`);
+    vectorTiles.reported = true;
+  }
   return vectorTiles.healthy;
 }
 
@@ -7965,8 +7973,7 @@ initDatabase()
   .then(() => backfillOrderRuns(pool))
   .then(async () => {
     if (VECTOR_TILES_URL) {
-      const ok = await checkVectorTiles();
-      console.log(ok ? 'Tuiles vectorielles disponibles' : 'Tuiles vectorielles injoignables : fond raster de secours');
+      await checkVectorTiles();
       setInterval(checkVectorTiles, 60_000).unref();
     }
   })

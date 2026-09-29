@@ -228,6 +228,41 @@ function decorateRowDriver(row, onlineMap) {
   };
 }
 
+// ---- Tuiles vectorielles auto-hébergées ------------------------------------
+// Le service Railway « tiles » (dossier tiles/) sert un extrait Bénin au format
+// PMTiles. On le relaie en même origine, avec un cache mémoire borné, et on
+// surveille sa disponibilité pour basculer sur le fond raster s'il tombe.
+const VECTOR_TILES_URL = String(process.env.TILES_INTERNAL_URL || '').trim().replace(/\/+$/, '');
+const VECTOR_TILES_NAME = String(process.env.TILES_NAME || 'benin').trim();
+const VECTOR_TILES_MAX_ZOOM = 15;
+const VECTOR_TILES_CACHE_BYTES = 48 * 1024 * 1024;
+const vectorTiles = { healthy: false, checkedAt: 0, cache: new Map(), cacheBytes: 0 };
+
+async function checkVectorTiles() {
+  if (!VECTOR_TILES_URL) { vectorTiles.healthy = false; return false; }
+  try {
+    const response = await fetch(`${VECTOR_TILES_URL}/${encodeURIComponent(VECTOR_TILES_NAME)}.json`, { signal: AbortSignal.timeout(4000) });
+    vectorTiles.healthy = response.ok;
+    await response.arrayBuffer().catch(() => null);
+  } catch {
+    vectorTiles.healthy = false;
+  }
+  vectorTiles.checkedAt = Date.now();
+  return vectorTiles.healthy;
+}
+
+function cacheVectorTile(key, entry) {
+  if (vectorTiles.cache.has(key)) return;
+  vectorTiles.cache.set(key, entry);
+  vectorTiles.cacheBytes += entry.body.length;
+  // Map conserve l'ordre d'insertion : on évince les plus anciennes.
+  for (const [oldKey, oldEntry] of vectorTiles.cache) {
+    if (vectorTiles.cacheBytes <= VECTOR_TILES_CACHE_BYTES) break;
+    vectorTiles.cache.delete(oldKey);
+    vectorTiles.cacheBytes -= oldEntry.body.length;
+  }
+}
+
 function mapConfiguration() {
   const maxZoom = (value, fallback = 19) => {
     const parsed = Number(value);
@@ -239,12 +274,24 @@ function mapConfiguration() {
     || 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').trim();
   const labelsUrl = String(process.env.MAP_LABELS_TILE_URL
     || 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}').trim();
+  // Fond de plan : tuiles vectorielles auto-hébergées (service « tiles »,
+  // relayées sur /tiles) dès qu'elles répondent ; sinon fond raster de secours.
+  const base = vectorTiles.healthy ? {
+    type: 'vector',
+    url: '/tiles/{z}/{x}/{y}.mvt',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+    maxZoom: 19,
+    maxDataZoom: VECTOR_TILES_MAX_ZOOM,
+    flavor: 'light',
+    lang: 'fr',
+  } : {
+    type: 'raster',
+    url: String(process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
+    attribution: String(process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors'),
+    maxZoom: maxZoom(process.env.MAP_TILE_MAX_ZOOM),
+  };
   return {
-    base: {
-      url: String(process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
-      attribution: String(process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors'),
-      maxZoom: maxZoom(process.env.MAP_TILE_MAX_ZOOM),
-    },
+    base,
     satellite: satelliteUrl ? {
       url: satelliteUrl,
       attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION
@@ -347,7 +394,54 @@ app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules', '
   immutable: true,
   maxAge: '30d',
 }));
+app.use('/vendor/protomaps-leaflet', express.static(path.join(__dirname, 'node_modules', 'protomaps-leaflet', 'dist'), {
+  maxAge: '7d',
+}));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Relais des tuiles vectorielles (même origine : pas de CORS, pas de domaine
+// public pour le service de tuiles).
+app.get('/tiles/:z/:x/:y.mvt', asyncRoute(async (req, res) => {
+  const [z, x, y] = [req.params.z, req.params.x, req.params.y].map((value) => (/^\d{1,6}$/.test(value) ? Number(value) : NaN));
+  if (![z, x, y].every(Number.isInteger) || z > VECTOR_TILES_MAX_ZOOM || x >= 2 ** z || y >= 2 ** z) {
+    return res.status(404).set('Cache-Control', 'no-store').end();
+  }
+  if (!VECTOR_TILES_URL) return res.status(404).set('Cache-Control', 'no-store').end();
+  const key = `${z}/${x}/${y}`;
+  const send = (entry) => {
+    res.set({ 'Cache-Control': 'public, max-age=604800', 'X-Content-Type-Options': 'nosniff' });
+    if (!entry.body.length) return res.status(204).end();
+    return res.status(200).type('application/vnd.mapbox-vector-tile').send(entry.body);
+  };
+  const cached = vectorTiles.cache.get(key);
+  if (cached) return send(cached);
+  let response;
+  try {
+    response = await fetch(`${VECTOR_TILES_URL}/${encodeURIComponent(VECTOR_TILES_NAME)}/${key}.mvt`, { signal: AbortSignal.timeout(8000) });
+  } catch {
+    vectorTiles.healthy = false;
+    return res.status(502).set('Cache-Control', 'no-store').end();
+  }
+  if (response.status === 204 || response.status === 404) {
+    await response.arrayBuffer().catch(() => null);
+    const entry = { body: Buffer.alloc(0) };
+    cacheVectorTile(key, entry);
+    return send(entry);
+  }
+  if (!response.ok) {
+    await response.arrayBuffer().catch(() => null);
+    return res.status(502).set('Cache-Control', 'no-store').end();
+  }
+  // fetch décompresse déjà un éventuel Content-Encoding gzip.
+  const entry = { body: Buffer.from(await response.arrayBuffer()) };
+  cacheVectorTile(key, entry);
+  return send(entry);
+}));
+
+// Configuration du fond de carte pour les pages publiques (formulaire client).
+app.get('/api/public/map-config', (req, res) => {
+  res.set('Cache-Control', 'no-store').json(mapConfiguration());
+});
 
 // Empreinte d'assets : force le navigateur à recharger app.js/app.css (et les
 // pages livreur) après chaque déploiement. Sans elle, les références « /app.js »
@@ -359,7 +453,7 @@ const ASSET_VERSION = (() => {
   if (fromEnv) return String(fromEnv).slice(0, 12);
   try {
     const hash = crypto.createHash('sha1');
-    for (const file of ['app.js', 'app.css', 'driver.js', 'driver.css']) {
+    for (const file of ['app.js', 'app.css', 'driver.js', 'driver.css', 'client.js', 'client.css', 'map-base.js']) {
       try { hash.update(fs.readFileSync(path.join(__dirname, 'public', file))); } catch (_) { /* fichier absent : ignoré */ }
     }
     return hash.digest('hex').slice(0, 12);
@@ -377,7 +471,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -7832,7 +7926,9 @@ async function backfillOrderRuns(dbPool) {
              o.created_at::date, 'draft',
              'backfill-run:' || o.company_id || ':' || o.driver_id || ':' || o.created_at::date,
              md5('backfill-run:' || o.company_id || ':' || o.driver_id || ':' || o.created_at::date),
-             NULL
+             -- Typage explicite : avec DISTINCT, un NULL nu devient « text » et
+             -- l'insertion échouait à chaque démarrage (colonne bigint).
+             NULL::bigint
       FROM orders o
       WHERE o.status NOT IN ('Livrée','Retournée','Annulée')
         AND NOT EXISTS (SELECT 1 FROM delivery_stops s WHERE s.order_id = o.id AND s.assignment_active = TRUE)
@@ -7867,6 +7963,13 @@ initDatabase()
   .then(() => applyCrmSchema(pool, path.join(__dirname, 'db', 'crm-schema.sql')))
   .then(() => synchronizeExistingOrders(pool))
   .then(() => backfillOrderRuns(pool))
+  .then(async () => {
+    if (VECTOR_TILES_URL) {
+      const ok = await checkVectorTiles();
+      console.log(ok ? 'Tuiles vectorielles disponibles' : 'Tuiles vectorielles injoignables : fond raster de secours');
+      setInterval(checkVectorTiles, 60_000).unref();
+    }
+  })
   .then(() => app.listen(port, () => console.log(`Delivery SaaS listening on port ${port}`)))
   .catch((error) => {
     console.error('Database initialization failed:', error.message);

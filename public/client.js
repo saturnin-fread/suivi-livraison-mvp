@@ -116,7 +116,8 @@
       mapEl.hidden = false;
       if (!map) {
         map = L.map(mapEl, { zoomControl: true, attributionControl: true, scrollWheelZoom: false }).setView(latLng, zoom);
-        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+        const created = map;
+        if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.baseLayer(config.base).addTo(created));
         marker = L.marker(latLng, { draggable: true, keyboard: true, title: 'Point de livraison' }).addTo(map);
         marker.on('dragend', () => {
           const point = marker.getLatLng();

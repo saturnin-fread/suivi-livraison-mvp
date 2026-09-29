@@ -1689,7 +1689,8 @@ async function renderOperationsMap() {
   function configureLayers() {
     if (layersConfigured) return;
     const cfg = snapshot.mapConfig;
-    baseStreet = L.tileLayer(cfg.base.url, { maxZoom: cfg.base.maxZoom, attribution: cfg.base.attribution }).addTo(map);
+    baseStreet = (window.TraxoMapBase ? window.TraxoMapBase.baseLayer(cfg.base)
+      : L.tileLayer(cfg.base.url, { maxZoom: cfg.base.maxZoom, attribution: cfg.base.attribution })).addTo(map);
     if (cfg.satellite) baseSatellite = L.tileLayer(cfg.satellite.url, { maxZoom: cfg.satellite.maxZoom, attribution: cfg.satellite.attribution });
     if (cfg.labels) baseLabels = L.tileLayer(cfg.labels.url, { maxZoom: cfg.labels.maxZoom, attribution: cfg.labels.attribution, pane: 'overlayPane' });
     // Désactive les fonds indisponibles.

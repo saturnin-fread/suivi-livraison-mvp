@@ -143,6 +143,8 @@
       </div>
     </main>
     <script src="/vendor/leaflet/leaflet.js"></script>
+    <script src="/vendor/protomaps-leaflet/protomaps-leaflet.js"></script>
+    <script src="/map-base.js"></script>
     <script src="/client.js"></script>
     <script>
       (() => {
@@ -252,17 +254,13 @@
         }
 
         // ---- Carte ----------------------------------------------------
-        function validTileConfig(config) {
-          return config && typeof config.url === 'string' && /^https:\/\//i.test(config.url)
-            && Number.isInteger(Number(config.maxZoom)) && Number(config.maxZoom) >= 1 && Number(config.maxZoom) <= 24;
-        }
         function applyMapConfig(config) {
-          if (!map || !validTileConfig(config && config.base)) return;
+          if (!map || !config || !config.base || !window.TraxoMapBase) return;
           const signature = JSON.stringify(config.base);
           if (signature === mapConfigSignature) return;
           mapConfigSignature = signature;
           if (tileLayer) map.removeLayer(tileLayer);
-          tileLayer = L.tileLayer(config.base.url, { maxZoom: Number(config.base.maxZoom), attribution: String(config.base.attribution || '') }).addTo(map);
+          tileLayer = window.TraxoMapBase.baseLayer(config.base).addTo(map);
         }
 
         function driverIcon(vehicleType, stale) {
@@ -414,7 +412,7 @@
           const mobile = window.matchMedia('(max-width: 640px)').matches;
           map = L.map('map', { zoomControl: false, attributionControl: false, keyboard: true }).setView([6.37, 2.43], 13);
           L.control.attribution({ position: mobile ? 'topleft' : 'bottomright', prefix: '<a href="https://leafletjs.com/">Leaflet</a>' }).addTo(map);
-          applyMapConfig({ base: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' } });
+          if (window.TraxoMapBase) window.TraxoMapBase.load().then(applyMapConfig);
           $('zoomIn').addEventListener('click', () => map && map.zoomIn());
           $('zoomOut').addEventListener('click', () => map && map.zoomOut());
           el.recenter.addEventListener('click', () => frame(true));

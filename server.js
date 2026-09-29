@@ -229,11 +229,11 @@ function decorateRowDriver(row, onlineMap) {
 }
 
 // ---- Tuiles vectorielles auto-hébergées ------------------------------------
-// Le service Railway « tiles » (dossier tiles/) sert un extrait Bénin au format
+// Le service Railway « tiles » (dossier tiles/) sert les pays couverts au format
 // PMTiles. On le relaie en même origine, avec un cache mémoire borné, et on
 // surveille sa disponibilité pour basculer sur le fond raster s'il tombe.
 const VECTOR_TILES_URL = String(process.env.TILES_INTERNAL_URL || '').trim().replace(/\/+$/, '');
-const VECTOR_TILES_NAME = String(process.env.TILES_NAME || 'benin').trim();
+const VECTOR_TILES_NAME = String(process.env.TILES_NAME || 'zones').trim();
 const VECTOR_TILES_MAX_ZOOM = 15;
 const VECTOR_TILES_CACHE_BYTES = 48 * 1024 * 1024;
 const vectorTiles = { healthy: false, checkedAt: 0, cache: new Map(), cacheBytes: 0 };
@@ -405,6 +405,10 @@ app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules', '
 app.use('/vendor/protomaps-leaflet', express.static(path.join(__dirname, 'node_modules', 'protomaps-leaflet', 'dist'), {
   maxAge: '7d',
 }));
+app.use('/vendor/maplibre-gl', express.static(path.join(__dirname, 'node_modules', 'maplibre-gl', 'dist'), { maxAge: '7d' }));
+app.use('/vendor/maplibre-gl-leaflet', express.static(path.join(__dirname, 'node_modules', '@maplibre', 'maplibre-gl-leaflet'), { maxAge: '7d' }));
+app.use('/vendor/protomaps-basemaps', express.static(path.join(__dirname, 'node_modules', '@protomaps', 'basemaps', 'dist'), { maxAge: '7d' }));
+app.use('/vendor/basemaps-assets', express.static(path.join(__dirname, 'public', 'vendor', 'basemaps-assets'), { maxAge: '30d' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Relais des tuiles vectorielles (même origine : pas de CORS, pas de domaine

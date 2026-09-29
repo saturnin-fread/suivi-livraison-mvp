@@ -29,7 +29,9 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@maplibre/maplibre-gl-leaflet": "^0.1.4",
     "@napi-rs/canvas": "^1.0.9",
+    "@protomaps/basemaps": "^5.7.2",
     "axios": "^1.8.4",
     "chart.js": "^4.5.1",
     "chartjs-plugin-datalabels": "^2.2.0",
@@ -39,6 +41,7 @@
     "ioredis": "^5.11.1",
     "leaflet": "^1.9.4",
     "libphonenumber-js": "^1.13.14",
+    "maplibre-gl": "^5.24.0",
     "multer": "^2.4.0",
     "nodemailer": "^6.10.1",
     "pg": "^8.13.3",

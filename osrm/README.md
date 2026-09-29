@@ -1,4 +1,4 @@
-# OSRM Bénin (map-matching)
+# OSRM Bénin + Côte d'Ivoire (map-matching)
 
 Moteur de routage/calage sur route pour le rejeu GPS. Sert le service **Match**
 d'OSRM (colle une trace GPS bruitée au réseau routier) et, accessoirement,
@@ -53,14 +53,14 @@ passe, paramètre ni fragment (contrainte de l'adaptateur `lib/routing.js`).
 
 ### Rafraîchir les données OSM
 
-Redéployer le service : le build retélécharge l'extrait Geofabrik du Bénin et
-reprépare le graphe. Penser à mettre à jour `ROUTING_MAP_DATA_VERSION`.
+Redéployer le service : le build retélécharge les extraits Geofabrik des pays
+couverts, les fusionne (osmium) et reprépare le graphe. Penser à mettre à jour `ROUTING_MAP_DATA_VERSION`.
 
 ## Arguments de build
 
 | Argument | Défaut | Rôle |
 |---|---|---|
-| `PBF_URL` | extrait Bénin Geofabrik | source OSM |
+| `COUNTRIES` | `benin ivory-coast` | extraits Geofabrik (Afrique) fusionnés |
 | `PROFILE` | `car` | profil OSRM (`car`, `bicycle`, `foot`) |
 
 Les motos empruntent le réseau routier « car » au Bénin ; `bicycle` inclut plus

@@ -693,7 +693,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .crm-gcount { color: #9aa4b2; margin-left: 6px; }
 .crm-empty { padding: 40px; text-align: center; color: var(--muted); }
 .crm-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 4px 0; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
-.crm-page { display: flex; align-items: center; gap: 6px; }
+.crm-page { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
 .crm-perwrap { position: relative; display: inline-flex; }
 .crm-per { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font-size: 13px; cursor: pointer; }
 .crm-per:hover { border-color: #c7ced9; background: #f7f9fc; }

@@ -6813,6 +6813,7 @@ async function start() {
     if (path === '/app/clients') return await renderCustomers();
     if (path === '/app/rapports') return await renderReports();
     if (path === '/app/parametres') return await renderSettings();
+    if (path === '/app/notifications') return await renderNotificationsCenter();
   } catch (error) {
     renderError(error);
   }
@@ -6861,195 +6862,377 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { 
 
 // Cloche de notifications : agrège les éléments actionnables (demandes à
 // vérifier, commandes à affecter, incidents, tournées brouillon, rétentions).
+// ---- Notifications (cloche, centre, préférences) -----------------------------
+const tnIcons = {
+  incident: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  requests: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  assign: '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 8.7 5 8.7-5"/>',
+  run: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+  delivered: '<path d="M20 6 9 17l-5-5"/>',
+  client: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/>',
+  security: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  sliders: '<path d="M21 5H3"/><path d="M15 12H3"/><path d="M17 19H3"/><circle cx="19" cy="12" r="2"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+  arrowUpRight: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+  arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+};
+const tnIcon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tnIcons[name] || ''}</svg>`;
+const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red' };
+const tnCategoryLabels = { incidents: 'Incident de livraison', requests: 'Demandes clients', deliveries: 'Livraisons', runs: 'Tournées', clients: 'Clients', security: 'Sécurité' };
+const tnTime = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''; };
+function tnDayGroup(iso) {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return { key: 'old', label: 'Plus anciennes', date: '' };
+  const day = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const now = new Date();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const date = d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
+  if (day(d) === day(now)) return { key: 'today', label: 'Aujourd’hui', date };
+  if (day(d) === day(yesterday)) return { key: 'yesterday', label: 'Hier', date };
+  return { key: day(d), label: d.toLocaleDateString('fr-FR', { weekday: 'long' }), date };
+}
+function tnRowsHtml(items, { withCta = false, selectedId = null, limit = Infinity } = {}) {
+  let lastGroup = null;
+  return items.slice(0, limit).map((it, i) => {
+    const g = tnDayGroup(it.at);
+    const head = g.key !== lastGroup ? `<div class="tn-group">${escapeHtml(g.label)}<span>${escapeHtml(g.date)}</span></div>` : '';
+    lastGroup = g.key;
+    const tag = it.priority === 'action' ? '<em class="tn-priority">À traiter</em>' : it.priority === 'security' ? '<em class="tn-priority sec">Sécurité</em>' : '';
+    return `${head}<div class="tn-row ${it.read ? '' : 'tn-unread'} ${selectedId === it.id ? 'tn-selected' : ''}" role="link" tabindex="0" data-nid="${escapeHtml(it.id)}" style="--i:${i}">
+      <span class="tn-type ${tnTone[it.type] || 'tn-neutral'}">${tnIcon(it.type)}</span>
+      <span class="tn-row-main"><span class="tn-row-title">${escapeHtml(it.title)}</span><p>${escapeHtml(it.summary)}</p>
+        <span class="tn-row-meta">${it.meta ? `<span>${escapeHtml(it.meta)}</span>` : ''}${tag}</span>
+        ${withCta && it.cta ? `<a class="tn-cta" href="${escapeHtml(it.href)}" data-open="${escapeHtml(it.id)}">${escapeHtml(it.cta)} ${tnIcon('arrowUpRight')}</a>` : ''}</span>
+      <span class="tn-row-end"><time>${escapeHtml(tnTime(it.at))}</time>${it.read ? '' : '<span class="tn-dot" aria-label="Non lue"></span>'}</span>
+    </div>`;
+  }).join('');
+}
+const tnEmpty = (title, text) => `<div class="tn-empty"><span class="tn-empty-icon">${tnIcon('inbox')}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(text)}</p></div>`;
+const tnSetState = (ids, action) => api('/api/app/notifications/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, action }) });
+const tnFilterTab = (items, tab) => {
+  if (tab === 'later') return items.filter((it) => it.later && !it.archived);
+  if (tab === 'archived') return items.filter((it) => it.archived);
+  const active = items.filter((it) => !it.archived && !it.later);
+  if (tab === 'action') return active.filter((it) => it.priority !== 'info');
+  if (tab === 'unread') return active.filter((it) => !it.read);
+  return active;
+};
+
 async function initNotifications() {
   const btn = document.getElementById('notifBtn');
   const pop = document.getElementById('notifPop');
   const dot = document.getElementById('notifDot');
   if (!btn || !pop || !dot) return;
-  // Suivi lu/non-lu par identifiant (localStorage). On borne le stockage aux
-  // notifications encore présentes pour éviter une croissance illimitée.
-  const READ_KEY = 'traxo.notif.read';
-  const readReadSet = () => { try { const a = JSON.parse(localStorage.getItem(READ_KEY) || '[]'); return new Set(Array.isArray(a) ? a : []); } catch { return new Set(); } };
-  const writeReadSet = (set, currentIds) => { try { localStorage.setItem(READ_KEY, JSON.stringify([...set].filter((id) => currentIds.has(id)))); } catch { /* stockage indisponible */ } };
-  const notifIcons = {
-    requests: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="8" height="4" x="8" y="2" rx="1" ry="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M12 11h4" /><path d="M12 16h4" /><path d="M8 11h.01" /><path d="M8 16h.01" /></svg>',
-    unassigned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" /><path d="m7.5 4.27 9 5.15" /><polyline points="3.29 7 12 12 20.71 7" /><line x1="12" x2="12" y1="22" y2="12" /><circle cx="18.5" cy="15.5" r="2.5" /><path d="M20.27 17.27 22 19" /></svg>',
-    incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>',
-    runs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></svg>',
-    relaunch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>',
-  };
-  const relTime = (iso) => {
-    const t = new Date(iso).getTime();
-    if (!Number.isFinite(t)) return '';
-    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-    if (s < 60) return 'à l’instant';
-    const m = Math.floor(s / 60); if (m < 60) return `il y a ${m} min`;
-    const h = Math.floor(m / 60); if (h < 24) return `il y a ${h} h`;
-    const d = Math.floor(h / 24); if (d < 7) return `il y a ${d} j`;
-    return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-  };
-  const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; };
-  const dayBucket = (iso) => {
-    const now = new Date();
-    const y = new Date(now); y.setDate(now.getDate() - 1);
-    const k = dayKey(iso);
-    if (k === dayKey(now)) return 'today';
-    if (k === dayKey(y)) return 'yesterday';
-    return 'older';
-  };
-  const notifGroups = [['today', 'Aujourd’hui'], ['yesterday', 'Hier'], ['older', 'Plus anciennes']];
+  pop.classList.add('tn-pop');
   let open = false;
-  let notifTab = 'all';
-  let lastData = { items: [] };
-  const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-  const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-  const itemHtml = (it, isUnread) => `<div class="notif-item ${isUnread ? 'unread' : ''}" data-href="${escapeHtml(it.href)}" role="link" tabindex="0">
-      <span class="notif-item-ic notif-${escapeHtml(it.type)}">${notifIcons[it.type] || ''}</span>
-      <span class="notif-item-main"><strong>${escapeHtml(it.title)}</strong><small>${escapeHtml(it.summary)}</small></span>
-      <span class="notif-item-side"><span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>${isUnread
-        ? `<span class="notif-item-udot" aria-label="Non lue"></span><button type="button" class="notif-read-btn" data-read="${escapeHtml(it.id)}" title="Marquer comme lu" aria-label="Marquer comme lu">${checkIcon}</button>`
-        : ''}</span>
-    </div>`;
-  const render = (data) => {
-    lastData = data || { items: [] };
-    const items = Array.isArray(lastData.items) ? lastData.items : [];
-    const ids = new Set(items.map((it) => it.id));
-    const readSet = readReadSet();
-    const isUnread = (it) => !readSet.has(it.id);
-    const unread = items.filter(isUnread).length;
-    if (unread > 0) { dot.hidden = false; dot.textContent = unread > 99 ? '99+' : String(unread); }
-    else { dot.hidden = true; dot.textContent = ''; }
-    const head = `<div class="notif-pop-head">
-        <strong>Notifications</strong>
-        <div class="notif-head-actions">${items.length ? '<button type="button" class="notif-readall">Tout marquer comme lu</button>' : ''}<button type="button" class="notif-close" aria-label="Fermer">${closeIcon}</button></div>
-      </div>
-      <div class="notif-tabs" role="tablist">
-        <button type="button" class="notif-tab ${notifTab === 'all' ? 'active' : ''}" data-tab="all">Toutes${unread ? `<span class="notif-tabbadge">${unread > 99 ? '99+' : unread}</span>` : ''}</button>
-        <button type="button" class="notif-tab ${notifTab === 'unread' ? 'active' : ''}" data-tab="unread">Non lues</button>
-      </div>`;
-    const shown = notifTab === 'unread' ? items.filter(isUnread) : items;
-    let feed;
-    if (!shown.length) {
-      feed = notifTab === 'unread'
-        ? '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Aucune notification non lue.</div>'
-        : '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Tout est à jour. Aucune action en attente.</div>';
-    } else {
-      const buckets = { today: [], yesterday: [], older: [] };
-      shown.forEach((it) => buckets[dayBucket(it.at)].push(it));
-      feed = notifGroups.map(([key, label]) => buckets[key].length
-        ? `<div class="notif-group"><div class="notif-group-head">${label}</div>${buckets[key].map((it) => itemHtml(it, isUnread(it))).join('')}</div>`
-        : '').join('');
-    }
-    const canDigest = ['owner', 'manager'].includes(context?.user?.role);
-    const foot = canDigest
-      ? `<div class="notif-pop-foot">
-          <button type="button" class="notif-digest">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-            M’envoyer un récap par e-mail
-          </button>
-          <span class="notif-digest-msg" role="status" aria-live="polite"></span>
-        </div>`
-      : '';
-    pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>${foot}`;
-    TraxoUI.mountNotifyCard(pop.querySelector('.notif-pop-body'), {
+  let tab = 'action';
+  let data = { items: [], counts: { action: 0, all: 0, unread: 0 } };
+  let undo = null;
+
+  const paintDot = () => {
+    const n = data.counts.unread || 0;
+    dot.hidden = n === 0;
+    dot.textContent = n > 99 ? '99+' : n ? String(n) : '';
+    btn.setAttribute('aria-label', n ? `Notifications, ${n} non lue${n > 1 ? 's' : ''}` : 'Notifications');
+  };
+  const close = () => { pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false'); };
+  let animate = false;
+  const render = () => {
+    paintDot();
+    if (!open) return;
+    const shown = tnFilterTab(data.items, tab);
+    const c = data.counts;
+    const tabBtn = (key, label, n) => `<button type="button" data-tab="${key}" aria-pressed="${tab === key}">${label}<span>${n}</span></button>`;
+    pop.innerHTML = `<div class="tn-pop-head"><div><h2>Notifications${c.unread ? ` <span>${c.unread}</span>` : ''}</h2><p>Votre activité, au bon moment.</p></div>
+        <div><a class="tn-icon" href="/app/notifications?vue=preferences" title="Mes préférences" aria-label="Mes préférences">${tnIcon('sliders')}</a><button type="button" class="tn-icon" data-close aria-label="Fermer">${tnIcon('x')}</button></div></div>
+      <div class="tn-tabs" role="group" aria-label="Filtrer">${tabBtn('action', 'À traiter', c.action)}${tabBtn('all', 'Toutes', c.all)}${tabBtn('unread', 'Non lues', c.unread)}</div>
+      <div class="tn-list${animate ? ' tn-anim' : ''}" id="tnList">${shown.length ? tnRowsHtml(shown, { limit: 4 }) : tab === 'unread' ? tnEmpty('Tout est lu', 'Aucune notification non lue pour le moment.') : tnEmpty('Rien à traiter', 'Vous êtes à jour. Les nouvelles demandes et les incidents apparaîtront ici.')}</div>
+      <div class="tn-pop-footer">${undo ? `<span class="tn-undo">${undo.count} notification${undo.count > 1 ? 's' : ''} marquée${undo.count > 1 ? 's' : ''} comme lue${undo.count > 1 ? 's' : ''}<button type="button" data-undo>Annuler</button></span>`
+        : `<button type="button" class="tn-link" data-readall ${c.unread ? '' : 'disabled'}>${tnIcon('checks')} Tout marquer comme lu</button>`}
+        <a class="tn-link red" href="/app/notifications">Ouvrir le centre ${tnIcon('arrowUpRight')}</a></div>`;
+    animate = false;
+    TraxoUI.mountNotifyCard(pop.querySelector('#tnList'), {
       prepend: true,
       title: 'Ne manquez aucune demande',
-      text: 'Activez les notifications : TRAXO vous prévient d’une nouvelle demande ou d’un incident, même dans un autre onglet.',
+      text: 'Soyez prévenu d’une nouvelle demande ou d’un incident, même dans un autre onglet.',
       onDone: (result) => {
         if (result === 'granted') TraxoUI.notifications.show('Notifications TRAXO activées', { body: 'Vous serez prévenu des nouvelles demandes, des commandes à affecter et des incidents.', tag: 'traxo-test' });
         else if (result === 'denied') uiToast('Notifications bloquées. Vous pourrez les autoriser dans les réglages du navigateur.', 'warning');
       },
     });
-    pop.querySelectorAll('.notif-tab').forEach((tab) => tab.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (notifTab === tab.dataset.tab) return;
-      notifTab = tab.dataset.tab;
-      render(lastData);
-    }));
-    pop.querySelector('.notif-close')?.addEventListener('click', (event) => {
-      event.stopPropagation();
-      pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false');
-    });
-    pop.querySelector('.notif-readall')?.addEventListener('click', (event) => {
-      event.stopPropagation();
-      items.forEach((it) => readSet.add(it.id));
-      writeReadSet(readSet, ids);
-      render(lastData);
-    });
-    // Marquer une notification comme lue (bouton ✓), sans naviguer.
-    pop.querySelectorAll('.notif-read-btn').forEach((b) => b.addEventListener('click', (event) => {
-      event.stopPropagation();
-      readSet.add(b.dataset.read);
-      writeReadSet(readSet, ids);
-      render(lastData);
-    }));
-    // Navigation de la ligne (div role=link) — hors clic sur le bouton ✓.
-    pop.querySelectorAll('.notif-item').forEach((row) => {
-      // Ouvrir une notification la marque comme lue.
-      const go = () => {
-        const readBtn = row.querySelector('.notif-read-btn');
-        if (readBtn) { readSet.add(readBtn.dataset.read); writeReadSet(readSet, ids); }
-        if (row.dataset.href) location.href = row.dataset.href;
-      };
-      row.addEventListener('click', (event) => { if (!event.target.closest('.notif-read-btn')) go(); });
-      row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); go(); } });
-    });
-    const digestBtn = pop.querySelector('.notif-digest');
-    digestBtn?.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      const msg = pop.querySelector('.notif-digest-msg');
-      const setMsg = (text, tone) => { if (msg) { msg.className = `notif-digest-msg${tone ? ` ${tone}` : ''}`; msg.textContent = text; } };
-      digestBtn.disabled = true;
-      setMsg('Envoi en cours…');
-      try {
-        const r = await api('/api/app/notifications/digest', { method: 'POST' });
-        if (r.sent) setMsg(`Récap envoyé à ${r.recipient || 'votre e-mail'}.`, 'ok');
-        else if (r.reason === 'nothing_to_send') setMsg('Rien à envoyer : aucune action en attente.');
-        else if (r.reason === 'email_not_configured') setMsg('Envoi d’e-mail non configuré.', 'err');
-        else if (r.reason === 'no_recipient') setMsg('Aucune adresse destinataire. Renseignez l’e-mail de l’entreprise dans Paramètres.', 'err');
-        else setMsg('Échec de l’envoi. Réessayez plus tard.', 'err');
-      } catch (error) {
-        setMsg(error.message || 'Échec de l’envoi.', 'err');
-      } finally {
-        digestBtn.disabled = false;
-      }
-    });
   };
-  // Notifications du navigateur : uniquement pour les éléments apparus depuis l'ouverture de TRAXO.
-  const ALERT_TYPES = new Set(['requests', 'unassigned', 'incidents']);
+  const openItem = async (id) => {
+    const it = data.items.find((x) => x.id === id);
+    if (!it) return;
+    if (!it.read) await tnSetState([id], 'read').catch(() => {});
+    location.href = it.href;
+  };
+  pop.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const t = event.target;
+    if (t.closest('[data-close]')) { close(); btn.focus(); return; }
+    const tabBtn = t.closest('[data-tab]');
+    if (tabBtn) { tab = tabBtn.dataset.tab; animate = true; render(); return; }
+    if (t.closest('[data-readall]')) {
+      const ids = data.items.filter((it) => !it.read && !it.archived && !it.later).map((it) => it.id);
+      if (!ids.length) return;
+      data.items.forEach((it) => { if (ids.includes(it.id)) it.read = true; });
+      data.counts.unread = 0;
+      undo = { ids, count: ids.length };
+      render();
+      tnSetState(ids, 'read').catch(() => load());
+      setTimeout(() => { if (undo && undo.ids === ids) { undo = null; render(); } }, 7000);
+      return;
+    }
+    if (t.closest('[data-undo]') && undo) {
+      const ids = undo.ids;
+      undo = null;
+      await tnSetState(ids, 'unread').catch(() => {});
+      load();
+      return;
+    }
+    const row = t.closest('[data-nid]');
+    if (row && !t.closest('a')) openItem(row.dataset.nid);
+  });
+  pop.addEventListener('keydown', (event) => {
+    const row = event.target.closest('[data-nid]');
+    if (row && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openItem(row.dataset.nid); }
+  });
+
+  // Notifications du navigateur : uniquement pour ce qui apparaît après l'ouverture de TRAXO.
+  const ALERT_TYPES = new Set(['requests', 'assign', 'incident', 'security']);
   let knownIds = null;
   const alertNew = (items) => {
     const ids = new Set(items.map((it) => it.id));
     if (!knownIds) { knownIds = ids; return; }
-    const fresh = items.filter((it) => !knownIds.has(it.id) && ALERT_TYPES.has(it.type));
+    const fresh = items.filter((it) => !knownIds.has(it.id) && ALERT_TYPES.has(it.type) && !it.read);
     knownIds = ids;
     if (!fresh.length || !TraxoUI.notifications.enabled() || document.visibilityState === 'visible') return;
-    if (fresh.length === 1) {
-      const it = fresh[0];
-      TraxoUI.notifications.show(it.title, { body: it.summary, tag: it.id, data: { url: it.href } });
-    } else {
-      TraxoUI.notifications.show(`${fresh.length} nouvelles actions dans TRAXO`, { body: fresh.slice(0, 3).map((it) => `${it.title} · ${it.summary}`).join('\n'), tag: 'traxo-batch', data: { url: '/app/operations?vue=demandes' } });
-    }
+    if (fresh.length === 1) TraxoUI.notifications.show(fresh[0].title, { body: fresh[0].summary, tag: fresh[0].id, data: { url: fresh[0].href } });
+    else TraxoUI.notifications.show(`${fresh.length} nouvelles notifications TRAXO`, { body: fresh.slice(0, 3).map((it) => it.title).join('\n'), tag: 'traxo-batch', data: { url: '/app/notifications' } });
   };
   const load = async () => {
     try {
-      const data = await api('/api/app/notifications');
-      alertNew(Array.isArray(data.items) ? data.items : []);
-      render(data);
+      const next = await api('/api/app/notifications');
+      const changed = JSON.stringify([next.items, next.counts]) !== JSON.stringify([data.items, data.counts]);
+      data = next;
+      alertNew(data.items);
+      // Pas de nouveau rendu si rien n'a changé : la liste ouverte ne clignote pas.
+      if (changed) render();
+      document.dispatchEvent(new CustomEvent('traxo:notifications', { detail: data }));
     } catch { /* silencieux */ }
   };
+  window.__tnReload = load;
   btn.addEventListener('click', (event) => {
     event.stopPropagation();
     open = !open;
-    if (open) { pop.removeAttribute('hidden'); render(lastData); load(); } else pop.setAttribute('hidden', '');
+    if (open) {
+      document.dispatchEvent(new CustomEvent('traxo:close-popovers', { detail: 'notifications' }));
+      pop.removeAttribute('hidden'); animate = true; render(); load();
+    } else close();
     btn.setAttribute('aria-expanded', String(open));
   });
-  document.addEventListener('click', (event) => {
-    if (open && !event.target.closest('.notif-menu')) { pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false'); }
-  });
+  document.addEventListener('traxo:close-popovers', (event) => { if (event.detail !== 'notifications' && open) close(); });
+  document.addEventListener('click', (event) => { if (open && !event.target.closest('.notif-menu')) close(); });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && open) { close(); btn.focus(); } });
   await load();
   setInterval(load, 60000);
 }
 initNotifications();
+
+async function renderNotificationsCenter() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('vue') === 'preferences') return renderNotificationPrefs();
+  setHeader('Notifications', 'Ce qui demande votre attention');
+  let data = await api('/api/app/notifications');
+  let tab = params.get('onglet') || 'action';
+  let query = '';
+  let type = 'all';
+  let selected = null;
+  let limit = 30;
+  let animate = true;
+  page.innerHTML = `<div class="tn-page">
+    <a class="tn-back" href="/app">${tnIcon('arrowLeft')} Tableau de bord</a>
+    <div class="tn-page-heading"><div><span class="tn-eyebrow">${escapeHtml(context.company.name)}</span><h1>Votre centre de notifications</h1><p>Retrouvez ce qui demande votre attention, puis reprenez votre activité.</p></div>
+      <a class="tn-btn" href="/app/notifications?vue=preferences">${tnIcon('sliders')} Mes préférences</a></div>
+    <div id="tnSummary"></div>
+    <div class="tn-layout"><section class="tn-card"><div class="tn-tabs" id="tnTabs" role="group" aria-label="Filtrer"></div>
+      <div class="tn-filters"><label>${tnIcon('search')}<input id="tnSearch" type="search" placeholder="Rechercher dans les notifications" aria-label="Rechercher dans les notifications"></label>
+        <select id="tnType" aria-label="Type"><option value="all">Tous les types</option>${Object.entries(tnCategoryLabels).map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}</select></div>
+      <div class="tn-results" id="tnResults"></div></section>
+      <aside id="tnDetail"></aside></div></div>`;
+  const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const list = () => tnFilterTab(data.items, tab).filter((it) => (type === 'all' || it.category === type)
+    && (!query || norm(`${it.title} ${it.summary} ${it.meta} ${it.ref}`).includes(norm(query))));
+  const paint = () => {
+    const c = data.counts;
+    document.getElementById('tnSummary').innerHTML = `<div class="tn-summary"><span class="tn-summary-dot"></span><strong>${c.action} notification${c.action > 1 ? 's' : ''} à traiter</strong><span>sur l’ensemble de votre espace</span>${c.unread ? `<button type="button" class="tn-link" id="tnReadAll">${tnIcon('checks')} Tout marquer comme lu</button>` : ''}</div>`;
+    const tabs = [['action', 'À traiter', c.action], ['all', 'Toutes', c.all], ['unread', 'Non lues', c.unread], ['later', 'Plus tard', c.later], ['archived', 'Archivées', c.archived]];
+    document.getElementById('tnTabs').innerHTML = tabs.map(([k, l, n]) => `<button type="button" data-tab="${k}" aria-pressed="${tab === k}">${l}<span>${n}</span></button>`).join('');
+    const shown = list();
+    const results = document.getElementById('tnResults');
+    results.classList.toggle('tn-anim', animate);
+    animate = false;
+    results.innerHTML = shown.length
+      ? `${tnRowsHtml(shown, { withCta: true, selectedId: selected, limit })}${shown.length > limit ? `<button type="button" class="tn-more" id="tnMore">Afficher ${Math.min(30, shown.length - limit)} de plus</button>` : ''}`
+      : tnEmpty(query ? 'Aucun résultat' : tab === 'archived' ? 'Aucune archive' : tab === 'later' ? 'Rien de côté' : 'Tout est à jour', query ? 'Essayez un autre mot ou un autre type.' : 'Les nouvelles notifications apparaîtront ici.');
+    paintDetail();
+  };
+  const paintDetail = () => {
+    const box = document.getElementById('tnDetail');
+    const it = data.items.find((x) => x.id === selected);
+    if (!it) {
+      box.innerHTML = `<div class="tn-detail tn-detail-empty"><span class="tn-empty-icon">${tnIcon('inbox')}</span><h2>Choisissez une notification</h2><p class="tn-note">Son détail et l’action à mener s’affichent ici.</p></div>`;
+      return;
+    }
+    const received = new Date(it.at);
+    box.innerHTML = `<div class="tn-detail" aria-live="polite">
+      <div class="tn-detail-top"><span class="tn-type ${tnTone[it.type] || 'tn-neutral'}">${tnIcon(it.type)}</span><button type="button" class="tn-icon" data-deselect aria-label="Fermer le détail">${tnIcon('x')}</button></div>
+      <span class="tn-eyebrow">${escapeHtml(tnCategoryLabels[it.category] || 'Notification')}</span>
+      <h2>${escapeHtml(it.title)}</h2><p>${escapeHtml(it.detail || it.summary)}</p>
+      <dl><div><dt>Élément concerné</dt><dd>${escapeHtml(it.ref || it.summary)}</dd></div>
+        <div><dt>Reçu</dt><dd>${escapeHtml(Number.isFinite(received.getTime()) && received.getTime() > 0 ? received.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }) : '—')}</dd></div>
+        <div><dt>État de lecture</dt><dd>${it.read ? 'Lu' : 'Non lu'}${it.priority === 'action' ? ' · Action toujours attendue' : ''}${it.archived ? ' · Archivée' : it.later ? ' · Gardée pour plus tard' : ''}</dd></div></dl>
+      <a class="tn-btn primary" href="${escapeHtml(it.href)}">${escapeHtml(it.cta || 'Ouvrir')} ${tnIcon('arrowUpRight')}</a>
+      <div class="tn-detail-actions">
+        <button type="button" data-act="${it.archived ? 'unarchive' : 'archive'}">${tnIcon(it.archived ? 'undo' : 'archive')} ${it.archived ? 'Restaurer' : 'Archiver'}</button>
+        <button type="button" data-act="unread">${tnIcon('mail')} Marquer comme non lu</button>
+        ${it.archived ? '' : `<button type="button" data-act="${it.later ? 'unlater' : 'later'}">${tnIcon('clock')} ${it.later ? 'Remettre dans la liste' : 'Garder pour plus tard'}</button>`}
+      </div>
+      <p class="tn-note">Marquer comme lu ou archiver ne clôture pas l’élément : la demande, l’incident ou la tournée reste à traiter dans TRAXO.</p></div>`;
+  };
+  const reload = async () => { data = await api('/api/app/notifications'); paint(); if (window.__tnReload) window.__tnReload(); };
+  const apply = async (ids, action, patch) => {
+    data.items.forEach((it) => { if (ids.includes(it.id)) Object.assign(it, patch); });
+    paint();
+    try { await tnSetState(ids, action); } catch (error) { uiToast(error.message, 'error'); }
+    reload();
+  };
+  page.addEventListener('click', async (event) => {
+    const t = event.target;
+    const tb = t.closest('#tnTabs [data-tab]');
+    if (tb) { tab = tb.dataset.tab; limit = 30; animate = true; paint(); return; }
+    if (t.closest('#tnMore')) { limit += 30; paint(); return; }
+    if (t.closest('#tnReadAll')) {
+      const ids = data.items.filter((it) => !it.read && !it.archived && !it.later).map((it) => it.id);
+      await apply(ids, 'read', { read: true });
+      uiToast(`${ids.length} notification${ids.length > 1 ? 's' : ''} marquée${ids.length > 1 ? 's' : ''} comme lue${ids.length > 1 ? 's' : ''}.`, 'success');
+      return;
+    }
+    if (t.closest('[data-deselect]')) { selected = null; paint(); return; }
+    const act = t.closest('#tnDetail [data-act]');
+    if (act && selected) {
+      const a = act.dataset.act;
+      const patch = { archive: { archived: true, read: true }, unarchive: { archived: false }, later: { later: true, read: true }, unlater: { later: false }, unread: { read: false } }[a];
+      const id = selected;
+      if (a === 'archive' || a === 'later') selected = null;
+      await apply([id], a, patch);
+      uiToast({ archive: 'Notification archivée.', unarchive: 'Notification restaurée.', later: 'Gardée pour plus tard.', unlater: 'Remise dans la liste.', unread: 'Marquée comme non lue.' }[a], 'success');
+      return;
+    }
+    const open = t.closest('[data-open]');
+    if (open) { const it = data.items.find((x) => x.id === open.dataset.open); if (it && !it.read) { event.preventDefault(); await tnSetState([it.id], 'read').catch(() => {}); location.href = it.href; } return; }
+    const row = t.closest('#tnResults [data-nid]');
+    if (row) {
+      selected = row.dataset.nid;
+      const it = data.items.find((x) => x.id === selected);
+      if (it && !it.read) { it.read = true; data.counts.unread = Math.max(0, data.counts.unread - 1); tnSetState([it.id], 'read').then(() => window.__tnReload && window.__tnReload()).catch(() => {}); }
+      paint();
+      if (window.matchMedia('(max-width: 860px)').matches) document.getElementById('tnDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+  page.addEventListener('keydown', (event) => {
+    const row = event.target.closest('#tnResults [data-nid]');
+    if (row && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); row.click(); }
+  });
+  document.getElementById('tnSearch').addEventListener('input', (e) => { query = e.target.value; limit = 30; paint(); });
+  document.getElementById('tnType').addEventListener('change', (e) => { type = e.target.value; limit = 30; paint(); });
+  paint();
+}
+
+async function renderNotificationPrefs() {
+  setHeader('Notifications', 'Vos préférences');
+  const prefs = await api('/api/app/notifications/preferences');
+  const saved = JSON.stringify({ categories: prefs.categories, digest: prefs.digest, digestHour: prefs.digestHour, digestDay: prefs.digestDay, timezone: prefs.timezone });
+  let state = JSON.parse(saved);
+  const catRows = [
+    ['incidents', 'Incidents de livraison', 'Adresse à préciser, client injoignable, colis endommagé…'],
+    ['requests', 'Demandes des clients', 'Formulaires reçus à valider, regroupés en une notification.'],
+    ['deliveries', 'Affectations et livraisons', 'Commandes à affecter, confirmées par le client, récapitulatif des livraisons terminées.'],
+    ['runs', 'Tournées', 'Tournées encore en préparation.'],
+    ['clients', 'Clients à relancer', 'Clients sans commande depuis plus d’un mois.'],
+  ];
+  const days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
+  const tzLabel = { 'Africa/Porto-Novo': 'Bénin — Cotonou (GMT+1)', 'Africa/Abidjan': 'Côte d’Ivoire — Abidjan (GMT)', 'Africa/Lome': 'Togo — Lomé (GMT)', 'Africa/Lagos': 'Nigeria — Lagos (GMT+1)', 'Africa/Dakar': 'Sénégal — Dakar (GMT)', 'Europe/Paris': 'France — Paris', UTC: 'UTC' };
+  page.innerHTML = `<div class="tn-page">
+    <a class="tn-back" href="/app/notifications">${tnIcon('arrowLeft')} Centre de notifications</a>
+    <div class="tn-page-heading"><div><span class="tn-eyebrow">Mon compte</span><h1>Mes notifications</h1><p>Choisissez ce qui mérite votre attention. Ces réglages ne concernent que vous.</p></div></div>
+    <form class="tn-settings" id="tnPrefs">
+      <section class="tn-settings-card"><div class="tn-settings-head"><h2>Dans TRAXO</h2><p>Les catégories affichées dans la cloche et le centre. Les masquer ne supprime rien : les éléments restent à traiter dans leurs pages.</p></div>
+        ${catRows.map(([k, t, d]) => `<div class="tn-setting-row"><div><label for="tn-cat-${k}">${escapeHtml(t)}</label><small>${escapeHtml(d)}</small></div>${TraxoUI.switchHtml({ id: `tn-cat-${k}`, name: k, checked: state.categories[k] !== false })}</div>`).join('')}
+        <div class="tn-setting-row"><div><label>Sécurité du compte</label><small>Nouvelles connexions à votre compte.</small></div><span class="tn-always">Toujours actives</span></div>
+        <div class="tn-setting-row"><div><label for="tn-device">Sur cet appareil</label><small>Une alerte du navigateur quand TRAXO est ouvert dans un autre onglet.</small></div>${TraxoUI.switchHtml({ id: 'tn-device', checked: TraxoUI.notifications.enabled(), disabled: ['unsupported', 'denied'].includes(TraxoUI.notifications.permission()) })}</div>
+      </section>
+      <section class="tn-settings-card"><div class="tn-settings-head"><span class="tn-type tn-blue">${tnIcon('mail')}</span><h2>Récapitulatif par e-mail</h2><p>Un seul e-mail avec ce qui reste à traiter et que vous n’avez pas encore lu. Rien n’est envoyé s’il n’y a rien.</p></div>
+        <div class="tn-segmented" role="group" aria-label="Fréquence">${[['off', 'Désactivé'], ['daily', 'Chaque jour'], ['weekly', 'Chaque semaine']].map(([v, l]) => `<button type="button" data-digest="${v}" aria-pressed="${state.digest === v}">${l}</button>`).join('')}</div>
+        <div class="tn-fields" id="tnDigestFields">
+          <label class="tn-field" id="tnDayWrap">Jour<select id="tnDay">${days.map((d, i) => `<option value="${i + 1}" ${state.digestDay === i + 1 ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+          <label class="tn-field">Heure<select id="tnHour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${state.digestHour === h ? 'selected' : ''}>${String(h).padStart(2, '0')} h 00</option>`).join('')}</select></label>
+          <label class="tn-field" style="grid-column:1/-1">Fuseau horaire<select id="tnTz">${(prefs.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${state.timezone === tz ? 'selected' : ''}>${escapeHtml(tzLabel[tz] || tz)}</option>`).join('')}</select></label>
+          <label class="tn-field" style="grid-column:1/-1">Envoyé à<input value="${escapeHtml(prefs.email || '')}" readonly></label>
+        </div>
+        ${prefs.emailConfigured ? '' : '<p class="tn-note">L’envoi d’e-mails n’est pas encore configuré sur ce serveur : le récapitulatif partira dès qu’il le sera.</p>'}
+        <div class="tn-security-note">${tnIcon('security')}<span>Les alertes de sécurité par e-mail (nouvelle connexion) se règlent dans Paramètres › Sécurité.</span></div>
+      </section>
+      <div class="tn-save" id="tnSave"><span id="tnSaveText">Aucune modification en attente</span><button type="submit" class="tn-btn primary" id="tnSaveBtn" disabled>Enregistrer</button></div>
+    </form></div>`;
+  const form = document.getElementById('tnPrefs');
+  const paintDigest = () => {
+    form.querySelectorAll('[data-digest]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.digest === state.digest)));
+    document.getElementById('tnDigestFields').hidden = state.digest === 'off';
+    document.getElementById('tnDayWrap').hidden = state.digest !== 'weekly';
+  };
+  const refresh = () => {
+    const dirty = JSON.stringify(state) !== saved;
+    document.getElementById('tnSave').classList.toggle('dirty', dirty);
+    document.getElementById('tnSaveText').textContent = dirty ? 'Modifications non enregistrées' : 'Aucune modification en attente';
+    document.getElementById('tnSaveBtn').disabled = !dirty;
+  };
+  form.addEventListener('click', (e) => { const b = e.target.closest('[data-digest]'); if (b) { state.digest = b.dataset.digest; paintDigest(); refresh(); } });
+  form.addEventListener('change', async (e) => {
+    const t = e.target;
+    if (t.id === 'tn-device') {
+      const result = await TraxoUI.notifications.setEnabled(t.checked);
+      if (!['granted', 'off'].includes(result)) { t.checked = false; uiToast(result === 'denied' ? 'Le navigateur a bloqué les notifications.' : 'Notifications non activées.', 'warning'); }
+      else uiToast(result === 'granted' ? 'Notifications activées sur cet appareil.' : 'Notifications désactivées sur cet appareil.', 'success');
+      return;
+    }
+    if (t.name && t.name in state.categories) state.categories[t.name] = t.checked;
+    if (t.id === 'tnHour') state.digestHour = Number(t.value);
+    if (t.id === 'tnDay') state.digestDay = Number(t.value);
+    if (t.id === 'tnTz') state.timezone = t.value;
+    refresh();
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const button = document.getElementById('tnSaveBtn');
+    button.disabled = true;
+    try {
+      await api('/api/app/notifications/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
+      uiToast('Préférences enregistrées.', 'success');
+      if (window.__tnReload) window.__tnReload();
+      renderNotificationPrefs();
+    } catch (error) { uiToast(error.message, 'error'); refresh(); }
+  });
+  window.addEventListener('beforeunload', (e) => { if (document.body.contains(form) && JSON.stringify(state) !== saved) { e.preventDefault(); e.returnValue = ''; } });
+  paintDigest();
+}
 
 start();

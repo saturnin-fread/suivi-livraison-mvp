@@ -71,7 +71,15 @@
   // ---- Champ GPS (obligatoire) avec épingle ajustable -------------------
   // Au-delà de 150 m (position par IP ou réseau, typique d'un ordinateur),
   // le point n'aide pas le livreur : il faut placer l'épingle soi-même.
+  // Le premier relevé d'un téléphone vient souvent du réseau (± 100 à 500 m),
+  // avant que la puce GPS ne se cale : on écoute donc la position quelques
+  // secondes et on garde le meilleur relevé, comme une appli GPS en continu.
   const GPS_MAX_ACCURACY_M = 150;
+  const GPS_GOOD_ACCURACY_M = 25;     // assez précis : on s'arrête tout de suite
+  const GPS_SETTLE_MS = 8000;         // relevé acceptable : on s'arrête après 8 s
+  const GPS_MAX_WAIT_MS = 25000;      // au plus 25 s d'affinage sur téléphone
+  const GPS_DESKTOP_WAIT_MS = 6000;   // un ordinateur n'a pas de puce GPS : inutile d'attendre
+  const hasFinePointer = () => window.matchMedia && window.matchMedia('(pointer: fine)').matches && !window.matchMedia('(pointer: coarse)').matches;
   function createGpsField(root, { initial, onChange } = {}) {
     let position = initial && Number.isFinite(Number(initial.latitude)) ? {
       latitude: Number(initial.latitude), longitude: Number(initial.longitude),
@@ -83,50 +91,61 @@
     let marker = null;
     let busy = false;
     let error = '';
+    let stopWatch = null;
 
     root.innerHTML = `<div class="cl-gps" id="gpsBox" role="group" aria-labelledby="gpsTitle">
         <div class="cl-gps-text"><strong id="gpsTitle">Position GPS *</strong><span id="gpsSub" aria-live="polite"></span></div>
         <button type="button" class="cl-btn outline sm" id="gpsBtn"></button>
       </div>
       <div class="cl-gps-map" id="gpsMap" hidden aria-label="Carte : déplacez l’épingle si besoin"></div>
-      <p class="cl-hint" id="gpsHint"></p>`;
+      <p class="cl-hint" id="gpsHint"></p>
+      <button type="button" class="cl-btn outline sm" id="gpsConfirm" hidden>L’épingle est au bon endroit</button>`;
     const box = root.querySelector('#gpsBox');
     const sub = root.querySelector('#gpsSub');
     const button = root.querySelector('#gpsBtn');
     const mapEl = root.querySelector('#gpsMap');
     const hint = root.querySelector('#gpsHint');
+    const confirmBtn = root.querySelector('#gpsConfirm');
+    const meters = (m) => (m >= 1000 ? `${Math.round(m / 1000)} km` : `${Math.round(m)} m`);
 
     function paint() {
-      box.classList.toggle('ok', Boolean(usable()) && !error);
-      box.classList.toggle('err', Boolean(error) || imprecise());
-      if (busy) sub.textContent = 'Recherche de votre position…';
-      else if (error) sub.textContent = error;
+      box.classList.toggle('ok', Boolean(usable()) && !error && !busy);
+      box.classList.toggle('err', !busy && (Boolean(error) || imprecise()));
+      if (busy) {
+        sub.textContent = position && position.accuracy != null
+          ? `Affinage de la position… ± ${meters(position.accuracy)} pour l’instant. Restez immobile, à l’extérieur si possible.`
+          : 'Recherche de votre position…';
+      } else if (error) sub.textContent = error;
       else if (imprecise()) {
-        const km = position.accuracy >= 1000 ? `${Math.round(position.accuracy / 1000)} km` : `${Math.round(position.accuracy)} m`;
-        sub.textContent = `Position trop imprécise (± ${km}). Placez l’épingle exactement sur votre lieu de livraison, ou réessayez depuis votre téléphone.`;
+        sub.textContent = hasFinePointer()
+          ? `Position estimée par le réseau (± ${meters(position.accuracy)}) : un ordinateur n’a pas de GPS. Placez l’épingle sur votre lieu de livraison, ou ouvrez ce lien sur votre téléphone.`
+          : `Position trop imprécise (± ${meters(position.accuracy)}). Placez l’épingle exactement sur votre lieu de livraison, ou réessayez à l’extérieur.`;
       } else if (position) {
         sub.textContent = position.accuracy != null
           ? `Position partagée · précision d’environ ${Math.round(position.accuracy)} m`
-          : 'Position partagée · ajustée sur la carte';
+          : 'Position partagée · confirmée sur la carte';
       } else sub.textContent = 'Partagez votre position depuis le lieu de livraison.';
-      button.textContent = busy ? 'Localisation…' : position ? 'Actualiser' : 'Partager ma position';
-      button.disabled = busy;
-      hint.textContent = imprecise() ? 'Déplacez l’épingle sur la carte pour confirmer l’endroit exact.'
-        : position ? 'Si l’épingle n’est pas au bon endroit, déplacez-la sur la carte.' : 'Requis pour envoyer votre demande.';
+      button.textContent = busy ? (position ? 'Utiliser cette position' : 'Localisation…') : position ? 'Actualiser' : 'Partager ma position';
+      button.disabled = busy && !position;
+      hint.textContent = busy ? 'La précision s’améliore en général en quelques secondes.'
+        : imprecise() ? 'Déplacez l’épingle sur la carte, ou confirmez-la si elle est déjà au bon endroit.'
+          : position ? 'Si l’épingle n’est pas au bon endroit, déplacez-la sur la carte.' : 'Requis pour envoyer votre demande.';
+      confirmBtn.hidden = busy || !imprecise();
       mapEl.hidden = !position;
     }
 
-    function showMap() {
+    function showMap({ recenter = true } = {}) {
       if (!position || typeof window.L === 'undefined') return;
       const latLng = [position.latitude, position.longitude];
       // Zoom adapté à la précision : large si la position est approximative.
-      const zoom = !position.accuracy ? 17 : position.accuracy > 3000 ? 12 : position.accuracy > GPS_MAX_ACCURACY_M ? 15 : 17;
+      const zoom = !position.accuracy ? 17 : position.accuracy > 3000 ? 12 : position.accuracy > GPS_MAX_ACCURACY_M ? 16 : 17;
       mapEl.hidden = false;
       if (!map) {
         map = L.map(mapEl, { zoomControl: true, attributionControl: true, scrollWheelZoom: false }).setView(latLng, zoom);
         const created = map;
         if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.baseLayer(config.base).addTo(created));
         marker = L.marker(latLng, { draggable: true, keyboard: true, title: 'Point de livraison' }).addTo(map);
+        marker.on('dragstart', () => { if (stopWatch) stopWatch(false); });
         marker.on('dragend', () => {
           const point = marker.getLatLng();
           position = { latitude: point.lat, longitude: point.lng, accuracy: null };
@@ -136,12 +155,22 @@
         });
       } else {
         marker.setLatLng(latLng);
-        map.setView(latLng, zoom);
+        if (recenter) map.setView(latLng, zoom);
       }
       setTimeout(() => map.invalidateSize(), 60);
     }
 
+    // Épingle confirmée à la main : même traitement qu'un déplacement.
+    confirmBtn.addEventListener('click', () => {
+      if (!position) return;
+      position = { latitude: position.latitude, longitude: position.longitude, accuracy: null };
+      error = '';
+      paint();
+      if (onChange) onChange(position);
+    });
+
     function locate() {
+      if (busy && stopWatch) { stopWatch(true); return; }
       if (!navigator.geolocation) {
         error = 'La localisation n’est pas disponible sur cet appareil.';
         paint();
@@ -149,22 +178,64 @@
       }
       busy = true;
       error = '';
+      const previous = position;
+      position = null;
       paint();
-      navigator.geolocation.getCurrentPosition((result) => {
+      const started = Date.now();
+      const maxWait = hasFinePointer() ? GPS_DESKTOP_WAIT_MS : GPS_MAX_WAIT_MS;
+      let best = null;
+      let watchId = null;
+      let timer = null;
+      let settle = null;
+      let ended = false;
+      let lastFailure = null;
+      const finish = (keep) => {
+        if (ended) return;
+        ended = true;
         busy = false;
-        position = { latitude: result.coords.latitude, longitude: result.coords.longitude, accuracy: result.coords.accuracy };
+        stopWatch = null;
+        if (watchId != null) navigator.geolocation.clearWatch(watchId);
+        clearTimeout(timer);
+        clearTimeout(settle);
+        if (keep === false) { paint(); return; } // épingle déplacée pendant l'affinage
+        if (best) { position = best; showMap(); }
+        else if (!error) {
+          position = previous;
+          error = lastFailure && lastFailure.code === 2
+            ? 'Position introuvable. Vérifiez que la localisation du téléphone est activée.'
+            : 'La recherche a pris trop de temps. Réessayez à l’extérieur ou près d’une fenêtre.';
+        }
         paint();
-        showMap();
         if (onChange) onChange(usable());
+      };
+      stopWatch = finish;
+      watchId = navigator.geolocation.watchPosition((result) => {
+        if (ended) return;
+        const fix = { latitude: result.coords.latitude, longitude: result.coords.longitude, accuracy: result.coords.accuracy };
+        const firstFix = !best;
+        if (!best || (fix.accuracy != null && fix.accuracy < best.accuracy)) {
+          best = fix;
+          position = best;
+          showMap({ recenter: firstFix });
+          paint();
+        }
+        const elapsed = Date.now() - started;
+        if (best.accuracy <= GPS_GOOD_ACCURACY_M || (best.accuracy <= GPS_MAX_ACCURACY_M && elapsed >= GPS_SETTLE_MS)) finish(true);
       }, (failure) => {
-        busy = false;
-        error = failure && failure.code === 1
-          ? 'Accès refusé. Autorisez la localisation dans votre navigateur, puis réessayez.'
-          : failure && failure.code === 3
-            ? 'La recherche a pris trop de temps. Réessayez à l’extérieur ou près d’une fenêtre.'
-            : 'Position introuvable. Vérifiez que la localisation du téléphone est activée.';
-        paint();
-      }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+        if (ended) return;
+        // Refus : on s'arrête. Erreur passagère (GPS pas encore calé, signal
+        // perdu un instant) : on continue d'écouter jusqu'à la fin du délai.
+        if (failure && failure.code === 1) {
+          position = previous;
+          error = 'Accès refusé. Autorisez la localisation dans votre navigateur, puis réessayez.';
+          finish(true);
+          return;
+        }
+        lastFailure = failure;
+      }, { enableHighAccuracy: true, timeout: maxWait, maximumAge: 0 });
+      // Un relevé acceptable arrivé tôt : on s'arrête dès que les 8 s sont écoulées.
+      settle = setTimeout(() => { if (best && best.accuracy <= GPS_MAX_ACCURACY_M) finish(true); }, GPS_SETTLE_MS + 50);
+      timer = setTimeout(() => finish(true), maxWait);
     }
 
     button.addEventListener('click', locate);

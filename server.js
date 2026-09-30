@@ -108,6 +108,7 @@ const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 
 const evidenceTypes = ['photo', 'signature'];
 const evidenceModes = ['off', 'optional', 'required'];
 const runStatuses = ['draft', 'planned', 'active', 'completed', 'cancelled'];
+const runStatusLabelsFr = { draft: 'En préparation', planned: 'Planifiée', active: 'En cours', completed: 'Terminée', cancelled: 'Annulée' };
 const runTransitions = {
   draft: ['planned', 'cancelled'],
   planned: ['draft', 'active', 'cancelled'],
@@ -2001,26 +2002,37 @@ function setMfaCookie(req, res, value, maxAge) {
   res.append('Set-Cookie', `traxo_mfa=${encodeURIComponent(value)}; Path=/app/login; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
 }
 
-// Secret TOTP chiffré au repos (AES-256-GCM), clé dérivée du secret serveur.
-function mfaKey() {
-  const secret = process.env.MFA_SECRET || trackingTokenSecret();
-  if (!secret || Buffer.byteLength(secret) < 16) {
+// Secret TOTP chiffré au repos (AES-256-GCM). Clé dédiée MFA_SECRET ; la clé
+// dérivée du secret des liens de suivi reste acceptée en lecture (secrets
+// chiffrés avant la mise en place de MFA_SECRET).
+function mfaKeys() {
+  const derive = (secret) => crypto.createHash('sha256').update(`mfa-totp:v1:${secret}`).digest();
+  const keys = [];
+  if (process.env.MFA_SECRET && Buffer.byteLength(process.env.MFA_SECRET) >= 16) keys.push(derive(process.env.MFA_SECRET));
+  const legacy = trackingTokenSecret();
+  if (legacy && Buffer.byteLength(legacy) >= 16) keys.push(derive(legacy));
+  if (!keys.length) {
     throw Object.assign(new Error('La double authentification n’est pas configurée sur ce serveur.'), { statusCode: 503 });
   }
-  return crypto.createHash('sha256').update(`mfa-totp:v1:${secret}`).digest();
+  return keys;
 }
 function encryptMfaSecret(value) {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', mfaKey(), iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', mfaKeys()[0], iv);
   const ciphertext = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
   return `v1.${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${ciphertext.toString('base64url')}`;
 }
 function decryptMfaSecret(value) {
   const [version, iv, tag, data] = String(value || '').split('.');
   if (version !== 'v1' || !iv || !tag || !data) return null;
-  const decipher = crypto.createDecipheriv('aes-256-gcm', mfaKey(), Buffer.from(iv, 'base64url'));
-  decipher.setAuthTag(Buffer.from(tag, 'base64url'));
-  return Buffer.concat([decipher.update(Buffer.from(data, 'base64url')), decipher.final()]).toString('utf8');
+  for (const key of mfaKeys()) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64url'));
+      decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+      return Buffer.concat([decipher.update(Buffer.from(data, 'base64url')), decipher.final()]).toString('utf8');
+    } catch { /* clé suivante */ }
+  }
+  return null;
 }
 const recoveryHash = (code) => digest(`mfa-recovery:${code}`);
 
@@ -2128,7 +2140,7 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
   else if (ownerName.length < 2 || ownerName.length > 120) fieldError = 'name';
   else if (!email || email.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fieldError = 'email';
   else if (phone.length < 6 || phone.length > 30) fieldError = 'phone';
-  else if (password.length < 8 || password.length > 200) fieldError = 'password';
+  else if (password.length < 10 || password.length > 200) fieldError = 'password';
   if (fieldError) return res.redirect(`/app/login?tab=register&error=${fieldError}`);
 
   const client = await pool.connect();
@@ -2239,7 +2251,7 @@ app.post('/app/reset', forgotRateLimit, asyncRoute(async (req, res) => {
   const password = String(req.body.password || '');
   const back = (err) => res.redirect(`/app/reset?token=${encodeURIComponent(token)}&error=${err}`);
   if (!token) return res.redirect('/app/forgot?error=invalid');
-  if (password.length < 8 || password.length > 200) return back('password');
+  if (password.length < 10 || password.length > 200) return back('password');
 
   const client = await pool.connect();
   try {
@@ -2390,8 +2402,8 @@ app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) =>
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const password = String(req.body.password || '');
   const passwordConfirmation = String(req.body.passwordConfirmation || '');
-  if (password.length < 12 || password.length > 128 || password.trim().length < 12) {
-    return res.status(400).json({ error: 'Le mot de passe doit contenir entre 12 et 128 caractères.' });
+  if (password.length < 10 || password.length > 128 || password.trim().length < 10) {
+    return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 10 caractères.' });
   }
   if (password !== passwordConfirmation) return res.status(400).json({ error: 'Les deux mots de passe ne correspondent pas.' });
   const client = await pool.connect();
@@ -2477,7 +2489,7 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
   const driverId = req.body.driverId ? String(req.body.driverId) : null;
   const notifyByEmail = req.body.notify === 'email';
   if (!/^\S+@\S+\.\S+$/.test(email) || displayName.length < 2 || displayName.length > 100 || !invitationRoles.includes(role)) {
-    return res.status(400).json({ error: 'Nom, adresse e-mail ou rôle invalide.' });
+    return res.status(400).json({ error: 'Vérifiez le nom, l’adresse e-mail et le rôle de la personne invitée.' });
   }
   if (req.auth.role === 'manager' && role === 'manager') {
     return res.status(403).json({ error: 'Seul un propriétaire peut inviter un autre manager.' });
@@ -2741,7 +2753,7 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
   const toStatus = String(req.body.toStatus || '').trim();
   const reason = String(req.body.reason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   if (!driverTransitionTargets.includes(toStatus)) return res.status(403).json({ error: 'Cette étape doit être gérée par l’exploitation.' });
   if (reasonRequiredStatuses.includes(toStatus) && reason.length < 5) {
     return res.status(400).json({ error: 'Expliquez la raison en au moins 5 caractères.' });
@@ -2810,7 +2822,7 @@ async function openDeliveryIncident(req, res, driverScoped = false) {
   const description = String(req.body.description || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!incidentCategories.includes(category) || !['low', 'medium', 'high'].includes(severity)) {
-    return res.status(400).json({ error: 'Type ou gravité d’incident invalide.' });
+    return res.status(400).json({ error: 'Choisissez le type d’incident et sa gravité.' });
   }
   if (description.length < 5 || description.length > 2000 || !idempotencyKey) {
     return res.status(400).json({ error: 'Décrivez correctement l’incident et réessayez.' });
@@ -2885,7 +2897,7 @@ async function saveOrderEvidence(req, res, driverScoped = false) {
   const evidenceType = String(req.params.type || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey || req.get('Idempotency-Key'));
   if (!evidenceTypes.includes(evidenceType)) return res.status(404).json({ error: 'Type de preuve introuvable.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   if (!req.file?.buffer?.length) return res.status(400).json({ error: 'Sélectionnez une image.' });
   const mimeType = detectedImageMime(req.file.buffer);
   if (!mimeType || !['image/jpeg', 'image/png'].includes(req.file.mimetype)) {
@@ -3009,7 +3021,7 @@ app.patch('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'm
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length < 2 || slug.length > 80) {
     return res.status(400).json({ error: 'Le nom d’espace ne peut contenir que des lettres minuscules, chiffres et tirets.' });
   }
-  if (adminEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail)) return res.status(400).json({ error: 'E-mail administratif invalide.' });
+  if (adminEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail)) return res.status(400).json({ error: 'Cette adresse e-mail semble incorrecte.' });
   if (!companyTimezones.includes(timezone)) return res.status(400).json({ error: 'Fuseau horaire non pris en charge.' });
   try {
     const result = await pool.query(
@@ -3702,7 +3714,7 @@ app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res
   // (ex. « essai »), source de fiches parasites.
   if (phone) {
     const digits = phone.replace(/\D/g, '');
-    if (digits.length < 6) return res.status(400).json({ error: 'Numéro de téléphone invalide.' });
+    if (digits.length < 6) return res.status(400).json({ error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' });
   }
   const created = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const inserted = await client.query(
@@ -3745,7 +3757,7 @@ app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req
       values.push(String(raw));
       sets.push(`pipeline_stage = $${values.length}`);
     } else {
-      return res.status(400).json({ error: 'Stade de pipeline invalide.' });
+      return res.status(400).json({ error: 'Étape commerciale inconnue.' });
     }
   }
   if ('status' in (req.body || {})) {
@@ -5203,11 +5215,11 @@ app.post('/api/app/drivers', requireCompanyApi, requireCompanyRoles('owner', 'ma
   const vehicleType = String(req.body.vehicleType || 'Moto').trim();
   const capacity = Number(req.body.capacity);
   const trackerId = String(req.body.trackerId || '').trim();
-  if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Nom du livreur invalide.' });
-  if (phone.length > 40) return res.status(400).json({ error: 'Téléphone invalide.' });
-  if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Type de véhicule invalide.' });
-  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'Capacité invalide (1 à 50).' });
-  if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'Identifiant GPS invalide (4 à 64 caractères alphanumériques).' });
+  if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Indiquez le nom du livreur.' });
+  if (phone.length > 40) return res.status(400).json({ error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' });
+  if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Choisissez un type de véhicule dans la liste.' });
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'La capacité doit être comprise entre 1 et 50 colis.' });
+  if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'L’identifiant du traceur doit contenir 4 à 64 lettres ou chiffres.' });
   const uniqueId = trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`;
   try {
     const result = await pool.query(
@@ -5231,11 +5243,11 @@ app.patch('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner'
   const fields = [];
   const values = [];
   let index = 1;
-  if (req.body.name !== undefined) { const name = String(req.body.name).trim(); if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Nom invalide.' }); fields.push(`name = $${index++}`); values.push(name); }
-  if (req.body.phone !== undefined) { const phone = String(req.body.phone).trim(); if (phone.length > 40) return res.status(400).json({ error: 'Téléphone invalide.' }); fields.push(`phone = $${index++}`); values.push(phone || null); }
-  if (req.body.vehicleType !== undefined) { const vehicleType = String(req.body.vehicleType).trim(); if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Véhicule invalide.' }); fields.push(`vehicle_type = $${index++}`); values.push(vehicleType); }
-  if (req.body.capacity !== undefined) { const capacity = Number(req.body.capacity); if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'Capacité invalide.' }); fields.push(`capacity = $${index++}`); values.push(capacity); }
-  if (req.body.trackerId !== undefined) { const trackerId = String(req.body.trackerId).trim(); if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'Identifiant GPS invalide.' }); fields.push(`traccar_unique_id = $${index++}`); values.push(trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`); }
+  if (req.body.name !== undefined) { const name = String(req.body.name).trim(); if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Indiquez un nom.' }); fields.push(`name = $${index++}`); values.push(name); }
+  if (req.body.phone !== undefined) { const phone = String(req.body.phone).trim(); if (phone.length > 40) return res.status(400).json({ error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' }); fields.push(`phone = $${index++}`); values.push(phone || null); }
+  if (req.body.vehicleType !== undefined) { const vehicleType = String(req.body.vehicleType).trim(); if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Choisissez un type de véhicule dans la liste.' }); fields.push(`vehicle_type = $${index++}`); values.push(vehicleType); }
+  if (req.body.capacity !== undefined) { const capacity = Number(req.body.capacity); if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'La capacité doit être comprise entre 1 et 50 colis.' }); fields.push(`capacity = $${index++}`); values.push(capacity); }
+  if (req.body.trackerId !== undefined) { const trackerId = String(req.body.trackerId).trim(); if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'L’identifiant du traceur doit contenir 4 à 64 lettres ou chiffres.' }); fields.push(`traccar_unique_id = $${index++}`); values.push(trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`); }
   if (req.body.active !== undefined) { fields.push(`active = $${index++}`); values.push(Boolean(req.body.active)); }
   if (!fields.length) return res.status(400).json({ error: 'Aucune modification fournie.' });
   values.push(req.params.id, req.auth.company_id);
@@ -5276,7 +5288,7 @@ const driverPhotoMimes = { 'image/jpeg': true, 'image/png': true, 'image/webp': 
 app.post('/api/app/drivers/:id/photo', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const dataUrl = String(req.body.dataUrl || '');
   const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-  if (!match || !driverPhotoMimes[match[1]]) return res.status(400).json({ error: 'Image invalide (JPEG, PNG ou WebP attendu).' });
+  if (!match || !driverPhotoMimes[match[1]]) return res.status(400).json({ error: 'Choisissez une image au format JPEG, PNG ou WebP.' });
   const buffer = Buffer.from(match[2], 'base64');
   if (buffer.length < 64 || buffer.length > 600 * 1024) return res.status(400).json({ error: 'Image trop lourde (max 600 Ko) ou vide.' });
   const result = await pool.query(
@@ -5323,7 +5335,7 @@ function companyLogoUrl(companyId, updatedAt) {
 app.post('/api/app/company/logo', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const dataUrl = String(req.body.dataUrl || '');
   const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-  if (!match || !driverPhotoMimes[match[1]]) return res.status(400).json({ error: 'Image invalide (JPEG, PNG ou WebP attendu).' });
+  if (!match || !driverPhotoMimes[match[1]]) return res.status(400).json({ error: 'Choisissez une image au format JPEG, PNG ou WebP.' });
   const buffer = Buffer.from(match[2], 'base64');
   if (buffer.length < 64 || buffer.length > 600 * 1024) return res.status(400).json({ error: 'Image trop lourde (max 600 Ko) ou vide.' });
   if (detectImageMime(buffer) !== match[1]) return res.status(400).json({ error: 'Le contenu du fichier ne correspond pas à une image valide.' });
@@ -5416,7 +5428,7 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
   const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
   let to = req.query.to ? Date.parse(req.query.to) : now;
   let from = req.query.from ? Date.parse(req.query.from) : now - 3 * 60 * 60 * 1000;
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return res.status(400).json({ error: 'Fenêtre temporelle invalide.' });
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return res.status(400).json({ error: 'Période incorrecte : vérifiez les dates de début et de fin.' });
   if (to > now) to = now;
   if (from >= to) return res.status(400).json({ error: 'La date de début doit précéder la date de fin.' });
   if (to - from > MAX_WINDOW_MS) from = to - MAX_WINDOW_MS;
@@ -5519,7 +5531,7 @@ app.post('/api/app/runs', requireCompanyApi, requireCompanyRoles('owner', 'manag
   if (!Number.isInteger(driverId) || driverId <= 0) return res.status(400).json({ error: 'Sélectionnez un livreur.' });
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Le nom de la tournée doit contenir entre 2 et 120 caractères.' });
   if (!serviceDate) return res.status(400).json({ error: 'La date de tournée est invalide.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité invalide. Rechargez la page puis réessayez.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(canonicalJson({ driverId, name, serviceDate }));
   const client = await pool.connect();
   try {
@@ -5592,7 +5604,7 @@ app.post('/api/app/runs/:id/orders', requireCompanyApi, requireCompanyRoles('own
   const expectedVersion = Number(req.body.expectedVersion);
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!Number.isInteger(orderId) || orderId <= 0 || !Number.isInteger(expectedVersion) || !idempotencyKey) {
-    return res.status(400).json({ error: 'Commande, version ou clé d’action invalide.' });
+    return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   }
   const fingerprint = digest(canonicalJson({ action: 'add_order', orderId, expectedVersion }));
   const client = await pool.connect();
@@ -5670,7 +5682,7 @@ app.post('/api/app/runs/:id/stops/:stopId/remove', requireCompanyApi, requireCom
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   const stopId = Number(req.params.stopId);
   if (!Number.isInteger(stopId) || !Number.isInteger(expectedVersion) || !idempotencyKey) {
-    return res.status(400).json({ error: 'Arrêt, version ou clé d’action invalide.' });
+    return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   }
   const fingerprint = digest(canonicalJson({ action: 'remove_stop', stopId, expectedVersion }));
   const client = await pool.connect();
@@ -5739,7 +5751,7 @@ app.post('/api/app/runs/:id/reorder', requireCompanyApi, requireCompanyRoles('ow
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!Number.isInteger(expectedVersion) || !idempotencyKey || !stopIds.length || stopIds.length > 100
       || stopIds.some((id) => !Number.isInteger(id) || id <= 0) || new Set(stopIds).size !== stopIds.length) {
-    return res.status(400).json({ error: 'Ordre des arrêts, version ou clé d’action invalide.' });
+    return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   }
   const fingerprint = digest(canonicalJson({ action: 'reorder', stopIds, expectedVersion }));
   const client = await pool.connect();
@@ -5860,7 +5872,7 @@ app.post('/api/app/runs/:id/status', requireCompanyApi, requireCompanyRoles('own
   const expectedVersion = Number(req.body.expectedVersion);
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!runStatuses.includes(toStatus) || !Number.isInteger(expectedVersion) || !idempotencyKey) {
-    return res.status(400).json({ error: 'État, version ou clé d’action invalide.' });
+    return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   }
   if (toStatus === 'cancelled' && (reason.length < 10 || reason.length > 1000)) {
     return res.status(400).json({ error: 'Expliquez l’annulation en 10 à 1 000 caractères.' });
@@ -5884,7 +5896,7 @@ app.post('/api/app/runs/:id/status', requireCompanyApi, requireCompanyRoles('own
     if (!run) throw Object.assign(new Error('Tournée introuvable.'), { statusCode: 404 });
     if (run.version !== expectedVersion) throw Object.assign(new Error('Cette tournée a changé. Rechargez-la avant de continuer.'), { statusCode: 409 });
     if (!(runTransitions[run.status] || []).includes(toStatus)) {
-      throw Object.assign(new Error(`Le passage de « ${run.status} » à « ${toStatus} » n’est pas autorisé.`), { statusCode: 409 });
+      throw Object.assign(new Error(`Impossible de passer la tournée de « ${runStatusLabelsFr[run.status] || run.status} » à « ${runStatusLabelsFr[toStatus] || toStatus} ».`), { statusCode: 409 });
     }
     const stops = await client.query(
       `SELECT s.id, o.status FROM delivery_stops s JOIN orders o ON o.id = s.order_id
@@ -6110,12 +6122,12 @@ app.post('/api/app/orders/:id/tracking-link/rotate', requireCompanyApi, requireC
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   const expiresInDays = req.body.expiresInDays === undefined ? 7 : Number(req.body.expiresInDays);
   const expectedVersion = Number(req.body.expectedVersion);
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide. Rechargez puis réessayez.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 30) {
     return res.status(400).json({ error: 'Choisissez une durée comprise entre 1 et 30 jours.' });
   }
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
-    return res.status(400).json({ error: 'La version du lien est absente. Rechargez la commande.' });
+    return res.status(400).json({ error: 'Rechargez la commande puis réessayez.' });
   }
   const fingerprint = digest(JSON.stringify({
     action: 'rotate_tracking_link', orderId: String(req.params.id), expiresInDays, expectedVersion,
@@ -6216,12 +6228,12 @@ app.post('/api/app/orders/:id/tracking-link/revoke', requireCompanyApi, requireC
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   const reason = String(req.body.reason || '').trim();
   const expectedVersion = Number(req.body.expectedVersion);
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide. Rechargez puis réessayez.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   if (reason.length < 8 || reason.length > 500) {
     return res.status(400).json({ error: 'Expliquez la révocation en 8 à 500 caractères.' });
   }
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
-    return res.status(400).json({ error: 'La version du lien est absente. Rechargez la commande.' });
+    return res.status(400).json({ error: 'Rechargez la commande puis réessayez.' });
   }
   const fingerprint = digest(JSON.stringify({
     action: 'revoke_tracking_link', orderId: String(req.params.id), reason, expectedVersion,
@@ -6389,9 +6401,9 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
   const toStatus = String(req.body.toStatus || '').trim();
   const reason = String(req.body.reason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide. Rechargez puis réessayez.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   if (!Object.prototype.hasOwnProperty.call(orderTransitions, toStatus)) {
-    return res.status(400).json({ error: 'Étape de livraison invalide.' });
+    return res.status(400).json({ error: 'Cette étape n’est pas possible pour cette commande.' });
   }
   if (reasonRequiredStatuses.includes(toStatus) && reason.length < 5) {
     return res.status(400).json({ error: 'Expliquez la raison en au moins 5 caractères.' });
@@ -6457,7 +6469,7 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
 
 app.post('/api/app/orders/:id/otp', requireCompanyApi, asyncRoute(async (req, res) => {
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -6522,7 +6534,7 @@ async function verifyOrderOtp(req, res, driverScoped = false) {
   const code = String(req.body.code || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: 'Saisissez le code à 6 chiffres.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), action: 'verify_otp', codeDigest: digest(code) }));
   const client = await pool.connect();
   try {
@@ -6678,7 +6690,7 @@ app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (
   const resolution = String(req.body.resolution || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (resolution.length < 5 || resolution.length > 2000) return res.status(400).json({ error: 'Précisez la résolution de l’incident.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ incidentId: String(req.params.id), resolution }));
   const client = await pool.connect();
   try {
@@ -6864,7 +6876,7 @@ app.post('/api/app/incidents/:id/notes', requireCompanyApi, asyncRoute(async (re
   const note = String(req.body.note || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (note.length < 3 || note.length > 2000) return res.status(400).json({ error: 'La note doit contenir entre 3 et 2 000 caractères.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -6896,7 +6908,7 @@ app.post('/api/app/incidents/:id/notes', requireCompanyApi, asyncRoute(async (re
 app.post('/api/app/incidents/:id/assign', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const assignedToUserId = String(req.body.userId || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (!/^\d+$/.test(assignedToUserId) || !idempotencyKey) return res.status(400).json({ error: 'Responsable ou clé d’action invalide.' });
+  if (!/^\d+$/.test(assignedToUserId) || !idempotencyKey) return res.status(400).json({ error: 'Choisissez un responsable, puis réessayez.' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -6942,7 +6954,7 @@ app.post('/api/app/incidents/:id/retention-hold', requireCompanyApi, requireComp
   if (!Number.isFinite(reviewDueAt.getTime()) || reviewDueAt.getTime() <= Date.now() || reviewDueAt.getTime() > maximumReview) {
     return res.status(400).json({ error: 'Choisissez une date de révision future, dans les 12 prochains mois.' });
   }
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(canonicalJson({ incidentId: String(req.params.id), reason, reviewDueAt: reviewDueAt.toISOString() }));
   const client = await pool.connect();
   try {
@@ -7001,7 +7013,7 @@ app.post('/api/app/incidents/:id/retention-hold/release', requireCompanyApi, req
   const reason = String(req.body.reason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (reason.length < 10 || reason.length > 2000) return res.status(400).json({ error: 'Précisez le motif de levée entre 10 et 2 000 caractères.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(canonicalJson({ incidentId: String(req.params.id), reason }));
   const client = await pool.connect();
   try {
@@ -7092,8 +7104,8 @@ app.post('/api/app/orders/:id/payment/configure', requireCompanyApi, requireComp
   const currency = String(req.body.currency || 'XOF').toUpperCase();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (expectedAmount === null || expectedAmount <= 0) return res.status(400).json({ error: 'Le montant attendu doit être un entier positif.' });
-  if (currency !== 'XOF') return res.status(400).json({ error: 'Cette version accepte uniquement le franc CFA XOF.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (currency !== 'XOF') return res.status(400).json({ error: 'Seuls les montants en franc CFA (FCFA) sont acceptés pour le moment.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), expectedAmount, currency, action: 'configure' }));
   const client = await pool.connect();
   try {
@@ -7154,7 +7166,7 @@ app.post('/api/app/orders/:id/payment/configure', requireCompanyApi, requireComp
     await client.query('ROLLBACK');
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
     console.error('Payment configuration error:', error.message);
-    return res.status(500).json({ error: 'Impossible de configurer cet encaissement.' });
+    return res.status(500).json({ error: 'Impossible de demander un paiement pour cette commande.' });
   } finally {
     client.release();
   }
@@ -7164,7 +7176,7 @@ app.post('/api/app/orders/:id/payment/remove', requireCompanyApi, requireCompany
   const reason = String(req.body.reason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (reason.length < 5) return res.status(400).json({ error: 'Expliquez pourquoi l’encaissement n’est plus requis.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), reason, action: 'remove_requirement' }));
   const client = await pool.connect();
   try {
@@ -7217,9 +7229,9 @@ async function collectOrderPayment(req, res, driverScoped = false) {
   const reference = String(req.body.reference || '').trim().slice(0, 120);
   const discrepancyReason = String(req.body.discrepancyReason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (amount === null || !paymentMethods.includes(method)) return res.status(400).json({ error: 'Montant ou mode d’encaissement invalide.' });
+  if (amount === null || !paymentMethods.includes(method)) return res.status(400).json({ error: 'Indiquez un montant supérieur à zéro et un moyen de paiement.' });
   if (discrepancyReason.length > 1000) return res.status(400).json({ error: 'Le motif de l’écart est trop long.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), amount, method, reference, discrepancyReason, action: 'collect' }));
   const client = await pool.connect();
   try {
@@ -7296,7 +7308,7 @@ app.post('/api/app/orders/:id/payment/collect', requireCompanyApi, requireCompan
 app.post('/api/app/orders/:id/payment/reconcile', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const note = String(req.body.note || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), note, action: 'reconcile' }));
   const client = await pool.connect();
   try {
@@ -7352,7 +7364,7 @@ app.post('/api/app/orders/:id/payment/reverse', requireCompanyApi, requireCompan
   const reason = String(req.body.reason || '').trim();
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (reason.length < 5) return res.status(400).json({ error: 'Expliquez pourquoi l’encaissement doit être annulé.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(JSON.stringify({ orderId: String(req.params.id), reason, action: 'reverse' }));
   const client = await pool.connect();
   try {
@@ -7435,11 +7447,11 @@ app.post('/api/app/orders/:id/payment/adjustments', requireCompanyApi, requireCo
   const effectiveDate = validDateOnly(req.body.effectiveDate);
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (!paymentAdjustmentTypes.includes(adjustmentType) || amount === null || amount <= 0 || !paymentMethods.includes(method)) {
-    return res.status(400).json({ error: 'Type, montant ou mode de l’ajustement invalide.' });
+    return res.status(400).json({ error: 'Vérifiez le type de correction, le montant et le moyen de paiement.' });
   }
   if (reason.length < 10 || reason.length > 1000) return res.status(400).json({ error: 'Expliquez l’ajustement en 10 à 1 000 caractères.' });
-  if (!effectiveDate || effectiveDate > pilotLocalDate()) return res.status(400).json({ error: 'La date effective est invalide ou future.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!effectiveDate || effectiveDate > pilotLocalDate()) return res.status(400).json({ error: 'Choisissez la date du jour ou une date passée.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(canonicalJson({ orderId: String(req.params.id), adjustmentType, amount, method, reference, reason, effectiveDate }));
   const client = await pool.connect();
   try {
@@ -7511,8 +7523,8 @@ app.post('/api/app/orders/:id/payment/adjustments/:adjustmentId/reverse', requir
   const effectiveDate = validDateOnly(req.body.effectiveDate);
   const idempotencyKey = normalizeIdempotencyKey(req.body.idempotencyKey);
   if (reason.length < 10 || reason.length > 1000) return res.status(400).json({ error: 'Expliquez la correction en 10 à 1 000 caractères.' });
-  if (!effectiveDate || effectiveDate > pilotLocalDate()) return res.status(400).json({ error: 'La date effective est invalide ou future.' });
-  if (!idempotencyKey) return res.status(400).json({ error: 'Clé de sécurité de l’action invalide.' });
+  if (!effectiveDate || effectiveDate > pilotLocalDate()) return res.status(400).json({ error: 'Choisissez la date du jour ou une date passée.' });
+  if (!idempotencyKey) return res.status(400).json({ error: 'Cette action n’a pas pu être enregistrée. Rechargez la page puis réessayez.' });
   const fingerprint = digest(canonicalJson({ orderId: String(req.params.id), adjustmentId: String(req.params.adjustmentId), reason, effectiveDate }));
   const client = await pool.connect();
   try {
@@ -7927,7 +7939,7 @@ app.post('/api/public/requests/:token/photos', publicRequestRateLimit, requestPh
   if (!request) return res.status(403).json({ error: 'Les photos ne sont plus modifiables pour cette demande.' });
   const buffer = req.body;
   const mime = detectImageMime(buffer);
-  if (!mime) return res.status(400).json({ error: 'Image invalide (JPEG, PNG ou WebP attendu).' });
+  if (!mime) return res.status(400).json({ error: 'Choisissez une image au format JPEG, PNG ou WebP.' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

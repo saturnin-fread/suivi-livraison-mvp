@@ -15,6 +15,20 @@ async function second(mfa, code) {
 }
 const api = async (cookie, path, body) => { const r = await fetch(base + path, { method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, data: await r.json().catch(() => ({})) }; };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+let cleanupCodes = null;
+// En cas d'échec en cours de route, on désactive la 2FA pour ne pas bloquer
+// les autres tests qui se connectent avec le même compte.
+async function cleanup() {
+  if (!cleanupCodes) return;
+  for (const code of cleanupCodes.slice(2)) {
+    const step = await login();
+    if (step.session) return;
+    const done = await second(step.mfa, code);
+    if (!done.session) continue;
+    const off = await api(done.session, '/api/app/account/2fa/disable', { password, code: cleanupCodes[cleanupCodes.length - 1] });
+    if (off.status === 200) return;
+  }
+}
 (async () => {
   const first = await login();
   assert.ok(first.session && first.location === '/app', 'connexion simple sans 2FA');
@@ -24,6 +38,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.strictEqual((await api(first.session, '/api/app/account/2fa/enable', { code: '000000' })).status, 400, 'code faux refusé à l’activation');
   const enabled = await api(first.session, '/api/app/account/2fa/enable', { code: totp.totp(secret) });
   assert.strictEqual(enabled.status, 200); assert.strictEqual(enabled.data.recoveryCodes.length, 8);
+  cleanupCodes = enabled.data.recoveryCodes;
   const sec = await api(first.session, '/api/app/account/security');
   assert.ok(sec.data.twoFactorEnabled && sec.data.recoveryCodesLeft === 8, 'état 2FA exposé');
 
@@ -52,6 +67,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.strictEqual((await api(good.session, '/api/app/account/2fa/disable', { password: 'faux', code: enabled.data.recoveryCodes[1] })).status, 400, 'mot de passe exigé');
   const off = await api(good.session, '/api/app/account/2fa/disable', { password, code: enabled.data.recoveryCodes[1] });
   assert.strictEqual(off.status, 200);
+  cleanupCodes = null;
   assert.ok((await login()).session, 'après désactivation : connexion simple');
   console.log('Double authentification OK : activation, 2 étapes, code faux, anti-rejeu, codes de secours, blocage, désactivation.');
-})().catch((e) => { console.error('Test 2FA échoué :', e.message); process.exit(1); });
+})().catch(async (e) => { console.error('Test 2FA échoué :', e.message); await cleanup().catch(() => {}); process.exit(1); });

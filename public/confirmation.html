@@ -74,7 +74,7 @@
               <ol class="cl-steps cl-enter d3">
                 ${step('done', 'Informations reçues', 'Votre demande a été envoyée.', { flow: true })}
                 ${step('current', `Validation de ${company()}`, needsInfo ? 'Des précisions vous sont demandées' : 'Nous vérifions vos informations', { working: true })}
-                ${step('upcoming', 'Livreur affecté', 'Vous serez informé une fois qu’un livreur sera affecté.')}
+                ${step('upcoming', 'Livreur affecté', 'Cette page se met à jour toute seule dès qu’un livreur est affecté.')}
               </ol>
             </aside>`;
           if (editing) return aside + `<div>${flashHtml()}<div class="cl-top"><h2>Modifier mes informations</h2></div><form id="editForm" novalidate>${C.requestFieldsHtml(data)}<div class="cl-sec"><div class="cl-actions"><button class="cl-btn" id="saveBtn" type="submit">Enregistrer les modifications</button><button class="cl-btn ghost" id="cancelBtn" type="button">Annuler</button></div><p class="cl-hint">Les photos ajoutées ou retirées sont enregistrées immédiatement.</p></div></form></div>`;

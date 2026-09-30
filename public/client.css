@@ -90,7 +90,19 @@ textarea.cl-input { min-height: 74px; resize: vertical; line-height: 1.45; }
 .cl-gps-text span { display: block; margin-top: 3px; color: var(--muted); font-size: 14px; }
 .cl-gps.ok .cl-gps-text span { color: var(--green); }
 .cl-gps.err .cl-gps-text span { color: var(--red); }
-.cl-gps-map { height: 200px; margin-top: 10px; border-radius: 3px; overflow: hidden; border: 1px solid var(--line); }
+.cl-gps-map { height: 280px; margin-top: 10px; border-radius: 3px; overflow: hidden; border: 1px solid var(--line); }
+@media (max-width: 560px) { .cl-gps-map { height: 240px; } }
+#gpsConfirm { margin-top: 10px; }
+/* Continuer sur le téléphone (ordinateur uniquement) */
+.cl-handoff { display: flex; align-items: center; gap: 18px; margin-top: 14px; padding: 16px; border: 1px solid var(--green-line); border-radius: var(--radius); background: var(--green-soft); animation: cl-handoff-in .3s ease both; }
+.cl-handoff-qr { flex-shrink: 0; width: 132px; height: 132px; padding: 6px; border-radius: 3px; background: #fff; }
+.cl-handoff-qr svg { display: block; width: 100%; height: 100%; }
+.cl-handoff-text { min-width: 0; }
+.cl-handoff-text strong { display: block; font-weight: 500; font-size: 15.5px; color: var(--green); }
+.cl-handoff-text span { display: block; margin-top: 4px; color: var(--ink-2); font-size: 14px; line-height: 1.5; }
+.cl-linkbtn { margin-top: 8px; padding: 0; border: 0; background: none; color: var(--green); font: inherit; font-size: 14px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+@keyframes cl-handoff-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .cl-handoff { animation: none; } }
 
 /* Photos */
 .cl-photos { display: flex; flex-wrap: wrap; gap: 12px; }

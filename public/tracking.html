@@ -184,7 +184,7 @@
         };
 
         let map = null;
-        let tileLayer = null;
+        let layerSwitch = null;
         let mapConfigSignature = '';
         let driverMarker = null;
         let destinationMarker = null;
@@ -280,8 +280,9 @@
           const signature = JSON.stringify(config.base);
           if (signature === mapConfigSignature) return;
           mapConfigSignature = signature;
-          if (tileLayer) map.removeLayer(tileLayer);
-          tileLayer = window.TraxoMapBase.baseLayer(config.base).addTo(map);
+          // Plan / Satellite / Hybride ; un nouveau fond « Plan » remplace l'ancien.
+          if (!layerSwitch) layerSwitch = window.TraxoMapBase.layerSwitcher(map, config, { position: window.matchMedia('(max-width: 640px)').matches ? 'topleft' : 'topright' });
+          else layerSwitch.updateStreet(config.base);
         }
 
         function driverIcon(vehicleType, stale) {

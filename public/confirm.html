@@ -201,7 +201,7 @@
           form.querySelectorAll('input[name="share"]').forEach((r) => r.addEventListener('change', () => {
             const yes = choice() === 'yes';
             view.querySelector('#gpsWrap').classList.toggle('open', yes);
-            if (yes && !gps) gps = C.createGpsField(view.querySelector('#gpsField'), { onChange: refresh });
+            if (yes && !gps) gps = C.createGpsField(view.querySelector('#gpsField'), { onChange: refresh, handoff: true });
             refresh();
           }));
           form.addEventListener('submit', async (event) => {

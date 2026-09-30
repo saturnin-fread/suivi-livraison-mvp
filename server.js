@@ -298,6 +298,9 @@ function mapConfiguration() {
     || 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').trim();
   const labelsUrl = String(process.env.MAP_LABELS_TILE_URL
     || 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}').trim();
+  // Routes et rues par-dessus l'imagerie (vue hybride).
+  const roadsUrl = String(process.env.MAP_ROADS_TILE_URL
+    || 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}').trim();
   // Fond de plan : tuiles vectorielles auto-hébergées (service « tiles »,
   // relayées sur /tiles) dès qu'elles répondent ; sinon fond raster de secours.
   const base = vectorTiles.healthy ? {
@@ -321,6 +324,14 @@ function mapConfiguration() {
       attribution: String(process.env.MAP_SATELLITE_ATTRIBUTION
         || 'Imagerie &copy; Esri, Maxar, Earthstar Geographics'),
       maxZoom: maxZoom(process.env.MAP_SATELLITE_MAX_ZOOM),
+      // Zoom natif de l'imagerie : au-delà, les tuiles sont agrandies.
+      maxNativeZoom: maxZoom(process.env.MAP_SATELLITE_NATIVE_ZOOM, 18),
+    } : null,
+    roads: roadsUrl ? {
+      url: roadsUrl,
+      attribution: String(process.env.MAP_ROADS_ATTRIBUTION || '&copy; Esri'),
+      maxZoom: maxZoom(process.env.MAP_ROADS_MAX_ZOOM),
+      maxNativeZoom: maxZoom(process.env.MAP_ROADS_NATIVE_ZOOM, 18),
     } : null,
     labels: labelsUrl ? {
       url: labelsUrl,

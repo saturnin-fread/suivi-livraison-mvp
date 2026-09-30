@@ -1,6 +1,8 @@
 /* Un élément marqué « hidden » reste masqué, même si une classe lui donne un display. */
 [hidden] { display: none !important; }
 
+/* Couleurs de l’appli livreur (alignées sur le noir TRAXO du back-office). */
+:root { --navy: #17191d; --navy-dark: #0b0d0f; }
 .driver-body { background: #eef3f8; padding-bottom: 78px; }
 .driver-header { position: sticky; z-index: 10; top: 0; min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; color: #fff; background: var(--navy-dark); box-shadow: 0 3px 14px #0d2e5833; }
 .driver-header strong, .driver-header small { display: block; }
@@ -63,3 +65,6 @@
   .driver-main { padding-right: 10px; padding-left: 10px; }
   .card { padding: 18px; }
 }
+
+.driver-notif-slot { margin: 0 0 16px; }
+.driver-notif-slot:empty { display: none; }

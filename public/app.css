@@ -1740,3 +1740,39 @@ button.danger-solid:hover, .button.danger-solid:hover { background: var(--red-da
 .wa-qr img { border-radius: 12px; border: 1px solid var(--line, #e5e7eb); background: #fff; padding: 8px; }
 /* Très petits écrans : le sous-titre de page laisse la place au titre et aux actions */
 @media (max-width: 420px) { .topbar-title small { display: none; } }
+
+/* ---- Interrupteur tactile (composant partagé back-office + appli livreur) ---- */
+.tg { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; padding: .125em; border-radius: .5em; font-size: 14px; background-image: linear-gradient(to bottom, #d5d5d5, #e8e8e8); box-shadow: 0 1px 1px rgb(255 255 255 / .6); }
+.tg.tg-sm { font-size: 11px; }
+.tg-input { appearance: none; position: absolute; inset: 0; z-index: 1; width: 100% !important; height: 100% !important; margin: 0; padding: 0 !important; border: 0 !important; border-radius: inherit; font: inherit; opacity: 0; cursor: pointer; }
+.tg-track { position: relative; display: flex; align-items: center; width: 3em; height: 1.5em; border-radius: .375em; background-color: #e8e8e8; box-shadow: inset 0 0 .0625em .125em rgb(255 255 255 / .2), inset 0 .0625em .125em rgb(0 0 0 / .4); transition: background-color .3s linear; }
+.tg-input:checked + .tg-track { background-color: #17191d; }
+.tg-knob { position: absolute; left: .0625em; display: flex; align-items: center; justify-content: center; width: 1.375em; height: 1.375em; border-radius: .3125em; background-color: #e8e8e8; box-shadow: inset 0 -.0625em .0625em .125em rgb(0 0 0 / .1), inset 0 -.125em .0625em rgb(0 0 0 / .2), inset 0 .1875em .0625em rgb(255 255 255 / .3), 0 .125em .125em rgb(0 0 0 / .5); transition: left .3s cubic-bezier(.3, .7, .2, 1); }
+.tg-input:checked + .tg-track .tg-knob { left: 1.5625em; }
+.tg-dots { display: grid; grid-template-columns: repeat(3, min-content); gap: .125em; }
+.tg-dots i { display: block; width: .125em; height: .125em; border-radius: 50%; background-image: radial-gradient(circle at 50% 0, #f5f5f5, #c4c4c4); }
+.tg-input:focus-visible + .tg-track { outline: 2px solid #17191d; outline-offset: 3px; }
+.tg-input:disabled { cursor: not-allowed; }
+.tg:has(.tg-input:disabled) { opacity: .45; }
+@media (prefers-reduced-motion: reduce) { .tg-track, .tg-knob { transition: none; } }
+.ops-chk .tg { margin-right: 2px; }
+
+/* ---- Carte « Activer les notifications » ---- */
+.nt-card { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 22px 16px; text-align: center; background: #f6f6f7; border: 1px solid #ececef; border-radius: 16px; }
+.nt-card-bell { width: 44px; height: 44px; margin: 4px 0 8px; color: #e11d2a; animation: nt-ring 2.6s ease-in-out 1s 2; transform-origin: 50% 8%; }
+.nt-card-bell svg { width: 100%; height: 100%; fill: currentColor; }
+.nt-card strong { font-size: 14px; color: #111317; }
+.nt-card p { margin: 0; max-width: 260px; font-size: 12.5px; line-height: 1.45; color: #6b6f77; }
+.nt-card-acts { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 8px; width: 100%; }
+.nt-card-acts button { width: min(180px, 100%); min-height: 34px; border: 0; border-radius: 999px; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
+.nt-allow { background: #e11d2a; color: #fff; }
+.nt-allow:hover { background: #c81824; }
+.nt-later { background: transparent; color: #6b6f77; }
+.nt-later:hover { background: #ececef; color: #111317; }
+.notif-pop .nt-card { margin: 10px 12px 4px; }
+@keyframes nt-ring { 0%, 100% { transform: rotate(0); } 10% { transform: rotate(14deg); } 20% { transform: rotate(-12deg); } 30% { transform: rotate(8deg); } 40% { transform: rotate(-5deg); } 50% { transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) { .nt-card-bell { animation: none; } }
+/* Carte (ordinateur) : la légende passe à droite pour ne plus recouvrir le bas du panneau Flotte. */
+@media (min-width: 901px) { .ops-legend, .ops-legend-toggle { left: auto; right: 64px; } }
+/* Panneau Flotte : les interrupteurs restent visibles en pied de panneau pendant le défilement. */
+#opsPanelBody .ops-fleet-foot { position: sticky; bottom: 0; z-index: 2; background: #fff; }

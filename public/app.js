@@ -160,7 +160,7 @@ async function api(url, options = {}) {
 function setHeader(title, hint) {
   document.getElementById('topTitle').textContent = title;
   document.getElementById('topHint').textContent = hint;
-  document.title = `${title} — Livraisons`;
+  document.title = `${title} — TRAXO`;
 }
 
 const operationsRoutes = ['/app/operations', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/tournees', '/app/incidents'];
@@ -1595,8 +1595,8 @@ async function renderOperationsMap() {
       </div>
       <div class="ops-driver-list" id="driverList">${cards || '<div class="ops-empty">Aucun livreur pour ce filtre.</div>'}</div>
       <div class="ops-fleet-foot">
-        <label class="ops-chk"><input type="checkbox" id="toggleDest" ${showDestinations ? 'checked' : ''}/> Destinations</label>
-        <label class="ops-chk"><input type="checkbox" id="toggleAuto" ${autoRefresh ? 'checked' : ''}/> Actualisation auto</label>
+        <label class="ops-chk">${TraxoUI.switchHtml({ id: 'toggleDest', checked: showDestinations, small: true })} Destinations</label>
+        <label class="ops-chk">${TraxoUI.switchHtml({ id: 'toggleAuto', checked: autoRefresh, small: true })} Actualisation auto</label>
       </div>`;
   }
 
@@ -3342,7 +3342,7 @@ async function renderSettings() {
   const txButton = (html, attrs = '', kind = '') => `<button type="button" class="tx-button ${kind}" ${attrs}>${html}</button>`;
   const heading = (title, desc, action = '', eyebrow = '') => `<div class="tx-heading"><div>${eyebrow ? `<span class="tx-eyebrow">${escapeHtml(eyebrow)}</span>` : ''}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(desc)}</p></div>${action}</div>`;
   const infoStrip = (text) => `<p class="tx-info-strip">${txIcon('circle-help')}<span>${text}</span></p>`;
-  const toggleRow = (id, title, desc, on, disabled = false) => `<div class="tx-setting-row"><div><label for="tx-${id}">${escapeHtml(title)}</label><p>${escapeHtml(desc)}</p></div><input class="tx-switch" type="checkbox" id="tx-${id}" name="${id}" role="switch" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}></div>`;
+  const toggleRow = (id, title, desc, on, disabled = false) => `<div class="tx-setting-row"><div><label for="tx-${id}">${escapeHtml(title)}</label><p>${escapeHtml(desc)}</p></div>${TraxoUI.switchHtml({ id: `tx-${id}`, name: id, checked: on, disabled })}</div>`;
   const savebar = (label) => `<div class="tx-savebar"><span class="tx-save-status" aria-live="polite">${txIcon('check')} Aucune modification en attente</span><div class="tx-inline-actions"><button type="button" class="tx-button tx-button-quiet" data-reset disabled>Annuler</button><button type="submit" class="tx-button tx-button-primary" data-save disabled>${escapeHtml(label)}</button></div></div>`;
   const logoBox = (url, alt = 'Logo de l’entreprise') => (url ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">` : `<span class="tx-org-initials">${escapeHtml(txInitials(context.company.name))}</span>`);
 
@@ -3659,6 +3659,16 @@ async function renderSettings() {
   }
 
   // ---- Sécurité -----------------------------------------------------------
+  // Notifications du navigateur : réglage propre à cet appareil (pas au compte).
+  function deviceNotifRow() {
+    const n = TraxoUI.notifications;
+    const perm = n.permission();
+    const desc = perm === 'unsupported' ? 'Ce navigateur ne permet pas les notifications.'
+      : perm === 'denied' ? 'Bloquées par le navigateur : autorisez-les dans les réglages du site (icône à gauche de l’adresse), puis rechargez la page.'
+        : 'Une alerte sur cet ordinateur ou ce téléphone pour chaque nouvelle demande, commande à affecter ou incident, même si TRAXO est dans un autre onglet.';
+    return toggleRow('deviceNotif', 'Notifications sur cet appareil', desc, n.enabled(), perm === 'unsupported' || perm === 'denied');
+  }
+
   async function security(box) {
     const s = await api('/api/app/account/security');
     const days = s.passwordChangedAt ? Math.max(0, Math.round((Date.now() - new Date(s.passwordChangedAt).getTime()) / 86400000)) : null;
@@ -3675,6 +3685,7 @@ async function renderSettings() {
             <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('shield-check')}<div><h3>Double authentification</h3><p>${s.twoFactorEnabled ? `Un code de votre application à chaque connexion · ${txPlural(s.recoveryCodesLeft, 'code de secours restant', 'codes de secours restants')}.` : 'Un code de votre application en plus de votre mot de passe.'}</p><span class="tx-badge ${s.twoFactorEnabled ? 'tx-badge-green' : 'tx-badge-red'}">${s.twoFactorEnabled ? 'Activée' : 'À activer'}</span></div></div>${s.twoFactorEnabled ? `<div class="tx-inline-actions">${txButton('Nouveaux codes', 'id="txMfaCodes"')}${txButton('Désactiver', 'id="txMfaOff"', 'tx-button-quiet')}</div>` : txButton('Configurer', 'id="txMfaOn"', 'tx-button-primary')}</div>
             <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('monitor')}<div><h3>Sessions actives</h3><p>${txPlural(s.activeSessions, 'appareil connecté', 'appareils connectés')} à votre compte.</p></div></div>${txButton('Voir', 'id="txSessions"')}</div>
             ${toggleRow('loginAlerts', 'M’avertir des nouvelles connexions', 'Recevez un e-mail lorsqu’un appareil se connecte à votre compte.', s.loginAlerts)}
+            ${deviceNotifRow()}
           </div></section>
           <section class="tx-panel"><div class="tx-panel-head"><div><h2>Codes de connexion</h2><p>${escapeHtml(channelNote)}</p></div></div><div class="tx-panel-body">
             <form id="txPhoneForm" class="tx-phone-form" novalidate>
@@ -3700,6 +3711,15 @@ async function renderSettings() {
         uiToast(alerts.checked ? 'Vous serez averti par e-mail des nouvelles connexions.' : 'Alertes de connexion désactivées.', 'success');
       } catch (error) { alerts.checked = !alerts.checked; uiToast(error.message, 'error'); }
       alerts.disabled = false;
+    });
+    const deviceNotif = box.querySelector('#tx-deviceNotif');
+    deviceNotif.addEventListener('change', async () => {
+      const result = await TraxoUI.notifications.setEnabled(deviceNotif.checked);
+      if (result === 'granted') {
+        uiToast('Notifications activées sur cet appareil.', 'success');
+        TraxoUI.notifications.show('Notifications TRAXO activées', { body: 'Vous serez prévenu des nouvelles demandes, des commandes à affecter et des incidents.', tag: 'traxo-test' });
+      } else if (result === 'off') uiToast('Notifications désactivées sur cet appareil.', 'success');
+      else { deviceNotif.checked = false; uiToast(result === 'denied' ? 'Le navigateur a bloqué les notifications.' : 'Notifications non activées.', 'warning'); refresh(); }
     });
     const phoneForm = box.querySelector('#txPhoneForm');
     const phoneSave = box.querySelector('#txPhoneSave');
@@ -6740,6 +6760,15 @@ async function initNotifications() {
         </div>`
       : '';
     pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>${foot}`;
+    TraxoUI.mountNotifyCard(pop.querySelector('.notif-pop-body'), {
+      prepend: true,
+      title: 'Ne manquez aucune demande',
+      text: 'Activez les notifications : TRAXO vous prévient d’une nouvelle demande ou d’un incident, même dans un autre onglet.',
+      onDone: (result) => {
+        if (result === 'granted') TraxoUI.notifications.show('Notifications TRAXO activées', { body: 'Vous serez prévenu des nouvelles demandes, des commandes à affecter et des incidents.', tag: 'traxo-test' });
+        else if (result === 'denied') uiToast('Notifications bloquées. Vous pourrez les autoriser dans les réglages du navigateur.', 'warning');
+      },
+    });
     pop.querySelectorAll('.notif-tab').forEach((tab) => tab.addEventListener('click', (event) => {
       event.stopPropagation();
       if (notifTab === tab.dataset.tab) return;
@@ -6795,7 +6824,29 @@ async function initNotifications() {
       }
     });
   };
-  const load = async () => { try { render(await api('/api/app/notifications')); } catch { /* silencieux */ } };
+  // Notifications du navigateur : uniquement pour les éléments apparus depuis l'ouverture de TRAXO.
+  const ALERT_TYPES = new Set(['requests', 'unassigned', 'incidents']);
+  let knownIds = null;
+  const alertNew = (items) => {
+    const ids = new Set(items.map((it) => it.id));
+    if (!knownIds) { knownIds = ids; return; }
+    const fresh = items.filter((it) => !knownIds.has(it.id) && ALERT_TYPES.has(it.type));
+    knownIds = ids;
+    if (!fresh.length || !TraxoUI.notifications.enabled() || document.visibilityState === 'visible') return;
+    if (fresh.length === 1) {
+      const it = fresh[0];
+      TraxoUI.notifications.show(it.title, { body: it.summary, tag: it.id, data: { url: it.href } });
+    } else {
+      TraxoUI.notifications.show(`${fresh.length} nouvelles actions dans TRAXO`, { body: fresh.slice(0, 3).map((it) => `${it.title} · ${it.summary}`).join('\n'), tag: 'traxo-batch', data: { url: '/app/operations?vue=demandes' } });
+    }
+  };
+  const load = async () => {
+    try {
+      const data = await api('/api/app/notifications');
+      alertNew(Array.isArray(data.items) ? data.items : []);
+      render(data);
+    } catch { /* silencieux */ }
+  };
   btn.addEventListener('click', (event) => {
     event.stopPropagation();
     open = !open;

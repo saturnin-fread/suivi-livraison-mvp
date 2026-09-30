@@ -20,11 +20,13 @@ const maxAgeOf = (res, name) => {
   return m ? Number(m[1]) : null;
 };
 const jar = (...values) => values.filter(Boolean).join('; ');
+// Chaque étape simule une adresse IP différente (le quota de connexions est par IP).
+let ip = '10.9.0.1';
 async function post(url, body, cookie) {
-  return fetch(`${base}${url}`, { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(cookie ? { Cookie: cookie } : {}) }, body: new URLSearchParams(body) });
+  return fetch(`${base}${url}`, { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}) }, body: new URLSearchParams(body) });
 }
 async function get(url, cookie) {
-  return fetch(`${base}${url}`, { redirect: 'manual', headers: cookie ? { Cookie: cookie } : {} });
+  return fetch(`${base}${url}`, { redirect: 'manual', headers: { 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}) } });
 }
 function lastCode(to) {
   const files = fs.readdirSync(outbox).filter((f) => f.endsWith('.json')).sort();
@@ -70,12 +72,11 @@ function lastWhatsAppCode(digits) {
     assert.ok(/error=code&left=4/.test(bad.headers.get('location')), 'code faux compté');
     assert.strictEqual((await post('/app/login/code/resend', {}, verify)).status, 429, 'renvoi limité à 30 s');
 
-    // 3. Bon code : session 12 h, appareil reconnu, configuration guidée
+    // 3. Bon code : session 12 h, configuration guidée ; appareil non mémorisé (« rester connecté » non coché)
     const ok = await post('/app/login/code', { code: lastCode(email) }, verify);
     assert.strictEqual(ok.headers.get('location'), '/app/bienvenue', 'code correct → configuration guidée');
     const session = cookieOf(ok, 'delivery_session');
-    const device = cookieOf(ok, 'traxo_device');
-    assert.ok(session && device, 'session et appareil reconnu');
+    assert.ok(session && !cookieOf(ok, 'traxo_device'), 'session ouverte, appareil non mémorisé');
     assert.strictEqual(maxAgeOf(ok, 'delivery_session'), 12 * 3600, 'session standard de 12 h');
     assert.strictEqual((await get('/app', session)).headers.get('location'), '/app/bienvenue', 'back-office inaccessible avant configuration');
     assert.strictEqual((await get('/app/bienvenue', session)).status, 200);
@@ -103,31 +104,54 @@ function lastWhatsAppCode(digits) {
     assert.strictEqual((await get('/app/bienvenue', session)).headers.get('location'), '/app', 'configuration non rejouable');
     assert.strictEqual((await api(valid)).status, 409);
 
-    // 5. Même appareil + « rester connecté » : pas de code, session 30 jours
-    const again = await post('/app/login', { user: email, password, remember: '1' }, device);
-    assert.strictEqual(again.headers.get('location'), '/app', 'appareil reconnu : pas de code');
-    assert.strictEqual(maxAgeOf(again, 'delivery_session'), 30 * 24 * 3600, 'rester connecté : 30 jours');
+    // Code par e-mail (en choisissant d'abord le canal si WhatsApp est proposé)
+    const resend = (cookie, channel) => fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, Cookie: cookie }, body: JSON.stringify({ channel }) });
+    async function emailCodeFor(cookie) {
+      const st = await (await get('/app/login/code/state', cookie)).json();
+      if (st.channel === 'pending') {
+        assert.ok(/error=code/.test((await post('/app/login/code', { code: '123456' }, cookie)).headers.get('location')), 'aucun code valable avant le choix du canal');
+        assert.strictEqual((await resend(cookie, 'email')).status, 200, 'choix e-mail');
+      }
+      return lastCode(email);
+    }
 
-    // 6 bis. Code reçu sur WhatsApp (canal simulé en test : WHATSAPP_FAKE=outbox)
+    ip = '10.9.0.5';
+    // 5. Sans « rester connecté » : code à chaque connexion. Avec : appareil reconnu 30 jours.
+    const noRemember = await post('/app/login', { user: email, password });
+    assert.strictEqual(noRemember.headers.get('location'), '/app/login/code', 'code exigé sans « rester connecté »');
+    const withRemember = await post('/app/login', { user: email, password, remember: '1' });
+    const verifyR = cookieOf(withRemember, 'traxo_verify');
+    const okR = await post('/app/login/code', { code: await emailCodeFor(verifyR) }, verifyR);
+    assert.strictEqual(okR.headers.get('location'), '/app');
+    const device = cookieOf(okR, 'traxo_device');
+    assert.ok(device, 'appareil mémorisé');
+    assert.strictEqual(maxAgeOf(okR, 'delivery_session'), 30 * 24 * 3600, 'rester connecté : 30 jours');
+    const again = await post('/app/login', { user: email, password }, device);
+    assert.strictEqual(again.headers.get('location'), '/app', 'appareil reconnu : pas de code');
+
+    // 6 bis. Choix WhatsApp (canal simulé en test : WHATSAPP_FAKE=outbox)
     if (process.env.WHATSAPP_FAKE === 'outbox') {
+      ip = '10.9.0.6';
       const viaWa = await post('/app/login', { user: email, password });
       const verifyWa = cookieOf(viaWa, 'traxo_verify');
       const waState = await (await get('/app/login/code/state', verifyWa)).json();
+      assert.strictEqual(waState.channel, 'pending', 'choix du canal proposé');
       assert.ok(waState.whatsapp && waState.whatsapp.endsWith('07'), 'WhatsApp proposé (numéro masqué)');
-      const switched = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
+      const switched = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
       assert.strictEqual(switched.status, 200, 'bascule vers WhatsApp immédiate');
-      const again30 = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
+      const again30 = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
       assert.strictEqual(again30.status, 429, 'renvoi WhatsApp limité à 30 s');
       const waOk = await post('/app/login/code', { code: lastWhatsAppCode('2250707070707') }, verifyWa);
       assert.strictEqual(waOk.headers.get('location'), '/app', 'code WhatsApp accepté');
     }
 
+    ip = '10.9.0.7';
     // 6. Nouvel appareil : code exigé, 5 essais au maximum
     const fresh = await post('/app/login', { user: email, password });
     assert.strictEqual(fresh.headers.get('location'), '/app/login/code', 'nouvel appareil → code');
     assert.ok(!cookieOf(fresh, 'delivery_session'));
     const verify2 = cookieOf(fresh, 'traxo_verify');
-    const good = lastCode(email);
+    const good = await emailCodeFor(verify2);
     const wrong = good === '123456' ? '654321' : '123456';
     const seen = [];
     for (let i = 0; i < 6; i += 1) seen.push((await post('/app/login/code', { code: wrong }, verify2)).headers.get('location'));

@@ -194,7 +194,7 @@ async function run() {
       }),
     }));
     ensure(incident.response.status === 201 && incident.payload.id, 'Le dossier de contrôle financier n’a pas été créé.');
-    const dossier = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/export`, { headers: { Cookie: ownerCookie } }));
+    const dossier = await json(await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/export?format=json`, { headers: { Cookie: ownerCookie } }));
     ensure(dossier.response.ok && dossier.payload.paymentAdjustments?.length === 4,
       'L’export de litige ne contient pas les ajustements financiers.');
     console.log('Smoke ajustements financiers réussi : droits, dates, idempotence, concurrence, remboursement, complément et écriture inverse.');

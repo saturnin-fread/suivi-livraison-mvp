@@ -196,8 +196,13 @@
     state.saving = true;
     state.saveError = '';
     render();
-    TraxoAuth.busy(true, 'Nous préparons votre espace…');
-    var started = Date.now();
+    // Environ 12 s : le livreur pressé prépare l'espace, puis le camion le « livre ».
+    var sequenceDone = window.TraxoLoader ? window.TraxoLoader.sequence([
+      { kind: 'speeder', message: 'Nous créons votre espace…', ms: 3000 },
+      { kind: 'speeder', message: 'Nous enregistrons votre activité et votre ville…', ms: 3000 },
+      { kind: 'truck', message: 'Nous préparons votre carte d’exploitation…', ms: 3000 },
+      { kind: 'truck', message: 'Votre espace arrive… presque prêt.', ms: 3000 },
+    ]) : Promise.resolve();
     fetch('/api/onboarding', {
       method: 'POST',
       credentials: 'same-origin',
@@ -220,8 +225,7 @@
       if (res.status === 409 && res.data.redirect) { location.href = res.data.redirect; return; }
       if (!res.ok) throw Object.assign(new Error(res.data.error || 'save_failed'), { field: res.data.field });
       try { sessionStorage.removeItem(STORE_KEY); } catch (e) { /* ignoré */ }
-      // Laisse l'animation se voir un instant, sans ralentir inutilement.
-      setTimeout(function () { location.href = res.data.redirect || '/app'; }, Math.max(0, 1200 - (Date.now() - started)));
+      sequenceDone.then(function () { location.href = res.data.redirect || '/app'; });
     }).catch(function (err) {
       TraxoAuth.busy(false);
       state.saving = false;

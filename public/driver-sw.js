@@ -1,7 +1,7 @@
 'use strict';
 
-const staticCache = 'delivery-driver-static-v1';
-const staticAssets = ['/driver', '/app.css', '/driver.css', '/driver-queue.js', '/driver.js'];
+const staticCache = 'delivery-driver-static-v2';
+const staticAssets = ['/driver', '/app.css', '/driver.css', '/loaders.css', '/loaders.js', '/driver-queue.js', '/driver.js'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(staticCache).then((cache) => cache.addAll(staticAssets)));

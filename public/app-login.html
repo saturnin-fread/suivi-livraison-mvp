@@ -8,6 +8,7 @@
     <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="stylesheet" href="/auth.css" />
+    <link rel="stylesheet" href="/loaders.css" />
   </head>
   <body>
     <header class="ax-header">
@@ -30,7 +31,7 @@
           <div class="ax-or">ou</div>
         </div>
 
-        <form id="loginForm" method="post" action="/app/login" data-busy-form novalidate>
+        <form id="loginForm" method="post" action="/app/login" data-busy-form data-loader="truck" data-loader-message="Connexion en cours…" novalidate>
           <div class="ax-field">
             <label class="ax-label" for="loginEmail">Adresse e-mail</label>
             <input class="ax-input" id="loginEmail" name="user" type="email" inputmode="email" autocomplete="username" placeholder="vous@exemple.com" required />
@@ -47,7 +48,7 @@
           </div>
           <label class="ax-check" for="remember">
             <input type="checkbox" id="remember" name="remember" value="1" />
-            <span>Rester connecté pendant 30 jours<small>À cocher uniquement sur un appareil personnel.</small></span>
+            <span>Rester connecté pendant 30 jours<small>Sur un appareil personnel uniquement : pas de code de vérification pendant 30 jours.</small></span>
           </label>
           <button class="ax-submit" type="submit" data-busy="Connexion…"><span class="ax-spin" aria-hidden="true"></span><span data-label>Se connecter</span></button>
         </form>
@@ -66,8 +67,7 @@
       <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
     </footer>
 
-    <div class="tx-busy" id="txBusy" aria-hidden="true"><div class="tx-busy-inner" role="status"><div class="tx-speeder" aria-hidden="true"><div class="sp-body"><span><span></span><span></span><span></span><span></span></span><div class="sp-base"><span></span><div class="sp-face"></div></div></div><div class="sp-lines"><span></span><span></span><span></span><span></span></div></div><p>Chargement…</p></div></div>
-
+    <script src="/loaders.js"></script>
     <script src="/auth.js"></script>
     <script>
       (function () {

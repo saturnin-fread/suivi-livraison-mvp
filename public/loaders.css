@@ -1,0 +1,66 @@
+/* Animations de chargement TRAXO : « livreur pressé » (création de compte)
+   et camion (connexion, déconnexion). Superposition plein écran commune. */
+.tx-busy { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; background: var(--tx-loader-bg, #fff); opacity: 0; pointer-events: none; transition: opacity .2s; font-family: TraxoSans, Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+.tx-busy.on { opacity: 1; pointer-events: auto; }
+.tx-busy-inner { display: grid; justify-items: center; gap: 26px; padding: 24px; text-align: center; }
+.tx-busy-stage { position: relative; width: 240px; height: 110px; display: grid; place-items: center; }
+.tx-busy-stage > * { grid-area: 1 / 1; transition: opacity .45s ease, transform .45s ease; }
+.tx-busy-stage > .is-hidden { opacity: 0; transform: translateX(-24px); pointer-events: none; }
+.tx-busy p { margin: 0; min-height: 1.5em; font-size: 16px; color: #393b40; transition: opacity .25s; }
+.tx-busy p.is-fading { opacity: 0; }
+.tx-busy-bar { width: min(260px, 70vw); height: 4px; border-radius: 4px; background: #eceef1; overflow: hidden; }
+.tx-busy-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: #dc263b; transition: width .3s linear; }
+.tx-busy-bar[hidden] { display: none; }
+/* Livreur pressé (création de compte) */
+.tx-speeder { position: relative; width: 240px; height: 110px; overflow: hidden; }
+.tx-speeder .sp-body { position: absolute; top: 58%; left: 50%; margin-left: -64px; animation: sp-shake .4s linear infinite; }
+.tx-speeder .sp-body > span { position: absolute; top: -19px; left: 60px; width: 35px; height: 5px; background: #16171a; border-radius: 2px 10px 1px 0; }
+.tx-speeder .sp-body > span > span { position: absolute; width: 30px; height: 1px; background: #16171a; animation: sp-f1 .2s linear infinite; }
+.tx-speeder .sp-body > span > span:nth-child(2) { top: 3px; animation: sp-f2 .4s linear infinite; }
+.tx-speeder .sp-body > span > span:nth-child(3) { top: 1px; animation: sp-f3 .4s linear infinite; animation-delay: -1s; }
+.tx-speeder .sp-body > span > span:nth-child(4) { top: 4px; animation: sp-f4 1s linear infinite; animation-delay: -1s; }
+.tx-speeder .sp-base span { position: absolute; width: 0; height: 0; border-top: 6px solid transparent; border-right: 100px solid #16171a; border-bottom: 6px solid transparent; }
+.tx-speeder .sp-base span::before { content: ""; position: absolute; right: -110px; top: -16px; width: 22px; height: 22px; border-radius: 50%; background: #16171a; }
+.tx-speeder .sp-base span::after { content: ""; position: absolute; top: -16px; right: -98px; width: 0; height: 0; border-top: 0 solid transparent; border-right: 55px solid #16171a; border-bottom: 16px solid transparent; }
+.tx-speeder .sp-face { position: absolute; right: -125px; top: -15px; width: 20px; height: 12px; background: #16171a; border-radius: 20px 20px 0 0; transform: rotate(-40deg); }
+.tx-speeder .sp-face::after { content: ""; position: absolute; right: 4px; top: 7px; width: 12px; height: 12px; background: #16171a; transform: rotate(40deg); border-radius: 0 0 0 2px; }
+.tx-speeder .sp-lines { position: absolute; inset: 0; }
+.tx-speeder .sp-lines span { position: absolute; width: 20%; height: 2px; background: #16171a; opacity: .75; }
+.tx-speeder .sp-lines span:nth-child(1) { top: 20%; animation: sp-l1 .6s linear infinite; animation-delay: -5s; }
+.tx-speeder .sp-lines span:nth-child(2) { top: 40%; animation: sp-l2 .8s linear infinite; animation-delay: -1s; background: #dc263b; }
+.tx-speeder .sp-lines span:nth-child(3) { top: 75%; animation: sp-l3 .6s linear infinite; }
+.tx-speeder .sp-lines span:nth-child(4) { top: 90%; animation: sp-l4 .5s linear infinite; animation-delay: -3s; }
+@keyframes sp-f1 { 0% { left: 0; } 100% { left: -80px; opacity: 0; } }
+@keyframes sp-f2 { 0% { left: 0; } 100% { left: -100px; opacity: 0; } }
+@keyframes sp-f3 { 0% { left: 0; } 100% { left: -50px; opacity: 0; } }
+@keyframes sp-f4 { 0% { left: 0; } 100% { left: -150px; opacity: 0; } }
+@keyframes sp-shake {
+  0% { transform: translate(2px, 1px) rotate(0deg); } 10% { transform: translate(-1px, -3px) rotate(-1deg); }
+  20% { transform: translate(-2px, 0) rotate(1deg); } 30% { transform: translate(1px, 2px) rotate(0deg); }
+  40% { transform: translate(1px, -1px) rotate(1deg); } 50% { transform: translate(-1px, 3px) rotate(-1deg); }
+  60% { transform: translate(-1px, 1px) rotate(0deg); } 70% { transform: translate(3px, 1px) rotate(-1deg); }
+  80% { transform: translate(-2px, -1px) rotate(1deg); } 90% { transform: translate(2px, 1px) rotate(0deg); }
+  100% { transform: translate(1px, -2px) rotate(-1deg); }
+}
+@keyframes sp-l1 { 0% { left: 200%; } 100% { left: -200%; opacity: 0; } }
+@keyframes sp-l2 { 0% { left: 200%; } 100% { left: -200%; opacity: 0; } }
+@keyframes sp-l3 { 0% { left: 200%; } 100% { left: -100%; opacity: 0; } }
+@keyframes sp-l4 { 0% { left: 200%; } 100% { left: -100%; opacity: 0; } }
+
+
+/* Camion de livraison (connexion / déconnexion) */
+.tx-truck { position: relative; width: 200px; height: 100px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; overflow-x: hidden; }
+.tx-truck .tr-body { width: 130px; margin-bottom: 6px; animation: tr-motion 1s linear infinite; }
+.tx-truck .tr-body svg { display: block; width: 100%; height: auto; }
+.tx-truck .tr-tires { position: absolute; bottom: 0; width: 130px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px 0 15px; }
+.tx-truck .tr-tires svg { width: 24px; }
+.tx-truck .tr-road { position: relative; width: 100%; height: 1.5px; background: #282828; border-radius: 3px; align-self: flex-end; }
+.tx-truck .tr-road::before { content: ""; position: absolute; right: -50%; width: 20px; height: 100%; background: #282828; border-left: 10px solid var(--tx-loader-bg, #fff); border-radius: 3px; animation: tr-road 1.4s linear infinite; }
+.tx-truck .tr-road::after { content: ""; position: absolute; right: -65%; width: 10px; height: 100%; background: #282828; border-left: 4px solid var(--tx-loader-bg, #fff); border-radius: 3px; animation: tr-road 1.4s linear infinite; }
+.tx-truck .tr-lamp { position: absolute; bottom: 0; right: -90%; height: 90px; animation: tr-road 1.4s linear infinite; }
+@keyframes tr-motion { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
+@keyframes tr-road { 0% { transform: translateX(0); } 100% { transform: translateX(-350px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tx-busy *, .tx-busy *::before, .tx-busy *::after { animation-duration: 3s !important; }
+}

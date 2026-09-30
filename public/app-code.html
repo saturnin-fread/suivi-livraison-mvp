@@ -7,6 +7,7 @@
     <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="stylesheet" href="/auth.css" />
+    <link rel="stylesheet" href="/loaders.css" />
   </head>
   <body>
     <header class="ax-header">
@@ -23,6 +24,19 @@
         <p class="ax-target" id="target"></p>
 
         <div class="ax-banner error" id="banner" role="alert" hidden></div>
+
+        <div class="ax-choose" id="chooser" hidden>
+          <button type="button" class="ax-choice" data-channel="email">
+            <span class="ax-choice-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span>
+            <span class="ax-choice-main"><strong>Par e‑mail</strong><small id="chooseEmail"></small></span>
+            <span class="ax-choice-go" aria-hidden="true">→</span>
+          </button>
+          <button type="button" class="ax-choice" data-channel="whatsapp">
+            <span class="ax-choice-ic wa" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-2-1-1 .8c-1-.5-1.6-1.1-2.1-2.1l.8-1-1-2L9 9.5z"/></svg></span>
+            <span class="ax-choice-main"><strong>Sur WhatsApp</strong><small id="chooseWa"></small></span>
+            <span class="ax-choice-go" aria-hidden="true">→</span>
+          </button>
+        </div>
 
         <form id="codeForm" method="post" action="/app/login/code" data-busy-form>
           <input type="hidden" name="code" id="codeValue" />
@@ -64,6 +78,7 @@
       <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
     </footer>
 
+    <script src="/loaders.js"></script>
     <script src="/auth.js"></script>
     <script>
       (function () {
@@ -101,6 +116,8 @@
 
         if (isTotp) {
           form.action = '/app/login/2fa';
+          form.dataset.loader = 'truck';
+          form.dataset.loaderMessage = 'Connexion en cours…';
           document.title = 'Vérification en deux étapes — TRAXO';
           document.getElementById('title').textContent = 'Vérification en deux étapes';
           document.getElementById('subtitle').textContent = 'Ouvrez votre application d’authentification et saisissez le code à 6 chiffres affiché pour TRAXO.';
@@ -140,14 +157,33 @@
           paint();
           tick = setInterval(function () { remaining -= 1; paint(); if (remaining <= 0) clearInterval(tick); }, 1000);
         }
+        var chooser = document.getElementById('chooser');
         function describe() {
+          var pending = info.channel === 'pending';
+          chooser.hidden = !pending;
+          form.hidden = pending;
+          if (pending) {
+            resendBlock.hidden = true;
+            switchBlock.hidden = true;
+            document.title = 'Recevoir votre code — TRAXO';
+            document.getElementById('title').textContent = 'Où recevoir votre code ?';
+            document.getElementById('subtitle').textContent = 'Pour sécuriser votre connexion, choisissez où recevoir votre code à 6 chiffres.';
+            document.getElementById('target').textContent = '';
+            document.getElementById('chooseEmail').textContent = info.email;
+            document.getElementById('chooseWa').textContent = info.whatsapp || '';
+            chooser.querySelector('[data-channel="whatsapp"]').hidden = !info.whatsapp;
+            document.getElementById('help').textContent = 'Pour ne plus avoir de code sur cet appareil, cochez « Rester connecté pendant 30 jours » à la connexion.';
+            return;
+          }
           var signup = info.purpose === 'signup';
+          form.dataset.loader = signup ? 'speeder' : 'truck';
+          form.dataset.loaderMessage = signup ? 'Nous ouvrons votre nouvel espace…' : 'Connexion en cours…';
           var onWhatsApp = info.channel === 'whatsapp';
           document.title = (signup ? 'Confirmez votre adresse' : 'Code de connexion') + ' — TRAXO';
           document.getElementById('title').textContent = signup ? 'Confirmez votre adresse e‑mail' : 'Confirmez qu’il s’agit bien de vous';
           document.getElementById('subtitle').textContent = onWhatsApp
             ? 'Nous avons envoyé un code à 6 chiffres sur WhatsApp au'
-            : (signup ? 'Nous venons d’envoyer un code à 6 chiffres à' : 'Première connexion sur cet appareil : nous avons envoyé un code à 6 chiffres à');
+            : (signup ? 'Nous venons d’envoyer un code à 6 chiffres à' : 'Pour sécuriser votre connexion, nous avons envoyé un code à 6 chiffres à');
           document.getElementById('target').textContent = onWhatsApp ? info.whatsapp : info.email;
           document.getElementById('help').textContent = onWhatsApp
             ? 'Le code est valable 10 minutes. Il arrive dans une conversation avec le numéro TRAXO.'
@@ -162,7 +198,8 @@
           if (!state) return;
           info = state;
           describe();
-          countdown(state.resendIn);
+          if (state.channel !== 'pending') countdown(state.resendIn);
+          else chooser.querySelector('.ax-choice').focus();
         }).catch(function () {});
 
         function send(channel, button) {
@@ -182,6 +219,14 @@
           }).catch(function () { button.disabled = false; TraxoAuth.showBanner('Connexion impossible. Vérifiez votre réseau puis réessayez.', 'error'); });
         }
         resendBtn.addEventListener('click', function () { send(info ? info.channel : 'email', resendBtn); });
+        chooser.querySelectorAll('[data-channel]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            chooser.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+            b.classList.add('is-sending');
+            send(b.dataset.channel, b);
+            setTimeout(function () { chooser.querySelectorAll('button').forEach(function (x) { x.disabled = false; x.classList.remove('is-sending'); }); }, 1500);
+          });
+        });
         switchBtn.addEventListener('click', function () { send(info && info.channel === 'whatsapp' ? 'email' : 'whatsapp', switchBtn); });
         otp.focus();
       })();

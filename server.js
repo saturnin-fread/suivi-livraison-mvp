@@ -83,6 +83,9 @@ const demoToken = demoTrackingEnabled ? process.env.DEMO_TRACKING_TOKEN : null;
 const sessionDurationMs = 12 * 60 * 60 * 1000;
 const rememberSessionMs = 30 * 24 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
+// Demande saisie par l'équipe, en attente de la confirmation du client.
+const PREFILLED_REQUEST_STATUS = 'À confirmer par le client';
+const PREFILLED_CONFIRM_MAX_ATTEMPTS = 5;
 // « Validée » : l'entreprise a validé la demande (infos client verrouillées)
 // sans avoir encore affecté de livreur. La conversion en commande reste possible.
 const convertibleRequestStatuses = [...editableRequestStatuses, 'Validée'];
@@ -495,7 +498,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -1147,6 +1150,11 @@ async function initDatabase() {
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+      -- Demandes pré-remplies par l'équipe, que le client confirme (code à 4 chiffres).
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS prefilled_by_user_id BIGINT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS confirm_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS confirm_locked_at TIMESTAMPTZ;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS customer_confirmed_at TIMESTAMPTZ;
       CREATE UNIQUE INDEX IF NOT EXISTS customer_requests_edit_token_unique
         ON customer_requests(edit_token_hash) WHERE edit_token_hash IS NOT NULL;
 
@@ -3067,6 +3075,7 @@ app.get('/demande/:token', asyncRoute(async (req, res) => {
     return res.status(404).send('Ce formulaire est introuvable ou expiré.');
   }
   res.set(PUBLIC_REQUEST_PAGE_HEADERS);
+  if (request.status === PREFILLED_REQUEST_STATUS) return sendShell(res, 'confirm.html');
   if (request.status !== 'En attente d’informations') {
     return res.redirect(`/demande/${encodeURIComponent(req.params.token)}/confirmation`);
   }
@@ -5407,6 +5416,56 @@ app.get('/api/app/dashboard', requireCompanyApi, asyncRoute(async (req, res) => 
         orderReference: r.reference, createdAt: r.created_at,
       })),
     },
+  });
+}));
+
+// Commande saisie par l'équipe, confirmée ensuite par le client (même lien que le
+// formulaire client). Le client prouve qu'il est le destinataire avec les 4 derniers
+// chiffres de son numéro ; le lien est alors lié à son appareil.
+function prefilledFieldsFromBody(body) {
+  const text = (value, max) => { const v = String(value || '').trim(); return v ? v.slice(0, max) : null; };
+  return {
+    customerName: text(body.customerName, 120),
+    neighborhood: text(body.neighborhood, 160),
+    landmark: text(body.landmark, 240),
+    notes: text(body.notes, 1000),
+    requestedTime: text(body.requestedTime, 80),
+  };
+}
+function phoneLastDigits(phone, count = 4) {
+  return String(phone || '').replace(/\D/g, '').slice(-count);
+}
+
+app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!(await companyDeliverySetting(req.auth.company_id, 'internalEntryEnabled'))) {
+    return res.status(403).json({ error: 'La saisie par votre équipe est désactivée dans vos paramètres Livraisons.' });
+  }
+  const fields = prefilledFieldsFromBody(req.body || {});
+  if (!fields.customerName || fields.customerName.length < 2) return res.status(400).json({ error: 'Indiquez le nom du client.', field: 'customerName' });
+  const phone = normalizeCustomerPhone(req.body || {});
+  if (!phone) return res.status(400).json({ error: 'Le téléphone du client est nécessaire : il sert à protéger son lien de confirmation.', field: 'customerPhone' });
+  if (!fields.neighborhood) return res.status(400).json({ error: 'Indiquez le quartier ou la zone de livraison.', field: 'neighborhood' });
+  const token = randomToken(24);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await pool.query(
+    `INSERT INTO customer_requests (company_id, token, status, customer_name, customer_phone, neighborhood,
+       landmark, notes, requested_time, expires_at, prefilled_by_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+    [req.auth.company_id, token, PREFILLED_REQUEST_STATUS, fields.customerName, phone, fields.neighborhood,
+      fields.landmark, fields.notes, fields.requestedTime, expiresAt, req.auth.user_id]
+  );
+  await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prefilled_created', { expiresAt });
+  const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
+  const url = `${publicBaseUrl(req)}/demande/${token}`;
+  const firstName = fields.customerName.split(/\s+/)[0];
+  return res.status(201).json({
+    id: result.rows[0].id,
+    token,
+    path: `/demande/${token}`,
+    url,
+    expiresAt,
+    phone,
+    message: `Bonjour ${firstName}, ${company.name || 'nous'} prépare votre livraison. Vérifiez vos informations et confirmez ici : ${url}`,
   });
 }));
 
@@ -8434,7 +8493,17 @@ app.post('/api/app/orders/:id/payment/adjustments/:adjustmentId/reverse', requir
 }));
 
 app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
-  const { customerName, customerPhone, deliveryAddress, driverId } = req.body;
+  const { driverId } = req.body;
+  // Champs structurés (nouvelle saisie) ou adresse libre (ancienne saisie, API).
+  const structured = prefilledFieldsFromBody(req.body || {});
+  const customerName = structured.customerName;
+  const deliveryAddress = String(req.body.deliveryAddress || '').trim()
+    || [structured.neighborhood, structured.landmark, structured.notes].filter(Boolean).join(' — ');
+  let customerPhone = String(req.body.customerPhone || '').trim() || null;
+  if (customerPhone && req.body.customerPhoneCountry) {
+    customerPhone = normalizeCustomerPhone(req.body);
+    if (!customerPhone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
+  }
   if (!customerName || !deliveryAddress || !driverId) {
     return res.status(400).json({ error: 'Nom client, lieu de livraison et livreur sont obligatoires.' });
   }
@@ -8451,9 +8520,11 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     );
     if (!driver.rows[0]) throw Object.assign(new Error('Livreur non autorisé.'), { statusCode: 400 });
     const order = await client.query(
-      `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address, status)
-       VALUES ($1, $2, $3, $4, $5, 'Confirmée') RETURNING id`,
-      [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress]
+      `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address,
+         neighborhood, landmark, notes, requested_time, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Confirmée') RETURNING id`,
+      [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress,
+        structured.neighborhood, structured.landmark, structured.notes, structured.requestedTime]
     );
     await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const token = randomToken(24);
@@ -8500,6 +8571,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     committed = true;
     return res.status(201).json({
       orderId: order.rows[0].id,
+      customerPhone,
       path: `/suivi/${token}`,
       trackingLink: { state: 'active', path: `/suivi/${token}`, expiresAt: trackingExpiration.expiresAt, version: 1 },
     });
@@ -8588,6 +8660,7 @@ function publicRequestStage(row) {
     if (['Retournée', 'Annulée'].includes(row.order_status)) return 'closed';
     return 'assigned';
   }
+  if (row.status === PREFILLED_REQUEST_STATUS) return row.archived_at ? 'closed' : 'to_confirm';
   if (row.status === 'Refusée') return 'refused';
   if (row.status === 'Archivée' || row.archived_at) return 'closed';
   if (row.status === 'Validée' || row.status === 'Confirmée') return 'validated';
@@ -8661,7 +8734,8 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   const result = await pool.query(
     `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time, r.location_lat, r.location_lng,
             r.location_accuracy, r.neighborhood, r.landmark, r.notes, r.submitted_at, r.updated_at,
-            r.validated_at, r.archived_at, r.edit_token_hash, r.version, c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at,
+            r.validated_at, r.archived_at, r.edit_token_hash, r.version, r.expires_at, r.confirm_attempts, r.confirm_locked_at,
+            c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at,
             o.id AS order_id, o.status AS order_status, o.status_changed_at AS order_status_changed_at,
             d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
             t.token AS tracking_token, t.token_ciphertext AS tracking_token_ciphertext,
@@ -8683,6 +8757,34 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   const stage = publicRequestStage(row);
   // Formulaire pas encore rempli : rien de personnel à protéger.
   if (stage === 'pending') return res.json({ stage, companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) });
+  if (stage === 'to_confirm') {
+    const expired = row.expires_at && new Date(row.expires_at) <= new Date();
+    const confirmOk = Boolean(row.edit_token_hash && requestDeviceSecret(req) && digest(requestDeviceSecret(req)) === row.edit_token_hash);
+    const brand = { stage, companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) };
+    if (expired) return res.json({ ...brand, stage: 'expired' });
+    if (!confirmOk) {
+      return res.json({
+        ...brand,
+        locked: Boolean(row.confirm_locked_at),
+        attemptsLeft: Math.max(0, PREFILLED_CONFIRM_MAX_ATTEMPTS - Number(row.confirm_attempts || 0)),
+        needsCode: true,
+      });
+    }
+    const split = phoneParts(row.customer_phone);
+    return res.json({
+      ...brand,
+      needsCode: false,
+      id: row.id,
+      customer_name: row.customer_name,
+      phone_country: split.country,
+      phone_national: split.national,
+      neighborhood: row.neighborhood,
+      landmark: row.landmark,
+      notes: row.notes,
+      requested_time: row.requested_time,
+      expiresAt: row.expires_at,
+    });
+  }
   let deviceOk = Boolean(row.edit_token_hash && requestDeviceSecret(req)
     && digest(requestDeviceSecret(req)) === row.edit_token_hash);
   // Anciens liens « ?edit=… » (avant ce changement) : échange UNIQUE contre un
@@ -8742,6 +8844,91 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
       trackingPath,
     } : null,
   });
+}));
+
+// Le client prouve qu'il est le destinataire : 4 derniers chiffres de son numéro.
+app.post('/api/public/requests/:token/unlock', publicRequestRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const code = String((req.body || {}).code || '').replace(/\D/g, '');
+  if (code.length !== 4) return res.status(400).json({ error: 'Saisissez les 4 derniers chiffres de votre numéro.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT id, company_id, customer_phone, confirm_attempts, confirm_locked_at, expires_at FROM customer_requests
+       WHERE token = $1 AND status = $2 AND archived_at IS NULL FOR UPDATE`,
+      [req.params.token, PREFILLED_REQUEST_STATUS]
+    );
+    const row = found.rows[0];
+    if (!row || (row.expires_at && new Date(row.expires_at) <= new Date())) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ce lien est introuvable ou a expiré.' });
+    }
+    if (row.confirm_locked_at) {
+      await client.query('ROLLBACK');
+      return res.status(423).json({ error: 'Trop d’essais. Pour votre sécurité, ce lien est bloqué : contactez l’entreprise pour en recevoir un nouveau.', locked: true });
+    }
+    const expected = Buffer.from(phoneLastDigits(row.customer_phone));
+    const given = Buffer.from(code);
+    const ok = expected.length === 4 && crypto.timingSafeEqual(expected, given);
+    if (!ok) {
+      const attempts = Number(row.confirm_attempts || 0) + 1;
+      const lock = attempts >= PREFILLED_CONFIRM_MAX_ATTEMPTS;
+      await client.query('UPDATE customer_requests SET confirm_attempts = $1, confirm_locked_at = CASE WHEN $2 THEN NOW() ELSE confirm_locked_at END WHERE id = $3', [attempts, lock, row.id]);
+      await client.query('COMMIT');
+      if (lock) await writeAudit({ company_id: row.company_id, user_id: null }, 'customer_request', row.id, 'confirm_locked');
+      return res.status(lock ? 423 : 400).json({
+        error: lock ? 'Trop d’essais. Pour votre sécurité, ce lien est bloqué : contactez l’entreprise pour en recevoir un nouveau.' : 'Ces chiffres ne correspondent pas au numéro enregistré.',
+        locked: lock,
+        attemptsLeft: Math.max(0, PREFILLED_CONFIRM_MAX_ATTEMPTS - attempts),
+      });
+    }
+    const secret = randomToken(24);
+    await client.query('UPDATE customer_requests SET edit_token_hash = $1, confirm_attempts = 0 WHERE id = $2', [digest(secret), row.id]);
+    await client.query('COMMIT');
+    await writeAudit({ company_id: row.company_id, user_id: null }, 'customer_request', row.id, 'confirm_unlocked');
+    setRequestDeviceCookie(req, res, req.params.token, secret);
+    return res.json({ ok: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+// Confirmation par le client : informations vérifiées, position partagée ou non.
+app.post('/api/public/requests/:token/confirm', publicRequestRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const secret = requestDeviceSecret(req);
+  if (!secret) return res.status(403).json({ error: 'Rouvrez le lien et saisissez les 4 derniers chiffres de votre numéro.' });
+  const body = req.body || {};
+  const fields = prefilledFieldsFromBody(body);
+  if (!fields.customerName || fields.customerName.length < 2 || !fields.neighborhood) {
+    return res.status(400).json({ error: 'Votre nom et votre quartier sont obligatoires.' });
+  }
+  const phone = normalizeCustomerPhone(body);
+  if (!phone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
+  const share = body.shareLocation === true;
+  const gps = share ? requestGpsFromBody(body) : null;
+  if (share && !gps) return res.status(400).json({ error: 'Votre position n’a pas pu être lue. Réessayez ou continuez sans la partager.' });
+  const result = await pool.query(
+    `UPDATE customer_requests
+     SET status = 'Validée', validated_at = NOW(), customer_confirmed_at = NOW(), submitted_at = NOW(),
+         customer_name = $1, customer_phone = $2, neighborhood = $3, landmark = $4, notes = $5, requested_time = $6,
+         location_lat = $7, location_lng = $8, location_accuracy = $9,
+         location_at = CASE WHEN $7::double precision IS NULL THEN NULL ELSE NOW() END,
+         version = version + 1, updated_at = NOW()
+     WHERE token = $10 AND edit_token_hash = $11 AND status = $12 AND archived_at IS NULL
+       AND (expires_at IS NULL OR expires_at > NOW())
+     RETURNING id, company_id`,
+    [fields.customerName, phone, fields.neighborhood, fields.landmark, fields.notes, fields.requestedTime,
+      gps ? gps.lat : null, gps ? gps.lng : null, gps ? gps.accuracy : null,
+      req.params.token, digest(secret), PREFILLED_REQUEST_STATUS]
+  );
+  if (!result.rows[0]) return res.status(409).json({ error: 'Cette commande a déjà été confirmée ou le lien a expiré.' });
+  await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, 'customer_confirmed', { locationShared: Boolean(gps) });
+  return res.json({ status: 'confirmed', redirect: `/demande/${encodeURIComponent(req.params.token)}/confirmation` });
 }));
 
 app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
@@ -9005,11 +9192,25 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
   const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
   const isStale = !Number.isFinite(timestampMs) || Date.now() - timestampMs > 10 * 60 * 1000;
   const finiteOrNull = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
-  const route = await publicTrackingRoute(routeKey, { lat: latitude, lng: longitude }, tracking.destination);
+  // Sans destination enregistrée, le client peut se situer depuis son téléphone :
+  // sa position sert au calcul du trajet puis est oubliée (jamais enregistrée).
+  let routeTarget = tracking.destination ? 'destination' : null;
+  let routeTo = tracking.destination;
+  if (!routeTo) {
+    const viewerLat = optionalNumber(req.query.lat);
+    const viewerLng = optionalNumber(req.query.lng);
+    if (viewerLat != null && viewerLng != null && viewerLat >= -90 && viewerLat <= 90 && viewerLng >= -180 && viewerLng <= 180) {
+      routeTo = { latitude: viewerLat, longitude: viewerLng };
+      routeTarget = 'viewer';
+    }
+  }
+  const routeCacheKey = routeTarget === 'viewer' && routeKey ? `${routeKey}:viewer:${routeTo.latitude.toFixed(3)},${routeTo.longitude.toFixed(3)}` : routeKey;
+  const route = await publicTrackingRoute(routeCacheKey, { lat: latitude, lng: longitude }, routeTo);
   return res.json({
     status: isStale ? 'stale' : 'online',
     ...activeDetails,
     route,
+    routeTarget: route ? routeTarget : null,
     latitude,
     longitude,
     speed: finiteOrNull(position.speed),

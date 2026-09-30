@@ -159,6 +159,7 @@
         function render() {
           C.renderHeader(document.getElementById('head'), data.companyName, 'Livraison', data.companyLogoUrl);
           document.title = data.id ? `${data.stage === 'received' ? 'Demande' : 'Livraison'} #${data.id} — ${company()}` : `Demande — ${company()}`;
+          if (data.stage === 'to_confirm') { location.replace(`/demande/${encodeURIComponent(token)}`); return; }
           if (data.stage === 'received') pageEl.innerHTML = receivedHtml();
           else if (['validated', 'assigned', 'delivered'].includes(data.stage)) pageEl.innerHTML = lockedHtml();
           else if (data.stage === 'refused') pageEl.innerHTML = simpleHtml('Votre demande n’a pas été retenue.', `Pour plus d’informations, contactez directement ${esc(company())}.`, `Demande #${data.id}`);

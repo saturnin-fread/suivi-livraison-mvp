@@ -67,6 +67,19 @@
       .trk-steps .cl-step.upcoming .cl-step-ic { width: 22px; height: 22px; margin: 3px; border-width: 2px; }
       .trk-steps .cl-step.upcoming .cl-step-body strong { color: var(--muted); }
       .trk-msg { margin: 14px 0 0; color: var(--muted); font-size: 14.5px; }
+      /* Arrivée estimée */
+      .trk-eta { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--line); animation: trk-in .4s both; }
+      .trk-eta-main strong { display: block; font-size: 26px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+      .trk-eta-main span { display: block; margin-top: 2px; color: var(--muted); font-size: 14px; }
+      .trk-eta-bar { position: relative; flex: 0 0 110px; height: 6px; border-radius: 99px; background: var(--green-soft); overflow: hidden; }
+      .trk-eta-bar i { position: absolute; inset: 0 auto 0 0; width: 40%; border-radius: 99px; background: var(--green); animation: trk-slide 1.8s ease-in-out infinite; }
+      .trk-locate { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); animation: trk-in .4s both; }
+      .trk-locate p { flex: 1; margin: 0; color: var(--muted); font-size: 14px; }
+      .trk-locate button { flex: 0 0 auto; min-height: 40px; padding: 8px 14px; border: 1.5px solid var(--green); border-radius: 4px; background: transparent; color: var(--green); font: inherit; font-size: 14.5px; font-weight: 500; cursor: pointer; }
+      .trk-locate button:hover { background: var(--green-soft); }
+      .trk-me { width: 18px; height: 18px; border-radius: 50%; background: #2563eb; box-shadow: 0 0 0 4px rgba(37, 99, 235, .25), 0 1px 4px rgba(0, 0, 0, .3); border: 2.5px solid #fff; }
+      @keyframes trk-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+      @keyframes trk-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
       .trk-panel-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 18px 22px 20px; font-size: 15.5px; }
       .trk-dest-line { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
       .trk-dest-line svg.ic { color: var(--ink); fill: var(--ink); stroke: var(--ink); width: 18px; height: 18px; }
@@ -112,7 +125,7 @@
         .trk-recenter span { display: none; }
         body.trk-done .trk-panel { border-radius: 8px; }
       }
-      @media (prefers-reduced-motion: reduce) { .trk-drv-halo { animation: none; opacity: .6; transform: scale(.8); } }
+      @media (prefers-reduced-motion: reduce) { .trk-drv-halo { animation: none; opacity: .6; transform: scale(.8); } .trk-eta, .trk-locate, .trk-eta-bar i { animation: none; } }
     </style>
   </head>
   <body class="trk">
@@ -131,6 +144,8 @@
           <div class="trk-status" aria-live="polite"><span class="cl-dot green" id="statusDot" aria-hidden="true"></span><span id="statusText">Chargement…</span></div>
         </div>
         <div class="trk-panel-body" id="panelBody">
+          <div class="trk-eta" id="eta" hidden aria-live="polite"><div class="trk-eta-main"><strong id="etaTime"></strong><span id="etaSub"></span></div><span class="trk-eta-bar" aria-hidden="true"><i></i></span></div>
+          <div class="trk-locate" id="locate" hidden><p id="locateText">Voyez dans combien de temps votre livreur arrive. Votre position reste sur ce téléphone.</p><button type="button" id="locateBtn">Me situer</button></div>
           <div class="trk-driver" id="driverCard" hidden></div>
           <ol class="cl-steps trk-steps" id="steps" aria-label="Étapes de la livraison"></ol>
           <p class="trk-msg" id="message" hidden></p>
@@ -181,6 +196,10 @@
         let refreshTimer = null;
         let refreshPausedUntil = 0;
         let terminal = false;
+        // Position du client (s'il n'a pas partagé de destination) : gardée en mémoire
+        // le temps de la page, envoyée seulement pour calculer le trajet.
+        let viewer = null;
+        let viewerMarker = null;
 
         // Retour vers la page de demande, uniquement si on vient d'elle (même onglet).
         let backPath = null;
@@ -315,6 +334,51 @@
           else setLive('Suivi en direct', '', true);
         }
 
+        function renderEta(data) {
+          const eta = document.getElementById('eta');
+          const locate = document.getElementById('locate');
+          const route = data.route;
+          const live = data.positionVisible !== false && ['online', 'stale'].includes(data.status);
+          if (live && route && Number.isFinite(Number(route.durationSeconds))) {
+            const minutes = Math.max(1, Math.round(Number(route.durationSeconds) / 60));
+            const arrival = new Date(Date.now() + minutes * 60000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+            const km = Number(route.distanceMeters) / 1000;
+            const dist = Number.isFinite(km) ? (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1).replace('.', ',')} km`) : '';
+            document.getElementById('etaTime').textContent = data.orderStatus === 'Arrivée' ? 'Votre livreur est là' : `Vers ${arrival.replace(':', ' h ')}`;
+            document.getElementById('etaSub').textContent = data.orderStatus === 'Arrivée' ? 'Il vous attend au point de livraison.'
+              : `Environ ${minutes} min${dist ? ` · ${dist}` : ''}${data.routeTarget === 'viewer' ? ' jusqu’à votre position actuelle' : ''}`;
+            eta.hidden = false;
+          } else eta.hidden = true;
+          locate.hidden = !(live && !data.destination && !viewer);
+        }
+
+        function renderViewer() {
+          if (!map || !viewer) return;
+          const icon = L.divIcon({ className: '', iconSize: [18, 18], iconAnchor: [9, 9], html: '<div class="trk-me"></div>' });
+          if (!viewerMarker) viewerMarker = L.marker([viewer.lat, viewer.lng], { icon, keyboard: false, title: 'Vous' }).addTo(map)
+            .bindTooltip('Vous', { permanent: true, direction: 'top', offset: [0, -14], className: 'trk-label' });
+          else viewerMarker.setLatLng([viewer.lat, viewer.lng]);
+          destinationPosition = [viewer.lat, viewer.lng];
+        }
+
+        document.getElementById('locateBtn').addEventListener('click', () => {
+          const button = document.getElementById('locateBtn');
+          const text = document.getElementById('locateText');
+          if (!navigator.geolocation) { text.textContent = 'La localisation n’est pas disponible sur cet appareil.'; return; }
+          button.disabled = true;
+          button.textContent = 'Localisation…';
+          navigator.geolocation.getCurrentPosition((result) => {
+            viewer = { lat: result.coords.latitude, lng: result.coords.longitude };
+            renderViewer();
+            framed = false;
+            refresh();
+          }, () => {
+            button.disabled = false;
+            button.textContent = 'Réessayer';
+            text.textContent = 'Position introuvable. Autorisez la localisation dans votre navigateur.';
+          }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
+        });
+
         function renderRoute(route) {
           const coordinates = route && Array.isArray(route.coordinates) ? route.coordinates : null;
           const latLngs = coordinates ? coordinates
@@ -371,7 +435,8 @@
           const controller = new AbortController();
           const timeout = window.setTimeout(() => controller.abort(), 12000);
           try {
-            const response = await fetch(`/api/tracking/${encodeURIComponent(token)}`, {
+            const near = viewer ? `?lat=${viewer.lat.toFixed(5)}&lng=${viewer.lng.toFixed(5)}` : '';
+            const response = await fetch(`/api/tracking/${encodeURIComponent(token)}${near}`, {
               cache: 'no-store', headers: { Accept: 'application/json' }, signal: controller.signal,
             });
             const data = await response.json().catch(() => ({}));
@@ -383,9 +448,11 @@
             renderHeader(data);
             if (data.status === 'completed') { renderCompleted(data); return; }
             renderPanel(data);
+            renderEta(data);
             if (!map) return;
             applyMapConfig(data.mapConfig);
             renderDestination(data.destination);
+            if (!data.destination) renderViewer();
             renderDriver(data);
             renderRoute(data.route);
             if (data.positionVisible === false) setLive('Suivi pas encore démarré', 'grey');

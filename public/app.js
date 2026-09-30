@@ -70,6 +70,7 @@ const runStatusLabels = {
 // Voir docs/UX_WRITING_GUIDE.md.
 const requestStatusLabels = {
   'En attente d’informations': 'En attente du client',
+  'À confirmer par le client': 'À confirmer par le client',
   'À vérifier': 'À valider',
   'Informations à compléter': 'À compléter par le client',
   'Validée': 'Validée',
@@ -77,7 +78,7 @@ const requestStatusLabels = {
   'Refusée': 'Refusée',
   'Archivée': 'Archivée',
 };
-const requestStatusTone = { 'En attente d’informations': 'grey', 'À vérifier': 'amber', 'Informations à compléter': 'amber', 'Validée': 'blue', 'Confirmée': 'green', 'Refusée': 'red', 'Archivée': 'grey' };
+const requestStatusTone = { 'En attente d’informations': 'grey', 'À confirmer par le client': 'grey', 'À vérifier': 'amber', 'Informations à compléter': 'amber', 'Validée': 'blue', 'Confirmée': 'green', 'Refusée': 'red', 'Archivée': 'grey' };
 function requestStatusLabel(status) { return requestStatusLabels[status] || status || '—'; }
 function requestStatusChip(status) { return crmChip(requestStatusLabel(status), requestStatusTone[status] || 'grey'); }
 const runEventLabels = {
@@ -222,7 +223,7 @@ const DASH_ORDER_STATUS_COLOR = {
 };
 const DASH_REQUEST_STATUS_COLOR = {
   'À vérifier': '#f59e0b', 'Informations à compléter': '#0ea5e9', 'Confirmée': '#10b981',
-  'Refusée': '#dc2626', 'En attente d’informations': '#94a3b8', 'Archivée': '#64748b',
+  'Refusée': '#dc2626', 'En attente d’informations': '#94a3b8', 'À confirmer par le client': '#a3a3a3', 'Archivée': '#64748b',
 };
 const DASH_AVAILABILITY_COLOR = {
   available: '#10b981', busy: '#3b82f6', full: '#8b5cf6', pause: '#f59e0b',
@@ -958,32 +959,210 @@ async function renderDashboard() {
 }
 
 async function renderNewOrder() {
-  setHeader('Nouvelle commande', 'Vous saisissez les informations du client');
-  const drivers = await api('/api/app/drivers');
-  page.innerHTML = `
-    <div class="page-header"><div><h1>Saisir une commande</h1><p class="subtitle">Vous connaissez déjà le client. Il recevra un lien pour suivre sa livraison.</p></div></div>
-    <section class="card"><form id="orderForm"><div class="form-grid">
-      <div class="field"><label>Nom du client</label><input name="customerName" required /></div>
-      <div class="field"><label>Téléphone du client</label><input name="customerPhone" inputmode="tel" placeholder="01 97 12 34 56" /></div>
-      <div class="field full"><label>Adresse et consignes</label><textarea name="deliveryAddress" required placeholder="Quartier, repère (ex. : portail vert, près de la pharmacie), consignes pour le livreur…"></textarea></div>
-      <div class="field full"><label>Livreur</label><select name="driverId" required><option value="">Sélectionner un livreur</option>${drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${['inactive', 'off_duty', 'incident'].includes(driver.operationalState) ? 'disabled' : ''}>${escapeHtml(driver.name)} — ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)} — ${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</option>`).join('')}</select></div>
-    </div><div class="actions" style="margin-top:20px"><button class="primary">Créer la commande</button></div></form><div id="orderResult"></div></section>`;
-  document.getElementById('orderForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
+  setHeader('Nouvelle commande', 'Vous connaissez déjà le client');
+  page.classList.add('page-no');
+  const C = window.TraxoClient;
+  const noIcon = {
+    arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
+    wa: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-2-1-1 .8c-1-.5-1.6-1.1-2.1-2.1l.8-1-1-2L9 9.5z"/></svg>',
+    sms: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+  };
+  const [drivers, rules] = await Promise.all([
+    api('/api/app/drivers').catch(() => []),
+    api('/api/app/settings/deliveries').catch(() => ({ internalEntryEnabled: true, customerFormEnabled: true })),
+  ]);
+  const unavailable = ['inactive', 'off_duty', 'incident'];
+  const sortedDrivers = drivers.filter((d) => d.active !== false)
+    .sort((a, b) => Number(unavailable.includes(a.operationalState)) - Number(unavailable.includes(b.operationalState)) || (a.activeOrders || 0) - (b.activeOrders || 0));
+  let mode = 'confirm';
+
+  const journeys = {
+    confirm: [
+      ['Vous saisissez ce que vous savez', 'Nom, téléphone, quartier.'],
+      ['Le client vérifie et confirme', 'Il corrige si besoin et partage sa position s’il le souhaite.'],
+      ['Vous affectez un livreur', 'Depuis Opérations › Demandes.'],
+      ['Le client suit sa livraison', 'En direct, avec le délai estimé s’il a partagé sa position.'],
+    ],
+    direct: [
+      ['Vous saisissez la commande', 'Toutes les informations sont sûres.'],
+      ['Vous choisissez le livreur', 'La commande rejoint sa tournée du jour.'],
+      ['Vous envoyez le lien de suivi', 'Par WhatsApp, SMS ou copier-coller.'],
+    ],
+  };
+  const journeyHtml = (steps, doneCount = 0) => `<ol class="no-journey">${steps.map(([t, s], i) => `<li class="${i < doneCount ? 'done' : i === doneCount ? 'now' : ''}" style="--i:${i}"><span class="dot" aria-hidden="true"></span><span><b>${escapeHtml(t)}</b><small>${escapeHtml(s)}</small></span></li>`).join('')}</ol>`;
+  const initialsOf = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
+  const driverCard = (d) => {
+    const off = unavailable.includes(d.operationalState);
+    const tone = off ? '' : ['busy', 'full'].includes(d.operationalState) ? 'busy' : ['available'].includes(d.operationalState) ? 'ok' : '';
+    const photo = d.hasPhoto ? `<img src="/api/app/drivers/${encodeURIComponent(d.id)}/photo?v=${encodeURIComponent(d.photoVersion || 0)}" alt="">` : escapeHtml(initialsOf(d.name));
+    return `<label class="no-driver"><input type="radio" name="driverId" value="${escapeHtml(d.id)}" ${off ? 'disabled' : ''}><span class="no-driver-body"><span class="no-av">${photo}</span><span class="no-driver-text"><strong>${escapeHtml(d.name)}</strong><small><span class="no-state ${tone}"></span>${escapeHtml(driverStateLabels[d.operationalState] || d.operationalState || '')} · ${escapeHtml(colisCount(d.activeOrders))}</small></span></span></label>`;
+  };
+
+  const confirmAllowed = rules.internalEntryEnabled !== false;
+  page.innerHTML = `<div class="no">
+    <div class="no-grid">
+      <aside class="no-aside">
+        <p class="no-eyebrow">Nouvelle commande</p>
+        <h1 class="no-title">Préparer une livraison</h1>
+        <p class="no-lead">Vous connaissez déjà votre client ? Saisissez ce que vous savez, TRAXO s’occupe du reste.</p>
+        <hr class="no-rule" />
+        <div class="no-modes" role="radiogroup" aria-label="Comment créer la commande">
+          <label class="no-mode"><input type="radio" name="noMode" value="confirm" checked ${confirmAllowed ? '' : 'disabled'}><span class="no-mode-body"><span class="no-mode-text"><strong>Le client confirme <span class="no-tag">Recommandé</span></strong><small>Il vérifie ses informations depuis son téléphone et partage sa position s’il le souhaite.</small></span></span></label>
+          <label class="no-mode"><input type="radio" name="noMode" value="direct" ${confirmAllowed ? '' : 'disabled'}><span class="no-mode-body"><span class="no-mode-text"><strong>Je crée la commande maintenant</strong><small>Tout est sûr : vous choisissez le livreur tout de suite.</small></span></span></label>
+        </div>
+        <div id="noJourney">${journeyHtml(journeys.confirm)}</div>
+        ${rules.customerFormEnabled !== false ? `<button type="button" class="no-textlink" id="noBlank">Le client remplit tout lui-même : envoyer un formulaire vierge ${noIcon.arrow}</button>` : ''}
+      </aside>
+      <div class="no-main" id="noMain">
+        ${confirmAllowed ? '' : '<p class="no-notice">La saisie par votre équipe est désactivée dans Paramètres › Livraisons.</p>'}
+        <form id="noForm" novalidate>
+          <div id="noError" role="alert"></div>
+          <section class="no-sec" style="--i:0">
+            <div class="no-sec-head"><span class="no-sec-num">01</span><h2 class="no-sec-title">Le client</h2></div>
+            <div class="no-row">
+              <div class="no-field"><label for="f-name">Nom et prénom *</label><input class="cl-input" id="f-name" name="customerName" autocomplete="off" required maxlength="120" /></div>
+              <div class="no-field"><label for="f-phone">Téléphone <span id="phoneReq">*</span></label>${C.phoneFieldHtml({})}<p class="no-hint" id="phoneHint">Pour le joindre à l’arrivée.</p></div>
+            </div>
+          </section>
+          <section class="no-sec" style="--i:1">
+            <div class="no-sec-head"><span class="no-sec-num">02</span><h2 class="no-sec-title">Lieu de livraison</h2></div>
+            <p class="no-sec-sub" id="placeSub">Le client pourra corriger ces informations et partager sa position exacte.</p>
+            <div class="no-field"><label for="f-zone">Quartier ou zone *</label><input class="cl-input" id="f-zone" name="neighborhood" required maxlength="160" placeholder="Ex. Akpakpa, Cotonou" /></div>
+            <div class="no-field"><label for="f-landmark">Repère <em>(facultatif)</em></label><input class="cl-input" id="f-landmark" name="landmark" maxlength="240" placeholder="Ex. portail vert, près de la pharmacie" /></div>
+            <div class="no-row">
+              <div class="no-field"><label for="f-time">Créneau souhaité <em>(facultatif)</em></label><input class="cl-input" id="f-time" name="requestedTime" maxlength="80" placeholder="Ex. 15 h – 17 h" /></div>
+              <div class="no-field"><label for="f-notes">Consigne pour le livreur <em>(facultatif)</em></label><input class="cl-input" id="f-notes" name="notes" maxlength="1000" placeholder="Ex. appeler en arrivant" /></div>
+            </div>
+          </section>
+          <div class="no-collapse" id="noDriverWrap" aria-hidden="true"><div>
+            <section class="no-sec" style="--i:2">
+              <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Livreur</h2></div>
+              ${sortedDrivers.length ? `<div class="no-drivers" role="radiogroup" aria-label="Livreur">${sortedDrivers.map(driverCard).join('')}</div>` : '<p class="no-empty">Aucun livreur actif. Ajoutez-en un depuis la page Livreurs.</p>'}
+            </section>
+          </div></div>
+          <div class="no-submit">
+            <button class="no-btn big" id="noSubmit" type="submit" ${confirmAllowed ? '' : 'disabled'}><span id="noSubmitLabel">Envoyer au client pour confirmation</span>${noIcon.arrow}</button>
+            <p class="no-hint" id="noSubmitHint">Vous obtenez un lien à envoyer par WhatsApp ou SMS.</p>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>`;
+
+  const form = document.getElementById('noForm');
+  const main = document.getElementById('noMain');
+  const errorBox = document.getElementById('noError');
+  const say = (text) => { errorBox.innerHTML = text ? `<p class="no-notice">${escapeHtml(text)}</p>` : ''; };
+  C.wirePhoneField(form);
+  // Le libellé d'aide du téléphone vient du composant client : on l'adapte au contexte.
+  const phoneHint = document.getElementById('phoneHint');
+  const setMode = (next) => {
+    mode = next;
+    const direct = mode === 'direct';
+    const wrap = document.getElementById('noDriverWrap');
+    wrap.classList.toggle('open', direct);
+    wrap.setAttribute('aria-hidden', String(!direct));
+    wrap.querySelectorAll('input').forEach((i) => { i.tabIndex = direct ? 0 : -1; });
+    document.getElementById('phoneReq').textContent = direct ? '' : '*';
+    document.getElementById('f-phone').required = !direct;
+    phoneHint.textContent = direct ? 'Pour le joindre à l’arrivée.' : 'Obligatoire : il reçoit le lien et s’en sert pour déverrouiller ses informations.';
+    document.getElementById('placeSub').textContent = direct ? 'Ces informations partent telles quelles au livreur.' : 'Le client pourra corriger ces informations et partager sa position exacte.';
+    document.getElementById('noSubmitLabel').textContent = direct ? 'Créer la commande' : 'Envoyer au client pour confirmation';
+    document.getElementById('noSubmitHint').textContent = direct ? 'Le lien de suivi est créé en même temps que la commande.' : 'Vous obtenez un lien à envoyer par WhatsApp ou SMS.';
+    document.getElementById('noJourney').innerHTML = journeyHtml(journeys[mode]);
+  };
+  document.querySelectorAll('input[name="noMode"]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
+  setMode('confirm');
+
+  const digitsOf = (phone) => String(phone || '').replace(/\D/g, '');
+  const shareScreen = ({ title, lead, url, message, phone, meta, doneCount, steps, next }) => {
+    const digits = digitsOf(phone);
+    main.innerHTML = `<div class="no-done" id="noDone" tabindex="-1">
+      <svg class="no-check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="30"/><path d="M20 33l8 8 16-17"/></svg>
+      <p class="no-eyebrow">${escapeHtml(meta.eyebrow)}</p>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(lead)}</p>
+      <div class="no-linkbox"><code>${escapeHtml(url)}</code><button type="button" data-copy="url">Copier</button></div>
+      <div class="no-share">
+        ${digits ? `<a class="no-btn no-wa" href="https://wa.me/${escapeHtml(digits)}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener">${noIcon.wa} WhatsApp</a>
+        <a class="no-btn outline" href="sms:+${escapeHtml(digits)}?&body=${encodeURIComponent(message)}">${noIcon.sms} SMS</a>` : ''}
+        <button type="button" class="no-btn ghost" data-copy="message">${noIcon.copy} Copier le message</button>
+      </div>
+      ${meta.note ? `<p class="no-meta">${escapeHtml(meta.note)}</p>` : ''}
+      ${journeyHtml(steps, doneCount)}
+      <div class="no-next">${next}<button type="button" class="no-btn ghost" id="noAgain">Saisir une autre commande</button></div>
+    </div>`;
+    const copy = async (text, label) => {
+      try { await navigator.clipboard.writeText(text); uiToast(label, 'success'); } catch { uiToast('Copie impossible : sélectionnez le texte à la main.', 'warning'); }
+    };
+    main.querySelector('[data-copy="url"]').addEventListener('click', () => copy(url, 'Lien copié.'));
+    main.querySelector('[data-copy="message"]').addEventListener('click', () => copy(message, 'Message copié.'));
+    main.querySelector('#noAgain').addEventListener('click', () => renderNewOrder());
+    document.getElementById('noDone').focus({ preventScroll: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  document.getElementById('noBlank')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
     button.disabled = true;
     try {
-      const result = await api('/api/app/orders', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+      const link = await api('/api/app/request-links', { method: 'POST' });
+      const url = publicLink(link.path);
+      shareScreen({
+        title: 'Formulaire prêt à envoyer',
+        lead: 'Le client indique lui-même ses coordonnées et sa position. Sa demande arrive ensuite dans Opérations › Demandes.',
+        url, message: `Bonjour, pour préparer votre livraison, indiquez vos informations ici : ${url}`, phone: '',
+        meta: { eyebrow: 'Formulaire vierge', note: `Le lien expire le ${formatDateOnly(link.expiresAt)}.` },
+        steps: [['Vous envoyez le formulaire', ''], ['Le client le remplit', 'Coordonnées, position, photos du lieu.'], ['Vous validez et affectez un livreur', '']],
+        doneCount: 1,
+        next: '<a class="no-btn outline" href="/app/operations?vue=demandes">Voir les demandes</a>',
       });
-      const url = publicLink(result.path);
-      document.getElementById('orderResult').innerHTML = `<div class="notice success">Commande créée. Envoyez au client son <a href="${escapeHtml(url)}" target="_blank" rel="noopener">lien de suivi</a>.</div>`;
-      event.currentTarget.reset();
+    } catch (error) { uiToast(error.message, 'error'); button.disabled = false; }
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    say('');
+    const missing = C.firstMissing(form);
+    if (missing) { say('Merci de remplir les champs obligatoires.'); missing.focus(); return; }
+    const data = C.readFields(form);
+    const submit = document.getElementById('noSubmit');
+    const label = document.getElementById('noSubmitLabel');
+    const idle = label.textContent;
+    if (mode === 'direct' && !data.driverId) { say('Choisissez le livreur de cette commande.'); form.querySelector('input[name="driverId"]:not(:disabled)')?.focus(); return; }
+    submit.disabled = true;
+    label.textContent = mode === 'direct' ? 'Création…' : 'Préparation du lien…';
+    try {
+      if (mode === 'confirm') {
+        const result = await api('/api/app/requests/prefilled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        const firstName = data.customerName.split(/\s+/)[0];
+        shareScreen({
+          title: `Envoyez le lien à ${firstName}`,
+          lead: `${firstName} vérifiera ses informations et partagera sa position s’il le souhaite. Pour protéger ses données, on lui demandera les 4 derniers chiffres de son numéro.`,
+          url: publicLink(result.path), message: result.message.replace(result.url, publicLink(result.path)), phone: result.phone,
+          meta: { eyebrow: 'Lien de confirmation prêt', note: `Le lien expire le ${formatDateOnly(result.expiresAt)}. Vous le retrouvez aussi dans Opérations › Demandes.` },
+          steps: journeys.confirm, doneCount: 1,
+          next: `<a class="no-btn outline" href="/app/operations?vue=demandes&demande=${encodeURIComponent(result.id)}">Voir la demande</a>`,
+        });
+      } else {
+        const result = await api('/api/app/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        const url = publicLink(result.path);
+        const firstName = data.customerName.split(/\s+/)[0];
+        shareScreen({
+          title: 'Commande créée',
+          lead: `Envoyez à ${firstName} son lien de suivi : il verra son livreur en direct dès le départ.`,
+          url, message: `Bonjour ${firstName}, votre livraison est en préparation. Suivez-la ici : ${url}`, phone: result.customerPhone,
+          meta: { eyebrow: 'Lien de suivi', note: 'Le lien reste disponible dans le tiroir de la commande.' },
+          steps: journeys.direct, doneCount: 2,
+          next: `<a class="no-btn outline" href="/app/operations?vue=commandes&commande=${encodeURIComponent(result.orderId)}">Voir la commande</a>`,
+        });
+      }
     } catch (error) {
-      document.getElementById('orderResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    } finally {
-      button.disabled = false;
+      say(error.message);
+      if (/téléphone/i.test(error.message)) C.markFieldError(form, 'customerPhone', error.message);
+      submit.disabled = false;
+      label.textContent = idle;
     }
   });
 }

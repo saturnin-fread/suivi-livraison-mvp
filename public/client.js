@@ -408,6 +408,6 @@
   window.TraxoClient = {
     icon, esc, initials, isCar, formatTime, renderHeader, brandMark, fetchJson, requestTokenFromPath,
     createGpsField, createPhotoPicker, compressImage, uploadPhoto, deletePhoto,
-    requestFieldsHtml, readFields, firstMissing, wirePhoneField, markFieldError,
+    requestFieldsHtml, readFields, firstMissing, wirePhoneField, markFieldError, phoneFieldHtml,
   };
 })();

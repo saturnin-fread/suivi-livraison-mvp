@@ -43,7 +43,7 @@ async function cleanup() {
   assert.ok(sec.data.twoFactorEnabled && sec.data.recoveryCodesLeft === 8, 'état 2FA exposé');
 
   const step1 = await login();
-  assert.ok(!step1.session && step1.mfa && step1.location === '/app/login?step=2fa', 'mot de passe seul : pas de session, étape 2');
+  assert.ok(!step1.session && step1.mfa && step1.location === '/app/login/2fa', 'mot de passe seul : pas de session, étape 2');
   const bad = await second(step1.mfa, '123456');
   assert.ok(!bad.session && /error=code/.test(bad.location), 'code faux : refusé');
   await wait(31000); // le code d'activation ne peut pas être rejoué : on attend le pas suivant

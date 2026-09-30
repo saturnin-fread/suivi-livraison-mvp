@@ -76,7 +76,10 @@ if (demoTrackingEnabled && (!process.env.DEMO_TRACKING_TOKEN || process.env.RAIL
   throw new Error('DEMO_TRACKING_ENABLED est interdit en production et exige un jeton explicite ailleurs.');
 }
 const demoToken = demoTrackingEnabled ? process.env.DEMO_TRACKING_TOKEN : null;
-const sessionDurationMs = 8 * 60 * 60 * 1000;
+// Session standard : 12 h. « Rester connecté » : 30 jours au maximum (durée
+// absolue, non prolongée à l'usage).
+const sessionDurationMs = 12 * 60 * 60 * 1000;
+const rememberSessionMs = 30 * 24 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
 // « Validée » : l'entreprise a validé la demande (infos client verrouillées)
 // sans avoir encore affecté de livreur. La conversion en commande reste possible.
@@ -486,7 +489,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -800,11 +803,11 @@ function suggestGeometricStopOrder(stops) {
   return best;
 }
 
-function setSessionCookie(req, res, token) {
+function setSessionCookie(req, res, token, durationMs = sessionDurationMs) {
   const secure = req.secure || req.get('x-forwarded-proto') === 'https';
-  res.setHeader(
+  res.append(
     'Set-Cookie',
-    `delivery_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(sessionDurationMs / 1000)}${secure ? '; Secure' : ''}`
+    `delivery_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(durationMs / 1000)}${secure ? '; Secure' : ''}`
   );
 }
 
@@ -865,6 +868,15 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_data BYTEA;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_mime TEXT;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_updated_at TIMESTAMPTZ;
+      -- Configuration guidée après inscription. Les entreprises existantes
+      -- prennent la valeur par défaut « done » ; seules les nouvelles
+      -- inscriptions sont créées en « pending ».
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS onboarding_status TEXT NOT NULL DEFAULT 'done';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS business_type TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS country TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS city TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS fleet_estimate TEXT;
 
       UPDATE companies
       SET slug = 'chicago-consulting-group', updated_at = NOW()
@@ -893,6 +905,9 @@ async function initDatabase() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_recovery_hashes JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+      CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users(google_sub) WHERE google_sub IS NOT NULL;
       CREATE TABLE IF NOT EXISTS mfa_challenges (
         token_hash TEXT PRIMARY KEY,
         user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -901,6 +916,33 @@ async function initDatabase() {
         attempts INTEGER NOT NULL DEFAULT 0,
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      ALTER TABLE mfa_challenges ADD COLUMN IF NOT EXISTS remember BOOLEAN NOT NULL DEFAULT FALSE;
+      -- Code de vérification envoyé par e-mail (inscription, nouvel appareil).
+      -- Code haché avec un secret serveur ; 10 min, 5 essais, 5 envois max.
+      CREATE TABLE IF NOT EXISTS login_codes (
+        token_hash TEXT PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        company_id BIGINT,
+        role TEXT,
+        purpose TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        remember BOOLEAN NOT NULL DEFAULT FALSE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        sends INTEGER NOT NULL DEFAULT 1,
+        last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      -- Appareils reconnus après un code valide : pas de nouveau code pendant 30 jours.
+      CREATE TABLE IF NOT EXISTS trusted_devices (
+        token_hash TEXT NOT NULL,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        user_agent TEXT,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (token_hash, user_id)
       );
 
       CREATE TABLE IF NOT EXISTS company_memberships (
@@ -1544,15 +1586,16 @@ async function initDatabase() {
   }
 }
 
-async function createSession(req, res, userId, companyId, scope) {
+async function createSession(req, res, userId, companyId, scope, { remember = false } = {}) {
   const token = randomToken();
   const userAgent = String(req.headers['user-agent'] || '').slice(0, 400) || null;
+  const durationMs = remember ? rememberSessionMs : sessionDurationMs;
   await pool.query(
     `INSERT INTO app_sessions (token_hash, user_id, company_id, scope, expires_at, user_agent)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [digest(token), userId, companyId || null, scope, new Date(Date.now() + sessionDurationMs), userAgent]
+    [digest(token), userId, companyId || null, scope, new Date(Date.now() + durationMs), userAgent]
   );
-  setSessionCookie(req, res, token);
+  setSessionCookie(req, res, token, durationMs);
 }
 
 async function readSession(req, scope) {
@@ -1562,7 +1605,7 @@ async function readSession(req, scope) {
   const result = await pool.query(
     `SELECT s.user_id, s.company_id, s.scope, s.expires_at,
             u.email, u.display_name, u.is_platform_admin, u.disabled,
-            c.name AS company_name, c.slug AS company_slug, c.activation_status, c.logo_updated_at AS company_logo_at, m.role, m.driver_id,
+            c.name AS company_name, c.slug AS company_slug, c.activation_status, c.logo_updated_at AS company_logo_at, c.onboarding_status, m.role, m.driver_id,
             d.active AS driver_active
      FROM app_sessions s
      JOIN users u ON u.id = s.user_id
@@ -1583,6 +1626,7 @@ function requireCompanyPage(req, res, next) {
   return readSession(req, 'company').then((session) => {
     if (!session) return res.redirect('/app/login');
     if (session.role === 'driver') return res.redirect('/driver');
+    if (session.onboarding_status === 'pending' && session.role === 'owner') return res.redirect('/app/bienvenue');
     req.auth = session;
     return next();
   }).catch(next);
@@ -1949,6 +1993,7 @@ app.get('/health', asyncRoute(async (_req, res) => {
 }));
 
 app.get('/', (_req, res) => res.redirect('/app'));
+app.get('/favicon.ico', (_req, res) => res.type('png').set('Cache-Control', 'public, max-age=604800').sendFile(path.join(__dirname, 'public', 'favicon.png')));
 
 app.get('/app/login', (_req, res) => sendShell(res, 'app-login.html'));
 // Brute-force protection on sign-in: a per-IP quota plus a per-email quota so a
@@ -1967,12 +2012,133 @@ const loginRateLimit = createRateLimitMiddleware({
   ],
 });
 
+const wantsRemember = (value) => value === true || value === 'on' || value === '1' || value === 'true';
+
+// Page d'arrivée après connexion : appli livreur, configuration guidée tant
+// qu'elle n'est pas terminée (propriétaire), sinon le back-office.
+function homeAfterLogin(role, onboardingStatus) {
+  if (role === 'driver') return '/driver';
+  if (role === 'owner' && onboardingStatus === 'pending') return '/app/bienvenue';
+  return '/app';
+}
+
+// Défi de double authentification (application TOTP) : mot de passe (ou
+// Google) validé, mais la session n'est ouverte qu'après le code.
+async function startTotpChallenge(req, res, { userId, companyId, role, remember }) {
+  const challenge = randomToken();
+  await pool.query('DELETE FROM mfa_challenges WHERE user_id = $1 OR expires_at < NOW()', [userId]);
+  await pool.query(
+    `INSERT INTO mfa_challenges (token_hash, user_id, company_id, role, expires_at, remember)
+     VALUES ($1, $2, $3, $4, NOW() + INTERVAL '5 minutes', $5)`,
+    [digest(challenge), userId, companyId, role, Boolean(remember)]
+  );
+  setMfaCookie(req, res, challenge, 300);
+}
+
+// --- Code de vérification par e-mail (inscription, connexion sur un nouvel appareil) ---
+// Actif dès qu'un fournisseur d'e-mail est configuré (LOGIN_EMAIL_CODE=off pour
+// le couper, =on pour le forcer en test avec EMAIL_OUTBOX_DIR).
+const LOGIN_CODE_TTL_MS = 10 * 60 * 1000;
+const LOGIN_CODE_RESEND_S = 30;
+const LOGIN_CODE_MAX_SENDS = 5;
+const LOGIN_CODE_MAX_ATTEMPTS = 5;
+const TRUSTED_DEVICE_MS = 30 * 24 * 60 * 60 * 1000;
+function loginCodesEnabled() {
+  const mode = String(process.env.LOGIN_EMAIL_CODE || '').toLowerCase();
+  if (mode === 'off') return false;
+  if (mode === 'on') return true;
+  return emailConfigured();
+}
+function loginCodePepper() {
+  return process.env.OTP_PEPPER || trackingTokenSecret() || process.env.SESSION_SECRET || 'traxo-dev-login-code';
+}
+function loginCodeHash(challenge, code) {
+  return crypto.createHmac('sha256', loginCodePepper()).update(`login-code:v1:${challenge}:${code}`).digest('hex');
+}
+function maskEmail(email) {
+  const [local, domain] = String(email || '').split('@');
+  if (!domain) return '';
+  const visible = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2);
+  return `${visible}${'•'.repeat(Math.max(2, Math.min(6, local.length - visible.length)))}@${domain}`;
+}
+function cookieFlags(req) {
+  return (req.secure || req.get('x-forwarded-proto') === 'https') ? '; Secure' : '';
+}
+function setVerifyCookie(req, res, value, maxAge) {
+  res.append('Set-Cookie', `traxo_verify=${encodeURIComponent(value)}; Path=/app/login; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${cookieFlags(req)}`);
+}
+async function isTrustedDevice(req, userId) {
+  const token = String(parseCookies(req).traxo_device || '');
+  if (!token) return false;
+  const result = await pool.query(
+    `UPDATE trusted_devices SET last_used_at = NOW()
+     WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW() RETURNING 1`,
+    [digest(token), userId]
+  );
+  return result.rowCount > 0;
+}
+async function trustDevice(req, res, userId) {
+  let token = String(parseCookies(req).traxo_device || '');
+  if (!/^[A-Za-z0-9_-]{32,64}$/.test(token)) token = randomToken();
+  const userAgent = String(req.headers['user-agent'] || '').slice(0, 400) || null;
+  await pool.query(
+    `INSERT INTO trusted_devices (token_hash, user_id, user_agent, expires_at)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (token_hash, user_id) DO UPDATE SET expires_at = EXCLUDED.expires_at, user_agent = EXCLUDED.user_agent, last_used_at = NOW()`,
+    [digest(token), userId, userAgent, new Date(Date.now() + TRUSTED_DEVICE_MS)]
+  );
+  res.append('Set-Cookie', `traxo_device=${encodeURIComponent(token)}; Path=/app; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(TRUSTED_DEVICE_MS / 1000)}${cookieFlags(req)}`);
+}
+function newLoginCode() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+async function sendLoginCodeEmail(req, email, code, purpose) {
+  const base = publicBaseUrl(req);
+  const intro = purpose === 'signup'
+    ? 'Voici votre code pour confirmer votre adresse e-mail et terminer la création de votre compte TRAXO.'
+    : 'Voici votre code pour vous connecter à TRAXO depuis un nouvel appareil.';
+  const html = renderEmailShell({
+    baseUrl: base,
+    heading: purpose === 'signup' ? 'Confirmez votre adresse e-mail' : 'Votre code de connexion',
+    introHtml: intro,
+    bodyHtml: `<p style="font-family:Arial,sans-serif;font-size:34px;font-weight:700;letter-spacing:8px;color:#111827;margin:22px 0 8px">${code}</p>
+      <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#667085;margin:0">Ce code est valable 10 minutes. Ne le communiquez à personne : l’équipe TRAXO ne vous le demandera jamais.</p>`,
+    footerNote: purpose === 'signup'
+      ? 'Vous n’avez pas créé de compte TRAXO ? Ignorez cet e-mail.'
+      : 'Ce n’est pas vous ? Quelqu’un connaît votre mot de passe : changez-le dès maintenant depuis « Mot de passe oublié ».',
+  });
+  const text = `${intro}\n\nCode : ${code}\n\nValable 10 minutes. Ne le communiquez à personne.`;
+  return sendEmail({ to: email, subject: `${code} — votre code TRAXO`, html, text });
+}
+// Crée le défi, envoie le code et pose le cookie ; renvoie false si l'e-mail
+// n'a pas pu partir (l'appelant affiche alors une erreur).
+async function startLoginCode(req, res, { userId, email, companyId, role, purpose, remember }) {
+  const challenge = randomToken();
+  const code = newLoginCode();
+  await pool.query('DELETE FROM login_codes WHERE user_id = $1 OR expires_at < NOW()', [userId]);
+  await pool.query(
+    `INSERT INTO login_codes (token_hash, user_id, company_id, role, purpose, code_hash, remember, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [digest(challenge), userId, companyId, role, purpose, loginCodeHash(challenge, code), Boolean(remember), new Date(Date.now() + LOGIN_CODE_TTL_MS)]
+  );
+  const sent = await sendLoginCodeEmail(req, email, code, purpose);
+  if (!sent.sent) {
+    console.error('Login code e-mail failed:', sent.reason, sent.detail || '');
+    await pool.query('DELETE FROM login_codes WHERE token_hash = $1', [digest(challenge)]);
+    return false;
+  }
+  setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
+  return true;
+}
+
 app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Base métier non configurée.');
   const email = normalizeEmail(req.body.user);
+  const remember = wantsRemember(req.body.remember);
   const result = await pool.query(
-    `SELECT u.id, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role
+    `SELECT u.id, u.email, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
      FROM users u JOIN company_memberships m ON m.user_id = u.id
+     JOIN companies c ON c.id = m.company_id
      WHERE u.email = $1 ORDER BY m.id LIMIT 1`,
     [email]
   );
@@ -1980,21 +2146,117 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   if (!user || user.disabled || !passwordMatches(req.body.password, user.password_salt, user.password_hash)) {
     return res.redirect('/app/login?error=1');
   }
-  // Double authentification : mot de passe correct, mais la session n'est
-  // ouverte qu'après le code (défi à usage unique, 5 min, 5 essais).
   if (user.totp_enabled_at) {
-    const challenge = randomToken();
-    await pool.query('DELETE FROM mfa_challenges WHERE user_id = $1 OR expires_at < NOW()', [user.id]);
-    await pool.query(
-      `INSERT INTO mfa_challenges (token_hash, user_id, company_id, role, expires_at)
-       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '5 minutes')`,
-      [digest(challenge), user.id, user.company_id, user.role]
-    );
-    setMfaCookie(req, res, challenge, 300);
-    return res.redirect('/app/login?step=2fa');
+    await startTotpChallenge(req, res, { userId: user.id, companyId: user.company_id, role: user.role, remember });
+    return res.redirect('/app/login/2fa');
   }
-  await createSession(req, res, user.id, user.company_id, 'company');
-  return res.redirect(user.role === 'driver' ? '/driver' : '/app');
+  // Nouvel appareil : code envoyé par e-mail avant d'ouvrir la session.
+  if (loginCodesEnabled() && !(await isTrustedDevice(req, user.id))) {
+    const started = await startLoginCode(req, res, {
+      userId: user.id, email: user.email, companyId: user.company_id, role: user.role, purpose: 'login', remember,
+    });
+    if (!started) return res.redirect('/app/login?error=code_send');
+    return res.redirect('/app/login/code');
+  }
+  await createSession(req, res, user.id, user.company_id, 'company', { remember });
+  return res.redirect(homeAfterLogin(user.role, user.onboarding_status));
+}));
+
+app.get('/app/login/code', (req, res) => {
+  if (!parseCookies(req).traxo_verify) return res.redirect('/app/login?error=expired');
+  return sendShell(res, 'app-code.html');
+});
+app.get('/app/login/2fa', (req, res) => {
+  if (!parseCookies(req).traxo_mfa) return res.redirect('/app/login?error=expired');
+  return sendShell(res, 'app-code.html');
+});
+
+async function findLoginCode(queryable, req, { lock = false } = {}) {
+  const challenge = String(parseCookies(req).traxo_verify || '');
+  if (!challenge) return { challenge, row: null };
+  const row = (await queryable.query(
+    `SELECT l.*, u.email FROM login_codes l JOIN users u ON u.id = l.user_id
+     WHERE l.token_hash = $1 AND l.expires_at > NOW()${lock ? ' FOR UPDATE OF l' : ''}`,
+    [digest(challenge)]
+  )).rows[0] || null;
+  return { challenge, row };
+}
+
+app.get('/app/login/code/state', asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!pool) return res.status(503).json({ error: 'Base métier non configurée.' });
+  const { row } = await findLoginCode(pool, req);
+  if (!row) return res.status(410).json({ error: 'expired' });
+  const wait = Math.max(0, LOGIN_CODE_RESEND_S - Math.floor((Date.now() - new Date(row.last_sent_at).getTime()) / 1000));
+  return res.json({
+    email: maskEmail(row.email),
+    purpose: row.purpose,
+    resendIn: row.sends >= LOGIN_CODE_MAX_SENDS ? null : wait,
+    attemptsLeft: Math.max(0, LOGIN_CODE_MAX_ATTEMPTS - row.attempts),
+  });
+}));
+
+app.post('/app/login/code/resend', loginRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Base métier non configurée.' });
+  const { challenge, row } = await findLoginCode(pool, req);
+  if (!row) return res.status(410).json({ error: 'Ce code a expiré. Reconnectez-vous pour en recevoir un nouveau.' });
+  if (row.sends >= LOGIN_CODE_MAX_SENDS) return res.status(429).json({ error: 'Nombre maximal d’envois atteint. Reconnectez-vous dans quelques minutes.' });
+  const elapsed = (Date.now() - new Date(row.last_sent_at).getTime()) / 1000;
+  if (elapsed < LOGIN_CODE_RESEND_S) return res.status(429).json({ error: 'Patientez quelques secondes avant de demander un nouveau code.', resendIn: Math.ceil(LOGIN_CODE_RESEND_S - elapsed) });
+  const code = newLoginCode();
+  const updated = await pool.query(
+    `UPDATE login_codes SET code_hash = $1, sends = sends + 1, attempts = 0, last_sent_at = NOW(), expires_at = $2
+     WHERE token_hash = $3 AND sends = $4 RETURNING sends`,
+    [loginCodeHash(challenge, code), new Date(Date.now() + LOGIN_CODE_TTL_MS), digest(challenge), row.sends]
+  );
+  if (!updated.rowCount) return res.status(429).json({ error: 'Un code vient déjà d’être envoyé.', resendIn: LOGIN_CODE_RESEND_S });
+  const sent = await sendLoginCodeEmail(req, row.email, code, row.purpose);
+  if (!sent.sent) return res.status(502).json({ error: 'L’e-mail n’a pas pu être envoyé. Réessayez dans un instant.' });
+  setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
+  return res.json({ ok: true, resendIn: updated.rows[0].sends >= LOGIN_CODE_MAX_SENDS ? null : LOGIN_CODE_RESEND_S });
+}));
+
+app.post('/app/login/code', loginRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).send('Base métier non configurée.');
+  const code = String(req.body.code || '').replace(/\D/g, '');
+  const client = await pool.connect();
+  let found;
+  try {
+    await client.query('BEGIN');
+    const lookup = await findLoginCode(client, req, { lock: true });
+    found = lookup.row;
+    if (!found || found.attempts >= LOGIN_CODE_MAX_ATTEMPTS) {
+      if (found) await client.query('DELETE FROM login_codes WHERE token_hash = $1', [found.token_hash]);
+      await client.query('COMMIT');
+      setVerifyCookie(req, res, '', 0);
+      return res.redirect('/app/login?error=expired');
+    }
+    const expected = Buffer.from(found.code_hash, 'hex');
+    const actual = Buffer.from(loginCodeHash(lookup.challenge, code), 'hex');
+    if (code.length !== 6 || !crypto.timingSafeEqual(expected, actual)) {
+      await client.query('UPDATE login_codes SET attempts = attempts + 1 WHERE token_hash = $1', [found.token_hash]);
+      await client.query('COMMIT');
+      return res.redirect(`/app/login/code?error=code&left=${Math.max(0, LOGIN_CODE_MAX_ATTEMPTS - 1 - found.attempts)}`);
+    }
+    await client.query('DELETE FROM login_codes WHERE token_hash = $1', [found.token_hash]);
+    await client.query('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = $1', [found.user_id]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  const status = (await pool.query(
+    `SELECT c.onboarding_status, m.role FROM company_memberships m JOIN companies c ON c.id = m.company_id
+     WHERE m.user_id = $1 AND m.company_id = $2`,
+    [found.user_id, found.company_id]
+  )).rows[0];
+  if (!status) return res.redirect('/app/login?error=1');
+  await trustDevice(req, res, found.user_id);
+  await createSession(req, res, found.user_id, found.company_id, 'company', { remember: found.remember });
+  setVerifyCookie(req, res, '', 0);
+  return res.redirect(homeAfterLogin(status.role, status.onboarding_status));
 }));
 
 function setMfaCookie(req, res, value, maxAge) {
@@ -2081,13 +2343,15 @@ app.post('/app/login/2fa', loginRateLimit, asyncRoute(async (req, res) => {
     if (!method) {
       await client.query('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE token_hash = $1', [found.token_hash]);
       await client.query('COMMIT');
-      return res.redirect(`/app/login?step=2fa&error=code&left=${Math.max(0, 4 - found.attempts)}`);
+      return res.redirect(`/app/login/2fa?error=code&left=${Math.max(0, 4 - found.attempts)}`);
     }
     await client.query('DELETE FROM mfa_challenges WHERE token_hash = $1', [found.token_hash]);
     await client.query('COMMIT');
-    await createSession(req, res, found.user_id, found.company_id, 'company');
+    const status = (await pool.query('SELECT onboarding_status FROM companies WHERE id = $1', [found.company_id])).rows[0];
+    await trustDevice(req, res, found.user_id);
+    await createSession(req, res, found.user_id, found.company_id, 'company', { remember: found.remember });
     setMfaCookie(req, res, '', 0);
-    return res.redirect(found.role === 'driver' ? '/driver' : '/app');
+    return res.redirect(homeAfterLogin(found.role, status && status.onboarding_status));
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -2126,70 +2390,362 @@ const registerRateLimit = createRateLimitMiddleware({
   ],
 });
 
+// Crée l'entreprise (en aperçu, configuration guidée à faire) et son
+// propriétaire. Utilisé par l'inscription e-mail et par Google.
+async function createOwnerAccount(client, { email, displayName, phone = null, companyName = null, password = null, googleSub = null, emailVerified = false }) {
+  const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
+  if (existing.rows[0]) throw Object.assign(new Error('email_taken'), { code: 'email_taken' });
+  const name = companyName || 'Mon entreprise';
+  let slug = slugifyCompany(name);
+  const slugTaken = await client.query('SELECT 1 FROM companies WHERE slug = $1', [slug]);
+  if (slugTaken.rows[0]) slug = `${slug}-${crypto.randomBytes(3).toString('hex')}`;
+  const company = await client.query(
+    `INSERT INTO companies (name, slug, activation_status, onboarding_status, admin_email)
+     VALUES ($1, $2, 'preview', 'pending', $3) RETURNING id`,
+    [name, slug, email]
+  );
+  const companyId = company.rows[0].id;
+  const salt = crypto.randomBytes(16).toString('hex');
+  // Compte Google sans mot de passe : empreinte d'un secret aléatoire jamais
+  // communiqué (« Mot de passe oublié » permet d'en définir un plus tard).
+  const secret = password || randomToken(32);
+  const createdUser = await client.query(
+    `INSERT INTO users (email, display_name, phone, password_salt, password_hash, google_sub, email_verified_at)
+     VALUES ($1, $2, $3, $4, $5, $6, ${emailVerified ? 'NOW()' : 'NULL'}) RETURNING id`,
+    [email, displayName, phone, salt, hashPassword(secret, salt), googleSub]
+  );
+  const userId = createdUser.rows[0].id;
+  await client.query(`INSERT INTO company_memberships (company_id, user_id, role) VALUES ($1, $2, 'owner')`, [companyId, userId]);
+  await client.query(
+    `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+     VALUES ($1, $2, 'company', $3, 'company_registered', jsonb_build_object('activation_status', 'preview', 'method', $4::text))`,
+    [companyId, userId, companyId, googleSub ? 'google' : 'email']
+  );
+  return { userId, companyId };
+}
+
+// Inscription courte (e-mail + mot de passe) : le nom de l'activité, la ville
+// et l'équipe sont demandés ensuite, dans la configuration guidée.
 app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Base métier non configurée.');
   const body = req.body || {};
-  const companyName = String(body.companyName || '').trim();
-  const ownerName = String(body.ownerName || '').trim();
   const email = normalizeEmail(body.email);
-  const phone = String(body.phone || '').trim();
   const password = String(body.password || '');
+  const companyName = String(body.companyName || '').trim() || null;
+  const ownerName = String(body.ownerName || '').trim();
+  const phone = String(body.phone || '').trim() || null;
 
   let fieldError = null;
-  if (companyName.length < 2 || companyName.length > 120) fieldError = 'company';
-  else if (ownerName.length < 2 || ownerName.length > 120) fieldError = 'name';
-  else if (!email || email.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fieldError = 'email';
-  else if (phone.length < 6 || phone.length > 30) fieldError = 'phone';
+  if (!email || email.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fieldError = 'email';
   else if (password.length < 10 || password.length > 200) fieldError = 'password';
-  if (fieldError) return res.redirect(`/app/login?tab=register&error=${fieldError}`);
+  else if (companyName && (companyName.length < 2 || companyName.length > 120)) fieldError = 'company';
+  else if (phone && (phone.length < 6 || phone.length > 30)) fieldError = 'phone';
+  if (fieldError) return res.redirect(`/app/register?error=${fieldError}`);
 
   const client = await pool.connect();
-  let userId;
-  let companyId;
+  let account;
   try {
     await client.query('BEGIN');
-    const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
-    if (existing.rows[0]) throw Object.assign(new Error('email_taken'), { code: 'email_taken' });
-
-    let slug = slugifyCompany(companyName);
-    const slugTaken = await client.query('SELECT 1 FROM companies WHERE slug = $1', [slug]);
-    if (slugTaken.rows[0]) slug = `${slug}-${crypto.randomBytes(3).toString('hex')}`;
-
-    const company = await client.query(
-      `INSERT INTO companies (name, slug, activation_status) VALUES ($1, $2, 'preview') RETURNING id`,
-      [companyName, slug]
-    );
-    companyId = company.rows[0].id;
-
-    const salt = crypto.randomBytes(16).toString('hex');
-    const createdUser = await client.query(
-      `INSERT INTO users (email, display_name, phone, password_salt, password_hash)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [email, ownerName, phone, salt, hashPassword(password, salt)]
-    );
-    userId = createdUser.rows[0].id;
-
-    await client.query(
-      `INSERT INTO company_memberships (company_id, user_id, role) VALUES ($1, $2, 'owner')`,
-      [companyId, userId]
-    );
-    await client.query(
-      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
-       VALUES ($1, $2, 'company', $3, 'company_registered', jsonb_build_object('activation_status', 'preview'))`,
-      [companyId, userId, companyId]
-    );
+    account = await createOwnerAccount(client, {
+      email,
+      displayName: (ownerName || email.split('@')[0]).slice(0, 120),
+      phone,
+      companyName,
+      password,
+    });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
-    if (error.code === 'email_taken') return res.redirect('/app/login?tab=register&error=email_taken');
+    if (error.code === 'email_taken') return res.redirect('/app/register?error=email_taken');
     console.error('Registration error:', error.message);
-    return res.redirect('/app/login?tab=register&error=server');
+    return res.redirect('/app/register?error=server');
   } finally {
     client.release();
   }
 
-  // No auto-login: the new owner confirms their credentials by signing in.
-  return res.redirect('/app/login?created=1');
+  // Adresse confirmée par code avant d'entrer ; sans fournisseur d'e-mail
+  // configuré, la session s'ouvre directement.
+  if (loginCodesEnabled()) {
+    const started = await startLoginCode(req, res, {
+      userId: account.userId, email, companyId: account.companyId, role: 'owner', purpose: 'signup', remember: false,
+    });
+    if (started) return res.redirect('/app/login/code');
+    return res.redirect('/app/login?created=1&error=code_send');
+  }
+  await createSession(req, res, account.userId, account.companyId, 'company');
+  return res.redirect('/app/bienvenue');
+}));
+
+app.get('/app/register', (_req, res) => sendShell(res, 'app-register.html'));
+app.get('/app/auth/config', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ google: googleAuthConfigured(), supportEmail: process.env.SUPPORT_EMAIL || 'support@gettraxo.app' });
+});
+app.get('/confidentialite', (_req, res) => sendShell(res, 'legal-privacy.html'));
+app.get('/conditions', (_req, res) => sendShell(res, 'legal-terms.html'));
+
+// --- Connexion avec Google (OpenID Connect, flux « authorization code » + PKCE) ---
+// Active seulement si GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET sont définis ;
+// sinon le bouton n'est pas affiché. URI de redirection à déclarer chez
+// Google : <APP_BASE_URL>/app/auth/google/callback
+function googleAuthConfigured() {
+  return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+}
+const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
+function googleRedirectUri(req) {
+  return `${publicBaseUrl(req)}/app/auth/google/callback`;
+}
+function setOauthCookie(req, res, value, maxAge) {
+  res.append('Set-Cookie', `traxo_oauth=${encodeURIComponent(value)}; Path=/app/auth; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${cookieFlags(req)}`);
+}
+// Contenu du cookie signé (HMAC) : état anti-CSRF, nonce, vérificateur PKCE.
+function oauthCookieKey() {
+  return crypto.createHash('sha256').update(`google-oauth:v1:${loginCodePepper()}`).digest();
+}
+function sealOauth(payload) {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const mac = crypto.createHmac('sha256', oauthCookieKey()).update(data).digest('base64url');
+  return `${data}.${mac}`;
+}
+function openOauth(value) {
+  const [data, mac] = String(value || '').split('.');
+  if (!data || !mac) return null;
+  const expected = crypto.createHmac('sha256', oauthCookieKey()).update(data).digest('base64url');
+  if (mac.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+    return payload && payload.exp > Date.now() ? payload : null;
+  } catch { return null; }
+}
+
+app.get('/app/auth/google', (req, res) => {
+  if (!googleAuthConfigured()) return res.redirect('/app/login?error=google_off');
+  const state = randomToken(24);
+  const nonce = randomToken(24);
+  const verifier = randomToken(48);
+  const from = req.query.from === 'register' ? 'register' : 'login';
+  setOauthCookie(req, res, sealOauth({ state, nonce, verifier, from, remember: wantsRemember(req.query.remember), exp: Date.now() + 10 * 60 * 1000 }), 600);
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    redirect_uri: googleRedirectUri(req),
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    nonce,
+    code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+    prompt: 'select_account',
+  });
+  return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res) => {
+  const saved = openOauth(parseCookies(req).traxo_oauth);
+  setOauthCookie(req, res, '', 0);
+  const back = saved && saved.from === 'register' ? '/app/register' : '/app/login';
+  if (!pool || !googleAuthConfigured()) return res.redirect(`${back}?error=google_off`);
+  if (req.query.error) return res.redirect(`${back}?error=google_cancel`);
+  const state = String(req.query.state || '');
+  if (!saved || !state || state.length !== saved.state.length || !crypto.timingSafeEqual(Buffer.from(state), Buffer.from(saved.state))) {
+    return res.redirect(`${back}?error=google`);
+  }
+  let claims;
+  try {
+    const token = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
+      code: String(req.query.code || ''),
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: googleRedirectUri(req),
+      grant_type: 'authorization_code',
+      code_verifier: saved.verifier,
+    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 10000 });
+    // Jeton reçu directement de Google (TLS, authentification client) : on
+    // contrôle émetteur, audience, expiration et nonce (OIDC Core §3.1.3.7).
+    const payload = String(token.data.id_token || '').split('.')[1];
+    claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch (error) {
+    console.error('Google OAuth token error:', error.response?.data?.error || error.message);
+    return res.redirect(`${back}?error=google`);
+  }
+  const email = normalizeEmail(claims.email);
+  const valid = claims && GOOGLE_ISSUERS.includes(claims.iss) && claims.aud === process.env.GOOGLE_CLIENT_ID
+    && Number(claims.exp) * 1000 > Date.now() && claims.nonce === saved.nonce && claims.sub && email
+    && (claims.email_verified === true || claims.email_verified === 'true');
+  if (!valid) return res.redirect(`${back}?error=google`);
+
+  const sub = String(claims.sub);
+  const displayName = String(claims.name || claims.given_name || email.split('@')[0]).trim().slice(0, 120);
+  let user = (await pool.query(
+    `SELECT u.id, u.disabled, u.google_sub, u.email_verified_at, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
+     FROM users u LEFT JOIN company_memberships m ON m.user_id = u.id LEFT JOIN companies c ON c.id = m.company_id
+     WHERE u.google_sub = $1 OR u.email = $2
+     ORDER BY (u.google_sub = $1) DESC NULLS LAST, m.id LIMIT 1`,
+    [sub, email]
+  )).rows[0];
+  if (user && user.disabled) return res.redirect(`${back}?error=disabled`);
+  if (user && user.google_sub && user.google_sub !== sub) return res.redirect(`${back}?error=google_other`);
+  if (user && !user.google_sub) {
+    // Première connexion Google sur un compte existant. Si l'adresse n'avait
+    // jamais été confirmée, un tiers a pu créer ce compte avec un mot de passe
+    // choisi par lui : on invalide ce mot de passe et ses sessions.
+    const unverified = !user.email_verified_at;
+    const salt = crypto.randomBytes(16).toString('hex');
+    await pool.query(
+      `UPDATE users SET google_sub = $1, email_verified_at = COALESCE(email_verified_at, NOW()),
+         password_salt = CASE WHEN $2 THEN $3 ELSE password_salt END,
+         password_hash = CASE WHEN $2 THEN $4 ELSE password_hash END, updated_at = NOW()
+       WHERE id = $5`,
+      [sub, unverified, salt, hashPassword(randomToken(32), salt), user.id]
+    );
+    if (unverified) await pool.query('DELETE FROM app_sessions WHERE user_id = $1', [user.id]);
+  }
+  if (!user) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const account = await createOwnerAccount(client, { email, displayName, googleSub: sub, emailVerified: true });
+      await client.query('COMMIT');
+      user = { id: account.userId, company_id: account.companyId, role: 'owner', onboarding_status: 'pending' };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Google registration error:', error.message);
+      return res.redirect(`${back}?error=server`);
+    } finally {
+      client.release();
+    }
+  }
+  if (!user.company_id || !user.role) return res.redirect(`${back}?error=no_company`);
+  if (user.totp_enabled_at) {
+    await startTotpChallenge(req, res, { userId: user.id, companyId: user.company_id, role: user.role, remember: saved.remember });
+    return res.redirect('/app/login/2fa');
+  }
+  await trustDevice(req, res, user.id);
+  await createSession(req, res, user.id, user.company_id, 'company', { remember: saved.remember });
+  return res.redirect(homeAfterLogin(user.role, user.onboarding_status));
+}));
+
+// --- Configuration guidée (après inscription) ---
+const ONBOARDING_CATEGORIES = ['restaurant', 'commerce', 'vente-en-ligne', 'livraison', 'autre'];
+const ONBOARDING_FLEET = ['Pas encore', '1', '2–5', '6–12', '13 et plus'];
+const COUNTRY_TIMEZONES = {
+  'Bénin': 'Africa/Porto-Novo', 'Côte d’Ivoire': 'Africa/Abidjan', 'Togo': 'Africa/Lome', 'Sénégal': 'Africa/Dakar',
+  'Burkina Faso': 'Africa/Ouagadougou', 'Cameroun': 'Africa/Douala', 'Mali': 'Africa/Bamako', 'Niger': 'Africa/Niamey',
+  'Ghana': 'Africa/Accra', 'Nigeria': 'Africa/Lagos', 'République démocratique du Congo': 'Africa/Kinshasa', 'France': 'Europe/Paris',
+};
+function onboardingSession(req, res, api) {
+  return readSession(req, 'company').then((session) => {
+    if (!session) {
+      if (api) res.status(401).json({ error: 'Votre session a expiré. Reconnectez-vous.' });
+      else res.redirect('/app/login');
+      return null;
+    }
+    if (session.role !== 'owner' || session.onboarding_status !== 'pending') {
+      if (api) res.status(409).json({ error: 'La configuration de ce compte est déjà terminée.', redirect: homeAfterLogin(session.role, 'done') });
+      else res.redirect(homeAfterLogin(session.role, 'done'));
+      return null;
+    }
+    return session;
+  });
+}
+app.get('/app/bienvenue', asyncRoute(async (req, res) => {
+  const session = await onboardingSession(req, res, false);
+  if (session) return sendShell(res, 'onboarding.html');
+}));
+app.get('/api/onboarding', asyncRoute(async (req, res) => {
+  const session = await onboardingSession(req, res, true);
+  if (!session) return;
+  const row = (await pool.query(
+    `SELECT u.display_name, u.phone, u.email, c.name, c.country, c.city
+     FROM users u JOIN companies c ON c.id = $2 WHERE u.id = $1`,
+    [session.user_id, session.company_id]
+  )).rows[0] || {};
+  const emailLocal = String(row.email || '').split('@')[0];
+  return res.json({
+    name: row.display_name && row.display_name !== emailLocal ? row.display_name : '',
+    business: row.name && row.name !== 'Mon entreprise' ? row.name : '',
+    country: row.country || '',
+    city: row.city || '',
+    phone: row.phone || '',
+  });
+}));
+app.post('/api/onboarding', asyncRoute(async (req, res) => {
+  const session = await onboardingSession(req, res, true);
+  if (!session) return;
+  const body = req.body || {};
+  const text = (value, max) => String(value == null ? '' : value).trim().slice(0, max);
+  const business = text(body.business, 70);
+  const category = text(body.category, 30);
+  const country = text(body.country, 60);
+  const city = text(body.city, 70);
+  const name = text(body.name, 80);
+  const prefix = text(body.prefix, 5);
+  const phoneRaw = text(body.phone, 30);
+  const fleet = text(body.fleet, 20);
+  if (business.length < 2) return res.status(400).json({ error: 'Il nous manque le nom de votre activité.', field: 'business' });
+  if (!ONBOARDING_CATEGORIES.includes(category)) return res.status(400).json({ error: 'Choisissez l’activité qui vous correspond le mieux.', field: 'category' });
+  if (!country) return res.status(400).json({ error: 'Choisissez le pays où vous travaillez.', field: 'country' });
+  if (!city) return res.status(400).json({ error: 'Indiquez votre ville principale.', field: 'city' });
+  if (name.length < 2) return res.status(400).json({ error: 'Indiquez votre prénom et votre nom.', field: 'name' });
+  let phone = null;
+  if (phoneRaw) {
+    const digits = phoneRaw.replace(/\D/g, '');
+    if (!/^\+[1-9]\d{0,3}$/.test(prefix) || digits.length < 6 || digits.length > 15 || !/^[\d\s().-]+$/.test(phoneRaw)) {
+      return res.status(400).json({ error: 'Ce numéro semble incomplet. Vérifiez aussi l’indicatif.', field: 'phone' });
+    }
+    phone = `${prefix} ${phoneRaw}`;
+  }
+  if (!ONBOARDING_FLEET.includes(fleet)) return res.status(400).json({ error: 'Choisissez une estimation, même si vous n’avez pas encore de livreur.', field: 'fleet' });
+  let logo = null;
+  if (body.logo) {
+    const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(body.logo));
+    const buffer = match ? Buffer.from(match[2], 'base64') : null;
+    if (!match || buffer.length < 64 || buffer.length > 600 * 1024 || detectImageMime(buffer) !== match[1]) {
+      return res.status(400).json({ error: 'Ce logo n’a pas pu être enregistré. Choisissez une image PNG, JPG ou WebP de moins de 2 Mo.', field: 'logo' });
+    }
+    logo = { buffer, mime: match[1] };
+  }
+  const timezone = COUNTRY_TIMEZONES[country];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const current = (await client.query('SELECT slug FROM companies WHERE id = $1 FOR UPDATE', [session.company_id])).rows[0];
+    let slug = current && current.slug;
+    // L'identifiant provisoire (« mon-entreprise… ») prend le nom de l'activité.
+    if (!slug || slug.startsWith('mon-entreprise')) {
+      slug = slugifyCompany(business);
+      const taken = await client.query('SELECT 1 FROM companies WHERE slug = $1 AND id <> $2', [slug, session.company_id]);
+      if (taken.rows[0]) slug = `${slug}-${crypto.randomBytes(3).toString('hex')}`;
+    }
+    await client.query(
+      `UPDATE companies SET name = $1, slug = $2, business_type = $3, country = $4, city = $5, fleet_estimate = $6,
+         timezone = COALESCE($7, timezone), onboarding_status = 'done', onboarding_completed_at = NOW(), updated_at = NOW()
+       WHERE id = $8`,
+      [business, slug, category, country, city, fleet, timezone && companyTimezones.includes(timezone) ? timezone : null, session.company_id]
+    );
+    if (logo) {
+      await client.query(
+        'UPDATE companies SET logo_data = $1, logo_mime = $2, logo_updated_at = NOW() WHERE id = $3',
+        [logo.buffer, logo.mime, session.company_id]
+      );
+    }
+    await client.query(
+      'UPDATE users SET display_name = $1, phone = COALESCE($2, phone), updated_at = NOW() WHERE id = $3',
+      [name, phone, session.user_id]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'company', $1, 'onboarding_completed', jsonb_build_object('business_type', $3::text, 'country', $4::text, 'fleet', $5::text))`,
+      [session.company_id, session.user_id, category, country, fleet]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Onboarding error:', error.message);
+    return res.status(500).json({ error: 'Vos informations n’ont pas pu être enregistrées. Réessayez dans un instant.' });
+  } finally {
+    client.release();
+  }
+  return res.json({ ok: true, redirect: '/app' });
 }));
 
 // --- Mot de passe oublié (OWASP Forgot Password) ---
@@ -2268,7 +2824,7 @@ app.post('/app/reset', forgotRateLimit, asyncRoute(async (req, res) => {
     }
     const salt = crypto.randomBytes(16).toString('hex');
     await client.query(
-      'UPDATE users SET password_salt = $1, password_hash = $2, password_changed_at = NOW() WHERE id = $3',
+      'UPDATE users SET password_salt = $1, password_hash = $2, password_changed_at = NOW(), email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = $3',
       [salt, hashPassword(password, salt), reset.user_id]
     );
     await client.query('UPDATE password_resets SET used_at = NOW() WHERE token_hash = $1', [digest(token)]);
@@ -3484,6 +4040,14 @@ async function sendViaBrevoApi({ from, to, subject, html, text }) {
 async function sendEmail({ to, subject, html, text }) {
   if (!to) return { sent: false, reason: 'no_recipient' };
   const from = emailFrom();
+  // Tests locaux uniquement : les e-mails sont écrits dans un dossier au lieu
+  // d'être envoyés (jamais en production).
+  const outbox = process.env.EMAIL_OUTBOX_DIR;
+  if (outbox && process.env.NODE_ENV !== 'production' && process.env.RAILWAY_ENVIRONMENT_NAME !== 'production') {
+    fs.mkdirSync(outbox, { recursive: true });
+    fs.writeFileSync(path.join(outbox, `${Date.now()}-${crypto.randomBytes(3).toString('hex')}.json`), JSON.stringify({ from, to, subject, html, text }));
+    return { sent: true, via: 'outbox' };
+  }
   if (process.env.BREVO_API_KEY) {
     try {
       await sendViaBrevoApi({ from, to, subject, html, text });

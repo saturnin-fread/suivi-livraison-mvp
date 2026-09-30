@@ -12,6 +12,7 @@ const { parsePhoneNumberFromString } = require('libphonenumber-js/max');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
 const totpLib = require('./lib/totp');
+const { WhatsAppChannel, internationalDigits, maskPhone } = require('./lib/whatsapp');
 const QRCode = require('qrcode');
 const {
   applyCrmSchema,
@@ -918,6 +919,12 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE mfa_challenges ADD COLUMN IF NOT EXISTS remember BOOLEAN NOT NULL DEFAULT FALSE;
+      -- Session WhatsApp (Baileys), chiffrée ; une ligne par clé.
+      CREATE TABLE IF NOT EXISTS whatsapp_auth (
+        id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
       -- Code de vérification envoyé par e-mail (inscription, nouvel appareil).
       -- Code haché avec un secret serveur ; 10 min, 5 essais, 5 envois max.
       CREATE TABLE IF NOT EXISTS login_codes (
@@ -934,6 +941,7 @@ async function initDatabase() {
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE login_codes ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email';
       -- Appareils reconnus après un code valide : pas de nouveau code pendant 30 jours.
       CREATE TABLE IF NOT EXISTS trusted_devices (
         token_hash TEXT NOT NULL,
@@ -1576,6 +1584,11 @@ async function initDatabase() {
       platformAdmin: true,
     });
 
+    const platformAdmins = String(process.env.PLATFORM_ADMIN_EMAILS || '').split(',').map(normalizeEmail).filter(Boolean);
+    if (platformAdmins.length) {
+      await client.query('UPDATE users SET is_platform_admin = TRUE WHERE email = ANY($1) AND is_platform_admin = FALSE', [platformAdmins]);
+    }
+
     await client.query('DELETE FROM app_sessions WHERE expires_at <= NOW()');
     await client.query('COMMIT');
   } catch (error) {
@@ -2110,6 +2123,31 @@ async function sendLoginCodeEmail(req, email, code, purpose) {
   const text = `${intro}\n\nCode : ${code}\n\nValable 10 minutes. Ne le communiquez à personne.`;
   return sendEmail({ to: email, subject: `${code} — votre code TRAXO`, html, text });
 }
+// Canal WhatsApp (numéro TRAXO relié depuis Paramètres › WhatsApp).
+const whatsapp = new WhatsAppChannel({
+  pool,
+  secret: process.env.WHATSAPP_SECRET || process.env.MFA_SECRET || trackingTokenSecret(),
+});
+// Tests locaux uniquement : canal simulé qui écrit les messages dans
+// EMAIL_OUTBOX_DIR (jamais en production).
+if (process.env.WHATSAPP_FAKE === 'outbox' && process.env.EMAIL_OUTBOX_DIR
+  && process.env.NODE_ENV !== 'production' && process.env.RAILWAY_ENVIRONMENT_NAME !== 'production') {
+  whatsapp.isReady = () => true;
+  whatsapp.sendText = async (phone, text) => {
+    if (!internationalDigits(phone)) throw Object.assign(new Error('bad_number'), { code: 'bad_number' });
+    fs.mkdirSync(process.env.EMAIL_OUTBOX_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.EMAIL_OUTBOX_DIR, `${Date.now()}-wa.json`), JSON.stringify({ whatsapp: internationalDigits(phone), text }));
+    return { jid: `${internationalDigits(phone)}@s.whatsapp.net` };
+  };
+}
+function whatsappAvailableFor(phone) {
+  return whatsapp.isReady() && Boolean(internationalDigits(phone));
+}
+async function sendLoginCodeWhatsApp(phone, code, purpose) {
+  const intro = purpose === 'signup' ? 'pour confirmer votre compte TRAXO' : 'pour vous connecter à TRAXO';
+  return whatsapp.sendText(phone, `*${code}* est votre code ${intro}.\n\nIl expire dans 10 minutes. Ne le communiquez à personne : l’équipe TRAXO ne vous le demandera jamais.`);
+}
+
 // Crée le défi, envoie le code et pose le cookie ; renvoie false si l'e-mail
 // n'a pas pu partir (l'appelant affiche alors une erreur).
 async function startLoginCode(req, res, { userId, email, companyId, role, purpose, remember }) {
@@ -2175,7 +2213,7 @@ async function findLoginCode(queryable, req, { lock = false } = {}) {
   const challenge = String(parseCookies(req).traxo_verify || '');
   if (!challenge) return { challenge, row: null };
   const row = (await queryable.query(
-    `SELECT l.*, u.email FROM login_codes l JOIN users u ON u.id = l.user_id
+    `SELECT l.*, u.email, u.phone FROM login_codes l JOIN users u ON u.id = l.user_id
      WHERE l.token_hash = $1 AND l.expires_at > NOW()${lock ? ' FOR UPDATE OF l' : ''}`,
     [digest(challenge)]
   )).rows[0] || null;
@@ -2191,6 +2229,8 @@ app.get('/app/login/code/state', asyncRoute(async (req, res) => {
   return res.json({
     email: maskEmail(row.email),
     purpose: row.purpose,
+    channel: row.channel,
+    whatsapp: whatsappAvailableFor(row.phone) ? maskPhone(row.phone) : null,
     resendIn: row.sends >= LOGIN_CODE_MAX_SENDS ? null : wait,
     attemptsLeft: Math.max(0, LOGIN_CODE_MAX_ATTEMPTS - row.attempts),
   });
@@ -2201,19 +2241,36 @@ app.post('/app/login/code/resend', loginRateLimit, asyncRoute(async (req, res) =
   const { challenge, row } = await findLoginCode(pool, req);
   if (!row) return res.status(410).json({ error: 'Ce code a expiré. Reconnectez-vous pour en recevoir un nouveau.' });
   if (row.sends >= LOGIN_CODE_MAX_SENDS) return res.status(429).json({ error: 'Nombre maximal d’envois atteint. Reconnectez-vous dans quelques minutes.' });
+  const channel = (req.body && req.body.channel) === 'whatsapp' ? 'whatsapp' : 'email';
+  if (channel === 'whatsapp' && !whatsappAvailableFor(row.phone)) {
+    return res.status(409).json({ error: 'L’envoi par WhatsApp n’est pas disponible pour ce compte. Utilisez l’e-mail.' });
+  }
+  // Changer de canal est permis tout de suite ; renvoyer sur le même canal, toutes les 30 s.
   const elapsed = (Date.now() - new Date(row.last_sent_at).getTime()) / 1000;
-  if (elapsed < LOGIN_CODE_RESEND_S) return res.status(429).json({ error: 'Patientez quelques secondes avant de demander un nouveau code.', resendIn: Math.ceil(LOGIN_CODE_RESEND_S - elapsed) });
+  if (channel === row.channel && elapsed < LOGIN_CODE_RESEND_S) return res.status(429).json({ error: 'Patientez quelques secondes avant de demander un nouveau code.', resendIn: Math.ceil(LOGIN_CODE_RESEND_S - elapsed) });
   const code = newLoginCode();
   const updated = await pool.query(
-    `UPDATE login_codes SET code_hash = $1, sends = sends + 1, attempts = 0, last_sent_at = NOW(), expires_at = $2
+    `UPDATE login_codes SET code_hash = $1, sends = sends + 1, attempts = 0, last_sent_at = NOW(), expires_at = $2, channel = $5
      WHERE token_hash = $3 AND sends = $4 RETURNING sends`,
-    [loginCodeHash(challenge, code), new Date(Date.now() + LOGIN_CODE_TTL_MS), digest(challenge), row.sends]
+    [loginCodeHash(challenge, code), new Date(Date.now() + LOGIN_CODE_TTL_MS), digest(challenge), row.sends, channel]
   );
   if (!updated.rowCount) return res.status(429).json({ error: 'Un code vient déjà d’être envoyé.', resendIn: LOGIN_CODE_RESEND_S });
-  const sent = await sendLoginCodeEmail(req, row.email, code, row.purpose);
-  if (!sent.sent) return res.status(502).json({ error: 'L’e-mail n’a pas pu être envoyé. Réessayez dans un instant.' });
+  if (channel === 'whatsapp') {
+    try {
+      await sendLoginCodeWhatsApp(row.phone, code, row.purpose);
+    } catch (error) {
+      console.error('Login code WhatsApp failed:', error.code || error.message);
+      const message = error.code === 'not_on_whatsapp'
+        ? 'Votre numéro n’a pas de compte WhatsApp. Utilisez l’e-mail.'
+        : 'Le code n’a pas pu être envoyé sur WhatsApp. Utilisez l’e-mail.';
+      return res.status(502).json({ error: message, channel: 'email' });
+    }
+  } else {
+    const sent = await sendLoginCodeEmail(req, row.email, code, row.purpose);
+    if (!sent.sent) return res.status(502).json({ error: 'L’e-mail n’a pas pu être envoyé. Réessayez dans un instant.' });
+  }
   setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
-  return res.json({ ok: true, resendIn: updated.rows[0].sends >= LOGIN_CODE_MAX_SENDS ? null : LOGIN_CODE_RESEND_S });
+  return res.json({ ok: true, channel, resendIn: updated.rows[0].sends >= LOGIN_CODE_MAX_SENDS ? null : LOGIN_CODE_RESEND_S });
 }));
 
 app.post('/app/login/code', loginRateLimit, asyncRoute(async (req, res) => {
@@ -2438,6 +2495,7 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
   let fieldError = null;
   if (!email || email.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fieldError = 'email';
   else if (password.length < 10 || password.length > 200) fieldError = 'password';
+  else if (body.passwordConfirm != null && String(body.passwordConfirm) !== password) fieldError = 'password_mismatch';
   else if (companyName && (companyName.length < 2 || companyName.length > 120)) fieldError = 'company';
   else if (phone && (phone.length < 6 || phone.length > 30)) fieldError = 'phone';
   if (fieldError) return res.redirect(`/app/register?error=${fieldError}`);
@@ -2622,6 +2680,48 @@ app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res)
   await trustDevice(req, res, user.id);
   await createSession(req, res, user.id, user.company_id, 'company', { remember: saved.remember });
   return res.redirect(homeAfterLogin(user.role, user.onboarding_status));
+}));
+
+// --- WhatsApp TRAXO : liaison du numéro (administrateur plateforme uniquement) ---
+function requirePlatformAdminApi(req, res, next) {
+  return readSession(req, 'company').then((session) => {
+    if (!session) return res.status(401).json({ error: 'Session requise.' });
+    if (!session.is_platform_admin) return res.status(403).json({ error: 'Réservé à l’administrateur de la plateforme TRAXO.' });
+    req.auth = session;
+    return next();
+  }).catch(next);
+}
+app.get('/api/app/whatsapp', requirePlatformAdminApi, (_req, res) => res.json(whatsapp.snapshot()));
+app.post('/api/app/whatsapp/link', requirePlatformAdminApi, asyncRoute(async (req, res) => {
+  const method = req.body && req.body.method === 'code' ? 'code' : 'qr';
+  let phone = null;
+  if (method === 'code') {
+    phone = internationalDigits(req.body.phone);
+    if (!phone) return res.status(400).json({ error: 'Indiquez le numéro avec son indicatif, par exemple +229 01 40 05 67 66.' });
+  }
+  if (whatsapp.isReady()) return res.status(409).json({ error: 'Un numéro est déjà relié. Déliez-le d’abord.' });
+  await whatsapp.logout().catch(() => {});
+  await whatsapp.connect({ phone });
+  await writeAudit(req.auth, 'platform', null, 'whatsapp_link_started', { method });
+  return res.json(whatsapp.snapshot());
+}));
+app.post('/api/app/whatsapp/cancel', requirePlatformAdminApi, asyncRoute(async (_req, res) => {
+  if (!whatsapp.isReady()) await whatsapp.logout().catch(() => {});
+  return res.json(whatsapp.snapshot());
+}));
+app.post('/api/app/whatsapp/logout', requirePlatformAdminApi, asyncRoute(async (req, res) => {
+  await whatsapp.logout();
+  await writeAudit(req.auth, 'platform', null, 'whatsapp_unlinked', {});
+  return res.json(whatsapp.snapshot());
+}));
+app.post('/api/app/whatsapp/test', requirePlatformAdminApi, asyncRoute(async (req, res) => {
+  const phone = String(req.body && req.body.phone || '').trim();
+  try {
+    await whatsapp.sendText(phone, 'Message de test TRAXO : le canal WhatsApp fonctionne.');
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  return res.json({ ok: true, ...whatsapp.snapshot() });
 }));
 
 // --- Configuration guidée (après inscription) ---
@@ -3147,7 +3247,7 @@ app.post('/api/app/invitations/:id/revoke', requireCompanyApi, requireCompanyRol
 }));
 
 app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
-  user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
+  user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role, isPlatformAdmin: Boolean(req.auth.is_platform_admin) },
   company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug, activationStatus: req.auth.activation_status || 'active', logoUrl: companyLogoUrl(req.auth.company_id, req.auth.company_logo_at) },
   supportEmail: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(process.env.SUPPORT_EMAIL || '')) ? process.env.SUPPORT_EMAIL : null,
   // Domaine canonique des liens partagés aux clients (APP_BASE_URL), quel que
@@ -3163,7 +3263,7 @@ app.get('/api/driver/context', requireDriverApi, asyncRoute(async (req, res) => 
   );
   if (!driver.rows[0] || !driver.rows[0].active) return res.status(403).json({ error: 'Ce profil livreur est désactivé.' });
   return res.json({
-    user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
+    user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role, isPlatformAdmin: Boolean(req.auth.is_platform_admin) },
     company: { id: req.auth.company_id, name: req.auth.company_name },
     driver: driver.rows[0],
   });
@@ -8807,6 +8907,7 @@ initDatabase()
     }
   })
   .then(() => app.listen(port, () => console.log(`Delivery SaaS listening on port ${port}`)))
+  .then(() => { whatsapp.start().catch((error) => console.error('WhatsApp start failed:', error.message)); })
   .catch((error) => {
     console.error('Database initialization failed:', error.message);
     process.exit(1);

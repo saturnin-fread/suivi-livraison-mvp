@@ -1900,3 +1900,11 @@ button.danger-solid:hover, .button.danger-solid:hover { background: var(--red-da
   .cp-foot { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .cp-backdrop, .cp { animation: none; } }
+
+/* WhatsApp TRAXO (Paramètres, administrateur plateforme) */
+.wa-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 16px 0 8px; }
+.wa-form .field { flex: 1 1 260px; margin: 0; }
+.wa-steps { margin: 14px 0; padding-left: 20px; line-height: 1.8; color: var(--ink, #111); }
+.wa-code { margin: 6px 0 4px; font-size: clamp(30px, 6vw, 44px); font-weight: 800; letter-spacing: .14em; font-variant-numeric: tabular-nums; }
+.wa-qr { display: grid; place-items: start; margin: 6px 0; }
+.wa-qr img { border-radius: 12px; border: 1px solid var(--line, #e5e7eb); background: #fff; padding: 8px; }

@@ -44,6 +44,14 @@
             </div>
             <p class="ax-hint" id="regPasswordHint">10 caractères minimum. Une courte phrase est plus facile à retenir.</p>
           </div>
+          <div class="ax-field">
+            <label class="ax-label" for="regConfirm">Confirmer le mot de passe</label>
+            <div class="ax-pw">
+              <input class="ax-input" id="regConfirm" name="passwordConfirm" type="password" autocomplete="new-password" minlength="10" maxlength="200" placeholder="Saisissez-le une seconde fois" aria-describedby="regConfirmHint" required />
+              <button type="button" data-toggle-pw="regConfirm" aria-pressed="false" aria-label="Afficher la confirmation">Afficher</button>
+            </div>
+            <p class="ax-hint" id="regConfirmHint" aria-live="polite"></p>
+          </div>
           <button class="ax-submit" type="submit" data-busy="Création du compte…"><span class="ax-spin" aria-hidden="true"></span><span data-label>Créer mon compte</span></button>
           <p class="ax-legal">En créant un compte, vous acceptez nos <a href="/conditions" target="_blank" rel="noopener">Conditions d’utilisation</a> et notre <a href="/confidentialite" target="_blank" rel="noopener">Politique de confidentialité</a>.</p>
         </form>
@@ -71,10 +79,13 @@
         var form = document.getElementById('registerForm');
         var email = document.getElementById('regEmail');
         var password = document.getElementById('regPassword');
+        var confirm = document.getElementById('regConfirm');
+        var confirmHint = document.getElementById('regConfirmHint');
         var messages = {
           email: 'Cette adresse e‑mail semble incomplète (ex. : vous@exemple.com).',
           email_taken: 'Un compte existe déjà avec cette adresse. Connectez-vous, ou utilisez « Mot de passe oublié ? ».',
           password: 'Choisissez un mot de passe d’au moins 10 caractères.',
+          password_mismatch: 'Les deux mots de passe ne correspondent pas.',
           company: 'Le nom de l’entreprise doit contenir entre 2 et 120 caractères.',
           phone: 'Ce numéro de téléphone semble incorrect.',
           server: 'Votre compte n’a pas pu être créé à cause d’un problème technique. Réessayez dans un instant.',
@@ -91,7 +102,7 @@
           }
         }
         form.addEventListener('submit', function (event) {
-          [email, password].forEach(function (input) { input.removeAttribute('aria-invalid'); });
+          [email, password, confirm].forEach(function (input) { input.removeAttribute('aria-invalid'); });
           if (!email.value.trim() || !email.checkValidity()) {
             event.preventDefault();
             email.setAttribute('aria-invalid', 'true');
@@ -104,8 +115,25 @@
             password.setAttribute('aria-invalid', 'true');
             TraxoAuth.showBanner(password.value ? 'Encore ' + (10 - password.value.length) + ' caractère' + (10 - password.value.length > 1 ? 's' : '') + ' : le mot de passe doit en contenir au moins 10.' : 'Choisissez un mot de passe.', 'error');
             password.focus();
+            return;
+          }
+          if (confirm.value !== password.value) {
+            event.preventDefault();
+            confirm.setAttribute('aria-invalid', 'true');
+            TraxoAuth.showBanner(confirm.value ? 'Les deux mots de passe ne correspondent pas.' : 'Saisissez le mot de passe une seconde fois pour le confirmer.', 'error');
+            confirm.focus();
           }
         }, true);
+        // Indication en direct : les deux saisies correspondent-elles ?
+        function checkMatch() {
+          if (!confirm.value) { confirmHint.textContent = ''; confirmHint.style.color = ''; return; }
+          var same = confirm.value === password.value;
+          confirmHint.textContent = same ? 'Les deux mots de passe correspondent.' : (password.value.indexOf(confirm.value) === 0 ? '' : 'Les deux mots de passe ne correspondent pas.');
+          confirmHint.style.color = same ? '#166534' : '#b3182b';
+          if (same) confirm.removeAttribute('aria-invalid');
+        }
+        confirm.addEventListener('input', checkMatch);
+        password.addEventListener('input', checkMatch);
       })();
     </script>
   </body>

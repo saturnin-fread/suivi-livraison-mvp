@@ -48,6 +48,9 @@
             Renvoyer le code
           </button>
         </div>
+        <div class="ax-resend" id="switchBlock" hidden>
+          <button type="button" class="ax-link-btn" id="switchBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/></svg> Recevoir le code sur WhatsApp</button>
+        </div>
         <div class="ax-resend" id="recoveryToggleBlock" hidden>
           <button type="button" class="ax-link-btn" id="recoveryToggle">Utiliser un code de secours</button>
         </div>
@@ -115,16 +118,19 @@
           return;
         }
 
-        // Code envoyé par e-mail
+        // Code envoyé par e-mail (ou WhatsApp si le numéro est connu)
         var resendBlock = document.getElementById('resendBlock');
         var resendBtn = document.getElementById('resendBtn');
         var resendWait = document.getElementById('resendWait');
         var timerEl = document.getElementById('timer');
+        var switchBlock = document.getElementById('switchBlock');
+        var switchBtn = document.getElementById('switchBtn');
         var tick = null;
+        var info = null;
         function countdown(seconds) {
           clearInterval(tick);
           resendBlock.hidden = false;
-          if (seconds == null) { resendWait.textContent = 'Nombre maximal d’envois atteint pour ce code.'; resendBtn.disabled = true; return; }
+          if (seconds == null) { resendWait.hidden = false; resendWait.textContent = 'Nombre maximal d’envois atteint pour ce code.'; resendBtn.disabled = true; return; }
           var remaining = seconds;
           function paint() {
             timerEl.textContent = Math.floor(remaining / 60) + ':' + String(remaining % 60).padStart(2, '0');
@@ -134,35 +140,49 @@
           paint();
           tick = setInterval(function () { remaining -= 1; paint(); if (remaining <= 0) clearInterval(tick); }, 1000);
         }
+        function describe() {
+          var signup = info.purpose === 'signup';
+          var onWhatsApp = info.channel === 'whatsapp';
+          document.title = (signup ? 'Confirmez votre adresse' : 'Code de connexion') + ' — TRAXO';
+          document.getElementById('title').textContent = signup ? 'Confirmez votre adresse e‑mail' : 'Confirmez qu’il s’agit bien de vous';
+          document.getElementById('subtitle').textContent = onWhatsApp
+            ? 'Nous avons envoyé un code à 6 chiffres sur WhatsApp au'
+            : (signup ? 'Nous venons d’envoyer un code à 6 chiffres à' : 'Première connexion sur cet appareil : nous avons envoyé un code à 6 chiffres à');
+          document.getElementById('target').textContent = onWhatsApp ? info.whatsapp : info.email;
+          document.getElementById('help').textContent = onWhatsApp
+            ? 'Le code est valable 10 minutes. Il arrive dans une conversation avec le numéro TRAXO.'
+            : 'Le code est valable 10 minutes. Vous ne trouvez pas l’e‑mail ? Regardez dans les courriers indésirables.';
+          switchBlock.hidden = !info.whatsapp;
+          switchBtn.lastChild.textContent = onWhatsApp ? ' Recevoir plutôt par e‑mail' : ' Recevoir le code sur WhatsApp';
+        }
         fetch('/app/login/code/state', { credentials: 'same-origin' }).then(function (r) {
           if (r.status === 410) { location.replace('/app/login?error=expired'); return null; }
           return r.json();
         }).then(function (state) {
           if (!state) return;
-          var signup = state.purpose === 'signup';
-          document.title = (signup ? 'Confirmez votre adresse' : 'Code de connexion') + ' — TRAXO';
-          document.getElementById('title').textContent = signup ? 'Confirmez votre adresse e‑mail' : 'Confirmez qu’il s’agit bien de vous';
-          document.getElementById('subtitle').textContent = signup
-            ? 'Nous venons d’envoyer un code à 6 chiffres à'
-            : 'Première connexion sur cet appareil : nous avons envoyé un code à 6 chiffres à';
-          document.getElementById('target').textContent = state.email;
-          document.getElementById('help').textContent = 'Le code est valable 10 minutes. Vous ne trouvez pas l’e‑mail ? Regardez dans les courriers indésirables.';
+          info = state;
+          describe();
           countdown(state.resendIn);
         }).catch(function () {});
 
-        resendBtn.addEventListener('click', function () {
-          resendBtn.disabled = true;
-          fetch('/app/login/code/resend', { method: 'POST', credentials: 'same-origin' }).then(function (r) {
+        function send(channel, button) {
+          button.disabled = true;
+          fetch('/app/login/code/resend', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channel: channel }) }).then(function (r) {
             return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
           }).then(function (res) {
+            button.disabled = false;
             if (res.status === 410) { location.replace('/app/login?error=expired'); return; }
-            if (!res.ok) { TraxoAuth.showBanner(res.data.error || 'Le code n’a pas pu être renvoyé.', 'error'); countdown(res.data.resendIn === undefined ? 30 : res.data.resendIn); return; }
-            TraxoAuth.showBanner('Nouveau code envoyé. L’ancien ne fonctionne plus.', 'success');
+            if (!res.ok) { TraxoAuth.showBanner(res.data.error || 'Le code n’a pas pu être renvoyé.', 'error'); if (res.data.resendIn !== undefined) countdown(res.data.resendIn); return; }
+            info.channel = res.data.channel || channel;
+            describe();
+            TraxoAuth.showBanner(info.channel === 'whatsapp' ? 'Code envoyé sur WhatsApp. L’ancien ne fonctionne plus.' : 'Nouveau code envoyé par e‑mail. L’ancien ne fonctionne plus.', 'success');
             otpRoot.classList.remove('has-error');
             countdown(res.data.resendIn);
             otp.focus();
-          }).catch(function () { TraxoAuth.showBanner('Connexion impossible. Vérifiez votre réseau puis réessayez.', 'error'); resendBtn.disabled = false; });
-        });
+          }).catch(function () { button.disabled = false; TraxoAuth.showBanner('Connexion impossible. Vérifiez votre réseau puis réessayez.', 'error'); });
+        }
+        resendBtn.addEventListener('click', function () { send(info ? info.channel : 'email', resendBtn); });
+        switchBtn.addEventListener('click', function () { send(info && info.channel === 'whatsapp' ? 'email' : 'whatsapp', switchBtn); });
         otp.focus();
       })();
     </script>

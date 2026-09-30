@@ -21,6 +21,21 @@
 Sans fournisseur d'e-mail configuré, le code par e-mail est désactivé
 (la session s'ouvre directement).
 
+## WhatsApp (code de connexion)
+
+- Numéro dédié relié depuis **Paramètres › WhatsApp TRAXO** (visible seulement
+  par l'administrateur plateforme : `PLATFORM_ADMIN_EMAILS`). Liaison par code
+  (WhatsApp › Appareils connectés › Connecter avec le numéro de téléphone) ou QR.
+- Session Baileys chiffrée en base (`whatsapp_auth`, clé `WHATSAPP_SECRET`, à
+  défaut `MFA_SECRET`). Changer cette clé impose de relier le numéro à nouveau.
+- Sur la page du code, « Recevoir le code sur WhatsApp » apparaît si le numéro
+  de l'utilisateur est enregistré avec l'indicatif (+229…) et que le canal est relié.
+- Garde-fous : 40 messages / heure (`WHATSAPP_MAX_PER_HOUR`), 25 s minimum par
+  destinataire, indicateur « écrit… » avant l'envoi. `WHATSAPP_ENABLED=off` coupe le canal.
+- Une seule instance du serveur doit tourner (sinon WhatsApp déconnecte l'autre).
+- Client non officiel : risque de restriction du numéro. Canal de secours
+  uniquement ; l'e-mail reste toujours disponible.
+
 ## Variables d'environnement
 
 | Variable | Rôle |
@@ -30,6 +45,9 @@ Sans fournisseur d'e-mail configuré, le code par e-mail est désactivé
 | `LOGIN_EMAIL_CODE` | `off` pour couper le code e-mail, `on` pour le forcer (tests). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Active « Continuer avec Google ». Sans elles, le bouton n'apparaît pas. |
 | `APP_BASE_URL` | Sert à construire l'adresse de retour Google. |
+| `PLATFORM_ADMIN_EMAILS` | Comptes (séparés par des virgules) qui voient Paramètres › WhatsApp TRAXO. |
+| `WHATSAPP_SECRET`, `WHATSAPP_MAX_PER_HOUR`, `WHATSAPP_ENABLED` | Canal WhatsApp (voir ci-dessus). |
+| `WHATSAPP_FAKE=outbox` | Tests locaux : messages WhatsApp écrits dans `EMAIL_OUTBOX_DIR`. |
 | `EMAIL_OUTBOX_DIR` | Tests locaux uniquement : écrit les e-mails dans un dossier (ignoré en production). |
 
 ## Activer la connexion Google

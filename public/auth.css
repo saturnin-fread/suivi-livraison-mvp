@@ -39,7 +39,7 @@ button, input, select { font: inherit; }
 .ax-footer a:hover { color: var(--ink); text-decoration: underline; }
 
 /* Corps : formulaire à gauche, visuel à droite */
-.ax-main { flex: 1; width: 100%; max-width: 1500px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr); gap: clamp(32px, 6vw, 96px); align-items: center; padding: clamp(32px, 5vw, 64px) clamp(20px, 4vw, 56px); }
+.ax-main { flex: 1; width: 100%; max-width: 1760px; margin: 0 auto; display: grid; grid-template-columns: minmax(380px, 0.78fr) minmax(0, 1.35fr); gap: clamp(32px, 5vw, 88px); align-items: center; padding: clamp(24px, 3vw, 40px) clamp(20px, 3vw, 44px); }
 .ax-form-col { width: 100%; max-width: 470px; justify-self: center; }
 .ax-title { margin: 0 0 8px; font-size: clamp(32px, 3.3vw, 46px); line-height: 1.08; font-weight: 700; letter-spacing: -0.035em; }
 .ax-sub { margin: 0 0 30px; font-size: clamp(17px, 1.5vw, 21px); line-height: 1.4; color: var(--muted); max-width: 22em; }
@@ -88,11 +88,12 @@ button, input, select { font: inherit; }
 .ax-banner a { color: inherit; font-weight: 500; }
 
 /* Visuel */
-.ax-visual { align-self: stretch; display: flex; flex-direction: column; justify-content: center; background: var(--panel); border-radius: 18px; padding: clamp(28px, 3.4vw, 52px) clamp(10px, 1vw, 12px) clamp(22px, 2vw, 30px); min-height: 560px; }
+.ax-visual { align-self: stretch; display: flex; flex-direction: column; background: var(--panel); border-radius: 20px; padding: clamp(28px, 3vw, 48px) 12px 12px; min-height: max(600px, calc(100vh - 210px)); }
 .ax-visual h2 { margin: 0 clamp(18px, 3vw, 44px) 10px; font-size: clamp(34px, 3.4vw, 50px); line-height: 1.04; font-weight: 700; letter-spacing: -0.04em; }
 .ax-visual p { margin: 0 clamp(18px, 3vw, 44px) 26px; font-size: clamp(16px, 1.4vw, 20px); color: var(--muted); }
-.ax-photo { flex: 1; min-height: 300px; max-height: 520px; border-radius: 12px; background: #e9e9eb url(/img/auth-livraison.webp) center 35% / cover no-repeat; }
-.ax-visual small { display: block; margin: 20px clamp(18px, 3vw, 44px) 0; font-size: 14px; color: var(--muted); }
+.ax-photo { position: relative; flex: 1; min-height: 380px; border-radius: 14px; overflow: hidden; background: #e9e9eb url(/img/auth-livraison.webp) center 40% / cover no-repeat; }
+.ax-visual small { position: absolute; left: 12px; right: 12px; bottom: 12px; display: block; margin: 0; padding: 14px clamp(16px, 2vw, 26px); border-radius: 0 0 14px 14px; font-size: 14px; color: #fff; background: linear-gradient(to top, rgba(10, 10, 12, .62), rgba(10, 10, 12, 0)); }
+.ax-visual { position: relative; }
 
 /* Code de vérification */
 .ax-center { flex: 1; width: 100%; display: flex; justify-content: center; padding: clamp(36px, 7vw, 88px) 20px; }

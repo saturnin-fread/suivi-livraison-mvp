@@ -34,6 +34,14 @@ function lastCode(to) {
   }
   throw new Error('Aucun e-mail reçu pour ' + to);
 }
+function lastWhatsAppCode(digits) {
+  const files = fs.readdirSync(outbox).filter((f) => f.endsWith('-wa.json')).sort();
+  for (let i = files.length - 1; i >= 0; i -= 1) {
+    const msg = JSON.parse(fs.readFileSync(path.join(outbox, files[i]), 'utf8'));
+    if (msg.whatsapp === digits) return /\*(\d{6})\*/.exec(msg.text)[1];
+  }
+  throw new Error('Aucun message WhatsApp pour ' + digits);
+}
 
 (async () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -45,8 +53,9 @@ function lastCode(to) {
     const google = await get('/app/auth/google');
     assert.ok(google.status === 302 && /google_off|accounts\.google\.com/.test(google.headers.get('location')), 'Google : désactivé proprement ou redirigé');
 
-    // 1. Inscription : pas de session avant le code
-    const reg = await post('/app/register', { email, password });
+    // 1. Inscription : confirmation exigée si fournie, pas de session avant le code
+    assert.strictEqual((await post('/app/register', { email, password, passwordConfirm: 'autre chose ici' })).headers.get('location'), '/app/register?error=password_mismatch', 'confirmation différente refusée');
+    const reg = await post('/app/register', { email, password, passwordConfirm: password });
     assert.strictEqual(reg.headers.get('location'), '/app/login/code', 'inscription → page du code');
     assert.ok(!cookieOf(reg, 'delivery_session'), 'aucune session avant le code');
     const verify = cookieOf(reg, 'traxo_verify');
@@ -98,6 +107,20 @@ function lastCode(to) {
     const again = await post('/app/login', { user: email, password, remember: '1' }, device);
     assert.strictEqual(again.headers.get('location'), '/app', 'appareil reconnu : pas de code');
     assert.strictEqual(maxAgeOf(again, 'delivery_session'), 30 * 24 * 3600, 'rester connecté : 30 jours');
+
+    // 6 bis. Code reçu sur WhatsApp (canal simulé en test : WHATSAPP_FAKE=outbox)
+    if (process.env.WHATSAPP_FAKE === 'outbox') {
+      const viaWa = await post('/app/login', { user: email, password });
+      const verifyWa = cookieOf(viaWa, 'traxo_verify');
+      const waState = await (await get('/app/login/code/state', verifyWa)).json();
+      assert.ok(waState.whatsapp && waState.whatsapp.endsWith('07'), 'WhatsApp proposé (numéro masqué)');
+      const switched = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
+      assert.strictEqual(switched.status, 200, 'bascule vers WhatsApp immédiate');
+      const again30 = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
+      assert.strictEqual(again30.status, 429, 'renvoi WhatsApp limité à 30 s');
+      const waOk = await post('/app/login/code', { code: lastWhatsAppCode('2250707070707') }, verifyWa);
+      assert.strictEqual(waOk.headers.get('location'), '/app', 'code WhatsApp accepté');
+    }
 
     // 6. Nouvel appareil : code exigé, 5 essais au maximum
     const fresh = await post('/app/login', { user: email, password });

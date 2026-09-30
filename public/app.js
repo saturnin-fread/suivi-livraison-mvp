@@ -579,7 +579,7 @@ function dashRecentOrders(rows) {
   if (!rows.length) return '<div class="dash-empty">Aucune commande</div>';
   return `<div class="dash-table-wrap"><table class="dash-table">
     <thead><tr><th>Commande</th><th>Client</th><th>Livreur</th><th>Statut</th><th>Créée</th></tr></thead>
-    <tbody>${rows.map((o) => `<tr onclick="location.href='/app/commandes/${o.id}'">
+    <tbody>${rows.map((o) => `<tr onclick="location.href='/app/operations?vue=commandes&commande=${o.id}'">
       <td><strong>${escapeHtml(o.reference || `#${o.id}`)}</strong></td>
       <td>${escapeHtml(o.customerName || '—')}</td>
       <td>${escapeHtml(o.driverName || '—')}</td>
@@ -596,7 +596,7 @@ function dashRecentRequests(rows) {
   if (!rows.length) return '<div class="dash-empty">Aucune demande</div>';
   return `<div class="dash-table-wrap"><table class="dash-table">
     <thead><tr><th>ID</th><th>Client</th><th>Position</th><th>Statut</th><th>Reçue le</th></tr></thead>
-    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/demandes/${r.id}'">
+    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/operations?vue=demandes&demande=${r.id}'">
       <td><strong>${escapeHtml(dashRequestCode(r))}</strong></td>
       <td>${escapeHtml(r.customerName || 'À préciser')}</td>
       <td>${r.hasLocation ? `<span class="dash-pos">${DASH_ICONS.pin}Position reçue</span>` : '<span class="dash-muted">—</span>'}</td>
@@ -608,7 +608,7 @@ function dashRecentIncidents(rows) {
   if (!rows.length) return '<div class="dash-empty">Aucun incident</div>';
   return `<div class="dash-table-wrap"><table class="dash-table">
     <thead><tr><th>ID</th><th>Type</th><th>Commande</th><th>Statut</th><th>Signalé le</th></tr></thead>
-    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/incidents/${r.id}'">
+    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/operations?vue=incidents&incident=${r.id}'">
       <td><strong>INC-${escapeHtml(String(r.id).padStart(3, '0'))}</strong></td>
       <td><span class="dash-type"><span class="dash-dot" style="background:${DASH_INCIDENT_COLOR[r.category] || '#e11d2a'}"></span>${escapeHtml(incidentCategoryLabels[r.category] || r.category || 'Autre')}</span></td>
       <td>${escapeHtml(r.orderReference || '—')}</td>
@@ -943,85 +943,6 @@ async function renderDashboard() {
   await dashLoadData();
 }
 
-async function renderRequestDetail(id) {
-  setHeader('Détail de la demande', 'Vérification avant affectation');
-  const request = await api(`/api/app/requests/${encodeURIComponent(id)}`);
-  const drivers = request.order_id ? [] : await api('/api/app/drivers');
-  const editable = ['À vérifier', 'Informations à compléter'].includes(request.status) && !request.order_id;
-  const convertible = (editable || request.status === 'Validée') && !request.order_id;
-  const photoIds = Array.isArray(request.photo_ids) ? request.photo_ids : [];
-  const photoSrc = (photoId) => `/api/app/requests/${encodeURIComponent(request.id)}/photos/${encodeURIComponent(photoId)}`;
-  page.innerHTML = `
-    <div class="page-header"><div><a href="/app/operations?vue=demandes">← Retour aux demandes</a><h1 style="margin-top:12px">${escapeHtml(request.customer_name || 'Demande en attente')}</h1><p class="subtitle">Demande n° ${escapeHtml(request.id)} · ${escapeHtml(formatDate(request.created_at))}</p></div>${badge(request.status)}</div>
-    <section class="card"><h2>Informations du client</h2><div class="detail-grid">
-      <div class="detail"><span>Téléphone</span><strong>${escapeHtml(request.customer_phone || '—')}</strong></div>
-      <div class="detail"><span>Zone ou quartier</span><strong>${escapeHtml(request.neighborhood || '—')}</strong></div>
-      <div class="detail"><span>Créneau souhaité</span><strong>${escapeHtml(request.requested_time || '—')}</strong></div>
-      <div class="detail"><span>Repère</span><strong>${escapeHtml(request.landmark || '—')}</strong></div>
-      <div class="detail"><span>Position GPS</span><strong>${request.location_lat == null ? 'Non partagée' : `${escapeHtml(request.location_lat)}, ${escapeHtml(request.location_lng)}`}</strong></div>
-      <div class="detail"><span>Précision</span><strong>${request.location_accuracy == null ? '—' : `${Math.round(request.location_accuracy)} m`}</strong></div>
-      <div class="detail" style="grid-column:1/-1"><span>Instructions</span><strong>${escapeHtml(request.notes || 'Aucune')}</strong></div>
-      <div class="detail" style="grid-column:1/-1"><span>Photos du lieu</span>${photoIds.length
-        ? `<div class="req-photos">${photoIds.map((photoId, i) => `<a href="${photoSrc(photoId)}" target="_blank" rel="noopener"><img src="${photoSrc(photoId)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</div>`
-        : '<strong>Aucune photo</strong>'}</div>
-    </div></section>
-    ${request.order_id ? `<section class="card" style="margin-top:18px"><h2>Commande créée</h2><div class="detail-grid"><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(request.order_id)}</strong></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(request.driver_name)}</strong></div><div class="detail"><span>Statut</span><strong>${escapeHtml(request.order_status)}</strong></div></div><div class="actions" style="margin-top:18px">${request.trackingLink?.path ? `<a class="button primary" target="_blank" rel="noopener" href="${escapeHtml(request.trackingLink.path)}">Ouvrir le suivi</a>` : ''}<a class="button secondary" href="/app/operations?vue=commandes">Voir les commandes</a></div></section>` : ''}
-    ${convertible ? `<section class="card" style="margin-top:18px"><h2>${editable ? 'Valider et affecter' : 'Affecter un livreur'}</h2><p class="subtitle">${editable ? 'Valider verrouille les modifications du client. Vous pouvez valider maintenant et affecter un livreur plus tard.' : `Demande validée le ${escapeHtml(formatDate(request.validated_at))} : les informations du client sont verrouillées.`}</p>${editable ? '<div class="actions" style="margin-top:14px"><button class="secondary" id="validateRequest">Valider sans affecter</button></div>' : ''}<div class="field" style="margin-top:16px"><label>Livreur</label><select id="conversionDriver"><option value="">Sélectionner un livreur</option>${drivers.map((driver) => {
-      const unavailable = ['inactive', 'off_duty', 'incident'].includes(driver.operationalState);
-      const state = driverStateLabels[driver.operationalState] || driver.operationalState;
-      return `<option value="${escapeHtml(driver.id)}" ${unavailable ? 'disabled' : ''}>${escapeHtml(driver.name)} — ${escapeHtml(state)} — ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</option>`;
-    }).join('')}</select></div><div class="actions" style="margin-top:16px"><button class="primary" id="convertRequest">Créer la commande et le suivi</button></div><div id="conversionResult"></div></section>` : ''}
-    ${!request.order_id && request.status !== 'Archivée' ? `<section class="card" style="margin-top:18px"><h2>Autres actions</h2><div class="actions">
-      <button class="secondary statusAction" data-status="Informations à compléter">Demander des précisions</button>
-      <button class="danger statusAction" data-status="Refusée">Refuser</button>
-      <button class="secondary statusAction" data-status="Archivée">Archiver</button>
-    </div><div id="actionResult"></div></section>` : ''}`;
-
-  const validateButton = document.getElementById('validateRequest');
-  if (validateButton) validateButton.addEventListener('click', async () => {
-    if (!confirm('Valider cette demande ? Le client ne pourra plus modifier ses informations. Vous pourrez affecter un livreur ensuite.')) return;
-    validateButton.disabled = true;
-    try {
-      await api(`/api/app/requests/${encodeURIComponent(id)}/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      location.reload();
-    } catch (error) {
-      document.getElementById('conversionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      validateButton.disabled = false;
-    }
-  });
-  if (convertible) document.getElementById('convertRequest').addEventListener('click', async () => {
-    const driverId = document.getElementById('conversionDriver').value;
-    if (!driverId) { document.getElementById('conversionResult').innerHTML = '<div class="notice error">Sélectionnez un livreur.</div>'; return; }
-    if (!confirm('Créer la commande, affecter ce livreur et verrouiller les informations du client ?')) return;
-    document.getElementById('convertRequest').disabled = true;
-    try {
-      const result = await api(`/api/app/requests/${encodeURIComponent(id)}/convert`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ driverId }),
-      });
-      document.getElementById('conversionResult').innerHTML = `<div class="notice success">Commande créée pour ${escapeHtml(result.driverName || 'le livreur')}. Redirection…</div>`;
-      setTimeout(() => location.reload(), 500);
-    } catch (error) {
-      document.getElementById('conversionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      document.getElementById('convertRequest').disabled = false;
-    }
-  });
-  document.querySelectorAll('.statusAction').forEach((button) => button.addEventListener('click', async () => {
-    const status = button.dataset.status;
-    const message = status === 'Confirmée' ? 'Confirmer cette demande et empêcher le client de la modifier ?' : `Passer cette demande au statut « ${status} » ?`;
-    if (!confirm(message)) return;
-    document.querySelectorAll('.statusAction').forEach((item) => { item.disabled = true; });
-    try {
-      await api(`/api/app/requests/${encodeURIComponent(id)}/status`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
-      });
-      location.reload();
-    } catch (error) {
-      document.getElementById('actionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-      document.querySelectorAll('.statusAction').forEach((item) => { item.disabled = false; });
-    }
-  }));
-}
-
 async function renderNewOrder() {
   setHeader('Nouvelle commande', 'Création directe par l’entreprise');
   const drivers = await api('/api/app/drivers');
@@ -1117,7 +1038,7 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
   const rotateTrackingLink = $('rotateTrackingLink');
   if (rotateTrackingLink) rotateTrackingLink.addEventListener('click', async () => {
     const expiresInDays = Number($('trackingTtl').value);
-    if (!confirm('Créer un nouveau lien ? L’ancien lien cessera immédiatement de fonctionner.')) return;
+    if (!(await uiConfirm('Créer un nouveau lien de suivi ?', { message: 'L’ancien lien cessera immédiatement de fonctionner.', tone: 'danger', confirmLabel: 'Renouveler le lien' }))) return;
     rotateTrackingLink.disabled = true;
     try {
       await api(`/api/app/orders/${encodeURIComponent(id)}/tracking-link/rotate`, {
@@ -1133,7 +1054,7 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
 
   const revokeTrackingLink = $('revokeTrackingLink');
   if (revokeTrackingLink) revokeTrackingLink.addEventListener('click', async () => {
-    const reason = prompt('Pourquoi révoquer ce lien ? (au moins 8 caractères)');
+    const reason = await uiPrompt('Révoquer le lien de suivi', { label: 'Motif de la révocation', placeholder: 'Ex. : lien partagé par erreur', minLength: 8, minLengthMessage: 'Le motif doit contenir au moins 8 caractères.' }, { tone: 'danger', confirmLabel: 'Révoquer', message: 'Le client ne pourra plus suivre sa livraison avec ce lien.' });
     if (!reason) return;
     if (reason.trim().length < 8) {
       $('trackingLinkResult').innerHTML = '<div class="notice error">Le motif doit contenir au moins 8 caractères.</div>';
@@ -1172,7 +1093,7 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
 
   const removePaymentRequirement = $('removePaymentRequirement');
   if (removePaymentRequirement) removePaymentRequirement.addEventListener('click', async () => {
-    const reason = prompt('Pourquoi cet encaissement n’est-il plus requis ?');
+    const reason = await uiPrompt('Retirer l’encaissement', { label: 'Pourquoi cet encaissement n’est-il plus requis ?', placeholder: 'Ex. : commande déjà payée en ligne', minLength: 3 }, { confirmLabel: 'Retirer' });
     if (!reason) return;
     removePaymentRequirement.disabled = true;
     try {
@@ -1225,7 +1146,7 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
 
   const reversePayment = $('reversePayment');
   if (reversePayment) reversePayment.addEventListener('click', async () => {
-    const reason = prompt('Pourquoi cette saisie d’encaissement doit-elle être annulée ?');
+    const reason = await uiPrompt('Annuler la saisie d’encaissement', { label: 'Pourquoi cette saisie doit-elle être annulée ?', placeholder: 'Ex. : montant saisi par erreur', minLength: 3 }, { tone: 'danger', confirmLabel: 'Annuler la saisie', cancelLabel: 'Retour' });
     if (!reason) return;
     reversePayment.disabled = true;
     try {
@@ -1246,7 +1167,7 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form));
     const button = form.querySelector('button');
-    if (!confirm(`Confirmer : ${paymentAdjustmentLabels[values.adjustmentType]} de ${formatMoney(values.amountMinor, 'XOF')} ?`)) return;
+    if (!(await uiConfirm(`${paymentAdjustmentLabels[values.adjustmentType]} de ${formatMoney(values.amountMinor, 'XOF')}`, { message: 'Cette écriture sera ajoutée au rapprochement de la commande.', confirmLabel: 'Enregistrer' }))) return;
     button.disabled = true;
     try {
       const idempotencyKey = idempotencyKeyFor(form, 'payment-adjustment', values);
@@ -1261,10 +1182,9 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
   });
 
   root.querySelectorAll('.reverse-adjustment').forEach((button) => button.addEventListener('click', async () => {
-    const reason = prompt('Pourquoi cette écriture doit-elle être corrigée ? (10 caractères minimum)') || '';
+    const reason = (await uiPrompt('Corriger une écriture', { label: 'Pourquoi cette écriture doit-elle être corrigée ?', placeholder: 'Ex. : remise appliquée deux fois', minLength: 10, minLengthMessage: 'Expliquez en 10 caractères minimum.' }, { message: 'Une écriture inverse est créée ; l’original reste visible.', confirmLabel: 'Créer l’écriture inverse' })) || '';
     if (reason.trim().length < 10) return;
     const effectiveDate = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
-    if (!confirm('Créer l’écriture inverse ? L’original restera visible.')) return;
     button.disabled = true;
     try {
       const values = { adjustmentId: button.dataset.adjustmentId, reason: reason.trim(), effectiveDate };
@@ -1387,6 +1307,15 @@ const incidentEventLabels = {
 
 async function renderIncidentDetail(id) {
   setHeader('Dossier d’incident', 'Chronologie vérifiable et gel de conservation');
+  await mountIncidentDossier(page, id);
+  if (new URLSearchParams(location.search).get('print') === '1') setTimeout(() => window.print(), 400);
+}
+
+// Dossier d'incident monté dans une page ou dans le tiroir d'Opérations.
+// opts.drawer : sans en-tête de page (le tiroir a le sien) ; opts.refresh :
+// appelé après une action à la place du simple re-montage.
+async function mountIncidentDossier(root, id, opts = {}) {
+  const $q = (sel) => root.querySelector(sel);
   const dossier = await api(`/api/app/incidents/${encodeURIComponent(id)}`);
   const incident = dossier.incident;
   const activeHold = dossier.holds.find((hold) => hold.status === 'active');
@@ -1398,7 +1327,7 @@ async function renderIncidentDetail(id) {
     : dossier.eventChainValid === false
       ? '<div class="notice error">L’intégrité de la chronologie ne peut pas être confirmée. Contactez le support avant d’utiliser ce dossier.</div>'
       : '<div class="notice">Dossier antérieur au journal d’intégrité : aucune chaîne d’événements disponible.</div>';
-  page.innerHTML = `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>
+  root.innerHTML = `${opts.drawer ? '' : `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>`}
     <section class="card incident-report"><div class="page-header"><div><h2>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</h2><p class="subtitle">Gravité ${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)}</p></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</div>
       <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable du dossier</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(incident.order_id)} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
       <h3>Déclaration d’origine</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte n’est pas modifiable.</small>
@@ -1410,9 +1339,9 @@ async function renderIncidentDetail(id) {
     ${dossier.evidence.some((item) => !item.superseded_at && !item.deleted_at) ? `<section class="card" style="margin-top:18px"><h2>Preuves complémentaires actives</h2><div class="evidence-grid">${dossier.evidence.filter((item) => !item.superseded_at && !item.deleted_at).map((item) => `<article class="evidence-card"><strong>${item.evidence_type === 'photo' ? 'Photo de remise' : 'Signature'}</strong><a href="/api/app/evidence/${escapeHtml(item.id)}" target="_blank" rel="noopener"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="Preuve ${escapeHtml(item.evidence_type)}" /></a><small>Empreinte : ${escapeHtml(item.content_sha256)}</small></article>`).join('')}</div></section>` : ''}
     <section class="card" style="margin-top:18px"><h2>Chronologie de la commande</h2><ol class="timeline">${dossier.orderEvents.map((event) => `<li><strong>${escapeHtml(event.to_status)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
 
-  document.getElementById('printIncident').addEventListener('click', () => window.print());
+  $q('#printIncident')?.addEventListener('click', () => window.print());
   const bindForm = (formId, url, prefix) => {
-    const form = document.getElementById(formId);
+    const form = $q(`#${formId}`);
     if (!form) return;
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -1422,9 +1351,9 @@ async function renderIncidentDetail(id) {
       try {
         const idempotencyKey = idempotencyKeyFor(form, prefix, values);
         await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, idempotencyKey }) });
-        await renderIncidentDetail(id);
+        if (opts.refresh) await opts.refresh(); else await mountIncidentDossier(root, id, opts);
       } catch (error) {
-        document.getElementById(formId.includes('Hold') ? 'holdResult' : 'incidentActionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        $q(formId.includes('Hold') ? '#holdResult' : '#incidentActionResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
         button.disabled = false;
       }
     });
@@ -1498,7 +1427,8 @@ async function renderOperationsMap() {
       <button type="button" class="ops-icon-btn" id="refreshMap" title="Actualiser"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg></button>
     </div>
 
-    <div class="ops-legend" id="opsLegend" hidden>
+    <div class="ops-legend" id="opsLegend">
+      <button type="button" class="ops-legend-x" id="legendClose" aria-label="Masquer la légende" title="Masquer la légende"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       <span class="ops-leg"><i class="dot" style="background:#16a34a"></i>En cours</span>
       <span class="ops-leg"><i class="dot" style="background:#d97706"></i>GPS ancien</span>
       <span class="ops-leg"><i class="dot" style="background:#e11d2a"></i>Incident</span>
@@ -2173,12 +2103,22 @@ async function renderOperationsMap() {
   });
 
   document.querySelectorAll('.ops-layer-btn').forEach((btn) => btn.addEventListener('click', () => setLayer(btn.dataset.layer)));
-  document.getElementById('kpiToggle').addEventListener('click', (event) => {
-    const panel = document.getElementById('opsKpisPanel');
-    const open = panel.hasAttribute('hidden');
-    if (open) panel.removeAttribute('hidden'); else panel.setAttribute('hidden', '');
-    event.currentTarget.setAttribute('aria-expanded', String(open));
-  });
+  // Résumé : ouvert par défaut sur grand écran, fermé sur mobile ; mémorisé.
+  const kpiPanel = document.getElementById('opsKpisPanel');
+  const kpiButton = document.getElementById('kpiToggle');
+  const setKpis = (open) => {
+    kpiPanel.hidden = !open;
+    kpiButton.setAttribute('aria-expanded', String(open));
+    kpiButton.classList.toggle('active', open);
+    try { localStorage.setItem('traxo.ops.kpis', open ? '1' : '0'); } catch { /* ignore */ }
+  };
+  (() => {
+    let saved = null;
+    try { saved = localStorage.getItem('traxo.ops.kpis'); } catch { /* ignore */ }
+    const open = saved == null ? window.matchMedia('(min-width: 1100px)').matches : saved === '1';
+    kpiPanel.hidden = !open; kpiButton.setAttribute('aria-expanded', String(open)); kpiButton.classList.toggle('active', open);
+  })();
+  kpiButton.addEventListener('click', () => setKpis(kpiPanel.hidden));
 
   // Panneaux flottants : repli + déplacement (souris/tactile), position mémorisée par appareil.
   const opsEl = page.querySelector('.ops');
@@ -2227,17 +2167,19 @@ async function renderOperationsMap() {
       writeStore(storeKey, { left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0, collapsed: el.classList.contains('collapsed') });
     });
     el.querySelector('[data-close]')?.addEventListener('click', () => {
-      el.setAttribute('hidden', '');
-      document.getElementById('kpiToggle')?.setAttribute('aria-expanded', 'false');
+      if (id === 'opsKpisPanel') { setKpis(false); return; }
+      el.hidden = true;
     });
   }
   setupFloat('opsPanel');
   setupFloat('opsKpisPanel');
 
-  document.getElementById('legendToggle').addEventListener('click', () => {
-    const legend = document.getElementById('opsLegend');
-    if (legend.hasAttribute('hidden')) legend.removeAttribute('hidden'); else legend.setAttribute('hidden', '');
-  });
+  // Légende : visible par défaut, masquable ; le choix est mémorisé.
+  const legendEl = document.getElementById('opsLegend');
+  const setLegend = (open) => { legendEl.hidden = !open; try { localStorage.setItem('traxo.ops.legend', open ? '1' : '0'); } catch { /* ignore */ } };
+  try { if (localStorage.getItem('traxo.ops.legend') === '0') legendEl.hidden = true; } catch { /* ignore */ }
+  document.getElementById('legendToggle').addEventListener('click', () => setLegend(true));
+  document.getElementById('legendClose').addEventListener('click', () => setLegend(false));
   document.getElementById('fitMap').addEventListener('click', () => redrawMap({ fit: true }));
   document.getElementById('refreshMap').addEventListener('click', () => loadSnapshot(false));
   document.getElementById('locateOperator').addEventListener('click', () => { mapUpdate.textContent = 'Recherche de votre position…'; map.locate({ setView: false, enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }); });
@@ -2276,6 +2218,268 @@ const fleetIcons = {
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   userx: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m17 8 5 5"/><path d="m22 8-5 5"/></svg>',
 };
+
+// Pastille de l'en-tête : logo de l'entreprise, sinon initiales de l'utilisateur.
+function paintCompanyAvatar() {
+  const el = document.getElementById('userAvatar');
+  if (!el || !context) return;
+  const logo = context.company && context.company.logoUrl;
+  el.classList.toggle('has-logo', !!logo);
+  if (logo) el.innerHTML = `<img src="${escapeHtml(logo)}" alt="">`;
+  else el.textContent = String(context.user.name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
+}
+
+// Logo : redimensionné dans le navigateur (512 px max, WebP ou PNG) pour
+// rester léger à l'envoi comme à l'affichage.
+function readLogoFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\/(png|jpeg|webp)$/.test(file.type)) { reject(new Error('Choisissez une image PNG, JPEG ou WebP.')); return; }
+    if (file.size > 8 * 1024 * 1024) { reject(new Error('Image trop lourde (8 Mo maximum).')); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 512 / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      let dataUrl = canvas.toDataURL('image/webp', 0.9);
+      if (!dataUrl.startsWith('data:image/webp')) dataUrl = canvas.toDataURL('image/png');
+      resolve(dataUrl);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible.')); };
+    img.src = url;
+  });
+}
+
+// ---- Recherche globale (Ctrl/⌘ K) ------------------------------------
+// Pages, actions rapides et données (commandes, demandes, tournées, livreurs,
+// clients). Les listes sont mises en cache 60 s ; les clients sont cherchés
+// côté serveur. Flèches pour naviguer, Entrée pour ouvrir, Échap pour fermer.
+const paletteState = { cache: null, cachedAt: 0 };
+const paletteIcons = {
+  page: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
+  order: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></svg>',
+  request: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+  run: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H12"/></svg>',
+  driver: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>',
+  client: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  action: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+};
+const paletteNormalize = (value) => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+async function paletteData() {
+  if (paletteState.cache && Date.now() - paletteState.cachedAt < 60_000) return paletteState.cache;
+  const safe = (promise) => promise.catch(() => []);
+  const [orders, requests, runs, drivers] = await Promise.all([
+    safe(api('/api/app/orders')), safe(api('/api/app/requests?scope=active')), safe(api('/api/app/runs')), safe(api('/api/app/drivers')),
+  ]);
+  paletteState.cache = { orders, requests, runs, drivers };
+  paletteState.cachedAt = Date.now();
+  return paletteState.cache;
+}
+
+function openCommandPalette() {
+  if (document.querySelector('.cp-backdrop')) return;
+  const go = (href) => () => { location.href = href; };
+  const staticItems = [
+    { group: 'Aller à', icon: 'page', label: 'Carte d’exploitation', run: go('/app/carte') },
+    { group: 'Aller à', icon: 'page', label: 'Tableau de bord', run: go('/app') },
+    { group: 'Aller à', icon: 'page', label: 'Opérations › Commandes', run: go('/app/operations?vue=commandes') },
+    { group: 'Aller à', icon: 'page', label: 'Opérations › Demandes', run: go('/app/operations?vue=demandes') },
+    { group: 'Aller à', icon: 'page', label: 'Opérations › Tournées', run: go('/app/operations?vue=tournees') },
+    { group: 'Aller à', icon: 'page', label: 'Opérations › Incidents', run: go('/app/operations?vue=incidents') },
+    { group: 'Aller à', icon: 'page', label: 'Livreurs', run: go('/app/livreurs') },
+    { group: 'Aller à', icon: 'page', label: 'Clients', run: go('/app/clients') },
+    { group: 'Aller à', icon: 'page', label: 'Rapports et exports', run: go('/app/rapports') },
+    { group: 'Aller à', icon: 'page', label: 'Paramètres', run: go('/app/parametres') },
+    { group: 'Actions', icon: 'action', label: 'Nouvelle commande', run: go('/app/nouvelle-commande') },
+    { group: 'Actions', icon: 'action', label: 'Nouvelle demande (lien client)', run: go('/app/operations?vue=creer') },
+    { group: 'Actions', icon: 'action', label: 'Déclarer un incident', run: () => pickOrderForIncident() },
+    { group: 'Actions', icon: 'action', label: 'Sécurité du compte (double authentification)', run: go('/app/parametres?section=security') },
+  ];
+  const backdrop = document.createElement('div');
+  backdrop.className = 'cp-backdrop';
+  backdrop.innerHTML = `<div class="cp" role="dialog" aria-modal="true" aria-label="Recherche globale">
+      <div class="cp-input"><span>${fleetIcons.search}</span><input type="search" id="cpInput" placeholder="Rechercher une commande, un client, un livreur, une page…" autocomplete="off" spellcheck="false"><kbd>Échap</kbd></div>
+      <div class="cp-results" id="cpResults" role="listbox"></div>
+      <div class="cp-foot"><span><kbd>↑</kbd><kbd>↓</kbd> naviguer</span><span><kbd>Entrée</kbd> ouvrir</span><span><kbd>Ctrl</kbd><kbd>K</kbd> rouvrir</span></div>
+    </div>`;
+  const input = backdrop.querySelector('#cpInput');
+  const results = backdrop.querySelector('#cpResults');
+  let items = [];
+  let active = 0;
+  let customerTimer = null;
+  let customers = [];
+  let lastCustomerQuery = '';
+  const close = () => { document.removeEventListener('keydown', onKey, true); backdrop.remove(); };
+  const choose = (item) => { close(); item.run(); };
+
+  const build = (data, raw) => {
+    const q = paletteNormalize(raw.trim());
+    const match = (text) => !q || paletteNormalize(text).includes(q);
+    const out = staticItems.filter((item) => match(`${item.label} ${item.group}`)).slice(0, q ? 6 : 14);
+    if (q && data) {
+      const take = (list, max) => list.slice(0, max);
+      out.push(...take(data.orders.filter((o) => match(`${o.reference || ''} CMD-${o.id} ${o.customer_name || ''} ${o.customer_phone || ''} ${o.neighborhood || ''} ${o.driver_name || ''}`)), 6).map((o) => ({
+        group: 'Commandes', icon: 'order', label: `${orderCode(o.reference, o.id)} · ${o.customer_name || 'Client'}`, hint: `${o.status}${o.neighborhood ? ` · ${o.neighborhood}` : ''}`, run: () => openOrderDrawer(o.id),
+      })));
+      out.push(...take(data.requests.filter((r) => match(`DEM-${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''}`)), 5).map((r) => ({
+        group: 'Demandes', icon: 'request', label: `DEM-${r.id} · ${r.customer_name || 'En attente du client'}`, hint: r.status, run: () => openRequestDrawer(r.id),
+      })));
+      out.push(...take(data.runs.filter((r) => match(`${r.name || ''} TRN-${r.id} ${r.driver_name || ''}`)), 4).map((r) => ({
+        group: 'Tournées', icon: 'run', label: r.name || `Tournée ${r.id}`, hint: `${r.driver_name || ''} · ${runStatusLabels[r.status] || r.status}`, run: () => openRunDrawer(r.id),
+      })));
+      out.push(...take(data.drivers.filter((d) => match(`${d.name || ''} ${d.phone || ''} ${d.vehicleType || ''}`)), 4).map((d) => ({
+        group: 'Livreurs', icon: 'driver', label: d.name, hint: d.vehicleType || 'Livreur', run: go(`/app/livreurs?livreur=${encodeURIComponent(d.id)}`),
+      })));
+      out.push(...customers.slice(0, 5).map((c) => ({
+        group: 'Clients', icon: 'client', label: c.display_name || c.name || `Client ${c.id}`, hint: c.primary_phone || c.phone || '', run: go(`/app/clients/${encodeURIComponent(c.id)}`),
+      })));
+    }
+    return out;
+  };
+
+  const paint = (data) => {
+    items = build(data, input.value);
+    active = Math.min(active, Math.max(0, items.length - 1));
+    if (!items.length) { results.innerHTML = '<div class="cp-empty">Aucun résultat. Essayez un nom, un numéro (CMD-…, DEM-…) ou un quartier.</div>'; return; }
+    let group = '';
+    results.innerHTML = items.map((item, i) => {
+      const head = item.group !== group ? `<div class="cp-group">${escapeHtml(item.group)}</div>` : '';
+      group = item.group;
+      return `${head}<button type="button" class="cp-item${i === active ? ' on' : ''}" data-i="${i}" role="option" aria-selected="${i === active}"><span class="cp-ic">${paletteIcons[item.icon]}</span><span class="cp-label">${escapeHtml(item.label)}</span>${item.hint ? `<span class="cp-hint">${escapeHtml(item.hint)}</span>` : ''}</button>`;
+    }).join('');
+    results.querySelectorAll('.cp-item').forEach((button) => {
+      button.addEventListener('click', () => choose(items[Number(button.dataset.i)]));
+      button.addEventListener('mousemove', () => { if (active !== Number(button.dataset.i)) { active = Number(button.dataset.i); setActive(); } });
+    });
+  };
+  const setActive = () => results.querySelectorAll('.cp-item').forEach((button, i) => {
+    button.classList.toggle('on', i === active);
+    button.setAttribute('aria-selected', String(i === active));
+    if (i === active) button.scrollIntoView({ block: 'nearest' });
+  });
+  const onKey = (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); }
+    else if (event.key === 'ArrowDown') { event.preventDefault(); active = Math.min(items.length - 1, active + 1); setActive(); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); active = Math.max(0, active - 1); setActive(); }
+    else if (event.key === 'Enter' && items[active]) { event.preventDefault(); choose(items[active]); }
+  };
+  let data = null;
+  input.addEventListener('input', () => {
+    active = 0;
+    paint(data);
+    const q = input.value.trim();
+    clearTimeout(customerTimer);
+    if (q.length >= 2 && q !== lastCustomerQuery) {
+      customerTimer = setTimeout(async () => {
+        lastCustomerQuery = q;
+        try { customers = (await api(`/api/app/crm/customers?limit=5&q=${encodeURIComponent(q)}`)).customers || []; } catch { customers = []; }
+        if (input.value.trim() === q) paint(data);
+      }, 220);
+    } else if (q.length < 2) customers = [];
+  });
+  backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close(); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(backdrop);
+  paint(null);
+  input.focus();
+  paletteData().then((loaded) => { data = loaded; if (document.body.contains(backdrop)) paint(data); });
+}
+
+document.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+    if (!document.getElementById('page')) return;
+    event.preventDefault();
+    openCommandPalette();
+  }
+});
+
+// ---- Dialogues et notifications maison --------------------------------
+// Remplacent alert/confirm/prompt du navigateur : même style que l'appli,
+// accessibles au clavier (Échap annule, Entrée valide) et sur mobile.
+const uiIcons = {
+  success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>',
+};
+
+function uiToast(message, type = 'info', { timeout = 4200 } = {}) {
+  let stack = document.getElementById('uiToasts');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'uiToasts';
+    stack.className = 'ui-toasts';
+    stack.setAttribute('role', 'status');
+    stack.setAttribute('aria-live', 'polite');
+    document.body.appendChild(stack);
+  }
+  const toast = document.createElement('div');
+  toast.className = `ui-toast ${type}`;
+  toast.innerHTML = `<span class="ui-toast-ic">${uiIcons[type] || uiIcons.info}</span><span class="ui-toast-msg">${escapeHtml(message)}</span><button type="button" class="ui-toast-x" aria-label="Fermer">×</button>`;
+  const dismiss = () => { toast.classList.add('out'); setTimeout(() => toast.remove(), 220); };
+  toast.querySelector('.ui-toast-x').addEventListener('click', dismiss);
+  stack.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('in'));
+  if (timeout) setTimeout(dismiss, type === 'error' ? timeout + 2500 : timeout);
+  return dismiss;
+}
+
+// Fenêtre de dialogue générique : résout avec la valeur choisie (ou null).
+function uiDialog({ title, message = '', tone = 'default', confirmLabel = 'Confirmer', cancelLabel = 'Annuler', field = null }) {
+  return new Promise((resolve) => {
+    const previous = document.activeElement;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'ui-dialog-backdrop';
+    const fieldHtml = field ? `<label class="ui-dialog-label" for="uiDialogField">${escapeHtml(field.label || '')}</label>
+      <textarea id="uiDialogField" rows="3" maxlength="${Number(field.maxLength) || 1000}" placeholder="${escapeHtml(field.placeholder || '')}">${escapeHtml(field.value || '')}</textarea>
+      <p class="ui-dialog-err" id="uiDialogErr" hidden></p>` : '';
+    backdrop.innerHTML = `<div class="ui-dialog ${tone}" role="alertdialog" aria-modal="true" aria-labelledby="uiDialogTitle">
+      <div class="ui-dialog-ic">${uiIcons[tone === 'danger' ? 'warning' : 'info']}</div>
+      <h2 id="uiDialogTitle">${escapeHtml(title)}</h2>
+      ${message ? `<p class="ui-dialog-msg">${escapeHtml(message)}</p>` : ''}
+      ${fieldHtml}
+      <div class="ui-dialog-actions"><button type="button" class="button secondary" data-ui="cancel">${escapeHtml(cancelLabel)}</button><button type="button" class="button ${tone === 'danger' ? 'danger-solid' : 'primary'}" data-ui="ok">${escapeHtml(confirmLabel)}</button></div>
+    </div>`;
+    const input = () => backdrop.querySelector('#uiDialogField');
+    const finish = (value) => {
+      document.removeEventListener('keydown', onKey, true);
+      backdrop.classList.remove('in');
+      setTimeout(() => backdrop.remove(), 160);
+      if (previous && previous.focus) previous.focus({ preventScroll: true });
+      resolve(value);
+    };
+    const accept = () => {
+      if (!field) return finish(true);
+      const value = input().value.trim();
+      const min = Number(field.minLength) || 0;
+      if (value.length < min) {
+        const err = backdrop.querySelector('#uiDialogErr');
+        err.hidden = false;
+        err.textContent = field.minLengthMessage || `Au moins ${min} caractères.`;
+        input().focus();
+        return undefined;
+      }
+      return finish(value);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') { event.stopPropagation(); finish(field ? null : false); }
+      if (event.key === 'Enter' && (!field || event.ctrlKey || event.metaKey)) { event.preventDefault(); accept(); }
+    };
+    backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) finish(field ? null : false); });
+    backdrop.querySelector('[data-ui="cancel"]').addEventListener('click', () => finish(field ? null : false));
+    backdrop.querySelector('[data-ui="ok"]').addEventListener('click', accept);
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('in'));
+    (field ? input() : backdrop.querySelector('[data-ui="ok"]')).focus();
+  });
+}
+const uiConfirm = (title, options = {}) => uiDialog({ title, ...options });
+const uiPrompt = (title, field, options = {}) => uiDialog({ title, field, confirmLabel: 'Valider', ...options });
 
 function openModal(title, bodyHtml, footHtml = '') {
   const backdrop = document.createElement('div');
@@ -2857,6 +3061,12 @@ async function renderDrivers() {
   search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
 
   refreshView();
+  const focusDriver = new URLSearchParams(location.search).get('livreur');
+  if (focusDriver) {
+    try { history.replaceState(null, '', '/app/livreurs'); } catch { /* ignore */ }
+    const driver = drivers.find((item) => String(item.id) === String(focusDriver));
+    if (driver) openDriverDetail(driver);
+  }
 }
 
 async function renderTeam() {
@@ -2983,7 +3193,7 @@ async function renderTeam() {
 
   function wireRevoke() {
     document.querySelectorAll('.revokeInvitation').forEach((button) => button.addEventListener('click', async () => {
-      if (!confirm('Révoquer cette invitation ? Le lien ne fonctionnera plus.')) return;
+      if (!(await uiConfirm('Révoquer cette invitation ?', { message: 'Le lien d’invitation ne fonctionnera plus.', tone: 'danger', confirmLabel: 'Révoquer' }))) return;
       button.disabled = true;
       try {
         await api(`/api/app/invitations/${encodeURIComponent(button.dataset.id)}/revoke`, { method: 'POST' });
@@ -3054,6 +3264,9 @@ async function renderSettings() {
   const canEdit = ['owner', 'manager'].includes(context.user.role);
   const company = context.company;
   const initials = String(company.name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
+  const logoMark = (size) => (context.company.logoUrl
+    ? `<span class="set2-logo ${size} has-logo"><img src="${escapeHtml(context.company.logoUrl)}" alt="Logo de l’entreprise"></span>`
+    : `<span class="set2-logo ${size}">${escapeHtml(initials)}</span>`);
   let section = (new URLSearchParams(location.search).get('section') || 'overview').toLowerCase();
   if (!settingsSections.some((s) => s.key === section)) section = 'overview';
 
@@ -3113,7 +3326,7 @@ async function renderSettings() {
     ];
     box.innerHTML = `
       <section class="set2-card set2-summary">
-        <span class="set2-logo">${escapeHtml(initials)}</span>
+        ${logoMark('')}
         <div class="set2-summary-main"><h3>${escapeHtml(company.name)}</h3><span class="set2-slug">${escapeHtml(company.slug || '')}</span></div>
         ${canEdit ? '<button class="button secondary small" id="editGeneral">Modifier</button>' : ''}
         <div class="set2-summary-stats">
@@ -3138,7 +3351,7 @@ async function renderSettings() {
       <section class="set2-card">
         <h3 class="set2-blocktitle">Profil de l’entreprise</h3>
         <div class="set2-profile">
-          <div class="set2-profile-logo"><span class="set2-logo lg">${escapeHtml(initials)}</span>${canEdit ? '<button class="button secondary small" type="button" id="editLogo">Modifier</button>' : ''}</div>
+          <div class="set2-profile-logo" id="logoBox">${logoMark('lg')}${canEdit ? `<div class="set2-logo-acts"><button class="button secondary small" type="button" id="editLogo">${context.company.logoUrl ? 'Changer' : 'Importer un logo'}</button>${context.company.logoUrl ? '<button class="button danger small" type="button" id="removeLogo">Retirer</button>' : ''}</div><small class="set2-logo-hint">PNG, JPEG ou WebP · affiché sur vos pages client</small><input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" hidden>` : ''}</div>
           <form id="companyForm" class="set2-profile-form">
             <div class="field"><label>Nom de l’entreprise</label><input name="name" maxlength="120" value="${escapeHtml(c.name || '')}" ${canEdit ? '' : 'disabled'} required></div>
             <div class="field"><label>Nom de l’espace</label><input name="slug" maxlength="80" value="${escapeHtml(c.slug || '')}" ${canEdit ? '' : 'disabled'} required></div>
@@ -3158,7 +3371,33 @@ async function renderSettings() {
         </div>
       </section>`;
     const logoBtn = document.getElementById('editLogo');
-    if (logoBtn) logoBtn.addEventListener('click', () => notify('<div class="notice">L’import d’un logo personnalisé arrivera prochainement.</div>'));
+    const logoFile = document.getElementById('logoFile');
+    const applyLogo = (logoUrl) => { context.company.logoUrl = logoUrl; paintCompanyAvatar(); renderGeneral(box); };
+    if (logoBtn && logoFile) {
+      logoBtn.addEventListener('click', () => logoFile.click());
+      logoFile.addEventListener('change', async () => {
+        const file = logoFile.files && logoFile.files[0];
+        if (!file) return;
+        logoBtn.disabled = true; logoBtn.textContent = 'Envoi…';
+        try {
+          const dataUrl = await readLogoFile(file);
+          const saved = await api('/api/app/company/logo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl }) });
+          uiToast('Logo mis à jour. Il apparaît déjà sur vos pages client.', 'success');
+          applyLogo(saved.logoUrl);
+        } catch (error) {
+          uiToast(error.message, 'error');
+          logoBtn.disabled = false; logoBtn.textContent = context.company.logoUrl ? 'Changer' : 'Importer un logo';
+        }
+      });
+    }
+    document.getElementById('removeLogo')?.addEventListener('click', async () => {
+      if (!(await uiConfirm('Retirer le logo ?', { message: 'L’initiale de l’entreprise sera affichée à la place.', confirmLabel: 'Retirer' }))) return;
+      try {
+        await api('/api/app/company/logo', { method: 'DELETE' });
+        uiToast('Logo retiré.', 'success');
+        applyLogo(null);
+      } catch (error) { uiToast(error.message, 'error'); }
+    });
     const form = document.getElementById('companyForm');
     if (canEdit && form) form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -3244,7 +3483,9 @@ async function renderSettings() {
       <section class="set2-card">
         <h3 class="set2-blocktitle">Sécurité du compte</h3>
         <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.lock}</span><div class="set2-opt-main"><strong>Mot de passe</strong><small>${escapeHtml(pwdSub)}</small></div><button class="button secondary small" id="editPwd">${setIcons.edit} Modifier</button></div>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.shield}</span><div class="set2-opt-main"><strong>Authentification à deux facteurs</strong><small>${s.twoFactorEnabled ? 'Activée' : 'Non configurée'}</small></div><button class="button secondary small" id="cfg2fa">Configurer</button></div>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.shield}</span><div class="set2-opt-main"><strong>Authentification à deux facteurs ${s.twoFactorEnabled ? '<span class="set2-pill ok">Activée</span>' : ''}</strong><small>${s.twoFactorEnabled ? `Code demandé à chaque connexion · ${escapeHtml(s.recoveryCodesLeft)} code${s.recoveryCodesLeft > 1 ? 's' : ''} de secours restant${s.recoveryCodesLeft > 1 ? 's' : ''}` : 'Protégez la connexion avec un code généré par une application (Google Authenticator, Authy…)'}</small></div>${s.twoFactorEnabled
+          ? '<div class="set2-opt-acts"><button class="button secondary small" id="mfaNewCodes">Nouveaux codes</button><button class="button danger small" id="mfaDisable">Désactiver</button></div>'
+          : '<button class="button primary small" id="cfg2fa">Activer</button>'}</div>
         <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.screen}</span><div class="set2-opt-main"><strong>Sessions actives</strong><small>${escapeHtml(s.activeSessions)} appareil${s.activeSessions > 1 ? 's' : ''} connecté${s.activeSessions > 1 ? 's' : ''}</small></div><button class="button secondary small" id="viewSessions">Voir les sessions</button></div>
         <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.bell}</span><div class="set2-opt-main"><strong>Alertes de connexion</strong><small>Recevoir un e-mail lors d’une nouvelle connexion</small></div>${setToggle('loginAlerts', s.loginAlerts, false)}</div>
         <div id="setResult"></div>
@@ -3265,9 +3506,107 @@ async function renderSettings() {
       try { await api('/api/app/account/preferences', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ loginAlerts: on }) }); }
       catch { alertsToggle.classList.toggle('on', !on); }
     });
-    document.getElementById('cfg2fa').addEventListener('click', () => notify('<div class="notice">L’authentification à deux facteurs arrivera prochainement.</div>'));
+    document.getElementById('cfg2fa')?.addEventListener('click', () => openMfaSetup(() => renderSecurity(box)));
+    document.getElementById('mfaDisable')?.addEventListener('click', () => openMfaDisable(() => renderSecurity(box)));
+    document.getElementById('mfaNewCodes')?.addEventListener('click', () => openMfaNewCodes(() => renderSecurity(box)));
     document.getElementById('editPwd').addEventListener('click', () => openPasswordModal());
     document.getElementById('viewSessions').addEventListener('click', () => openSessionsModal());
+  }
+
+  // ---- Double authentification -----------------------------------------
+  const mfaCodeField = (id, label = 'Code à 6 chiffres') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" class="mfa-input" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="123 456" required></div>`;
+
+  function showRecoveryCodes(codes, onDone) {
+    const text = `Codes de secours TRAXO (${context.user.email})\nChaque code ne fonctionne qu’une fois.\n\n${codes.join('\n')}\n`;
+    const modal = openModal('Vos codes de secours',
+      `<p class="subtitle" style="margin:0 0 14px">Gardez-les en lieu sûr : ils permettent de vous connecter si vous perdez votre téléphone. <strong>Ils ne seront plus affichés.</strong></p>
+       <ol class="mfa-codes">${codes.map((code) => `<li>${escapeHtml(code)}</li>`).join('')}</ol>
+       <div class="mfa-code-acts"><button type="button" class="button secondary small" id="mfaCopy">Copier</button><button type="button" class="button secondary small" id="mfaDownload">Télécharger (.txt)</button></div>`,
+      '<button class="button primary" type="button" id="mfaDone">J’ai enregistré mes codes</button>');
+    modal.backdrop.querySelector('#mfaCopy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(text); uiToast('Codes copiés.', 'success'); } catch { uiToast('Copie impossible : utilisez le téléchargement.', 'warning'); }
+    });
+    modal.backdrop.querySelector('#mfaDownload').addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+      link.download = 'traxo-codes-de-secours.txt';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    });
+    modal.backdrop.querySelector('#mfaDone').addEventListener('click', () => { modal.close(); onDone(); });
+  }
+
+  async function openMfaSetup(onDone) {
+    let setup;
+    try { setup = await api('/api/app/account/2fa/setup', { method: 'POST' }); }
+    catch (error) { uiToast(error.message, 'error'); return; }
+    const modal = openModal('Activer la double authentification',
+      `<ol class="mfa-steps">
+         <li><strong>Installez une application d’authentification</strong><span>Google Authenticator, Microsoft Authenticator, Authy ou 1Password.</span></li>
+         <li><strong>Scannez ce QR code</strong><span>Ou saisissez la clé manuellement.</span>
+           <div class="mfa-qr">${setup.qrSvg}</div>
+           <div class="mfa-secret"><code>${escapeHtml(setup.secret)}</code><button type="button" class="button secondary small" id="mfaCopySecret">Copier la clé</button></div></li>
+         <li><strong>Saisissez le code affiché</strong><form id="mfaEnableForm">${mfaCodeField('mfaEnableCode')}</form></li>
+       </ol><div id="modalResult"></div>`,
+      '<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" type="submit" form="mfaEnableForm">Activer</button>');
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#mfaCopySecret').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(setup.secret.replace(/\s+/g, '')); uiToast('Clé copiée.', 'success'); } catch { uiToast('Copie impossible.', 'warning'); }
+    });
+    modal.backdrop.querySelector('#mfaEnableForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = modal.backdrop.querySelector('button.primary');
+      button.disabled = true;
+      try {
+        const result = await api('/api/app/account/2fa/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: modal.backdrop.querySelector('#mfaEnableCode').value }) });
+        modal.close();
+        uiToast('Double authentification activée.', 'success');
+        showRecoveryCodes(result.recoveryCodes, onDone);
+      } catch (error) {
+        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        button.disabled = false;
+      }
+    });
+    setTimeout(() => modal.backdrop.querySelector('#mfaEnableCode')?.focus(), 50);
+  }
+
+  function openMfaDisable(onDone) {
+    const modal = openModal('Désactiver la double authentification',
+      `<p class="subtitle" style="margin:0 0 14px">Votre compte ne sera plus protégé que par le mot de passe.</p>
+       <form id="mfaDisableForm"><div class="field"><label for="mfaDisablePwd">Mot de passe</label><input id="mfaDisablePwd" type="password" autocomplete="current-password" required></div>${mfaCodeField('mfaDisableCode', 'Code à 6 chiffres ou code de secours')}</form><div id="modalResult"></div>`,
+      '<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button danger-solid" type="submit" form="mfaDisableForm">Désactiver</button>');
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#mfaDisableForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = modal.backdrop.querySelector('button.danger-solid');
+      button.disabled = true;
+      try {
+        await api('/api/app/account/2fa/disable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: modal.backdrop.querySelector('#mfaDisablePwd').value, code: modal.backdrop.querySelector('#mfaDisableCode').value }) });
+        modal.close();
+        uiToast('Double authentification désactivée.', 'success');
+        onDone();
+      } catch (error) {
+        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        button.disabled = false;
+      }
+    });
+  }
+
+  function openMfaNewCodes(onDone) {
+    const modal = openModal('Générer de nouveaux codes de secours',
+      `<p class="subtitle" style="margin:0 0 14px">Les anciens codes ne fonctionneront plus.</p><form id="mfaCodesForm">${mfaCodeField('mfaCodesCode')}</form><div id="modalResult"></div>`,
+      '<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" type="submit" form="mfaCodesForm">Générer</button>');
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+    modal.backdrop.querySelector('#mfaCodesForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      try {
+        const result = await api('/api/app/account/2fa/recovery-codes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: modal.backdrop.querySelector('#mfaCodesCode').value }) });
+        modal.close();
+        showRecoveryCodes(result.recoveryCodes, onDone);
+      } catch (error) {
+        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      }
+    });
   }
 
   function openPasswordModal() {
@@ -3324,10 +3663,9 @@ async function renderSettings() {
       </section>
       <section class="set2-card">
         <h3 class="set2-blocktitle">Paiement</h3>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.billing}</span><div class="set2-opt-main"><strong>Aucun moyen de paiement configuré</strong><small>Configurez votre paiement pour activer le renouvellement automatique de votre abonnement.</small></div><button class="button secondary small" id="cfgPay">Configurer le paiement</button></div>
+        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.billing}</span><div class="set2-opt-main"><strong>Paiement en ligne <span class="set2-pill soon">En préparation</span></strong><small>Mobile Money et carte bancaire seront proposés ici. D’ici là, votre formule reste active et aucun prélèvement n’est effectué.</small></div>${context.supportEmail ? `<a class="button secondary small" href="mailto:${escapeHtml(context.supportEmail)}?subject=Facturation%20TRAXO">Nous contacter</a>` : ''}</div>
         <div id="setResult"></div>
       </section>`;
-    document.getElementById('cfgPay').addEventListener('click', () => notify('<div class="notice">La passerelle de paiement sera branchée prochainement.</div>'));
     document.getElementById('seePlans').addEventListener('click', () => { try { history.replaceState(null, '', '/app/parametres?section=billing&plans=1'); } catch { /* ignore */ } renderBilling(box); });
   }
 
@@ -3385,7 +3723,7 @@ async function renderSettings() {
         return `<div class="plan-compact"><span class="plan-ic sm">${planIcons[p.code] || setIcons.billing}</span><div class="plan-compact-main"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.microcopy)}</small></div><div class="plan-compact-price"><strong>${pr.big}</strong>${pr.unit ? `<small>${escapeHtml(pr.unit)}</small>` : ''}<small class="plan-compact-cap">${escapeHtml(p.capacityLabel)}</small></div>${cta}</div>`;
       };
       box.innerHTML = `
-        <div class="plan-breadcrumb"><a href="/app/parametres?section=overview">Paramètres</a><span>›</span><a href="#" id="crumbBilling">Facturation</a><span>›</span><span>Voir les plans</span></div>
+        <div class="plan-breadcrumb"><a href="/app/parametres?section=overview">Paramètres</a><span>›</span><a href="/app/parametres?section=billing" id="crumbBilling">Facturation</a><span>›</span><span>Voir les plans</span></div>
         <div class="plan-header">
           <div><h2>Voir les plans</h2><p>Choisissez la formule la plus adaptée à la taille de votre flotte.</p></div>
           <div class="plan-cycles">${cycleBtn('monthly', 'Mensuel')}${cycleBtn('quarterly', 'Trimestriel')}${cycleBtn('yearly', 'Annuel')}</div>
@@ -3402,14 +3740,17 @@ async function renderSettings() {
       const cb = document.getElementById('crumbBilling');
       if (cb) cb.addEventListener('click', (e) => { e.preventDefault(); try { history.replaceState(null, '', '/app/parametres?section=billing'); } catch { /* ignore */ } renderBilling(box); });
       box.querySelectorAll('[data-act="trial"]').forEach((b) => b.addEventListener('click', () => notify('<div class="notice">L’essai gratuit s’active uniquement lors de la première connexion de votre espace.</div>')));
-      box.querySelectorAll('[data-act="contact"]').forEach((b) => b.addEventListener('click', () => notify('<div class="notice">Écrivez-nous pour un devis Grande flotte : notre équipe vous recontactera.</div>')));
+      box.querySelectorAll('[data-act="contact"]').forEach((b) => b.addEventListener('click', () => {
+        if (context.supportEmail) location.href = `mailto:${context.supportEmail}?subject=${encodeURIComponent('Devis Grande flotte TRAXO')}`;
+        else notify('<div class="notice">Pour un devis Grande flotte, contactez l’équipe TRAXO : elle vous recontactera.</div>');
+      }));
       box.querySelectorAll('[data-pick]').forEach((b) => b.addEventListener('click', async () => {
         if (b.disabled) return;
         b.disabled = true;
         try {
           await api('/api/app/billing/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planCode: b.dataset.pick, billingCycle: cycle }) });
           data.currentPlan = b.dataset.pick; data.billingCycle = cycle;
-          notify('<div class="notice success">Formule mise à jour. La passerelle de paiement sera branchée prochainement.</div>');
+          uiToast('Formule enregistrée. Aucun prélèvement tant que le paiement en ligne n’est pas activé.', 'success');
           draw();
         } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); b.disabled = false; }
       }));
@@ -3646,6 +3987,15 @@ async function openOrderDrawer(orderId, opts = {}) {
     });
     body.scrollTop = scrollTop;
     markActive();
+    if (opts.focusSection && !scrollTop) {
+      const target = byName(opts.focusSection);
+      opts.focusSection = null;
+      if (target) {
+        pinnedUntil = Date.now() + 1500;
+        setActive(sections.indexOf(target));
+        setTimeout(() => goTo(target, 'textarea'), 260);
+      }
+    }
   };
 
   try {
@@ -3654,6 +4004,30 @@ async function openOrderDrawer(orderId, opts = {}) {
     drawer.innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
     drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
   }
+}
+
+// « Nouvel incident » : un incident se déclare toujours sur une commande.
+// On choisit la commande, puis son tiroir s'ouvre directement sur Incidents.
+async function pickOrderForIncident(onChange) {
+  const modal = openModal('Déclarer un incident', `<p class="subtitle" style="margin:0 0 12px">Choisissez la commande concernée.</p>
+    <label class="crm-search pick-search"><span>${fleetIcons.search}</span><input type="search" id="pickOrderQ" placeholder="Client, numéro, quartier, livreur…" autocomplete="off"></label>
+    <ul class="pick-list" id="pickOrderList"><li class="crm-muted">Chargement…</li></ul>`);
+  let orders = [];
+  try { orders = (await api('/api/app/orders')).filter((o) => !['Livrée', 'Retournée', 'Annulée'].includes(o.status)); } catch (error) { orders = []; }
+  const list = modal.backdrop.querySelector('#pickOrderList');
+  const draw = (q) => {
+    const rows = orders.filter((o) => `${o.reference || ''} ${o.id} ${o.customer_name || ''} ${o.neighborhood || ''} ${o.driver_name || ''}`.toLowerCase().includes(q)).slice(0, 30);
+    list.innerHTML = rows.length ? rows.map((o) => `<li><button type="button" data-id="${escapeHtml(o.id)}"><span><strong>${escapeHtml(o.customer_name || 'Client')}</strong><small>${escapeHtml(orderCode(o.reference, o.id))} · ${escapeHtml(o.neighborhood || o.landmark || '—')}${o.driver_name ? ` · ${escapeHtml(o.driver_name)}` : ''}</small></span>${crmChip(o.status, crmOrderStatusColor(o.status))}</button></li>`).join('')
+      : '<li class="crm-muted">Aucune commande en cours ne correspond.</li>';
+    list.querySelectorAll('button[data-id]').forEach((button) => button.addEventListener('click', () => {
+      modal.close();
+      openOrderDrawer(button.dataset.id, { onChange, focusSection: 'Incidents' });
+    }));
+  };
+  draw('');
+  const input = modal.backdrop.querySelector('#pickOrderQ');
+  input.addEventListener('input', () => draw(input.value.trim().toLowerCase()));
+  input.focus();
 }
 
 // Tiroir d'une tournée : aperçu (avancement, carte des arrêts), ordre de passage
@@ -3898,7 +4272,7 @@ async function openRunDrawer(runId, opts = {}) {
     });
     body.querySelectorAll('[data-remove]').forEach((button) => button.addEventListener('click', async () => {
       const stop = stops.find((item) => String(item.id) === button.dataset.remove);
-      if (!stop || !confirm(`Retirer ${orderCode(stop.order_reference, stop.order_id)} de cette tournée ? La commande reste affectée au livreur et son historique est conservé.`)) return;
+      if (!stop || !(await uiConfirm(`Retirer ${orderCode(stop.order_reference, stop.order_id)} de la tournée ?`, { message: 'La commande reste affectée au livreur et son historique est conservé.', confirmLabel: 'Retirer' }))) return;
       button.disabled = true;
       try {
         await api(`/api/app/runs/${encodeURIComponent(runId)}/stops/${encodeURIComponent(stop.id)}/remove`, {
@@ -3939,9 +4313,9 @@ async function openRunDrawer(runId, opts = {}) {
         if (button) button.disabled = false;
       }
     };
-    foot?.querySelectorAll('[data-to]').forEach((button) => button.addEventListener('click', () => {
+    foot?.querySelectorAll('[data-to]').forEach((button) => button.addEventListener('click', async () => {
       const toStatus = button.dataset.to;
-      if (!confirm(`${runActionLabels[toStatus] || runStatusLabels[toStatus]} ?`)) return;
+      if (!(await uiConfirm(`${runActionLabels[toStatus] || runStatusLabels[toStatus]} ?`, { message: ({ planned: 'La tournée est prête pour le départ ; l’ordre de passage reste modifiable.', active: 'Le livreur voit la tournée et l’ordre de passage est verrouillé.', completed: 'La tournée sera clôturée.', draft: 'La tournée repasse en préparation : vous pourrez ajouter ou retirer des colis.' })[toStatus] || '', confirmLabel: runActionLabels[toStatus] || 'Confirmer' }))) return;
       changeStatus(toStatus, '', button);
     }));
     foot?.querySelector('#rdCancel')?.addEventListener('click', () => {
@@ -3965,6 +4339,61 @@ async function openRunDrawer(runId, opts = {}) {
     markActive();
   };
 
+  try {
+    await paint();
+  } catch (error) {
+    drawer.innerHTML = `<div class="crm-drawer-head"><div class="crm-drawer-title">Erreur</div><button class="crm-drawer-close" type="button">✕</button></div><div class="crm-drawer-body"><div class="notice error">${escapeHtml(error.message)}</div></div>`;
+    drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
+  }
+}
+
+// Tiroir d'un incident : le dossier complet (actions, gel, chronologies),
+// avec impression et export depuis l'en-tête. opts.onChange : rafraîchit la liste.
+async function openIncidentDrawer(incidentId, opts = {}) {
+  const existing = document.querySelector('.crm-drawer-wrap');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'crm-drawer-wrap';
+  wrap.innerHTML = '<div class="crm-drawer-backdrop"></div><aside class="crm-drawer wide" role="dialog" aria-modal="true" aria-label="Incident"><div class="loading-state" style="padding:40px">Chargement…</div></aside>';
+  const drawer = wrap.querySelector('.crm-drawer');
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (event) => { if (event.key === 'Escape' && !event.target.closest('input, textarea, select')) close(); };
+  wrap.querySelector('.crm-drawer-backdrop').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  const canControl = ['owner', 'manager'].includes(context.user.role);
+  const printIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>';
+  const dlIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>';
+  const paint = async (scrollTop = 0) => {
+    const { incident } = await api(`/api/app/incidents/${encodeURIComponent(incidentId)}`);
+    drawer.innerHTML = `
+      <div class="crm-drawer-head">
+        <div><div class="crm-drawer-title">INC-${escapeHtml(incident.id)} ${crmChip(incident.status === 'resolved' ? 'Résolu' : 'Ouvert', incident.status === 'resolved' ? 'green' : 'red')}</div>
+          <small>${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</small></div>
+        <div class="crm-drawer-headact">
+          <a class="crm-icobtn" href="/app/incidents/${escapeHtml(incident.id)}?print=1" target="_blank" rel="noopener" title="Imprimer / PDF" aria-label="Imprimer ou enregistrer en PDF">${printIc}</a>
+          ${canControl ? `<a class="crm-icobtn" href="/api/app/incidents/${escapeHtml(incident.id)}/export" title="Télécharger les données" aria-label="Télécharger les données">${dlIc}</a>` : ''}
+          <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+      </div>
+      <div class="crm-drawer-body incident-drawer-body" id="incDrawerBody"></div>
+      <div class="crm-drawer-foot"><button type="button" class="button secondary" id="incOpenOrder">Voir la commande</button></div>`;
+    drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
+    drawer.querySelector('#incOpenOrder').addEventListener('click', () => {
+      close();
+      openOrderDrawer(incident.order_id, { onChange: opts.onChange, onBack: () => openIncidentDrawer(incidentId, opts), backLabel: 'Retour à l’incident' });
+    });
+    const body = drawer.querySelector('#incDrawerBody');
+    await mountIncidentDossier(body, incidentId, {
+      drawer: true,
+      refresh: async () => {
+        await paint(body.scrollTop);
+        if (typeof opts.onChange === 'function') opts.onChange();
+      },
+    });
+    body.scrollTop = scrollTop;
+  };
   try {
     await paint();
   } catch (error) {
@@ -4006,7 +4435,7 @@ async function openRequestDrawer(requestId, opts = {}) {
     const photoIds = Array.isArray(r.photo_ids) ? r.photo_ids : [];
     const photoSrc = (photoId) => `/api/app/requests/${encodeURIComponent(r.id)}/photos/${encodeURIComponent(photoId)}`;
     const footer = r.order_id
-      ? `<a class="button secondary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a><a class="button primary" href="/app/commandes/${escapeHtml(r.order_id)}">Voir la commande</a>`
+      ? `${r.token ? '<button class="button secondary" type="button" id="reqCopyLink">Copier le lien client</button>' : ''}<button class="button primary" type="button" id="reqOpenOrder">Voir la commande</button>`
       : canAct
         ? `<div class="req-morewrap">
             <button class="button secondary" type="button" id="reqMore" aria-haspopup="true" aria-expanded="false">Autres actions</button>
@@ -4018,8 +4447,8 @@ async function openRequestDrawer(requestId, opts = {}) {
           </div>
           ${assignable
             ? `<button class="button primary" type="button" id="reqAssign" disabled>${editable ? 'Valider et affecter' : 'Affecter le livreur'}</button>`
-            : `<a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a>`}`
-        : `<a class="button primary" href="/app/demandes/${escapeHtml(r.id)}">Fiche demande</a>`;
+            : `${r.token ? '<button class="button primary" type="button" id="reqCopyLink">Copier le lien à envoyer au client</button>' : ''}`}`
+        : '<button class="button secondary" type="button" id="reqClose">Fermer</button>';
     const usableDrivers = drivers.filter((d) => d.active && !['inactive', 'off_duty', 'incident'].includes(d.operationalState));
     const assignHtml = assignable ? `<div class="req-assign">
         <label for="reqDriver">Livreur à affecter</label>
@@ -4082,7 +4511,7 @@ async function openRequestDrawer(requestId, opts = {}) {
         const question = editable
           ? `Valider la demande DEM-${r.id} et l’affecter à ${driverName} ? Les informations du client seront verrouillées.`
           : `Affecter la demande DEM-${r.id} à ${driverName} ?`;
-        if (!confirm(question)) return;
+        if (!(await uiConfirm(question, { confirmLabel: 'Confirmer' }))) return;
         const msg = wrap.querySelector('#reqAssignMsg');
         assignBtn.disabled = true;
         driverSelect.disabled = true;
@@ -4102,6 +4531,16 @@ async function openRequestDrawer(requestId, opts = {}) {
         }
       });
     }
+    wrap.querySelector('#reqCopyLink')?.addEventListener('click', async () => {
+      const url = publicLink(`/demande/${r.token}`);
+      try { await navigator.clipboard.writeText(url); uiToast('Lien client copié.', 'success'); }
+      catch { uiToast(url, 'info', { timeout: 9000 }); }
+    });
+    wrap.querySelector('#reqOpenOrder')?.addEventListener('click', () => {
+      wrap.querySelector('.crm-drawer-backdrop').click();
+      openOrderDrawer(r.order_id, { onChange: opts.onChange, onBack: () => openRequestDrawer(requestId, opts), backLabel: 'Retour à la demande' });
+    });
+    wrap.querySelector('#reqClose')?.addEventListener('click', () => wrap.querySelector('.crm-drawer-backdrop').click());
     // « Autres actions » : popover Refuser / Archiver.
     const moreBtn = wrap.querySelector('#reqMore');
     if (moreBtn) {
@@ -4122,7 +4561,7 @@ async function openRequestDrawer(requestId, opts = {}) {
       const validateItem = pop.querySelector('[data-validate]');
       if (validateItem) validateItem.addEventListener('click', async (event) => {
         event.stopPropagation();
-        if (!confirm(`Valider la demande DEM-${r.id} ? Le client ne pourra plus modifier ses informations. Vous pourrez affecter un livreur ensuite.`)) return;
+        if (!(await uiConfirm(`Valider la demande DEM-${r.id} ?`, { message: 'Le client ne pourra plus modifier ses informations. Vous pourrez affecter un livreur ensuite.', confirmLabel: 'Valider' }))) return;
         pop.querySelectorAll('button').forEach((b) => { b.disabled = true; });
         try {
           await api(`/api/app/requests/${encodeURIComponent(r.id)}/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -4130,7 +4569,7 @@ async function openRequestDrawer(requestId, opts = {}) {
           if (typeof opts.onChange === 'function') opts.onChange();
         } catch (error) {
           pop.querySelectorAll('button').forEach((b) => { b.disabled = false; });
-          alert(error.message);
+          uiToast(error.message, 'error');
         }
       });
       pop.querySelectorAll('[data-status]').forEach((btn) => {
@@ -4140,7 +4579,7 @@ async function openRequestDrawer(requestId, opts = {}) {
           const message = status === 'Refusée'
             ? `Refuser la demande DEM-${r.id} ? Elle sera marquée comme refusée et quittera la file active.`
             : `Archiver la demande DEM-${r.id} ? Elle quittera la file active (réversible via l’onglet Archives).`;
-          if (!confirm(message)) return;
+          if (!(await uiConfirm(message, { tone: /refus|archiv/i.test(message) ? 'danger' : 'default', confirmLabel: 'Confirmer' }))) return;
           pop.querySelectorAll('[data-status]').forEach((b) => { b.disabled = true; });
           try {
             await api(`/api/app/requests/${encodeURIComponent(r.id)}/status`, {
@@ -4151,7 +4590,7 @@ async function openRequestDrawer(requestId, opts = {}) {
             if (typeof opts.onChange === 'function') opts.onChange();
           } catch (error) {
             pop.querySelectorAll('[data-status]').forEach((b) => { b.disabled = false; });
-            alert(error.message);
+            uiToast(error.message, 'error');
           }
         });
       });
@@ -4286,8 +4725,8 @@ async function renderOperationsWorkspace(initialSegment) {
       ],
     },
     incidents: {
-      title: 'Incidents', newLabel: 'Nouvel incident', newHref: '/app/operations?vue=incidents', placeholder: 'Rechercher un incident, une commande…', countKey: 'open_incidents',
-      endpoint: () => `/api/app/incidents?scope=${encodeURIComponent(scopeState.incidents)}`, href: (r) => `/app/incidents/${r.id}`,
+      title: 'Incidents', newLabel: 'Nouvel incident', newAction: () => pickOrderForIncident(loadSegment), placeholder: 'Rechercher un incident, une commande…', countKey: 'open_incidents',
+      endpoint: () => `/api/app/incidents?scope=${encodeURIComponent(scopeState.incidents)}`, drawerFn: (id) => openIncidentDrawer(id, { onChange: loadSegment }), href: (r) => `/app/incidents/${r.id}`,
       statusValues: ['open', 'resolved'], statusLabelMap: { open: 'Ouvert', resolved: 'Résolu' },
       groupCols: [['status', 'Statut'], ['severity', 'Priorité'], ['assignee', 'Assigné à']],
       groupVal: (r, k) => k === 'status' ? (r.status === 'resolved' ? 'Résolu' : 'Ouvert') : k === 'severity' ? (incidentSeverityLabels[r.severity] || r.severity) : (r.assigned_to || r.driver_name || 'Non attribué'),
@@ -4357,7 +4796,7 @@ async function renderOperationsWorkspace(initialSegment) {
         <div class="crm-tool-wrap"><button class="crm-btn" id="crmFilter">${crmIcons.filter} Filtrer<span class="crm-b" id="crmFilterN" hidden></span></button></div>
         <div class="crm-tool-wrap"><button class="crm-btn" id="crmGroup">${crmIcons.group} Grouper par</button></div>
         <div class="crm-tool-wrap"><button class="crm-btn" id="crmSort">${crmIcons.sort} Trier</button></div>
-        ${co.newHref ? `<a class="crm-new" href="${escapeHtml(co.newHref)}">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</a>` : ''}
+        ${co.newAction ? `<button type="button" class="crm-new" id="crmNewAction">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</button>` : co.newHref ? `<a class="crm-new" href="${escapeHtml(co.newHref)}">${fleetIcons.plus} ${escapeHtml(co.newLabel)}</a>` : ''}
       </div>
       <div class="crm-chips" id="crmChips"></div>
       <div class="cli-bulk" id="crmBulk" hidden></div>
@@ -4368,6 +4807,7 @@ async function renderOperationsWorkspace(initialSegment) {
     document.getElementById('crmFilter').addEventListener('click', (e) => { e.stopPropagation(); openFilterMenu(e.currentTarget); });
     document.getElementById('crmGroup').addEventListener('click', (e) => { e.stopPropagation(); openGroupMenu(e.currentTarget); });
     document.getElementById('crmSort').addEventListener('click', (e) => { e.stopPropagation(); openSortMenu(e.currentTarget); });
+    document.getElementById('crmNewAction')?.addEventListener('click', () => co.newAction());
   }
 
   function renderTabs() {
@@ -4535,14 +4975,14 @@ async function renderOperationsWorkspace(initialSegment) {
   async function archiveCrmSelection(co) {
     if (!co.rowArchive) return;
     const ids = [...crmSelected];
-    if (!ids.length || !confirm(`${co.rowArchive.title} — ${ids.length} élément(s) ?`)) return;
+    if (!ids.length || !(await uiConfirm(`${co.rowArchive.title} ${ids.length} élément(s) ?`, { message: 'Ils quitteront la file active (réversible depuis les archives).', confirmLabel: co.rowArchive.title }))) return;
     try {
       await Promise.all(ids.map((id) => api(co.rowArchive.endpoint(id), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(co.rowArchive.body),
       })));
       crmSelected.clear(); refreshCrmBulk();
       await loadSegment();
-    } catch (error) { alert(error.message || 'Action impossible.'); }
+    } catch (error) { uiToast(error.message || 'Action impossible.', 'error'); }
   }
 
   function rowHtml(r, co) {
@@ -4555,7 +4995,7 @@ async function renderOperationsWorkspace(initialSegment) {
 
   async function rowArchive(co, id) {
     if (!co.rowArchive) return;
-    if (!confirm(co.rowArchive.confirm(id))) return;
+    if (!(await uiConfirm(co.rowArchive.confirm(id), { confirmLabel: co.rowArchive.title }))) return;
     try {
       await api(co.rowArchive.endpoint(id), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4563,7 +5003,7 @@ async function renderOperationsWorkspace(initialSegment) {
       });
       await loadSegment();
     } catch (error) {
-      alert(error.message);
+      uiToast(error.message, 'error');
     }
   }
 
@@ -4647,6 +5087,7 @@ async function renderOperationsWorkspace(initialSegment) {
   const focusRequest = focusParams.get('demande');
   const focusOrder = focusParams.get('commande');
   const focusRun = focusParams.get('tournee');
+  const focusIncident = focusParams.get('incident');
   if (segment === 'demandes' && /^\d{1,18}$/.test(focusRequest || '')) {
     focusParams.delete('demande');
     history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
@@ -4659,6 +5100,10 @@ async function renderOperationsWorkspace(initialSegment) {
     focusParams.delete('tournee');
     history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
     openRunDrawer(focusRun, { onChange: loadSegment });
+  } else if (segment === 'incidents' && /^\d{1,18}$/.test(focusIncident || '')) {
+    focusParams.delete('incident');
+    history.replaceState(null, '', `${location.pathname}?${focusParams.toString()}`);
+    openIncidentDrawer(focusIncident, { onChange: loadSegment });
   }
 }
 
@@ -4838,23 +5283,23 @@ async function renderCustomers() {
   };
   const archiveSelected = async () => {
     const ids = [...selected];
-    if (!ids.length || !confirm(`Archiver ${ids.length} client(s) ? Ils n'apparaîtront plus par défaut.`)) return;
+    if (!ids.length || !(await uiConfirm(`Archiver ${ids.length} client(s) ?`, { message: 'Ils n’apparaîtront plus dans la liste par défaut.', confirmLabel: 'Archiver' }))) return;
     try {
       await Promise.all(ids.map((id) => api(`/api/app/crm/customers/${encodeURIComponent(id)}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'archived' }),
       })));
       selected.clear(); refreshBulk(); load();
-    } catch (error) { alert(error.message || 'Archivage impossible.'); }
+    } catch (error) { uiToast(error.message || 'Archivage impossible.', 'error'); }
   };
 
   const archiveOne = async (id) => {
-    if (!confirm('Archiver ce client ?')) return;
+    if (!(await uiConfirm('Archiver ce client ?', { message: 'Il n’apparaîtra plus dans la liste par défaut.', confirmLabel: 'Archiver' }))) return;
     try {
       await api(`/api/app/crm/customers/${encodeURIComponent(id)}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'archived' }),
       });
       selected.delete(String(id)); refreshBulk(); load();
-    } catch (error) { alert(error.message || 'Archivage impossible.'); }
+    } catch (error) { uiToast(error.message || 'Archivage impossible.', 'error'); }
   };
 
   // Menu « ⋮ » par ligne / carte.
@@ -4904,13 +5349,13 @@ async function renderCustomers() {
         <button type="button" class="button secondary cli-merge-btn">Fusionner ici</button></li>`).join('')}</ul>`;
       listEl.querySelectorAll('.cli-merge-row').forEach((row) => {
         row.querySelector('.cli-merge-btn').addEventListener('click', async () => {
-          if (!confirm('Fusionner ce doublon dans la fiche courante ? Son historique bascule ici et il devient une redirection.')) return;
+          if (!(await uiConfirm('Fusionner ce doublon ?', { message: 'Son historique bascule dans la fiche courante et l’ancienne fiche devient une redirection.', tone: 'danger', confirmLabel: 'Fusionner' }))) return;
           const b = row.querySelector('.cli-merge-btn'); b.disabled = true; b.textContent = 'Fusion…';
           try {
             await api(`/api/app/crm/customers/${encodeURIComponent(targetId)}/merge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: Number(row.dataset.src) }) });
             row.remove(); load();
             if (!listEl.querySelector('.cli-merge-row')) close();
-          } catch (err) { b.disabled = false; b.textContent = 'Fusionner ici'; alert(err.message || 'Fusion impossible.'); }
+          } catch (err) { b.disabled = false; b.textContent = 'Fusionner ici'; uiToast(err.message || 'Fusion impossible.', 'error'); }
         });
       });
     } catch (err) {
@@ -5086,7 +5531,7 @@ async function renderCustomers() {
               const el = section.querySelector('.cli-col-count'); if (el) el.textContent = count;
             });
           } catch (error) {
-            alert(error.message || 'Déplacement impossible.');
+            uiToast(error.message || 'Déplacement impossible.', 'error');
             load();
           }
         },
@@ -5320,11 +5765,11 @@ async function renderCustomerDetail(id) {
       bodyEl.innerHTML = tabs[tab.dataset.tab] || '';
     }));
     document.getElementById('ficheArchive')?.addEventListener('click', async () => {
-      if (!confirm('Archiver ce client ? Il n\'apparaîtra plus dans la liste par défaut.')) return;
+      if (!(await uiConfirm('Archiver ce client ?', { message: 'Il n’apparaîtra plus dans la liste par défaut.', confirmLabel: 'Archiver' }))) return;
       try {
         await api(`/api/app/crm/customers/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'archived' }) });
         location.href = '/app/clients';
-      } catch (error) { alert(error.message || 'Archivage impossible.'); }
+      } catch (error) { uiToast(error.message || 'Archivage impossible.', 'error'); }
     });
 
     // Édition en ligne de la fiche (nom, secteur, note de service).
@@ -5431,13 +5876,13 @@ const REPORT_ART = {
   clients: '<svg viewBox="0 0 150 130" fill="none" aria-hidden="true"><ellipse cx="75" cy="116" rx="50" ry="8" fill="#0b1b3a" opacity=".06"/><circle cx="45" cy="54" r="15" fill="#cfd8e3"/><path d="M21 102a24 24 0 0 1 48 0Z" fill="#cfd8e3"/><circle cx="105" cy="54" r="15" fill="#dbe2ec"/><path d="M81 102a24 24 0 0 1 48 0Z" fill="#dbe2ec"/><circle cx="75" cy="46" r="19" fill="#e11d2a"/><path d="M44 106a31 31 0 0 1 62 0Z" fill="#e11d2a"/></svg>',
 };
 const REPORT_SOURCES = [
-  { key: 'orders', dataset: 'operations', label: 'Commandes', icon: 'box', wired: true,
+  { key: 'orders', dataset: 'operations', label: 'Commandes', icon: 'box',
     desc: 'Exportez vos commandes, leur statut, leur affectation et leurs informations de livraison.', list: '/api/app/orders' },
-  { key: 'routes', dataset: 'routes', label: 'Tournées', icon: 'route', wired: false,
+  { key: 'routes', dataset: 'routes', label: 'Tournées', icon: 'route',
     desc: 'Exportez vos tournées, leurs livreurs, leurs arrêts et leur état.', list: '/api/app/runs' },
-  { key: 'incidents', dataset: 'incidents', label: 'Incidents', icon: 'alert', wired: false,
+  { key: 'incidents', dataset: 'incidents', label: 'Incidents', icon: 'alert',
     desc: 'Exportez les incidents signalés et leur état de traitement.', list: '/api/app/incidents' },
-  { key: 'clients', dataset: 'customers', label: 'Clients', icon: 'users', wired: false,
+  { key: 'clients', dataset: 'customers', label: 'Clients', icon: 'users',
     desc: 'Exportez les clients enregistrés et leurs informations utiles.', list: '/api/app/crm/customers' },
 ];
 // Colonnes d'export par source. Les colonnes de base sont toujours incluses par
@@ -5658,11 +6103,6 @@ async function reportStepConfigure(source) {
       if (response.status === 401) { location.href = '/app/login'; return; }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        if (payload.code === 'DATASET_NOT_WIRED') {
-          btn.disabled = false; btn.innerHTML = label;
-          msg.hidden = false; msg.className = 'rep-msg'; msg.textContent = `La génération de fichier pour « ${source.label} » arrive très bientôt. L’aperçu ci-dessus reflète vos données réelles.`;
-          return;
-        }
         throw new Error(payload.error || 'Export impossible pour le moment.');
       }
       const blob = await response.blob();
@@ -5783,14 +6223,14 @@ async function start() {
     document.getElementById('topCompany').textContent = context.company.name;
     document.getElementById('topRole').textContent = roleLabels[context.user.role] || context.user.role;
     document.getElementById('userName').textContent = `${context.user.name} · ${context.user.email}`;
-    document.getElementById('userAvatar').textContent = String(context.user.name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
+    paintCompanyAvatar();
     if (!['owner', 'manager'].includes(context.user.role)) {
       document.querySelector('[data-route="/app/equipe"]')?.remove();
     }
     activateNavigation();
     const path = location.pathname;
     const detail = path.match(/^\/app\/demandes\/(\d+)$/);
-    if (detail) return await renderRequestDetail(detail[1]);
+    if (detail) { location.replace(`/app/operations?vue=demandes&demande=${encodeURIComponent(detail[1])}`); return; }
     const orderDetail = path.match(/^\/app\/commandes\/(\d+)$/);
     if (orderDetail) return await renderOrderDetail(orderDetail[1]);
     const incidentDetail = path.match(/^\/app\/incidents\/(\d+)$/);
@@ -5820,6 +6260,8 @@ async function start() {
 }
 
 document.getElementById('menuButton').addEventListener('click', () => sidebar.classList.toggle('open'));
+document.getElementById('cpTrigger')?.addEventListener('click', () => openCommandPalette());
+if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) { const kbd = document.querySelector('.cp-trigger-kbd'); if (kbd) kbd.textContent = '⌘ K'; }
 document.addEventListener('click', (event) => {
   if (window.innerWidth <= 900 && sidebar.classList.contains('open') && !sidebar.contains(event.target) && event.target.id !== 'menuButton') {
     sidebar.classList.remove('open');

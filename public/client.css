@@ -239,3 +239,5 @@ textarea.cl-input { min-height: 74px; resize: vertical; line-height: 1.45; }
 .cl-enter.d2 { animation-delay: .14s; }
 .cl-enter.d3 { animation-delay: .22s; }
 .cl-step.done .cl-step-ic, .cl-hstep.done .cl-hstep-ic { animation: cl-pop .5s cubic-bezier(.2, .8, .3, 1.4) .3s both; }
+.cl-brand-mark.has-logo { background: #fff; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08); }
+.cl-brand-mark.has-logo img { width: 100%; height: 100%; object-fit: contain; }

@@ -154,7 +154,7 @@
         }
 
         function render() {
-          C.renderHeader(document.getElementById('head'), data.companyName, 'Livraison');
+          C.renderHeader(document.getElementById('head'), data.companyName, 'Livraison', data.companyLogoUrl);
           document.title = data.id ? `${data.stage === 'received' ? 'Demande' : 'Livraison'} #${data.id} — ${company()}` : `Demande — ${company()}`;
           if (data.stage === 'received') pageEl.innerHTML = receivedHtml();
           else if (['validated', 'assigned', 'delivered'].includes(data.stage)) pageEl.innerHTML = lockedHtml();

@@ -78,6 +78,8 @@
         .panel { min-height: 0; align-items: stretch; justify-content: flex-start; padding: 24px 20px calc(30px + env(safe-area-inset-bottom)); }
         .panel-inner { max-width: none; }
       }
+          .mfa-code { font-size: 22px; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }
+      .mfa-hint { margin: 8px 0 18px; color: #66758c; font-size: 13px; line-height: 1.45; }
     </style>
   </head>
   <body>
@@ -148,6 +150,17 @@
                 <a class="link" href="/app/forgot">Mot de passe oublié ?</a>
               </div>
               <button class="submit" type="submit">Se connecter</button>
+            </form>
+
+            <!-- Double authentification -->
+            <form id="mfaForm" method="post" action="/app/login/2fa" hidden>
+              <h1>Vérification en deux étapes</h1>
+              <p class="sub">Saisissez le code à 6 chiffres affiché dans votre application d’authentification.</p>
+              <label for="mfaCode">Code de vérification</label>
+              <input id="mfaCode" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="9" pattern="[0-9A-Za-z\- ]{6,9}" placeholder="123 456" required class="mfa-code" />
+              <p class="mfa-hint" id="mfaHint">Téléphone perdu ? Saisissez l’un de vos codes de secours (format ABCD-EFGH).</p>
+              <button class="submit" type="submit">Vérifier et se connecter</button>
+              <div class="row"><a class="link" href="/app/login">← Revenir à la connexion</a></div>
             </form>
 
             <!-- Register -->
@@ -232,6 +245,20 @@
 
         var tab = params.get('tab');
         var error = params.get('error');
+        var mfaForm = document.getElementById('mfaForm');
+        if (params.get('step') === '2fa') {
+          loginForm.hidden = true; registerForm.hidden = true;
+          document.querySelector('.tabs').hidden = true;
+          mfaForm.hidden = false;
+          var mfaInput = document.getElementById('mfaCode');
+          mfaInput.focus();
+          if (error === 'code') {
+            var left = Number(params.get('left'));
+            showBanner('Code incorrect.' + (left >= 0 && left < 5 ? ' Encore ' + left + ' essai' + (left > 1 ? 's' : '') + '.' : ''), 'error');
+          }
+          return;
+        }
+        if (error === 'expired') showBanner('La vérification a expiré. Reconnectez-vous.', 'error');
         if (params.get('created') === '1') {
           show('login');
           showBanner('Compte créé. Connectez-vous avec vos identifiants.', 'success');

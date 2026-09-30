@@ -50,8 +50,8 @@
           document.getElementById('submitHint').textContent = ready ? 'Vous pourrez encore modifier vos informations après l’envoi.' : 'Partagez votre position pour continuer.';
         }
 
-        function render(companyName) {
-          C.renderHeader(document.getElementById('head'), companyName, 'Livraison');
+        function render(companyName, logoUrl) {
+          C.renderHeader(document.getElementById('head'), companyName, 'Livraison', logoUrl);
           document.getElementById('asideCompany').textContent = companyName || '';
           if (companyName) document.title = `Préparer votre livraison — ${companyName}`;
           form.innerHTML = `${C.requestFieldsHtml()}
@@ -106,7 +106,7 @@
             location.replace(`/demande/${encodeURIComponent(token)}/confirmation`);
             return;
           }
-          render(result.ok ? result.data.companyName : '');
+          render(result.ok ? result.data.companyName : '', result.ok ? result.data.companyLogoUrl : null);
           if (!result.ok) say(result.data.error || 'Ce formulaire est introuvable ou a expiré.', 'err');
         })();
       })();

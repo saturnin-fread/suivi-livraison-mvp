@@ -1,3 +1,6 @@
+/* Un élément marqué « hidden » reste masqué, même si une classe lui donne un display. */
+[hidden] { display: none !important; }
+
 .driver-body { background: #eef3f8; padding-bottom: 78px; }
 .driver-header { position: sticky; z-index: 10; top: 0; min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; color: #fff; background: var(--navy-dark); box-shadow: 0 3px 14px #0d2e5833; }
 .driver-header strong, .driver-header small { display: block; }

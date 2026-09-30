@@ -160,7 +160,10 @@ async function run() {
   const notifications = await json(await fetch(`${baseUrl}/api/app/notifications`, { headers: { Cookie: cookie } }));
   ensure((notifications.payload.items || []).some((item) => item.type === 'requests'), 'Une demande à vérifier doit apparaître dans les notifications.');
   const requestLinks = (notifications.payload.items || []).filter((item) => item.type === 'requests').map((item) => item.href);
-  ensure(requestLinks.every((href) => /^\/app\/operations\?vue=demandes&demande=\d+$/.test(href)), `Les notifications de demande doivent ouvrir Opérations › Demandes (${requestLinks.join(', ')}).`);
+  // Les demandes à vérifier sont regroupées : une seule notification, qui ouvre
+  // la demande elle-même quand elle est seule, sinon la liste des demandes.
+  ensure(requestLinks.length === 1, `Les demandes à vérifier doivent former une seule notification (${requestLinks.length}).`);
+  ensure(requestLinks.every((href) => /^\/app\/operations\?vue=demandes(&demande=\d+)?$/.test(href)), `Les notifications de demande doivent ouvrir Opérations › Demandes (${requestLinks.join(', ')}).`);
 
   console.log('Parcours client réussi : accès lié à l’appareil, téléphone, GPS, photos, validation, verrouillage, affectation et suivi.');
 }

@@ -11,6 +11,7 @@ const { Pool } = require('pg');
 const { parsePhoneNumberFromString } = require('libphonenumber-js/max');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
+const { computeInsights } = require('./lib/dashboard-insights');
 const totpLib = require('./lib/totp');
 const { WhatsAppChannel, internationalDigits, maskPhone } = require('./lib/whatsapp');
 const { buildIncidentPdf } = require('./lib/incident-pdf');
@@ -83,6 +84,9 @@ const demoToken = demoTrackingEnabled ? process.env.DEMO_TRACKING_TOKEN : null;
 const sessionDurationMs = 12 * 60 * 60 * 1000;
 const rememberSessionMs = 30 * 24 * 60 * 60 * 1000;
 const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
+// Demande saisie par l'équipe, en attente de la confirmation du client.
+const PREFILLED_REQUEST_STATUS = 'À confirmer par le client';
+const PREFILLED_CONFIRM_MAX_ATTEMPTS = 5;
 // « Validée » : l'entreprise a validé la demande (infos client verrouillées)
 // sans avoir encore affecté de livreur. La conversion en commande reste possible.
 const convertibleRequestStatuses = [...editableRequestStatuses, 'Validée'];
@@ -495,7 +499,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -1147,6 +1151,11 @@ async function initDatabase() {
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+      -- Demandes pré-remplies par l'équipe, que le client confirme (code à 4 chiffres).
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS prefilled_by_user_id BIGINT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS confirm_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS confirm_locked_at TIMESTAMPTZ;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS customer_confirmed_at TIMESTAMPTZ;
       CREATE UNIQUE INDEX IF NOT EXISTS customer_requests_edit_token_unique
         ON customer_requests(edit_token_hash) WHERE edit_token_hash IS NOT NULL;
 
@@ -1408,6 +1417,29 @@ async function initDatabase() {
       );
       CREATE INDEX IF NOT EXISTS delivery_run_events_run_created_idx
         ON delivery_run_events(run_id, created_at ASC, id ASC);
+
+      CREATE TABLE IF NOT EXISTS notification_states (
+        user_id BIGINT NOT NULL,
+        company_id BIGINT NOT NULL,
+        notif_key TEXT NOT NULL,
+        read_at TIMESTAMPTZ,
+        archived_at TIMESTAMPTZ,
+        later_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, company_id, notif_key)
+      );
+      CREATE TABLE IF NOT EXISTS notification_prefs (
+        user_id BIGINT NOT NULL,
+        company_id BIGINT NOT NULL,
+        categories JSONB NOT NULL DEFAULT '{}'::jsonb,
+        digest TEXT NOT NULL DEFAULT 'off',
+        digest_hour INTEGER NOT NULL DEFAULT 8,
+        digest_day INTEGER NOT NULL DEFAULT 1,
+        timezone TEXT,
+        last_digest_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, company_id)
+      );
 
       CREATE TABLE IF NOT EXISTS audit_logs (
         id BIGSERIAL PRIMARY KEY,
@@ -3023,7 +3055,7 @@ app.get('/admin', requirePlatformPage, (_req, res) => {
 
 const companyPages = [
   '/app', '/app/operations', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/carte',
-  '/app/livreurs', '/app/tournees', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres',
+  '/app/livreurs', '/app/tournees', '/app/incidents', '/app/equipe', '/app/clients', '/app/rapports', '/app/parametres', '/app/notifications',
 ];
 app.get(companyPages, requireCompanyPage, (_req, res) => {
   sendShell(res, 'app.html');
@@ -3067,6 +3099,7 @@ app.get('/demande/:token', asyncRoute(async (req, res) => {
     return res.status(404).send('Ce formulaire est introuvable ou expiré.');
   }
   res.set(PUBLIC_REQUEST_PAGE_HEADERS);
+  if (request.status === PREFILLED_REQUEST_STATUS) return sendShell(res, 'confirm.html');
   if (request.status !== 'En attente d’informations') {
     return res.redirect(`/demande/${encodeURIComponent(req.params.token)}/confirmation`);
   }
@@ -4175,70 +4208,6 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
 }));
 
 // Construit la liste des notifications actionnables d'une entreprise.
-async function buildNotificationItems(cid) {
-  const [reqs, unassigned, incidents, runs, relaunch] = await Promise.all([
-    pool.query(
-      `SELECT id, customer_name, created_at FROM customer_requests
-       WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier'
-       ORDER BY created_at DESC LIMIT 12`,
-      [cid]
-    ),
-    pool.query(
-      `SELECT id, customer_name, reference, created_at FROM orders
-       WHERE company_id = $1 AND driver_id IS NULL AND status <> ALL($2::text[])
-       ORDER BY created_at DESC LIMIT 12`,
-      [cid, terminalOrderStatuses]
-    ),
-    pool.query(
-      `SELECT i.id, i.created_at, o.customer_name FROM delivery_incidents i
-       LEFT JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
-       WHERE i.company_id = $1 AND i.status = 'open'
-       ORDER BY i.created_at DESC LIMIT 12`,
-      [cid]
-    ),
-    pool.query(
-      `SELECT id, name, created_at FROM delivery_runs
-       WHERE company_id = $1 AND status = 'draft'
-       ORDER BY created_at DESC LIMIT 12`,
-      [cid]
-    ),
-    // Clients « à relancer » : même dérivation d'étape que la liste CRM
-    // (surcharge manuelle prioritaire, sinon stade auto selon l'ancienneté
-    // de la dernière commande). Garder aligné avec l'API /crm/customers.
-    pool.query(
-      `WITH base AS (
-         SELECT c.id, c.display_name, c.pipeline_stage, c.created_at,
-           (SELECT MAX(o.created_at) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS last_order_at,
-           (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS order_count
-         FROM customers c
-         WHERE c.company_id = $1 AND c.status NOT IN ('archived', 'merged', 'anonymized')
-       ), staged AS (
-         SELECT id, display_name, last_order_at,
-           COALESCE(NULLIF(pipeline_stage, ''), CASE
-             WHEN last_order_at IS NULL AND created_at >= NOW() - INTERVAL '30 days' THEN 'nouveau'
-             WHEN last_order_at IS NULL THEN 'inactif'
-             WHEN created_at >= NOW() - INTERVAL '21 days' AND order_count <= 2 THEN 'nouveau'
-             WHEN last_order_at >= NOW() - INTERVAL '30 days' THEN 'actif'
-             WHEN last_order_at >= NOW() - INTERVAL '90 days' THEN 'a_relancer'
-             ELSE 'inactif' END) AS stage
-         FROM base
-       )
-       SELECT id, display_name, last_order_at FROM staged
-       WHERE stage = 'a_relancer'
-       ORDER BY last_order_at ASC NULLS LAST LIMIT 12`,
-      [cid]
-    ),
-  ]);
-  const items = [];
-  for (const r of reqs.rows) items.push({ id: `request-${r.id}`, type: 'requests', title: 'Nouvelle demande à vérifier', summary: r.customer_name || 'Client à préciser', at: r.created_at, href: `/app/operations?vue=demandes&demande=${r.id}` });
-  for (const o of unassigned.rows) items.push({ id: `order-${o.id}`, type: 'unassigned', title: 'Commande à affecter', summary: [o.reference, o.customer_name].filter(Boolean).join(' · ') || `Commande n° ${o.id}`, at: o.created_at, href: `/app/commandes/${o.id}` });
-  for (const i of incidents.rows) items.push({ id: `incident-${i.id}`, type: 'incidents', title: 'Incident ouvert', summary: i.customer_name ? `Commande de ${i.customer_name}` : `Incident n° ${i.id}`, at: i.created_at, href: `/app/incidents/${i.id}` });
-  for (const r of runs.rows) items.push({ id: `run-${r.id}`, type: 'runs', title: 'Tournée à planifier', summary: r.name || `Tournée n° ${r.id}`, at: r.created_at, href: `/app/tournees/${r.id}` });
-  for (const c of relaunch.rows) items.push({ id: `relaunch-${c.id}`, type: 'relaunch', title: 'Client à relancer', summary: c.display_name || `Client n° ${c.id}`, at: c.last_order_at || new Date(0).toISOString(), href: `/app/clients/${c.id}` });
-  items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-  return items.slice(0, 20);
-}
-
 // --- E-mail — indépendant du fournisseur (SMTP standard, ou Resend en repli) ---
 // Inactif tant qu'aucun fournisseur n'est configuré. Pour activer : renseigner
 // les variables SMTP_* (Brevo, Amazon SES, Mailgun…) ou RESEND_API_KEY.
@@ -4366,45 +4335,370 @@ function renderEmailShell({ baseUrl = '', heading = '', introHtml = '', bodyHtml
     </table>
   </td></tr></table></body></html>`;
 }
-// Construit le digest e-mail des actions en attente d'une entreprise.
-async function buildCompanyDigest(cid, appBaseUrl = '') {
-  const items = await buildNotificationItems(cid);
-  if (!items.length) return null;
-  const baseUrl = String(appBaseUrl || '').replace(/\/+$/, '');
-  const rows = items.map((it) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;border:1px solid #eef1f5;border-radius:12px"><tr><td style="padding:12px 14px">
-    <div style="font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#111827">${escHtmlServer(it.title)}</div>
-    <div style="font-family:Arial,sans-serif;font-size:13px;color:#667085;margin-top:2px">${escHtmlServer(it.summary)}</div>
-    ${baseUrl ? `<a href="${escHtmlServer(baseUrl + it.href)}" style="font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#e11d2a;text-decoration:none">Ouvrir →</a>` : ''}
-  </td></tr></table>`).join('');
-  const label = `${items.length} action${items.length > 1 ? 's' : ''} en attente`;
-  const html = renderEmailShell({
-    baseUrl,
-    heading: `Vous avez ${label}`,
-    introHtml: 'Voici le récapitulatif des actions à traiter dans votre espace TRAXO.',
-    bodyHtml: rows,
-    ctaLabel: baseUrl ? 'Ouvrir TRAXO' : undefined,
-    ctaUrl: baseUrl ? `${baseUrl}/app` : undefined,
+// ---- Notifications ----------------------------------------------------------
+// Les notifications sont calculées à partir de l'état métier (demandes, incidents,
+// commandes, tournées) : elles disparaissent quand l'élément est traité. L'état
+// lu / archivé / « plus tard » est propre à chaque utilisateur (notification_states)
+// et ne change jamais l'état métier.
+const NOTIFICATION_CATEGORIES = ['incidents', 'requests', 'deliveries', 'runs', 'clients'];
+const notificationIncidentLabels = {
+  client_injoignable: 'Client injoignable', adresse: 'Adresse à préciser', colis: 'Colis endommagé ou manquant',
+  paiement: 'Problème de paiement', vehicule: 'Problème de véhicule', gps: 'GPS ou connexion', autre: 'Incident signalé',
+};
+const notifKeyPattern = /^[a-z]+-[0-9a-f-]{1,40}$/;
+
+function frDateShort(value, timeZone = DASHBOARD_TZ) {
+  return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', timeZone }).format(new Date(value));
+}
+
+async function buildNotificationItems(cid, { currentSessionHash = null, userId = null } = {}) {
+  const [reqs, toAssign, unassigned, incidents, runs, relaunch, delivered, logins] = await Promise.all([
+    pool.query(
+      `SELECT id, customer_name, created_at, submitted_at FROM customer_requests
+       WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier'
+       ORDER BY COALESCE(submitted_at, created_at) DESC LIMIT 200`,
+      [cid]
+    ),
+    pool.query(
+      `SELECT r.id, r.customer_name, r.neighborhood, r.validated_at, r.customer_confirmed_at, (r.location_lat IS NOT NULL) AS has_location
+       FROM customer_requests r LEFT JOIN orders o ON o.customer_request_id = r.id
+       WHERE r.company_id = $1 AND r.archived_at IS NULL AND r.status = 'Validée' AND o.id IS NULL
+       ORDER BY COALESCE(r.customer_confirmed_at, r.validated_at) DESC LIMIT 30`,
+      [cid]
+    ),
+    pool.query(
+      `SELECT id, customer_name, reference, created_at FROM orders
+       WHERE company_id = $1 AND driver_id IS NULL AND status <> ALL($2::text[])
+       ORDER BY created_at DESC LIMIT 30`,
+      [cid, terminalOrderStatuses]
+    ),
+    pool.query(
+      `SELECT i.id, i.category, i.created_at, i.description, o.id AS order_id, o.reference, o.customer_name, d.name AS driver_name
+       FROM delivery_incidents i
+       LEFT JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
+       LEFT JOIN drivers d ON d.id = o.driver_id
+       WHERE i.company_id = $1 AND i.status = 'open'
+       ORDER BY i.created_at DESC LIMIT 30`,
+      [cid]
+    ),
+    pool.query(
+      `SELECT r.id, r.name, r.created_at, r.service_date, d.name AS driver_name
+       FROM delivery_runs r LEFT JOIN drivers d ON d.id = r.driver_id
+       WHERE r.company_id = $1 AND r.status = 'draft'
+       ORDER BY r.created_at DESC LIMIT 20`,
+      [cid]
+    ),
+    // Clients « à relancer » : même dérivation d'étape que la liste CRM.
+    pool.query(
+      `WITH base AS (
+         SELECT c.id, c.display_name, c.pipeline_stage, c.created_at,
+           (SELECT MAX(o.created_at) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS last_order_at,
+           (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS order_count
+         FROM customers c
+         WHERE c.company_id = $1 AND c.status NOT IN ('archived', 'merged', 'anonymized')
+       ), staged AS (
+         SELECT id, display_name, last_order_at,
+           COALESCE(NULLIF(pipeline_stage, ''), CASE
+             WHEN last_order_at IS NULL AND created_at >= NOW() - INTERVAL '30 days' THEN 'nouveau'
+             WHEN last_order_at IS NULL THEN 'inactif'
+             WHEN created_at >= NOW() - INTERVAL '21 days' AND order_count <= 2 THEN 'nouveau'
+             WHEN last_order_at >= NOW() - INTERVAL '30 days' THEN 'actif'
+             WHEN last_order_at >= NOW() - INTERVAL '90 days' THEN 'a_relancer'
+             ELSE 'inactif' END) AS stage
+         FROM base
+       )
+       SELECT id, display_name, last_order_at FROM staged
+       WHERE stage = 'a_relancer'
+       ORDER BY last_order_at ASC NULLS LAST LIMIT 12`,
+      [cid]
+    ),
+    // Livraisons terminées : un récapitulatif par jour (7 derniers jours), pas un message par arrêt.
+    pool.query(
+      `SELECT to_char((e.created_at AT TIME ZONE '${DASHBOARD_TZ}')::date, 'YYYY-MM-DD') AS day, COUNT(DISTINCT e.order_id)::int AS n, MAX(e.created_at) AS last_at
+       FROM order_status_events e
+       WHERE e.company_id = $1 AND e.to_status = 'Livrée' AND e.created_at >= NOW() - INTERVAL '7 days'
+       GROUP BY 1 ORDER BY 1 DESC`,
+      [cid]
+    ),
+    userId ? pool.query(
+      `SELECT token_hash, user_agent, created_at FROM app_sessions
+       WHERE user_id = $1 AND expires_at > NOW() AND (created_at >= NOW() - INTERVAL '7 days' OR token_hash = $2)
+       ORDER BY created_at DESC LIMIT 40`,
+      [userId, currentSessionHash || '']
+    ) : Promise.resolve({ rows: [] }),
+  ]);
+  const items = [];
+  if (reqs.rows.length) {
+    const n = reqs.rows.length;
+    const newest = reqs.rows[0];
+    const oldest = reqs.rows[n - 1];
+    const range = n > 1 ? `${frDateShort(oldest.submitted_at || oldest.created_at)} – ${frDateShort(newest.submitted_at || newest.created_at)}` : (newest.customer_name || 'Client à préciser');
+    items.push({
+      id: `requests-${newest.id}`, category: 'requests', type: 'requests', priority: 'action',
+      title: n > 1 ? `${n} demandes attendent votre validation` : 'Nouvelle demande à valider',
+      summary: n > 1 ? `Formulaires reçus · ${range}` : range,
+      meta: n > 1 ? 'Demandes regroupées' : 'Formulaire client',
+      detail: n > 1 ? `${n} clients ont rempli leur formulaire. Vérifiez leurs informations, puis validez-les ou affectez un livreur.` : 'Un client a rempli son formulaire. Vérifiez ses informations, puis validez la demande ou affectez un livreur.',
+      ref: n > 1 ? `${n} demandes` : `Demande #${newest.id}`,
+      at: newest.submitted_at || newest.created_at,
+      href: n > 1 ? '/app/operations?vue=demandes' : `/app/operations?vue=demandes&demande=${newest.id}`,
+      cta: n > 1 ? 'Examiner les demandes' : 'Voir la demande',
+    });
+  }
+  for (const r of toAssign.rows) {
+    const confirmed = Boolean(r.customer_confirmed_at);
+    items.push({
+      id: `assign-${r.id}`, category: 'deliveries', type: 'assign', priority: 'action',
+      title: confirmed ? 'Commande confirmée par le client' : 'Demande validée, livreur à affecter',
+      summary: [r.customer_name, r.neighborhood].filter(Boolean).join(' · ') || `Demande #${r.id}`,
+      meta: confirmed ? (r.has_location ? 'Position partagée' : 'Position non partagée') : 'Validée',
+      detail: confirmed
+        ? `Le client a vérifié ses informations${r.has_location ? ' et partagé sa position' : ''}. Affectez un livreur pour lancer la livraison.`
+        : 'La demande est validée. Affectez un livreur pour créer la commande.',
+      ref: `Demande #${r.id}`,
+      at: r.customer_confirmed_at || r.validated_at,
+      href: `/app/operations?vue=demandes&demande=${r.id}`,
+      cta: 'Affecter un livreur',
+    });
+  }
+  for (const o of unassigned.rows) {
+    items.push({
+      id: `order-${o.id}`, category: 'deliveries', type: 'assign', priority: 'action',
+      title: 'Commande sans livreur', summary: [o.reference, o.customer_name].filter(Boolean).join(' · ') || `Commande n° ${o.id}`,
+      meta: 'À affecter', detail: 'Cette commande n’a pas encore de livreur.', ref: o.reference || `Commande n° ${o.id}`,
+      at: o.created_at, href: `/app/operations?vue=commandes&commande=${o.id}`, cta: 'Voir la commande',
+    });
+  }
+  for (const i of incidents.rows) {
+    items.push({
+      id: `incident-${i.id}`, category: 'incidents', type: 'incident', priority: 'action',
+      title: notificationIncidentLabels[i.category] || 'Incident signalé',
+      summary: [i.reference, i.customer_name].filter(Boolean).join(' · ') || `Incident n° ${i.id}`,
+      meta: i.driver_name || '',
+      detail: `${i.driver_name ? `${i.driver_name} a signalé` : 'Un incident a été signalé'} sur cette livraison. Consultez la commande pour organiser la suite.`,
+      ref: [i.reference, i.customer_name].filter(Boolean).join(' · ') || `Incident n° ${i.id}`,
+      at: i.created_at, href: `/app/incidents/${i.id}`, cta: 'Voir l’incident',
+    });
+  }
+  for (const r of runs.rows) {
+    items.push({
+      id: `run-${r.id}`, category: 'runs', type: 'run', priority: 'action',
+      title: 'Une tournée reste à préparer', summary: r.name || `Tournée n° ${r.id}`, meta: r.driver_name || '',
+      detail: 'Cette tournée est en préparation : vérifiez l’ordre des arrêts, puis planifiez-la.',
+      ref: r.name || `Tournée n° ${r.id}`, at: r.created_at, href: `/app/tournees/${r.id}`, cta: 'Voir la tournée',
+    });
+  }
+  for (const d of delivered.rows) {
+    items.push({
+      id: `delivered-${d.day}`, category: 'deliveries', type: 'delivered', priority: 'info',
+      title: `${d.n} livraison${d.n > 1 ? 's' : ''} terminée${d.n > 1 ? 's' : ''}`,
+      summary: `Récapitulatif du ${frDateShort(`${d.day}T12:00:00Z`)}`, meta: 'Information',
+      detail: 'Les livraisons remises ce jour-là. Aucune action n’est attendue.',
+      ref: `Livraisons du ${frDateShort(`${d.day}T12:00:00Z`)}`, at: d.last_at, href: '/app/operations?vue=commandes', cta: 'Voir les commandes',
+    });
+  }
+  for (const c of relaunch.rows) {
+    items.push({
+      id: `relaunch-${c.id}`, category: 'clients', type: 'client', priority: 'info',
+      title: 'Client à relancer', summary: c.display_name || `Client n° ${c.id}`, meta: 'Sans commande depuis plus de 30 jours',
+      detail: 'Ce client n’a pas commandé depuis plus d’un mois. Une relance peut le faire revenir.',
+      ref: c.display_name || `Client n° ${c.id}`, at: c.last_order_at || new Date(0).toISOString(), href: `/app/clients/${c.id}`, cta: 'Voir le client',
+    });
+  }
+  // Une alerte par appareil (le plus récent), jamais pour l'appareil utilisé en ce moment.
+  const currentDevice = logins.rows.find((s) => currentSessionHash && s.token_hash === currentSessionHash);
+  const seenDevices = new Set(currentDevice ? [describeDevice(currentDevice.user_agent)] : []);
+  for (const s of logins.rows) {
+    if (currentSessionHash && s.token_hash === currentSessionHash) continue;
+    const device = describeDevice(s.user_agent);
+    if (seenDevices.has(device)) continue;
+    seenDevices.add(device);
+    items.push({
+      id: `login-${s.token_hash.slice(0, 12)}`, category: 'security', type: 'security', priority: 'security',
+      title: 'Nouvelle connexion à votre compte', summary: describeDevice(s.user_agent), meta: 'Sécurité',
+      detail: 'Un appareil s’est connecté à votre compte. Si ce n’était pas vous, fermez cette session et changez votre mot de passe.',
+      ref: describeDevice(s.user_agent), at: s.created_at, href: '/app/parametres?section=security', cta: 'Voir mes sessions',
+    });
+  }
+  items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  return items;
+}
+
+function defaultNotificationPrefs() {
+  return { categories: Object.fromEntries(NOTIFICATION_CATEGORIES.map((c) => [c, true])), digest: 'off', digestHour: 8, digestDay: 1, timezone: null };
+}
+async function notificationPrefs(userId, cid) {
+  const row = (await pool.query('SELECT categories, digest, digest_hour, digest_day, timezone FROM notification_prefs WHERE user_id = $1 AND company_id = $2', [userId, cid])).rows[0];
+  const prefs = defaultNotificationPrefs();
+  if (row) {
+    for (const c of NOTIFICATION_CATEGORIES) if (typeof row.categories?.[c] === 'boolean') prefs.categories[c] = row.categories[c];
+    prefs.digest = row.digest; prefs.digestHour = row.digest_hour; prefs.digestDay = row.digest_day; prefs.timezone = row.timezone;
+  }
+  return prefs;
+}
+
+// Éléments + état propre à l'utilisateur, filtrés selon ses préférences
+// (la sécurité reste toujours visible).
+async function userNotifications(auth, currentSessionHash) {
+  const [items, prefs, states] = await Promise.all([
+    buildNotificationItems(auth.company_id, { currentSessionHash, userId: auth.user_id }),
+    notificationPrefs(auth.user_id, auth.company_id),
+    pool.query('SELECT notif_key, read_at, archived_at, later_at FROM notification_states WHERE user_id = $1 AND company_id = $2', [auth.user_id, auth.company_id]),
+  ]);
+  const byKey = new Map(states.rows.map((r) => [r.notif_key, r]));
+  const visible = items.filter((it) => it.category === 'security' || prefs.categories[it.category] !== false).map((it) => {
+    const st = byKey.get(it.id) || {};
+    return { ...it, read: Boolean(st.read_at), readAt: st.read_at || null, archived: Boolean(st.archived_at), later: Boolean(st.later_at) };
   });
-  const text = items.map((it) => `- ${it.title} : ${it.summary}`).join('\n');
-  return { count: items.length, subject: `TRAXO — ${label}`, html, text };
+  const active = visible.filter((it) => !it.archived && !it.later);
+  const counts = {
+    action: active.filter((it) => it.priority !== 'info').length,
+    all: active.length,
+    unread: active.filter((it) => !it.read).length,
+    later: visible.filter((it) => it.later && !it.archived).length,
+    archived: visible.filter((it) => it.archived).length,
+  };
+  return { items: visible, counts, prefs };
 }
 
 app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
-  const items = await buildNotificationItems(req.auth.company_id);
-  return res.json({ items, generatedAt: new Date().toISOString() });
+  const currentHash = digest(String(parseCookies(req).delivery_session || ''));
+  const { items, counts } = await userNotifications(req.auth, currentHash);
+  return res.json({ items, counts, generatedAt: new Date().toISOString() });
 }));
 
-// Digest e-mail à la demande. Reste inactif (sent:false, reason:
-// email_not_configured) tant qu'aucun fournisseur n'est configuré.
-app.post('/api/app/notifications/digest', requireCompanyApi, asyncRoute(async (req, res) => {
-  if (!['owner', 'manager'].includes(req.auth.role)) return res.status(403).json({ error: 'Réservé aux responsables.' });
-  const digest = await buildCompanyDigest(req.auth.company_id, publicBaseUrl(req));
-  if (!digest) return res.json({ sent: false, reason: 'nothing_to_send', count: 0, configured: emailConfigured() });
-  const company = await pool.query('SELECT admin_email FROM companies WHERE id = $1', [req.auth.company_id]);
-  const to = company.rows[0]?.admin_email || null;
-  const result = await sendEmail({ to, subject: digest.subject, html: digest.html, text: digest.text });
-  return res.json({ ...result, count: digest.count, configured: emailConfigured(), recipient: to });
+// Lu / non lu / archivé / plus tard : idempotent, par utilisateur.
+app.post('/api/app/notifications/state', requireCompanyApi, asyncRoute(async (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? [...new Set(req.body.ids.map(String))] : [];
+  const action = String(req.body.action || '');
+  const columns = { read: ['read_at', true], unread: ['read_at', false], archive: ['archived_at', true], unarchive: ['archived_at', false], later: ['later_at', true], unlater: ['later_at', false] };
+  if (!ids.length || ids.length > 300 || ids.some((id) => !notifKeyPattern.test(id)) || !columns[action]) {
+    return res.status(400).json({ error: 'Demande invalide.' });
+  }
+  const [column, on] = columns[action];
+  await pool.query(
+    `INSERT INTO notification_states (user_id, company_id, notif_key, ${column}, updated_at)
+     SELECT $1, $2, k, CASE WHEN $4 THEN NOW() ELSE NULL END, NOW() FROM unnest($3::text[]) AS k
+     ON CONFLICT (user_id, company_id, notif_key) DO UPDATE
+       SET ${column} = CASE WHEN $4 THEN COALESCE(notification_states.${column}, NOW()) ELSE NULL END,
+           updated_at = NOW()`,
+    [req.auth.user_id, req.auth.company_id, ids, on]
+  );
+  // Archiver ou « plus tard » : l'élément est aussi considéré comme lu.
+  if (on && (action === 'archive' || action === 'later')) {
+    await pool.query(
+      `UPDATE notification_states SET read_at = COALESCE(read_at, NOW()) WHERE user_id = $1 AND company_id = $2 AND notif_key = ANY($3::text[])`,
+      [req.auth.user_id, req.auth.company_id, ids]
+    );
+  }
+  return res.json({ ok: true, count: ids.length });
 }));
+
+app.get('/api/app/notifications/preferences', requireCompanyApi, asyncRoute(async (req, res) => {
+  const prefs = await notificationPrefs(req.auth.user_id, req.auth.company_id);
+  const company = (await pool.query('SELECT timezone FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
+  const user = (await pool.query('SELECT email FROM users WHERE id = $1', [req.auth.user_id])).rows[0] || {};
+  return res.json({ ...prefs, timezone: prefs.timezone || company.timezone || DASHBOARD_TZ, timezones: companyTimezones, email: user.email, emailConfigured: emailConfigured() });
+}));
+
+app.put('/api/app/notifications/preferences', requireCompanyApi, asyncRoute(async (req, res) => {
+  const body = req.body || {};
+  const categories = {};
+  for (const c of NOTIFICATION_CATEGORIES) {
+    if (typeof body.categories?.[c] !== 'boolean') return res.status(400).json({ error: 'Préférences invalides.', field: c });
+    categories[c] = body.categories[c];
+  }
+  const digestMode = String(body.digest || 'off');
+  const hour = Number(body.digestHour);
+  const day = Number(body.digestDay);
+  const timezone = String(body.timezone || '');
+  if (!['off', 'daily', 'weekly'].includes(digestMode) || !Number.isInteger(hour) || hour < 0 || hour > 23
+    || !Number.isInteger(day) || day < 1 || day > 7 || !companyTimezones.includes(timezone)) {
+    return res.status(400).json({ error: 'Préférences du récapitulatif invalides.' });
+  }
+  await pool.query(
+    `INSERT INTO notification_prefs (user_id, company_id, categories, digest, digest_hour, digest_day, timezone, updated_at)
+     VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, NOW())
+     ON CONFLICT (user_id, company_id) DO UPDATE SET categories = EXCLUDED.categories, digest = EXCLUDED.digest,
+       digest_hour = EXCLUDED.digest_hour, digest_day = EXCLUDED.digest_day, timezone = EXCLUDED.timezone, updated_at = NOW()`,
+    [req.auth.user_id, req.auth.company_id, JSON.stringify(categories), digestMode, hour, day, timezone]
+  );
+  await writeAudit(req.auth, 'user', req.auth.user_id, 'notification_prefs_changed', { digest: digestMode });
+  return res.json({ categories, digest: digestMode, digestHour: hour, digestDay: day, timezone });
+}));
+
+// Récapitulatif e-mail d'un utilisateur : éléments autorisés, non lus, non archivés.
+async function buildUserDigest(auth, appBaseUrl = '') {
+  const { items } = await userNotifications(auth, null);
+  const pending = items.filter((it) => !it.read && !it.archived && !it.later && it.priority !== 'info');
+  if (!pending.length) return null;
+  const baseUrl = String(appBaseUrl || '').replace(/\/+$/, '');
+  const rows = pending.slice(0, 15).map((it) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;border:1px solid #eef1f5;border-radius:12px"><tr><td style="padding:12px 14px">
+    <div style="font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#111827">${escHtmlServer(it.title)}</div>
+    <div style="font-family:Arial,sans-serif;font-size:13px;color:#667085;margin-top:2px">${escHtmlServer(it.summary)}</div>
+    ${baseUrl ? `<a href="${escHtmlServer(baseUrl + it.href)}" style="font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#e11d2a;text-decoration:none">${escHtmlServer(it.cta || 'Ouvrir')} →</a>` : ''}
+  </td></tr></table>`).join('');
+  const label = `${pending.length} notification${pending.length > 1 ? 's' : ''} à traiter`;
+  const html = renderEmailShell({
+    baseUrl,
+    heading: `Vous avez ${label}`,
+    introHtml: 'Voici ce qui attend votre attention dans votre espace TRAXO.',
+    bodyHtml: rows,
+    ctaLabel: baseUrl ? 'Ouvrir le centre de notifications' : undefined,
+    ctaUrl: baseUrl ? `${baseUrl}/app/notifications` : undefined,
+    footerNote: 'Vous recevez ce récapitulatif parce que vous l’avez activé dans vos préférences de notifications.',
+  });
+  const text = pending.map((it) => `- ${it.title} : ${it.summary}`).join('\n');
+  return { count: pending.length, subject: `TRAXO — ${label}`, html, text };
+}
+
+app.post('/api/app/notifications/digest', requireCompanyApi, asyncRoute(async (req, res) => {
+  const digestMail = await buildUserDigest(req.auth, publicBaseUrl(req));
+  if (!digestMail) return res.json({ sent: false, reason: 'nothing_to_send', count: 0, configured: emailConfigured() });
+  const result = await sendEmail({ to: req.auth.email, subject: digestMail.subject, html: digestMail.html, text: digestMail.text });
+  return res.json({ ...result, count: digestMail.count, configured: emailConfigured(), recipient: req.auth.email });
+}));
+
+// Envoi planifié des récapitulatifs (quotidien ou hebdomadaire, à l'heure locale choisie).
+function localClock(timeZone, date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', weekday: 'short', hourCycle: 'h23' })
+    .formatToParts(date).map((p) => [p.type, p.value]));
+  const weekday = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[parts.weekday] || 1;
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour), weekday };
+}
+async function runNotificationDigests() {
+  if (!pool || !emailConfigured() || process.env.NOTIFICATION_DIGEST === 'off') return;
+  const due = await pool.query(
+    `SELECT p.user_id, p.company_id, p.digest, p.digest_hour, p.digest_day, COALESCE(p.timezone, c.timezone, '${DASHBOARD_TZ}') AS tz,
+            p.last_digest_at, u.email, u.display_name, m.role
+     FROM notification_prefs p
+     JOIN users u ON u.id = p.user_id AND COALESCE(u.disabled, FALSE) = FALSE
+     JOIN company_memberships m ON m.user_id = p.user_id AND m.company_id = p.company_id AND m.role <> 'driver'
+     JOIN companies c ON c.id = p.company_id
+     WHERE p.digest IN ('daily', 'weekly')`
+  );
+  const base = String(process.env.APP_BASE_URL || '').replace(/\/+$/, '');
+  for (const row of due.rows) {
+    try {
+      const now = localClock(row.tz);
+      if (now.hour < row.digest_hour) continue;
+      if (row.digest === 'weekly' && now.weekday !== row.digest_day) continue;
+      const last = row.last_digest_at ? localClock(row.tz, new Date(row.last_digest_at)).day : null;
+      if (last === now.day) continue;
+      if (row.digest === 'weekly' && row.last_digest_at && Date.now() - new Date(row.last_digest_at).getTime() < 6 * 24 * 3600 * 1000) continue;
+      // Marqué avant l'envoi : un échec ne provoque pas de rafale d'e-mails.
+      await pool.query('UPDATE notification_prefs SET last_digest_at = NOW() WHERE user_id = $1 AND company_id = $2', [row.user_id, row.company_id]);
+      const mail = await buildUserDigest({ user_id: row.user_id, company_id: row.company_id, role: row.role, email: row.email }, base);
+      if (mail) await sendEmail({ to: row.email, subject: mail.subject, html: mail.html, text: mail.text });
+    } catch (error) {
+      console.error('Notification digest failed:', error.message);
+    }
+  }
+}
+if (process.env.NODE_ENV !== 'test') {
+  const digestTimer = setInterval(() => { runNotificationDigests().catch((error) => console.error('Digest loop:', error.message)); }, 10 * 60 * 1000);
+  digestTimer.unref();
+}
 
 app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
   const pageNumber = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
@@ -5051,362 +5345,193 @@ app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) =
 }));
 
 // ---------------------------------------------------------------------------
-// Tableau de bord analytique (onglets Général / Commandes / Livraisons /
-// Livreurs / Demandes). Fenêtre glissante 7 ou 30 jours (ou plage explicite),
-// comparée à la période précédente de même longueur. Fuseau Africa/Porto-Novo
-// (UTC+1 fixe, sans heure d'été).
+// Tableau de bord : utilitaires de dates (jours au format AAAA-MM-JJ).
 // ---------------------------------------------------------------------------
 const DASHBOARD_TZ = 'Africa/Porto-Novo';
-const DASHBOARD_TZ_OFFSET_MIN = 60; // UTC+1 constant
-
-function dashboardLocalToday() {
-  const shifted = new Date(Date.now() + DASHBOARD_TZ_OFFSET_MIN * 60000);
-  return shifted.toISOString().slice(0, 10);
-}
 function dashboardAddDays(dateStr, n) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
-}
-function dashboardBound(dateStr) {
-  return `${dateStr}T00:00:00+01:00`;
 }
 function dashboardDaysBetween(fromStr, toStr) {
   const a = Date.parse(`${fromStr}T00:00:00Z`);
   const b = Date.parse(`${toStr}T00:00:00Z`);
   return Math.round((b - a) / 86400000) + 1;
 }
-const DASHBOARD_MAX_DAYS = 366;
 const validDashboardDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
   && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
 
-function dashboardWindow(query) {
-  const today = dashboardLocalToday();
-  let from;
-  let to;
-  if (validDashboardDate(query.from) && validDashboardDate(query.to) && query.from <= query.to) {
-    from = query.from;
-    to = query.to;
-    if (dashboardDaysBetween(from, to) > DASHBOARD_MAX_DAYS) {
-      from = dashboardAddDays(to, -(DASHBOARD_MAX_DAYS - 1));
-    }
-  } else {
-    const requested = Number(query.period);
-    const days = requested === 30 ? 30 : (requested === 90 ? 90 : 7);
-    to = today;
-    from = dashboardAddDays(to, -(days - 1));
-  }
-  const days = dashboardDaysBetween(from, to);
-  const prevTo = dashboardAddDays(from, -1);
-  const prevFrom = dashboardAddDays(from, -days);
-  return {
-    from,
-    to,
-    days,
-    prevFrom,
-    prevTo,
-    startIso: dashboardBound(from),
-    endIso: dashboardBound(dashboardAddDays(to, 1)),
-    prevStartIso: dashboardBound(prevFrom),
-    prevEndIso: dashboardBound(from),
-  };
-}
-
-function dashboardTrend(current, previous) {
-  const value = Number(current) || 0;
-  const prev = Number(previous) || 0;
-  if (prev === 0) {
-    return { value, previous: prev, deltaPct: value > 0 ? null : 0, isNew: value > 0 };
-  }
-  return { value, previous: prev, deltaPct: ((value - prev) / prev) * 100, isNew: false };
-}
-function dashboardRate(numerator, denominator) {
-  const d = Number(denominator) || 0;
-  return d === 0 ? null : (Number(numerator) || 0) / d;
-}
-function dashboardRateTrend(curNum, curDen, prevNum, prevDen) {
-  const value = dashboardRate(curNum, curDen);
-  const previous = dashboardRate(prevNum, prevDen);
-  const deltaPoints = value !== null && previous !== null ? (value - previous) * 100 : null;
-  return { value, previous, deltaPoints };
-}
-
-const DASHBOARD_SCALARS_SQL = `
-  WITH ft AS (
-    SELECT DISTINCT ON (order_id) order_id, to_status, created_at
-    FROM order_status_events
-    WHERE company_id = $1 AND to_status = ANY($4::text[])
-    ORDER BY order_id, created_at ASC
-  )
-  SELECT
-    (SELECT count(*) FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS orders_created,
-    (SELECT count(*) FROM ft WHERE to_status = 'Livrée' AND created_at >= $2 AND created_at < $3) AS delivered,
-    (SELECT count(*) FROM ft WHERE to_status = 'Retournée' AND created_at >= $2 AND created_at < $3) AS returned,
-    (SELECT count(*) FROM ft WHERE to_status = 'Annulée' AND created_at >= $2 AND created_at < $3) AS cancelled,
-    (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS requests_received,
-    (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND validated_at >= $2 AND validated_at < $3) AS requests_converted,
-    (SELECT count(*) FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS incidents_opened,
-    (SELECT count(*) FROM delivery_incidents WHERE company_id = $1 AND resolved_at >= $2 AND resolved_at < $3) AS incidents_resolved,
-    (SELECT count(DISTINCT driver_id) FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3) AS drivers_active,
-    (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND service_date >= $5::date AND service_date <= $6::date) AS runs_planned,
-    (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3) AS runs_completed,
-    (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status = 'cancelled' AND cancelled_at >= $2 AND cancelled_at < $3) AS runs_cancelled,
-    (SELECT EXTRACT(EPOCH FROM percentile_cont(0.5) WITHIN GROUP (ORDER BY (resolved_at - created_at)))
-       FROM delivery_incidents WHERE company_id = $1 AND resolved_at >= $2 AND resolved_at < $3 AND resolved_at >= created_at) AS incident_median_delay
-`;
-
-async function dashboardScalars(companyId, startIso, endIso, fromDate, toDate) {
-  const { rows } = await pool.query(DASHBOARD_SCALARS_SQL, [companyId, startIso, endIso, terminalOrderStatuses, fromDate, toDate]);
-  const r = rows[0] || {};
-  return {
-    ordersCreated: Number(r.orders_created) || 0,
-    delivered: Number(r.delivered) || 0,
-    returned: Number(r.returned) || 0,
-    cancelled: Number(r.cancelled) || 0,
-    requestsReceived: Number(r.requests_received) || 0,
-    requestsConverted: Number(r.requests_converted) || 0,
-    incidentsOpened: Number(r.incidents_opened) || 0,
-    incidentsResolved: Number(r.incidents_resolved) || 0,
-    driversActive: Number(r.drivers_active) || 0,
-    runsPlanned: Number(r.runs_planned) || 0,
-    runsCompleted: Number(r.runs_completed) || 0,
-    runsCancelled: Number(r.runs_cancelled) || 0,
-    incidentMedianDelay: r.incident_median_delay == null ? null : Number(r.incident_median_delay),
-  };
+// Tableau de bord : période de 7 ou 30 jours, ou plage choisie (92 jours au plus),
+// comparée à la période précédente de même durée, dans le fuseau de l'entreprise.
+// Filtre facultatif par livreur, appliqué à toutes les mesures. Les demandes
+// clients n'ont pas de livreur tant qu'elles ne sont pas converties : avec un
+// filtre, seules les demandes devenues commandes de ce livreur sont comptées.
+const DASHBOARD_RANGE_MAX_DAYS = 92;
+const DASHBOARD_ROWS_MAX = 3000;
+function localDateIn(timeZone, date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
 app.get('/api/app/dashboard', requireCompanyApi, asyncRoute(async (req, res) => {
-  const companyId = req.auth.company_id;
-  const win = dashboardWindow(req.query);
-  const term = terminalOrderStatuses;
-  const TZ = DASHBOARD_TZ;
+  const cid = req.auth.company_id;
+  const company = (await pool.query('SELECT timezone FROM companies WHERE id = $1', [cid])).rows[0] || {};
+  const timezone = companyTimezones.includes(company.timezone) ? company.timezone : DASHBOARD_TZ;
+  const today = localDateIn(timezone);
+  let from;
+  let to;
+  if (req.query.from || req.query.to) {
+    if (!validDashboardDate(req.query.from) || !validDashboardDate(req.query.to) || req.query.from > req.query.to) {
+      return res.status(400).json({ error: 'Choisissez une date de début antérieure à la date de fin.' });
+    }
+    if (req.query.from > today) return res.status(400).json({ error: 'La période ne peut pas commencer après aujourd’hui.' });
+    from = req.query.from;
+    to = req.query.to > today ? today : req.query.to;
+    if (dashboardDaysBetween(from, to) > DASHBOARD_RANGE_MAX_DAYS) {
+      return res.status(400).json({ error: `Choisissez une période de ${DASHBOARD_RANGE_MAX_DAYS} jours au plus.` });
+    }
+  } else {
+    const days = Number(req.query.period) === 30 ? 30 : 7;
+    to = today;
+    from = dashboardAddDays(today, -(days - 1));
+  }
+  const days = dashboardDaysBetween(from, to);
+  const prevFrom = dashboardAddDays(from, -days);
+  // Bornes larges en UTC (± 1 jour) : le découpage exact par jour local est fait ensuite.
+  const startIso = `${dashboardAddDays(prevFrom, -1)}T00:00:00Z`;
+  const endIso = `${dashboardAddDays(to, 2)}T00:00:00Z`;
 
-  const [
-    cur, prev, seriesResult, prevSeriesResult, orderStatusResult, requestStatusResult,
-    availabilityResult, incidentCategoryResult, incidentsByDayResult, perRunResult,
-    validationDelayResult, driversResult, recentOrdersResult, recentRequestsResult,
-    recentIncidentsResult, nowResult,
-  ] = await Promise.all([
-    dashboardScalars(companyId, win.startIso, win.endIso, win.from, win.to),
-    dashboardScalars(companyId, win.prevStartIso, win.prevEndIso, win.prevFrom, win.prevTo),
-    // Série courante par jour (commandes, livraisons, retours, demandes, conversions, incidents, tournées terminées)
-    pool.query(`
-      WITH ft AS (
-        SELECT DISTINCT ON (order_id) order_id, to_status, created_at
-        FROM order_status_events WHERE company_id = $1 AND to_status = ANY($4::text[])
-        ORDER BY order_id, created_at ASC
-      ),
-      days AS (SELECT generate_series($5::date, $6::date, interval '1 day')::date AS d),
-      oc AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1),
-      dl AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM ft WHERE to_status = 'Livrée' AND created_at >= $2 AND created_at < $3 GROUP BY 1),
-      rt AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM ft WHERE to_status = 'Retournée' AND created_at >= $2 AND created_at < $3 GROUP BY 1),
-      rr AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM customer_requests WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1),
-      rc AS (SELECT (validated_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM customer_requests WHERE company_id = $1 AND validated_at >= $2 AND validated_at < $3 GROUP BY 1),
-      ic AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1),
-      rcp AS (SELECT (completed_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3 GROUP BY 1)
-      SELECT to_char(days.d, 'YYYY-MM-DD') AS date,
-        COALESCE(oc.c,0)::int AS orders_created, COALESCE(dl.c,0)::int AS delivered, COALESCE(rt.c,0)::int AS returned,
-        COALESCE(rr.c,0)::int AS requests_received, COALESCE(rc.c,0)::int AS requests_converted,
-        COALESCE(ic.c,0)::int AS incidents, COALESCE(rcp.c,0)::int AS runs_completed
-      FROM days
-      LEFT JOIN oc ON oc.d = days.d LEFT JOIN dl ON dl.d = days.d LEFT JOIN rt ON rt.d = days.d
-      LEFT JOIN rr ON rr.d = days.d LEFT JOIN rc ON rc.d = days.d LEFT JOIN ic ON ic.d = days.d
-      LEFT JOIN rcp ON rcp.d = days.d
-      ORDER BY days.d
-    `, [companyId, win.startIso, win.endIso, term, win.from, win.to]),
-    // Série de la période précédente (pour la ligne « période précédente »), alignée par index de jour
-    pool.query(`
-      WITH ft AS (
-        SELECT DISTINCT ON (order_id) order_id, to_status, created_at
-        FROM order_status_events WHERE company_id = $1 AND to_status = ANY($4::text[])
-        ORDER BY order_id, created_at ASC
-      ),
-      days AS (SELECT generate_series($5::date, $6::date, interval '1 day')::date AS d),
-      dl AS (SELECT (created_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM ft WHERE to_status = 'Livrée' AND created_at >= $2 AND created_at < $3 GROUP BY 1),
-      rcp AS (SELECT (completed_at AT TIME ZONE '${TZ}')::date AS d, count(*) c FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3 GROUP BY 1)
-      SELECT COALESCE(dl.c,0)::int AS delivered, COALESCE(rcp.c,0)::int AS runs_completed
-      FROM days LEFT JOIN dl ON dl.d = days.d LEFT JOIN rcp ON rcp.d = days.d ORDER BY days.d
-    `, [companyId, win.prevStartIso, win.prevEndIso, term, win.prevFrom, win.prevTo]),
-    pool.query(`SELECT status, count(*)::int c FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY status ORDER BY c DESC`, [companyId, win.startIso, win.endIso]),
-    pool.query(`SELECT status, count(*)::int c FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL GROUP BY status ORDER BY c DESC`, [companyId]),
-    pool.query(`SELECT availability_status, count(*)::int c FROM drivers WHERE company_id = $1 AND active AND archived_at IS NULL GROUP BY availability_status ORDER BY c DESC`, [companyId]),
-    pool.query(`SELECT category, count(*)::int c FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY category ORDER BY c DESC`, [companyId, win.startIso, win.endIso]),
-    pool.query(`SELECT to_char((created_at AT TIME ZONE '${TZ}')::date, 'YYYY-MM-DD') AS date, category, count(*)::int c FROM delivery_incidents WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1, 2`, [companyId, win.startIso, win.endIso]),
-    pool.query(`
-      WITH per_run AS (
-        SELECT s.run_id, count(*) c FROM delivery_stops s
-        JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = $1
-        WHERE s.company_id = $1 AND s.removed_at IS NULL AND r.service_date >= $2::date AND r.service_date <= $3::date
-        GROUP BY s.run_id)
-      SELECT COALESCE(count(*) FILTER (WHERE c BETWEEN 1 AND 3),0)::int AS b1,
-             COALESCE(count(*) FILTER (WHERE c BETWEEN 4 AND 6),0)::int AS b2,
-             COALESCE(count(*) FILTER (WHERE c >= 7),0)::int AS b3 FROM per_run
-    `, [companyId, win.from, win.to]),
-    pool.query(`
-      SELECT COALESCE(count(*) FILTER (WHERE (validated_at AT TIME ZONE '${TZ}')::date = (created_at AT TIME ZONE '${TZ}')::date),0)::int AS same_day,
-             COALESCE(count(*) FILTER (WHERE (validated_at AT TIME ZONE '${TZ}')::date > (created_at AT TIME ZONE '${TZ}')::date),0)::int AS later
-      FROM customer_requests WHERE company_id = $1 AND validated_at >= $2 AND validated_at < $3
-    `, [companyId, win.startIso, win.endIso]),
-    // Statistiques riches par livreur (commandes assignées, livrées, retours, incidents, charge, tournées)
-    pool.query(`
-      WITH ft AS (
-        SELECT DISTINCT ON (order_id) order_id, to_status, created_at
-        FROM order_status_events WHERE company_id = $1 AND to_status = ANY($4::text[])
-        ORDER BY order_id, created_at ASC
-      ),
-      oa AS (SELECT driver_id, count(*)::int c FROM orders WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY driver_id),
-      del AS (SELECT o.driver_id, count(*)::int c FROM ft JOIN orders o ON o.id = ft.order_id AND o.company_id = $1 WHERE ft.to_status = 'Livrée' AND ft.created_at >= $2 AND ft.created_at < $3 GROUP BY o.driver_id),
-      ret AS (SELECT o.driver_id, count(*)::int c FROM ft JOIN orders o ON o.id = ft.order_id AND o.company_id = $1 WHERE ft.to_status = 'Retournée' AND ft.created_at >= $2 AND ft.created_at < $3 GROUP BY o.driver_id),
-      inc AS (SELECT o.driver_id, count(*)::int c FROM delivery_incidents i JOIN orders o ON o.id = i.order_id AND o.company_id = $1 WHERE i.company_id = $1 AND i.created_at >= $2 AND i.created_at < $3 GROUP BY o.driver_id),
-      ld AS (SELECT o.driver_id, count(*)::int c FROM delivery_stops s JOIN orders o ON o.id = s.order_id AND o.company_id = $1 WHERE s.company_id = $1 AND s.assignment_active AND NOT (o.status = ANY($4::text[])) GROUP BY o.driver_id),
-      ra AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND service_date >= $5::date AND service_date <= $6::date GROUP BY driver_id),
-      rcc AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3 GROUP BY driver_id),
-      rip AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND status = 'active' GROUP BY driver_id),
-      rcx AS (SELECT driver_id, count(*)::int c FROM delivery_runs WHERE company_id = $1 AND status = 'cancelled' AND cancelled_at >= $2 AND cancelled_at < $3 GROUP BY driver_id)
-      SELECT d.id, d.name, d.availability_status, d.capacity,
-        COALESCE(oa.c,0) AS assigned, COALESCE(del.c,0) AS delivered, COALESCE(ret.c,0) AS returned,
-        COALESCE(inc.c,0) AS incidents, COALESCE(ld.c,0) AS load,
-        COALESCE(ra.c,0) AS runs_assigned, COALESCE(rcc.c,0) AS runs_completed,
-        COALESCE(rip.c,0) AS runs_in_progress, COALESCE(rcx.c,0) AS runs_cancelled
-      FROM drivers d
-      LEFT JOIN oa ON oa.driver_id = d.id LEFT JOIN del ON del.driver_id = d.id LEFT JOIN ret ON ret.driver_id = d.id
-      LEFT JOIN inc ON inc.driver_id = d.id LEFT JOIN ld ON ld.driver_id = d.id LEFT JOIN ra ON ra.driver_id = d.id
-      LEFT JOIN rcc ON rcc.driver_id = d.id LEFT JOIN rip ON rip.driver_id = d.id LEFT JOIN rcx ON rcx.driver_id = d.id
-      WHERE d.company_id = $1 AND d.active AND d.archived_at IS NULL
-      ORDER BY assigned DESC, delivered DESC, d.name ASC LIMIT 12
-    `, [companyId, win.startIso, win.endIso, term, win.from, win.to]),
-    pool.query(`
-      SELECT o.id, o.reference, o.customer_name, o.status, o.created_at, d.name AS driver_name
-      FROM orders o LEFT JOIN drivers d ON d.id = o.driver_id
-      WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 8
-    `, [companyId]),
-    pool.query(`
-      SELECT id, customer_name, status, neighborhood, created_at, (location_lat IS NOT NULL) AS has_location
-      FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL
-      ORDER BY created_at DESC LIMIT 8
-    `, [companyId]),
-    pool.query(`
-      SELECT i.id, i.category, i.status, i.created_at, o.reference
-      FROM delivery_incidents i LEFT JOIN orders o ON o.id = i.order_id AND o.company_id = $1
-      WHERE i.company_id = $1 ORDER BY i.created_at DESC LIMIT 8
-    `, [companyId]),
-    pool.query(`
-      SELECT
-        (SELECT count(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open')::int AS open_incidents,
-        (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status IN ('À vérifier','Informations à compléter'))::int AS to_process,
-        (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier')::int AS to_review,
-        (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL)::int AS active_requests,
-        (SELECT count(*) FROM drivers WHERE company_id = $1 AND active AND archived_at IS NULL)::int AS drivers_total,
-        (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status = 'active')::int AS runs_active,
-        (SELECT count(*) FROM delivery_runs WHERE company_id = $1 AND status IN ('draft','planned','active'))::int AS open_runs,
-        (SELECT count(*) FROM delivery_stops s JOIN orders o ON o.id = s.order_id AND o.company_id = $1 WHERE s.company_id = $1 AND s.assignment_active AND NOT (o.status = ANY($2::text[])))::int AS open_load,
-        (SELECT count(*) FROM orders WHERE company_id = $1 AND NOT (status = ANY($2::text[])))::int AS open_deliveries
-    `, [companyId, term]),
+  const drivers = (await pool.query(
+    'SELECT id, name, active, archived_at FROM drivers WHERE company_id = $1 ORDER BY (active AND archived_at IS NULL) DESC, name ASC', [cid]
+  )).rows;
+  let driverId = null;
+  if (req.query.driver && req.query.driver !== 'all') {
+    driverId = /^\d+$/.test(String(req.query.driver)) ? Number(req.query.driver) : NaN;
+    if (!drivers.some((d) => Number(d.id) === driverId)) return res.status(400).json({ error: 'Livreur introuvable.' });
+  }
+
+  const [orders, requests, runs, incidents, stock] = await Promise.all([
+    pool.query(
+      `SELECT o.id, o.reference, o.customer_name, o.neighborhood, o.status, o.driver_id, o.created_at,
+              ev.delivered_at, ev.returned_at, ev.out_at,
+              (SELECT count(*) FROM delivery_incidents i WHERE i.company_id = o.company_id AND i.order_id = o.id)::int AS incidents
+       FROM orders o
+       LEFT JOIN LATERAL (
+         SELECT MIN(e.created_at) FILTER (WHERE e.to_status = 'Livrée') AS delivered_at,
+                MIN(e.created_at) FILTER (WHERE e.to_status = 'Retournée') AS returned_at,
+                MIN(e.created_at) FILTER (WHERE e.to_status IN ('En tournée', 'En livraison')) AS out_at
+         FROM order_status_events e WHERE e.order_id = o.id AND e.company_id = o.company_id
+       ) ev ON TRUE
+       WHERE o.company_id = $1 AND ($4::bigint IS NULL OR o.driver_id = $4)
+         AND ((o.created_at >= $2 AND o.created_at < $3)
+           OR (o.status IN ('Livrée', 'Retournée') AND COALESCE(o.status_changed_at, o.updated_at) >= $2))
+       ORDER BY o.created_at DESC
+       LIMIT 20000`,
+      [cid, startIso, endIso, driverId]
+    ),
+    pool.query(
+      `SELECT r.id, r.customer_name, r.neighborhood, r.status, r.submitted_at, r.customer_confirmed_at, o.id AS order_id, o.driver_id
+       FROM customer_requests r LEFT JOIN orders o ON o.customer_request_id = r.id AND o.company_id = r.company_id
+       WHERE r.company_id = $1 AND COALESCE(r.submitted_at, r.customer_confirmed_at) >= $2 AND COALESCE(r.submitted_at, r.customer_confirmed_at) < $3
+         AND ($4::bigint IS NULL OR o.driver_id = $4)
+       LIMIT 20000`,
+      [cid, startIso, endIso, driverId]
+    ),
+    pool.query(
+      `SELECT r.id, r.name, r.status, r.driver_id, to_char(r.service_date, 'YYYY-MM-DD') AS service_date,
+              COALESCE(st.total, 0)::int AS stops_total, COALESCE(st.done, 0)::int AS stops_done
+       FROM delivery_runs r
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS total, count(*) FILTER (WHERE o.status IN ('Livrée', 'Retournée')) AS done
+         FROM delivery_stops s JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
+         WHERE s.run_id = r.id AND s.company_id = r.company_id AND s.removed_at IS NULL
+       ) st ON TRUE
+       WHERE r.company_id = $1 AND r.service_date >= $2::date AND r.service_date <= $3::date AND ($4::bigint IS NULL OR r.driver_id = $4)
+       LIMIT 5000`,
+      [cid, prevFrom, to, driverId]
+    ),
+    pool.query(
+      `SELECT i.id, i.category, i.status, i.created_at, o.id AS order_id, o.reference, o.customer_name, o.driver_id
+       FROM delivery_incidents i JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
+       WHERE i.company_id = $1 AND i.created_at >= $2 AND i.created_at < $3 AND ($4::bigint IS NULL OR o.driver_id = $4)
+       LIMIT 20000`,
+      [cid, startIso, endIso, driverId]
+    ),
+    pool.query(
+      `SELECT
+         (SELECT count(*) FROM delivery_incidents i JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
+          WHERE i.company_id = $1 AND i.status = 'open' AND ($2::bigint IS NULL OR o.driver_id = $2))::int AS open_incidents,
+         (SELECT count(*) FROM customer_requests WHERE company_id = $1 AND archived_at IS NULL AND status = 'À vérifier')::int AS to_review`,
+      [cid, driverId]
+    ),
   ]);
 
-  const now = nowResult.rows[0] || {};
-  const nowNum = (key) => Number(now[key]) || 0;
-  const metrics = {
-    ordersCreated: dashboardTrend(cur.ordersCreated, prev.ordersCreated),
-    delivered: dashboardTrend(cur.delivered, prev.delivered),
-    returned: dashboardTrend(cur.returned, prev.returned),
-    cancelled: dashboardTrend(cur.cancelled, prev.cancelled),
-    closed: dashboardTrend(cur.delivered + cur.returned + cur.cancelled, prev.delivered + prev.returned + prev.cancelled),
-    requestsReceived: dashboardTrend(cur.requestsReceived, prev.requestsReceived),
-    requestsConverted: dashboardTrend(cur.requestsConverted, prev.requestsConverted),
-    incidentsOpened: dashboardTrend(cur.incidentsOpened, prev.incidentsOpened),
-    incidentsResolved: dashboardTrend(cur.incidentsResolved, prev.incidentsResolved),
-    driversActive: dashboardTrend(cur.driversActive, prev.driversActive),
-    runsPlanned: dashboardTrend(cur.runsPlanned, prev.runsPlanned),
-    runsCompleted: dashboardTrend(cur.runsCompleted, prev.runsCompleted),
-    runsCancelled: dashboardTrend(cur.runsCancelled, prev.runsCancelled),
-    incidentMedianDelay: {
-      value: cur.incidentMedianDelay, previous: prev.incidentMedianDelay,
-      deltaPct: (cur.incidentMedianDelay != null && prev.incidentMedianDelay) ? ((cur.incidentMedianDelay - prev.incidentMedianDelay) / prev.incidentMedianDelay) * 100 : null,
-    },
-    deliveryRate: dashboardRateTrend(cur.delivered, cur.delivered + cur.returned, prev.delivered, prev.delivered + prev.returned),
-    conversionRate: dashboardRateTrend(cur.requestsConverted, cur.requestsReceived, prev.requestsConverted, prev.requestsReceived),
-  };
-
-  const incidentsByDayMap = new Map();
-  for (const row of incidentsByDayResult.rows) {
-    if (!incidentsByDayMap.has(row.date)) incidentsByDayMap.set(row.date, {});
-    incidentsByDayMap.get(row.date)[row.category || 'autre'] = row.c;
+  const stockRow = stock.rows[0] || {};
+  const result = computeInsights({
+    raw: { orders: orders.rows, requests: requests.rows, runs: runs.rows, incidents: incidents.rows },
+    drivers, from, to, timezone,
+    stock: { openIncidents: stockRow.open_incidents || 0 },
+  });
+  let truncated = orders.rows.length >= 20000;
+  for (const key of Object.keys(result.rows)) {
+    if (result.rows[key].length > DASHBOARD_ROWS_MAX) { result.rows[key] = result.rows[key].slice(0, DASHBOARD_ROWS_MAX); truncated = true; }
   }
-  const perRun = perRunResult.rows[0] || {};
-  const vDelay = validationDelayResult.rows[0] || {};
-
   return res.json({
-    range: { from: win.from, to: win.to, days: win.days, timezone: DASHBOARD_TZ },
-    comparison: { from: win.prevFrom, to: win.prevTo, days: win.days },
-    metrics,
-    now: {
-      openIncidents: nowNum('open_incidents'),
-      toProcess: nowNum('to_process'),
-      toReview: nowNum('to_review'),
-      activeRequests: nowNum('active_requests'),
-      driversTotal: nowNum('drivers_total'),
-      runsActive: nowNum('runs_active'),
-      openRuns: nowNum('open_runs'),
-      openLoad: nowNum('open_load'),
-      openDeliveries: nowNum('open_deliveries'),
-    },
-    series: seriesResult.rows.map((row, i) => ({
-      date: row.date,
-      ordersCreated: row.orders_created,
-      delivered: row.delivered,
-      returned: row.returned,
-      requestsReceived: row.requests_received,
-      requestsConverted: row.requests_converted,
-      incidents: row.incidents,
-      runsCompleted: row.runs_completed,
-      incidentsByCategory: incidentsByDayMap.get(row.date) || {},
-      prevDelivered: prevSeriesResult.rows[i] ? prevSeriesResult.rows[i].delivered : 0,
-      prevRunsCompleted: prevSeriesResult.rows[i] ? prevSeriesResult.rows[i].runs_completed : 0,
-    })),
-    distributions: {
-      orderStatus: orderStatusResult.rows.map((r) => ({ label: r.status, value: r.c })),
-      requestStatus: requestStatusResult.rows.map((r) => ({ label: r.status, value: r.c })),
-      driverAvailability: availabilityResult.rows.map((r) => ({ label: r.availability_status, value: r.c })),
-      incidentCategory: incidentCategoryResult.rows.map((r) => ({ label: r.category || 'autre', value: r.c })),
-      deliveriesPerRun: [
-        { label: '1 – 3 livraisons', value: Number(perRun.b1) || 0 },
-        { label: '4 – 6 livraisons', value: Number(perRun.b2) || 0 },
-        { label: '7+ livraisons', value: Number(perRun.b3) || 0 },
-      ],
-      validationDelay: [
-        { label: 'Validées le jour même', value: Number(vDelay.same_day) || 0 },
-        { label: 'Validées plus tard', value: Number(vDelay.later) || 0 },
-      ],
-    },
-    tables: {
-      drivers: driversResult.rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        availability: r.availability_status,
-        capacity: Number(r.capacity) || 0,
-        assigned: Number(r.assigned) || 0,
-        delivered: Number(r.delivered) || 0,
-        returned: Number(r.returned) || 0,
-        incidents: Number(r.incidents) || 0,
-        load: Number(r.load) || 0,
-        runsAssigned: Number(r.runs_assigned) || 0,
-        runsCompleted: Number(r.runs_completed) || 0,
-        runsInProgress: Number(r.runs_in_progress) || 0,
-        runsCancelled: Number(r.runs_cancelled) || 0,
-      })),
-      recentOrders: recentOrdersResult.rows.map((r) => ({
-        id: r.id, reference: r.reference, customerName: r.customer_name,
-        status: r.status, driverName: r.driver_name, createdAt: r.created_at,
-      })),
-      recentRequests: recentRequestsResult.rows.map((r) => ({
-        id: r.id, customerName: r.customer_name, status: r.status,
-        neighborhood: r.neighborhood, createdAt: r.created_at, hasLocation: r.has_location,
-      })),
-      recentIncidents: recentIncidentsResult.rows.map((r) => ({
-        id: r.id, category: r.category, status: r.status,
-        orderReference: r.reference, createdAt: r.created_at,
-      })),
-    },
+    ...result,
+    today,
+    maxDays: DASHBOARD_RANGE_MAX_DAYS,
+    driver: driverId,
+    drivers: drivers.filter((d) => (d.active && !d.archived_at) || Number(d.id) === driverId).map((d) => ({ id: Number(d.id), name: d.name })),
+    attention: { incidents: stockRow.open_incidents || 0, requests: stockRow.to_review || 0 },
+    truncated,
+  });
+}));
+
+// Commande saisie par l'équipe, confirmée ensuite par le client (même lien que le
+// formulaire client). Le client prouve qu'il est le destinataire avec les 4 derniers
+// chiffres de son numéro ; le lien est alors lié à son appareil.
+function prefilledFieldsFromBody(body) {
+  const text = (value, max) => { const v = String(value || '').trim(); return v ? v.slice(0, max) : null; };
+  return {
+    customerName: text(body.customerName, 120),
+    neighborhood: text(body.neighborhood, 160),
+    landmark: text(body.landmark, 240),
+    notes: text(body.notes, 1000),
+    requestedTime: text(body.requestedTime, 80),
+  };
+}
+function phoneLastDigits(phone, count = 4) {
+  return String(phone || '').replace(/\D/g, '').slice(-count);
+}
+
+app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!(await companyDeliverySetting(req.auth.company_id, 'internalEntryEnabled'))) {
+    return res.status(403).json({ error: 'La saisie par votre équipe est désactivée dans vos paramètres Livraisons.' });
+  }
+  const fields = prefilledFieldsFromBody(req.body || {});
+  if (!fields.customerName || fields.customerName.length < 2) return res.status(400).json({ error: 'Indiquez le nom du client.', field: 'customerName' });
+  const phone = normalizeCustomerPhone(req.body || {});
+  if (!phone) return res.status(400).json({ error: 'Le téléphone du client est nécessaire : il sert à protéger son lien de confirmation.', field: 'customerPhone' });
+  if (!fields.neighborhood) return res.status(400).json({ error: 'Indiquez le quartier ou la zone de livraison.', field: 'neighborhood' });
+  const token = randomToken(24);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await pool.query(
+    `INSERT INTO customer_requests (company_id, token, status, customer_name, customer_phone, neighborhood,
+       landmark, notes, requested_time, expires_at, prefilled_by_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+    [req.auth.company_id, token, PREFILLED_REQUEST_STATUS, fields.customerName, phone, fields.neighborhood,
+      fields.landmark, fields.notes, fields.requestedTime, expiresAt, req.auth.user_id]
+  );
+  await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prefilled_created', { expiresAt });
+  const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
+  const url = `${publicBaseUrl(req)}/demande/${token}`;
+  const firstName = fields.customerName.split(/\s+/)[0];
+  return res.status(201).json({
+    id: result.rows[0].id,
+    token,
+    path: `/demande/${token}`,
+    url,
+    expiresAt,
+    phone,
+    message: `Bonjour ${firstName}, ${company.name || 'nous'} prépare votre livraison. Vérifiez vos informations et confirmez ici : ${url}`,
   });
 }));
 
@@ -8434,7 +8559,17 @@ app.post('/api/app/orders/:id/payment/adjustments/:adjustmentId/reverse', requir
 }));
 
 app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
-  const { customerName, customerPhone, deliveryAddress, driverId } = req.body;
+  const { driverId } = req.body;
+  // Champs structurés (nouvelle saisie) ou adresse libre (ancienne saisie, API).
+  const structured = prefilledFieldsFromBody(req.body || {});
+  const customerName = structured.customerName;
+  const deliveryAddress = String(req.body.deliveryAddress || '').trim()
+    || [structured.neighborhood, structured.landmark, structured.notes].filter(Boolean).join(' — ');
+  let customerPhone = String(req.body.customerPhone || '').trim() || null;
+  if (customerPhone && req.body.customerPhoneCountry) {
+    customerPhone = normalizeCustomerPhone(req.body);
+    if (!customerPhone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
+  }
   if (!customerName || !deliveryAddress || !driverId) {
     return res.status(400).json({ error: 'Nom client, lieu de livraison et livreur sont obligatoires.' });
   }
@@ -8451,9 +8586,11 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     );
     if (!driver.rows[0]) throw Object.assign(new Error('Livreur non autorisé.'), { statusCode: 400 });
     const order = await client.query(
-      `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address, status)
-       VALUES ($1, $2, $3, $4, $5, 'Confirmée') RETURNING id`,
-      [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress]
+      `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address,
+         neighborhood, landmark, notes, requested_time, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Confirmée') RETURNING id`,
+      [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress,
+        structured.neighborhood, structured.landmark, structured.notes, structured.requestedTime]
     );
     await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const token = randomToken(24);
@@ -8500,6 +8637,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     committed = true;
     return res.status(201).json({
       orderId: order.rows[0].id,
+      customerPhone,
       path: `/suivi/${token}`,
       trackingLink: { state: 'active', path: `/suivi/${token}`, expiresAt: trackingExpiration.expiresAt, version: 1 },
     });
@@ -8588,6 +8726,7 @@ function publicRequestStage(row) {
     if (['Retournée', 'Annulée'].includes(row.order_status)) return 'closed';
     return 'assigned';
   }
+  if (row.status === PREFILLED_REQUEST_STATUS) return row.archived_at ? 'closed' : 'to_confirm';
   if (row.status === 'Refusée') return 'refused';
   if (row.status === 'Archivée' || row.archived_at) return 'closed';
   if (row.status === 'Validée' || row.status === 'Confirmée') return 'validated';
@@ -8661,7 +8800,8 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   const result = await pool.query(
     `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time, r.location_lat, r.location_lng,
             r.location_accuracy, r.neighborhood, r.landmark, r.notes, r.submitted_at, r.updated_at,
-            r.validated_at, r.archived_at, r.edit_token_hash, r.version, c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at,
+            r.validated_at, r.archived_at, r.edit_token_hash, r.version, r.expires_at, r.confirm_attempts, r.confirm_locked_at,
+            c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at,
             o.id AS order_id, o.status AS order_status, o.status_changed_at AS order_status_changed_at,
             d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
             t.token AS tracking_token, t.token_ciphertext AS tracking_token_ciphertext,
@@ -8683,6 +8823,34 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   const stage = publicRequestStage(row);
   // Formulaire pas encore rempli : rien de personnel à protéger.
   if (stage === 'pending') return res.json({ stage, companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) });
+  if (stage === 'to_confirm') {
+    const expired = row.expires_at && new Date(row.expires_at) <= new Date();
+    const confirmOk = Boolean(row.edit_token_hash && requestDeviceSecret(req) && digest(requestDeviceSecret(req)) === row.edit_token_hash);
+    const brand = { stage, companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) };
+    if (expired) return res.json({ ...brand, stage: 'expired' });
+    if (!confirmOk) {
+      return res.json({
+        ...brand,
+        locked: Boolean(row.confirm_locked_at),
+        attemptsLeft: Math.max(0, PREFILLED_CONFIRM_MAX_ATTEMPTS - Number(row.confirm_attempts || 0)),
+        needsCode: true,
+      });
+    }
+    const split = phoneParts(row.customer_phone);
+    return res.json({
+      ...brand,
+      needsCode: false,
+      id: row.id,
+      customer_name: row.customer_name,
+      phone_country: split.country,
+      phone_national: split.national,
+      neighborhood: row.neighborhood,
+      landmark: row.landmark,
+      notes: row.notes,
+      requested_time: row.requested_time,
+      expiresAt: row.expires_at,
+    });
+  }
   let deviceOk = Boolean(row.edit_token_hash && requestDeviceSecret(req)
     && digest(requestDeviceSecret(req)) === row.edit_token_hash);
   // Anciens liens « ?edit=… » (avant ce changement) : échange UNIQUE contre un
@@ -8742,6 +8910,91 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
       trackingPath,
     } : null,
   });
+}));
+
+// Le client prouve qu'il est le destinataire : 4 derniers chiffres de son numéro.
+app.post('/api/public/requests/:token/unlock', publicRequestRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const code = String((req.body || {}).code || '').replace(/\D/g, '');
+  if (code.length !== 4) return res.status(400).json({ error: 'Saisissez les 4 derniers chiffres de votre numéro.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT id, company_id, customer_phone, confirm_attempts, confirm_locked_at, expires_at FROM customer_requests
+       WHERE token = $1 AND status = $2 AND archived_at IS NULL FOR UPDATE`,
+      [req.params.token, PREFILLED_REQUEST_STATUS]
+    );
+    const row = found.rows[0];
+    if (!row || (row.expires_at && new Date(row.expires_at) <= new Date())) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ce lien est introuvable ou a expiré.' });
+    }
+    if (row.confirm_locked_at) {
+      await client.query('ROLLBACK');
+      return res.status(423).json({ error: 'Trop d’essais. Pour votre sécurité, ce lien est bloqué : contactez l’entreprise pour en recevoir un nouveau.', locked: true });
+    }
+    const expected = Buffer.from(phoneLastDigits(row.customer_phone));
+    const given = Buffer.from(code);
+    const ok = expected.length === 4 && crypto.timingSafeEqual(expected, given);
+    if (!ok) {
+      const attempts = Number(row.confirm_attempts || 0) + 1;
+      const lock = attempts >= PREFILLED_CONFIRM_MAX_ATTEMPTS;
+      await client.query('UPDATE customer_requests SET confirm_attempts = $1, confirm_locked_at = CASE WHEN $2 THEN NOW() ELSE confirm_locked_at END WHERE id = $3', [attempts, lock, row.id]);
+      await client.query('COMMIT');
+      if (lock) await writeAudit({ company_id: row.company_id, user_id: null }, 'customer_request', row.id, 'confirm_locked');
+      return res.status(lock ? 423 : 400).json({
+        error: lock ? 'Trop d’essais. Pour votre sécurité, ce lien est bloqué : contactez l’entreprise pour en recevoir un nouveau.' : 'Ces chiffres ne correspondent pas au numéro enregistré.',
+        locked: lock,
+        attemptsLeft: Math.max(0, PREFILLED_CONFIRM_MAX_ATTEMPTS - attempts),
+      });
+    }
+    const secret = randomToken(24);
+    await client.query('UPDATE customer_requests SET edit_token_hash = $1, confirm_attempts = 0 WHERE id = $2', [digest(secret), row.id]);
+    await client.query('COMMIT');
+    await writeAudit({ company_id: row.company_id, user_id: null }, 'customer_request', row.id, 'confirm_unlocked');
+    setRequestDeviceCookie(req, res, req.params.token, secret);
+    return res.json({ ok: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+// Confirmation par le client : informations vérifiées, position partagée ou non.
+app.post('/api/public/requests/:token/confirm', publicRequestRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const secret = requestDeviceSecret(req);
+  if (!secret) return res.status(403).json({ error: 'Rouvrez le lien et saisissez les 4 derniers chiffres de votre numéro.' });
+  const body = req.body || {};
+  const fields = prefilledFieldsFromBody(body);
+  if (!fields.customerName || fields.customerName.length < 2 || !fields.neighborhood) {
+    return res.status(400).json({ error: 'Votre nom et votre quartier sont obligatoires.' });
+  }
+  const phone = normalizeCustomerPhone(body);
+  if (!phone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
+  const share = body.shareLocation === true;
+  const gps = share ? requestGpsFromBody(body) : null;
+  if (share && !gps) return res.status(400).json({ error: 'Votre position n’a pas pu être lue. Réessayez ou continuez sans la partager.' });
+  const result = await pool.query(
+    `UPDATE customer_requests
+     SET status = 'Validée', validated_at = NOW(), customer_confirmed_at = NOW(), submitted_at = NOW(),
+         customer_name = $1, customer_phone = $2, neighborhood = $3, landmark = $4, notes = $5, requested_time = $6,
+         location_lat = $7, location_lng = $8, location_accuracy = $9,
+         location_at = CASE WHEN $7::double precision IS NULL THEN NULL ELSE NOW() END,
+         version = version + 1, updated_at = NOW()
+     WHERE token = $10 AND edit_token_hash = $11 AND status = $12 AND archived_at IS NULL
+       AND (expires_at IS NULL OR expires_at > NOW())
+     RETURNING id, company_id`,
+    [fields.customerName, phone, fields.neighborhood, fields.landmark, fields.notes, fields.requestedTime,
+      gps ? gps.lat : null, gps ? gps.lng : null, gps ? gps.accuracy : null,
+      req.params.token, digest(secret), PREFILLED_REQUEST_STATUS]
+  );
+  if (!result.rows[0]) return res.status(409).json({ error: 'Cette commande a déjà été confirmée ou le lien a expiré.' });
+  await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, 'customer_confirmed', { locationShared: Boolean(gps) });
+  return res.json({ status: 'confirmed', redirect: `/demande/${encodeURIComponent(req.params.token)}/confirmation` });
 }));
 
 app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {
@@ -9005,11 +9258,25 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
   const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
   const isStale = !Number.isFinite(timestampMs) || Date.now() - timestampMs > 10 * 60 * 1000;
   const finiteOrNull = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
-  const route = await publicTrackingRoute(routeKey, { lat: latitude, lng: longitude }, tracking.destination);
+  // Sans destination enregistrée, le client peut se situer depuis son téléphone :
+  // sa position sert au calcul du trajet puis est oubliée (jamais enregistrée).
+  let routeTarget = tracking.destination ? 'destination' : null;
+  let routeTo = tracking.destination;
+  if (!routeTo) {
+    const viewerLat = optionalNumber(req.query.lat);
+    const viewerLng = optionalNumber(req.query.lng);
+    if (viewerLat != null && viewerLng != null && viewerLat >= -90 && viewerLat <= 90 && viewerLng >= -180 && viewerLng <= 180) {
+      routeTo = { latitude: viewerLat, longitude: viewerLng };
+      routeTarget = 'viewer';
+    }
+  }
+  const routeCacheKey = routeTarget === 'viewer' && routeKey ? `${routeKey}:viewer:${routeTo.latitude.toFixed(3)},${routeTo.longitude.toFixed(3)}` : routeKey;
+  const route = await publicTrackingRoute(routeCacheKey, { lat: latitude, lng: longitude }, routeTo);
   return res.json({
     status: isStale ? 'stale' : 'online',
     ...activeDetails,
     route,
+    routeTarget: route ? routeTarget : null,
     latitude,
     longitude,
     speed: finiteOrNull(position.speed),

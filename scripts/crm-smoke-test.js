@@ -250,6 +250,9 @@ async function cleanupFixture(pool, fixture) {
     }
     for (const companyId of fixture.companyIds) {
       await client.query(`SELECT set_config('app.company_id', $1, true)`, [String(companyId)]);
+      // Les commandes créent automatiquement la tournée du jour de leur livreur.
+      await client.query('DELETE FROM delivery_stops WHERE company_id = $1', [companyId]);
+      await client.query('DELETE FROM delivery_runs WHERE company_id = $1', [companyId]);
       await client.query('DELETE FROM orders WHERE company_id = $1', [companyId]);
       await client.query('DELETE FROM customers WHERE company_id = $1', [companyId]);
       await client.query('DELETE FROM drivers WHERE company_id = $1', [companyId]);

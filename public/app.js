@@ -70,6 +70,7 @@ const runStatusLabels = {
 // Voir docs/UX_WRITING_GUIDE.md.
 const requestStatusLabels = {
   'En attente d’informations': 'En attente du client',
+  'À confirmer par le client': 'À confirmer par le client',
   'À vérifier': 'À valider',
   'Informations à compléter': 'À compléter par le client',
   'Validée': 'Validée',
@@ -77,7 +78,7 @@ const requestStatusLabels = {
   'Refusée': 'Refusée',
   'Archivée': 'Archivée',
 };
-const requestStatusTone = { 'En attente d’informations': 'grey', 'À vérifier': 'amber', 'Informations à compléter': 'amber', 'Validée': 'blue', 'Confirmée': 'green', 'Refusée': 'red', 'Archivée': 'grey' };
+const requestStatusTone = { 'En attente d’informations': 'grey', 'À confirmer par le client': 'grey', 'À vérifier': 'amber', 'Informations à compléter': 'amber', 'Validée': 'blue', 'Confirmée': 'green', 'Refusée': 'red', 'Archivée': 'grey' };
 function requestStatusLabel(status) { return requestStatusLabels[status] || status || '—'; }
 function requestStatusChip(status) { return crmChip(requestStatusLabel(status), requestStatusTone[status] || 'grey'); }
 const runEventLabels = {
@@ -180,22 +181,7 @@ function renderError(error) {
   page.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
 }
 
-// ===========================================================================
-// Tableaux de bord (onglets) — câblés sur GET /api/app/dashboard.
-// Graphiques en SVG inline (zéro dépendance), fidèles aux maquettes TRAXO.
-// ===========================================================================
-const DASH_TABS = [
-  { key: 'general', label: 'Général' },
-  { key: 'commandes', label: 'Commandes' },
-  { key: 'livraisons', label: 'Livraisons' },
-  { key: 'livreurs', label: 'Livreurs' },
-  { key: 'demandes', label: 'Demandes' },
-  { key: 'tournees', label: 'Tournées' },
-  { key: 'incidents', label: 'Incidents' },
-];
-const dashboardState = { period: 7, tab: 'general', from: null, to: null, data: null };
-const isDashDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
-
+// Icônes partagées (liste des livreurs, etc.).
 const DASH_ICONS = {
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" /><path d="M12 22V12" /><polyline points="3.29 7 12 12 20.71 7" /><path d="m7.5 4.27 9 5.15" /></svg>',
   truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" /><path d="M15 18H9" /><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" /><circle cx="17" cy="18" r="2" /><circle cx="7" cy="18" r="2" /></svg>',
@@ -214,776 +200,217 @@ const DASH_ICONS = {
   chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg>',
 };
 
-const DASH_ORDER_STATUS_COLOR = {
-  'Livrée': '#10b981', 'Confirmée': '#2563eb', 'En préparation': '#94a3b8',
-  'Récupérée': '#0ea5e9', 'En tournée': '#6366f1', 'En livraison': '#3b82f6',
-  'Arrivée': '#f59e0b', 'Échec': '#dc2626', 'Retour': '#f97316',
-  'Retournée': '#b91c1c', 'Annulée': '#64748b',
-};
-const DASH_REQUEST_STATUS_COLOR = {
-  'À vérifier': '#f59e0b', 'Informations à compléter': '#0ea5e9', 'Confirmée': '#10b981',
-  'Refusée': '#dc2626', 'En attente d’informations': '#94a3b8', 'Archivée': '#64748b',
-};
-const DASH_AVAILABILITY_COLOR = {
-  available: '#10b981', busy: '#3b82f6', full: '#8b5cf6', pause: '#f59e0b',
-  off_duty: '#f59e0b', incident: '#dc2626', offline: '#94a3b8', inactive: '#cbd5e1', stale: '#f59e0b',
-};
-const DASH_INCIDENT_COLOR = {
-  adresse: '#f59e0b', client_injoignable: '#3b82f6', colis: '#8b5cf6', paiement: '#0ea5e9',
-  vehicule: '#64748b', gps: '#14b8a6', autre: '#e11d2a',
-};
-const DASH_INCIDENT_STATUS_LABEL = { open: 'Ouvert', resolved: 'Résolu', closed: 'Clôturé' };
-const DASH_PALETTE = ['#e11d2a', '#16233f', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#0ea5e9', '#64748b'];
-
-function dashNiceCeil(value) {
-  const v = Math.max(1, value);
-  if (v <= 5) return 5;
-  const pow = Math.pow(10, Math.floor(Math.log10(v)));
-  const n = v / pow;
-  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
-  return step * pow;
-}
-function dashInitials(name) {
-  return String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
-}
-function dashDayShort(dateStr) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(d);
-}
-function dashFormatRange(from, to) {
-  const f = new Date(`${from}T00:00:00Z`);
-  const t = new Date(`${to}T00:00:00Z`);
-  const sameMonth = from.slice(0, 7) === to.slice(0, 7);
-  const dayF = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', timeZone: 'UTC' }).format(f);
-  if (sameMonth) {
-    const rest = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(t);
-    return `${dayF} – ${rest}`;
-  }
-  const left = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(f);
-  const right = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(t);
-  return `${left} – ${right}`;
-}
-function dashCompactRange(from, to) {
-  const f = new Date(`${from}T00:00:00Z`);
-  const t = new Date(`${to}T00:00:00Z`);
-  const dayF = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', timeZone: 'UTC' }).format(f);
-  if (from.slice(0, 7) === to.slice(0, 7)) {
-    return `${dayF} – ${new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(t)}`;
-  }
-  const left = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(f);
-  const right = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(t);
-  return `${left} – ${right}`;
-}
-function dashDuration(seconds) {
-  if (seconds == null || !Number.isFinite(Number(seconds))) return '—';
-  const s = Math.max(0, Math.round(Number(seconds)));
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s % 3600) / 60);
-  if (h >= 1) return `${h} h ${String(m).padStart(2, '0')}`;
-  return `${m} min`;
-}
-
-// Libellé de comparaison (« vs 11 – 17 sept. »), rempli après chargement.
-let dashCmpLabel = '';
-
-function dashDelta(trend, invert) {
-  if (!trend) return '';
-  const inner = () => {
-    if (trend.isNew) return '<span class="dd-val up">Nouveau</span>';
-    const pct = trend.deltaPct;
-    if (pct == null || !Number.isFinite(pct)) return '<span class="dd-val flat">—</span>';
-    const r = Math.round(pct * 10) / 10;
-    if (r === 0) return '<span class="dd-val flat">↗ 0 %</span>';
-    const positive = r > 0;
-    const good = invert ? !positive : positive;
-    return `<span class="dd-val ${good ? 'up' : 'down'}">${positive ? '↗' : '↘'} ${positive ? '+' : '−'}${Math.abs(r).toLocaleString('fr-FR')} %</span>`;
-  };
-  return `<span class="dash-delta">${inner()}<span class="dd-cmp">vs ${escapeHtml(dashCmpLabel)}</span></span>`;
-}
-function dashDeltaPoints(points, invert) {
-  const inner = () => {
-    if (points == null || !Number.isFinite(points)) return '<span class="dd-val flat">—</span>';
-    const r = Math.round(points * 10) / 10;
-    if (r === 0) return '<span class="dd-val flat">↗ 0 pt</span>';
-    const positive = r > 0;
-    const good = invert ? !positive : positive;
-    return `<span class="dd-val ${good ? 'up' : 'down'}">${positive ? '↗' : '↘'} ${positive ? '+' : '−'}${Math.abs(r).toLocaleString('fr-FR')} pt</span>`;
-  };
-  return `<span class="dash-delta">${inner()}<span class="dd-cmp">vs ${escapeHtml(dashCmpLabel)}</span></span>`;
-}
-
-function dashKpi({ icon, label, value, delta, tone }) {
-  return `<article class="dash-kpi">
-    <div class="dash-kpi-head"><span class="dash-kpi-ic ${tone || ''}">${icon}</span><span class="dash-kpi-label">${escapeHtml(label)}</span></div>
-    <strong class="dash-kpi-value">${escapeHtml(value)}</strong>
-    ${delta || '<span class="dash-delta"></span>'}
-  </article>`;
-}
-
-function dashCard(title, body, control) {
-  return `<section class="card dash-card">
-    <div class="dash-card-head"><h2 class="dash-card-title">${escapeHtml(title)}</h2>${control || ''}</div>
-    ${body}
-  </section>`;
-}
-function dashLink(text, href) {
-  return `<a class="dash-cardlink" href="${escapeHtml(href || '#')}">${escapeHtml(text)}</a>`;
-}
-function dashLegend(items) {
-  return `<div class="dash-legend">${items.map((it) => `<span><i class="${it.line ? 'line' : ''}" style="background:${it.color}"></i>${escapeHtml(it.label)}</span>`).join('')}</div>`;
-}
-
-// --- Graphiques SVG (style épuré : courbes lissées, dégradés doux, tooltips) --
-const DASH_W = 760;
-const DASH_H = 250;
-const DASH_PAD = { l: 40, r: 16, t: 24, b: 30 };
-let dashUidSeq = 0;
-const dashUid = () => `dg${(dashUidSeq += 1)}`;
-function dashGeom(n) {
-  const iw = DASH_W - DASH_PAD.l - DASH_PAD.r;
-  const ih = DASH_H - DASH_PAD.t - DASH_PAD.b;
-  return { iw, ih, x: (i) => DASH_PAD.l + iw * ((i + 0.5) / n) };
-}
-// Attribut data-tip (info-bulle au survol). Le texte est déjà échappé/formaté.
-function dashTip(text) { return ` data-tip="${text}"`; }
-// Rectangle à coins supérieurs arrondis, base plate (look Metabase).
-function dashTopRect(x, w, yTop, yBase, r) {
-  const h = yBase - yTop;
-  const rr = Math.max(0, Math.min(r, w / 2, h));
-  return `M${x.toFixed(1)},${yBase.toFixed(1)} L${x.toFixed(1)},${(yTop + rr).toFixed(1)} Q${x.toFixed(1)},${yTop.toFixed(1)} ${(x + rr).toFixed(1)},${yTop.toFixed(1)} L${(x + w - rr).toFixed(1)},${yTop.toFixed(1)} Q${(x + w).toFixed(1)},${yTop.toFixed(1)} ${(x + w).toFixed(1)},${(yTop + rr).toFixed(1)} L${(x + w).toFixed(1)},${yBase.toFixed(1)} Z`;
-}
-// Courbe lissée monotone (Fritsch–Carlson) — pas de dépassement sous la ligne de base.
-function dashSmoothPath(pts) {
-  const n = pts.length;
-  if (n < 2) return n ? `M ${pts[0][0]} ${pts[0][1]}` : '';
-  const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
-  const dx = []; const dy = []; const ms = [];
-  for (let i = 0; i < n - 1; i += 1) { dx[i] = xs[i + 1] - xs[i]; dy[i] = ys[i + 1] - ys[i]; ms[i] = dy[i] / dx[i]; }
-  const m = new Array(n);
-  m[0] = ms[0]; m[n - 1] = ms[n - 2];
-  for (let i = 1; i < n - 1; i += 1) m[i] = (ms[i - 1] * ms[i] <= 0) ? 0 : (ms[i - 1] + ms[i]) / 2;
-  for (let i = 0; i < n - 1; i += 1) {
-    if (ms[i] === 0) { m[i] = 0; m[i + 1] = 0; } else {
-      const a = m[i] / ms[i]; const b = m[i + 1] / ms[i]; const s = a * a + b * b;
-      if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * ms[i]; m[i + 1] = t * b * ms[i]; }
-    }
-  }
-  let d = `M ${xs[0].toFixed(1)} ${ys[0].toFixed(1)}`;
-  for (let i = 0; i < n - 1; i += 1) {
-    const c1x = xs[i] + dx[i] / 3; const c1y = ys[i] + m[i] * dx[i] / 3;
-    const c2x = xs[i + 1] - dx[i] / 3; const c2y = ys[i + 1] - m[i + 1] * dx[i] / 3;
-    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${xs[i + 1].toFixed(1)} ${ys[i + 1].toFixed(1)}`;
-  }
-  return d;
-}
-function dashBarGrad(id, color) {
-  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}"/><stop offset="1" stop-color="${color}" stop-opacity="0.78"/></linearGradient>`;
-}
-function dashAreaGrad(id, color) {
-  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity="0.24"/><stop offset="0.9" stop-color="${color}" stop-opacity="0.02"/></linearGradient>`;
-}
-function dashGrid(niceMax, opts = {}) {
-  const { ih } = { ih: DASH_H - DASH_PAD.t - DASH_PAD.b };
-  let g = '';
-  for (let k = 0; k <= 4; k += 1) {
-    const val = (niceMax / 4) * k;
-    const y = DASH_PAD.t + ih - ih * (val / niceMax);
-    g += `<line x1="${DASH_PAD.l}" y1="${y.toFixed(1)}" x2="${DASH_W - DASH_PAD.r}" y2="${y.toFixed(1)}" stroke="#f0f3f8" stroke-width="1"${k === 0 ? '' : ' stroke-dasharray="2 4"'}/>`;
-    g += `<text x="${DASH_PAD.l - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="dash-axis">${opts.percent ? Math.round(val) + '%' : formatInteger(Math.round(val))}</text>`;
-  }
-  return g;
-}
-function dashXLabels(series, n) {
-  const { x } = dashGeom(n);
-  const step = Math.max(1, Math.ceil(n / 8));
-  return series.map((d, i) => (i % step === 0 || i === n - 1)
-    ? `<text x="${x(i).toFixed(1)}" y="${DASH_H - 9}" text-anchor="middle" class="dash-axis">${dashDayShort(d.date)}</text>` : '').join('');
-}
-function dashLinePlot(series, k, color, x, y, { labels, dashed, name } = {}) {
-  const pts = series.map((d, i) => [x(i), y(Number(d[k]) || 0)]);
-  const path = dashSmoothPath(pts);
-  const line = `<path d="${path}" fill="none" stroke="${color}" stroke-width="${dashed ? 2 : 2.6}" stroke-linejoin="round" stroke-linecap="round"${dashed ? ' stroke-dasharray="5 5" opacity="0.85"' : ''}/>`;
-  const dots = series.map((d, i) => `<circle class="dash-pt" cx="${pts[i][0].toFixed(1)}" cy="${pts[i][1].toFixed(1)}" r="${dashed ? 3 : 3.6}" fill="#fff" stroke="${color}" stroke-width="2"${dashTip(`${dashDayShort(d.date)} · <b>${formatInteger(Number(d[k]) || 0)}</b>${name ? ` ${escapeHtml(name)}` : ''}`)}/>`).join('');
-  const lab = labels ? series.map((d, i) => `<text x="${pts[i][0].toFixed(1)}" y="${(pts[i][1] - 10).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${formatInteger(Number(d[k]) || 0)}</text>`).join('') : '';
-  return { line, dots, lab };
-}
-
-// Barres (une série) + libellés + ligne secondaire ou « période précédente ».
-function dashBarChart(series, opt) {
-  if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
-  const n = series.length;
-  const { ih, x } = dashGeom(n);
-  const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.key]) || 0, opt.lineKey ? (Number(d[opt.lineKey]) || 0) : 0, opt.prevKey ? (Number(d[opt.prevKey]) || 0) : 0)));
-  const niceMax = dashNiceCeil(maxV);
-  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
-  const base = DASH_PAD.t + ih;
-  const bw = Math.max(6, Math.min(30, (dashGeom(n).iw / n) * 0.5));
-  const gid = dashUid();
-  const bars = series.map((d, i) => {
-    const v = Number(d[opt.key]) || 0;
-    if (v <= 0) return '';
-    const yTop = y(v);
-    const path = `<path class="dash-barrect" d="${dashTopRect(x(i) - bw / 2, bw, yTop, base, 5)}" fill="url(#${gid})"${dashTip(`${dashDayShort(d.date)} · <b>${formatInteger(v)}</b> ${escapeHtml(opt.barName || '')}`)}/>`;
-    const label = `<text x="${x(i).toFixed(1)}" y="${(yTop - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.labelColor || opt.color}">${formatInteger(v)}</text>`;
-    return path + label;
-  }).join('');
-  let overlay = '';
-  if (opt.prevKey) { const p = dashLinePlot(series, opt.prevKey, '#c3ccd9', x, y, { dashed: true, name: opt.prevName }); overlay += p.line + p.dots; }
-  if (opt.lineKey) { const p = dashLinePlot(series, opt.lineKey, opt.lineColor || '#10b981', x, y, { labels: true, name: opt.lineName }); overlay += p.line + p.dots + p.lab; }
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet"><defs>${dashBarGrad(gid, opt.color)}</defs>${dashGrid(niceMax)}${bars}${overlay}${dashXLabels(series, n)}</svg>`;
-}
-
-// Deux lignes lissées (période courante vs précédente).
-function dashDualLineChart(series, opt) {
-  if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
-  const n = series.length;
-  const { ih, x } = dashGeom(n);
-  const maxV = Math.max(1, ...series.map((d) => Math.max(Number(d[opt.aKey]) || 0, Number(d[opt.bKey]) || 0)));
-  const niceMax = dashNiceCeil(maxV);
-  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
-  const b = dashLinePlot(series, opt.bKey, '#c3ccd9', x, y, { dashed: true, name: opt.bName });
-  const a = dashLinePlot(series, opt.aKey, opt.aColor || '#e11d2a', x, y, { labels: true, name: opt.aName });
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${b.line}${b.dots}${a.line}${a.dots}${a.lab}${dashXLabels(series, n)}</svg>`;
-}
-
-// Aire lissée (taux %, 0–100).
-function dashAreaChart(points, opt) {
-  const valid = (points || []).filter((p) => p.value != null);
-  if (!valid.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
-  const n = points.length;
-  const { ih, x } = dashGeom(n);
-  const niceMax = 100;
-  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
-  const color = opt.color || '#3b82f6';
-  const gid = dashUid();
-  const idx = points.map((d, i) => (d.value == null ? null : i)).filter((i) => i != null);
-  const pts = idx.map((i) => [x(i), y(points[i].value)]);
-  const linePath = dashSmoothPath(pts);
-  const base = DASH_PAD.t + ih;
-  const areaPath = `${linePath} L ${pts[pts.length - 1][0].toFixed(1)} ${base.toFixed(1)} L ${pts[0][0].toFixed(1)} ${base.toFixed(1)} Z`;
-  const dots = idx.map((i) => `<circle class="dash-pt" cx="${x(i).toFixed(1)}" cy="${y(points[i].value).toFixed(1)}" r="3.4" fill="#fff" stroke="${color}" stroke-width="2"${dashTip(`${dashDayShort(points[i].date)} · <b>${Math.round(points[i].value)}%</b>`)}/><text x="${x(i).toFixed(1)}" y="${(y(points[i].value) - 10).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${color}">${Math.round(points[i].value)}%</text>`).join('');
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet"><defs>${dashAreaGrad(gid, color)}</defs>${dashGrid(niceMax, { percent: true })}<path d="${areaPath}" fill="url(#${gid})"/><path d="${linePath}" fill="none" stroke="${color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>${dots}${dashXLabels(points, n)}</svg>`;
-}
-
-// Barres groupées (deux séries par catégorie) — ex. Livraisons par livreur.
-function dashGroupedChart(items, opt) {
-  if (!items || !items.length) return '<div class="dash-empty">Aucune donnée</div>';
-  const n = items.length;
-  const { ih, iw } = dashGeom(n);
-  const maxV = Math.max(1, ...items.map((d) => Math.max(Number(d[opt.aKey]) || 0, Number(d[opt.bKey]) || 0)));
-  const niceMax = dashNiceCeil(maxV);
-  const y = (v) => DASH_PAD.t + ih - ih * (v / niceMax);
-  const base = DASH_PAD.t + ih;
-  const groupW = iw / n;
-  const bw = Math.min(26, groupW * 0.26);
-  const ga = dashUid(); const gb = dashUid();
-  let bars = ''; let labels = '';
-  items.forEach((d, i) => {
-    const cx = DASH_PAD.l + groupW * (i + 0.5);
-    const va = Number(d[opt.aKey]) || 0; const vb = Number(d[opt.bKey]) || 0;
-    if (va > 0) { bars += `<path class="dash-barrect" d="${dashTopRect(cx - bw - 3, bw, y(va), base, 5)}" fill="url(#${ga})"${dashTip(`${escapeHtml(d.label)} · <b>${formatInteger(va)}</b> ${escapeHtml(opt.aName || '')}`)}/><text x="${(cx - bw / 2 - 3).toFixed(1)}" y="${(y(va) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.aColor}">${formatInteger(va)}</text>`; }
-    if (vb > 0) { bars += `<path class="dash-barrect" d="${dashTopRect(cx + 3, bw, y(vb), base, 5)}" fill="url(#${gb})"${dashTip(`${escapeHtml(d.label)} · <b>${formatInteger(vb)}</b> ${escapeHtml(opt.bName || '')}`)}/><text x="${(cx + bw / 2 + 3).toFixed(1)}" y="${(y(vb) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="${opt.bColor}">${formatInteger(vb)}</text>`; }
-    labels += `<circle cx="${cx.toFixed(1)}" cy="${DASH_H - 15}" r="11" fill="#eef1f6"/><text x="${cx.toFixed(1)}" y="${DASH_H - 11.5}" text-anchor="middle" class="dash-initials">${escapeHtml(dashInitials(d.label))}</text>`;
-    labels += `<text x="${cx.toFixed(1)}" y="${DASH_H + 1}" text-anchor="middle" class="dash-axis">${escapeHtml((d.label || '').split(' ')[0])}</text>`;
-  });
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H + 16}" preserveAspectRatio="xMidYMid meet"><defs>${dashBarGrad(ga, opt.aColor)}${dashBarGrad(gb, opt.bColor)}</defs>${dashGrid(niceMax)}${bars}${labels}</svg>`;
-}
-
-// Barres empilées par jour (catégories) — ex. Incidents par jour.
-function dashStackedChart(series, categories) {
-  if (!series || !series.length) return '<div class="dash-empty">Aucune donnée sur la période</div>';
-  const n = series.length;
-  const { ih, x } = dashGeom(n);
-  const totals = series.map((d) => categories.reduce((s, c) => s + (Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0), 0));
-  const niceMax = dashNiceCeil(Math.max(1, ...totals));
-  const base = DASH_PAD.t + ih;
-  const bw = Math.max(8, Math.min(28, (dashGeom(n).iw / n) * 0.44));
-  let bars = '';
-  series.forEach((d, i) => {
-    const active = categories.map((c) => ({ c, v: Number(d.incidentsByCategory && d.incidentsByCategory[c.key]) || 0 })).filter((s) => s.v > 0);
-    let acc = 0;
-    active.forEach((s, k) => {
-      const yBase = base - ih * (acc / niceMax);
-      const yTop = base - ih * ((acc + s.v) / niceMax);
-      const isTop = k === active.length - 1;
-      const shape = isTop
-        ? `<path d="${dashTopRect(x(i) - bw / 2, bw, yTop, yBase, 4)}" fill="${s.c.color}"${dashTip(`${dashDayShort(d.date)} · ${escapeHtml(s.c.label)} <b>${formatInteger(s.v)}</b>`)}/>`
-        : `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${(yBase - yTop).toFixed(1)}" fill="${s.c.color}"${dashTip(`${dashDayShort(d.date)} · ${escapeHtml(s.c.label)} <b>${formatInteger(s.v)}</b>`)}/>`;
-      bars += shape;
-      acc += s.v;
-    });
-    if (totals[i] > 0) bars += `<text x="${x(i).toFixed(1)}" y="${(base - ih * (totals[i] / niceMax) - 7).toFixed(1)}" text-anchor="middle" class="dash-vlabel" fill="#475569">${formatInteger(totals[i])}</text>`;
-  });
-  return `<svg class="dash-chart" viewBox="0 0 ${DASH_W} ${DASH_H}" preserveAspectRatio="xMidYMid meet">${dashGrid(niceMax)}${bars}${dashXLabels(series, n)}</svg>`;
-}
-
-function dashPolar(cx, cy, r, a) { const rad = ((a - 90) * Math.PI) / 180; return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]; }
-function dashRingArc(cx, cy, r, s, e) {
-  const [x1, y1] = dashPolar(cx, cy, r, s); const [x2, y2] = dashPolar(cx, cy, r, e);
-  const large = e - s > 180 ? 1 : 0;
-  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
-}
-function dashDonut(rawSegments, opt = {}) {
-  const segments = (rawSegments || []).filter((s) => (Number(s.value) || 0) > 0);
-  const total = segments.reduce((s, x) => s + (Number(x.value) || 0), 0);
-  if (!total) return '<div class="dash-empty">Aucune donnée sur la période</div>';
-  const cx = 90; const cy = 90; const r = 68; const th = 17;
-  const gap = segments.length > 1 ? 3 : 0;
-  let acc = 0;
-  const arcs = segments.map((s, i) => {
-    const frac = (Number(s.value) || 0) / total;
-    const a0 = acc * 360; acc += frac; const a1 = acc * 360;
-    const color = s.color || DASH_PALETTE[i % DASH_PALETTE.length];
-    const pct = Math.round(frac * 100);
-    const tip = dashTip(`${escapeHtml(s.label)} · <b>${formatInteger(s.value)}</b> · ${pct}%`);
-    if (frac >= 0.9999) return `<circle class="dash-seg" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${th}"${tip}/>`;
-    return `<path class="dash-seg" d="${dashRingArc(cx, cy, r, a0 + gap / 2, a1 - gap / 2)}" fill="none" stroke="${color}" stroke-width="${th}" stroke-linecap="round"${tip}/>`;
-  }).join('');
-  const legend = segments.map((s, i) => {
-    const color = s.color || DASH_PALETTE[i % DASH_PALETTE.length];
-    const pct = Math.round(((Number(s.value) || 0) / total) * 100);
-    return `<li><span class="dash-dot" style="background:${color}"></span><span class="dash-leg-label">${escapeHtml(s.label)}</span><strong class="dash-leg-val">${formatInteger(s.value)}</strong><span class="dash-leg-pct">${pct}%</span></li>`;
-  }).join('');
-  return `<div class="dash-donut-wrap">
-    <svg class="dash-donut" viewBox="0 0 180 180">${arcs}
-      <text x="90" y="85" text-anchor="middle" class="dash-donut-total">${formatInteger(opt.total != null ? opt.total : total)}</text>
-      <text x="90" y="104" text-anchor="middle" class="dash-donut-sub">${escapeHtml(opt.centerLabel || 'total')}</text>
-    </svg>
-    <ul class="dash-legend-list">${legend}</ul>
-  </div>`;
-}
-
-// Info-bulle partagée (survol des points/barres/segments) — initialisée une fois.
-(function dashTooltipSetup() {
-  if (typeof document === 'undefined' || (typeof window !== 'undefined' && window.__dashTipInit)) return;
-  if (typeof window !== 'undefined') window.__dashTipInit = true;
-  let tip = null;
-  const ensure = () => { if (!tip) { tip = document.createElement('div'); tip.className = 'dash-tip'; tip.setAttribute('hidden', ''); document.body.appendChild(tip); } return tip; };
-  document.addEventListener('pointerover', (e) => {
-    const el = e.target.closest ? e.target.closest('[data-tip]') : null;
-    if (!el) return;
-    const t = ensure(); t.innerHTML = el.getAttribute('data-tip'); t.removeAttribute('hidden');
-  });
-  document.addEventListener('pointermove', (e) => {
-    if (!tip || tip.hasAttribute('hidden')) return;
-    const pad = 14; const r = tip.getBoundingClientRect();
-    let x = e.clientX + pad; let y = e.clientY + pad;
-    if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
-    if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
-    tip.style.left = `${x}px`; tip.style.top = `${y}px`;
-  });
-  document.addEventListener('pointerout', (e) => {
-    const el = e.target.closest ? e.target.closest('[data-tip]') : null;
-    if (el && tip) tip.setAttribute('hidden', '');
-  });
-}());
-
-function dashProgressRows(rows, opt = {}) {
-  if (!rows.length) return '<div class="dash-empty">Aucune donnée</div>';
-  const base = opt.base != null ? opt.base : Math.max(1, ...rows.map((r) => Number(r.value) || 0));
-  return `<ul class="dash-bars">${rows.map((r) => {
-    const v = Number(r.value) || 0;
-    const pct = base > 0 ? Math.round((v / base) * 100) : 0;
-    return `<li><div class="dash-bar-head"><span>${escapeHtml(r.label)}</span><span class="dash-bar-nums"><strong>${escapeHtml(r.display != null ? r.display : formatInteger(v))}</strong><span class="dash-bar-pct">${pct}%</span></span></div><div class="dash-bar-track"><span style="width:${pct}%;background:${r.color || '#e11d2a'}"></span></div></li>`;
-  }).join('')}</ul>`;
-}
-
-// --- Tableaux ---------------------------------------------------------------
-function dashRecentOrders(rows) {
-  if (!rows.length) return '<div class="dash-empty">Aucune commande</div>';
-  return `<div class="dash-table-wrap"><table class="dash-table">
-    <thead><tr><th>Commande</th><th>Client</th><th>Livreur</th><th>Statut</th><th>Créée</th></tr></thead>
-    <tbody>${rows.map((o) => `<tr onclick="location.href='/app/operations?vue=commandes&commande=${o.id}'">
-      <td><strong>${escapeHtml(o.reference || `#${o.id}`)}</strong></td>
-      <td>${escapeHtml(o.customerName || '—')}</td>
-      <td>${escapeHtml(o.driverName || '—')}</td>
-      <td>${badge(o.status)}</td>
-      <td class="dash-muted">${escapeHtml(formatDate(o.createdAt))}</td>
-    </tr>`).join('')}</tbody></table></div>`;
-}
-function dashRequestCode(r) {
-  const d = new Date(r.createdAt);
-  const ymd = Number.isNaN(d.getTime()) ? '00000000' : `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
-  return `DE-${ymd}-${String(r.id).padStart(4, '0')}`;
-}
-function dashRecentRequests(rows) {
-  if (!rows.length) return '<div class="dash-empty">Aucune demande</div>';
-  return `<div class="dash-table-wrap"><table class="dash-table">
-    <thead><tr><th>N°</th><th>Client</th><th>Position</th><th>Statut</th><th>Reçue le</th></tr></thead>
-    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/operations?vue=demandes&demande=${r.id}'">
-      <td><strong>${escapeHtml(dashRequestCode(r))}</strong></td>
-      <td>${escapeHtml(r.customerName || 'En attente du client')}</td>
-      <td>${r.hasLocation ? `<span class="dash-pos">${DASH_ICONS.pin}Position reçue</span>` : '<span class="dash-muted">—</span>'}</td>
-      <td>${requestStatusChip(r.status)}</td>
-      <td class="dash-muted">${escapeHtml(formatDate(r.createdAt))}</td>
-    </tr>`).join('')}</tbody></table></div>`;
-}
-function dashRecentIncidents(rows) {
-  if (!rows.length) return '<div class="dash-empty">Aucun incident</div>';
-  return `<div class="dash-table-wrap"><table class="dash-table">
-    <thead><tr><th>ID</th><th>Type</th><th>Commande</th><th>Statut</th><th>Signalé le</th></tr></thead>
-    <tbody>${rows.map((r) => `<tr onclick="location.href='/app/operations?vue=incidents&incident=${r.id}'">
-      <td><strong>INC-${escapeHtml(String(r.id).padStart(3, '0'))}</strong></td>
-      <td><span class="dash-type"><span class="dash-dot" style="background:${DASH_INCIDENT_COLOR[r.category] || '#e11d2a'}"></span>${escapeHtml(incidentCategoryLabels[r.category] || r.category || 'Autre')}</span></td>
-      <td>${escapeHtml(r.orderReference || '—')}</td>
-      <td>${badge(DASH_INCIDENT_STATUS_LABEL[r.status] || r.status)}</td>
-      <td class="dash-muted">${escapeHtml(formatDate(r.createdAt))}</td>
-    </tr>`).join('')}</tbody></table></div>`;
-}
-function dashPerfTable(drivers, columns) {
-  if (!drivers.length) return '<div class="dash-empty">Aucun livreur actif</div>';
-  const head = columns.map((c) => `<th class="${c.num ? 'num' : ''}">${escapeHtml(c.label)}</th>`).join('');
-  return `<div class="dash-table-wrap"><table class="dash-table">
-    <thead><tr><th>Livreur</th>${head}</tr></thead>
-    <tbody>${drivers.map((d) => `<tr>
-      <td><span class="dash-driver"><span class="dash-avatar">${escapeHtml(dashInitials(d.name))}</span>${escapeHtml(d.name)}</span></td>
-      ${columns.map((c) => c.render(d)).join('')}
-    </tr>`).join('')}</tbody></table></div>`;
-}
-function dashRateCell(numer, denom) {
-  const pct = denom > 0 ? Math.round((numer / denom) * 100) : 0;
-  return `<td><div class="dash-cell-rate"><div class="dash-mini-track"><span style="width:${pct}%"></span></div><span>${pct}%</span></div></td>`;
-}
-
-
-// --- Contenu par onglet -----------------------------------------------------
-function dashTabContent(tab, data) {
-  const m = data.metrics;
-  const now = data.now;
-  const val = (t) => formatInteger(t ? t.value : 0);
-  const rate = (t) => (t && t.value != null ? formatPercent(t.value) : '—');
-  const orderStatusSeg = data.distributions.orderStatus.map((s) => ({ ...s, color: DASH_ORDER_STATUS_COLOR[s.label] }));
-  const perJour = '';
-  const cettePeriode = '';
-
-  if (tab === 'commandes') {
-    const kpis = [
-      dashKpi({ icon: DASH_ICONS.box, label: 'Commandes créées', value: val(m.ordersCreated), delta: dashDelta(m.ordersCreated), tone: 'red' }),
-      dashKpi({ icon: DASH_ICONS.check, label: 'Livrées', value: val(m.delivered), delta: dashDelta(m.delivered), tone: 'green' }),
-      dashKpi({ icon: DASH_ICONS.clock, label: 'En cours', value: formatInteger(now.openDeliveries), tone: 'blue' }),
-      dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de livraison', value: rate(m.deliveryRate), delta: dashDeltaPoints(m.deliveryRate.deltaPoints), tone: 'orange' }),
-    ];
-    return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Commandes créées par jour', dashLegend([{ color: '#e11d2a', label: 'Créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
-      ${dashCard('Répartition par statut', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
-    </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes', '/app/operations?vue=commandes'));
-  }
-
-  if (tab === 'livraisons') {
-    const assigned = m.ordersCreated.value;
-    const seg = [
-      { label: 'Terminées', value: m.delivered.value, color: '#3b82f6' },
-      { label: 'En cours', value: now.openDeliveries, color: '#f59e0b' },
-      { label: 'Annulées', value: m.cancelled.value, color: '#e11d2a' },
-    ];
-    const ratePoints = data.series.map((d) => ({ date: d.date, value: (d.delivered + d.returned) > 0 ? (d.delivered / (d.delivered + d.returned)) * 100 : null }));
-    const kpis = [
-      dashKpi({ icon: DASH_ICONS.box, label: 'Livraisons assignées', value: formatInteger(assigned), delta: dashDelta(m.ordersCreated), tone: 'red' }),
-      dashKpi({ icon: DASH_ICONS.truck, label: 'Livraisons terminées', value: val(m.delivered), delta: dashDelta(m.delivered), tone: 'green' }),
-      dashKpi({ icon: DASH_ICONS.clock, label: 'En cours', value: formatInteger(now.openDeliveries), tone: 'blue' }),
-      dashKpi({ icon: DASH_ICONS.xcircle, label: 'Annulées', value: val(m.cancelled), delta: dashDelta(m.cancelled, true), tone: 'red' }),
-    ];
-    const driverRows = data.tables.drivers;
-    return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Livraisons terminées par jour', dashLegend([{ color: '#3b82f6', label: 'Cette période (terminées)' }, { color: '#c3ccd9', label: 'Période précédente', line: true }]) + dashBarChart(data.series, { key: 'delivered', color: '#3b82f6', barName: 'livrées', prevKey: 'prevDelivered', prevName: '(préc.)' }), perJour)}
-      ${dashCard('État des livraisons', dashDonut(seg, { centerLabel: 'livraisons totales', total: assigned }), cettePeriode)}
-    </div><div class="dash-grid-2">
-      ${dashCard('Taux de livraison par jour', dashAreaChart(ratePoints, { color: '#3b82f6' }))}
-      ${dashCard('Répartition par livreur', dashPerfTable(driverRows, [
-        { label: 'Livraisons assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.assigned)}</td>` },
-        { label: 'Livraisons terminées', num: true, render: (d) => `<td class="num">${formatInteger(d.delivered)}</td>` },
-        { label: 'Taux de livraison', render: (d) => dashRateCell(d.delivered, d.assigned) },
-      ]), dashLink('Voir tous', '/app/livreurs'))}
-    </div>`;
-  }
-
-  if (tab === 'livreurs') {
-    const availSeg = data.distributions.driverAvailability.map((s) => ({ label: driverStateLabels[s.label] || s.label, value: s.value, color: DASH_AVAILABILITY_COLOR[s.label] }));
-    const grouped = data.tables.drivers.map((d) => ({ label: d.name, assigned: d.assigned, delivered: d.delivered }));
-    const assignedTotal = m.ordersCreated.value;
-    const kpis = [
-      dashKpi({ icon: DASH_ICONS.users, label: 'Livreurs enregistrés', value: formatInteger(now.driversTotal), tone: 'red' }),
-      dashKpi({ icon: DASH_ICONS.user, label: 'Actifs cette période', value: val(m.driversActive), delta: dashDelta(m.driversActive), tone: 'green' }),
-      dashKpi({ icon: DASH_ICONS.box, label: 'Livraisons assignées', value: formatInteger(assignedTotal), delta: dashDelta(m.ordersCreated), tone: 'blue' }),
-      dashKpi({ icon: DASH_ICONS.check, label: 'Livraisons terminées', value: val(m.delivered), delta: dashDelta(m.delivered), tone: 'navy' }),
-    ];
-    const workload = [
-      { label: 'Assignées', value: assignedTotal, color: '#3b82f6' },
-      { label: 'Terminées', value: m.delivered.value, color: '#10b981' },
-      { label: 'En cours', value: now.openLoad, color: '#f59e0b' },
-      { label: 'Annulées', value: m.cancelled.value, color: '#e11d2a' },
-    ];
-    return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Livraisons par livreur', dashLegend([{ color: '#3b82f6', label: 'Assignées' }, { color: '#10b981', label: 'Terminées' }]) + dashGroupedChart(grouped, { aKey: 'assigned', aColor: '#3b82f6', aName: 'assignées', bKey: 'delivered', bColor: '#10b981', bName: 'terminées' }), cettePeriode)}
-      ${dashCard('Disponibilité actuelle', dashDonut(availSeg, { centerLabel: 'livreurs totaux' }))}
-    </div><div class="dash-grid-2">
-      ${dashCard('Performance individuelle', dashPerfTable(data.tables.drivers, [
-        { label: 'Assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.assigned)}</td>` },
-        { label: 'Livrées', num: true, render: (d) => `<td class="num">${formatInteger(d.delivered)}</td>` },
-        { label: 'Taux de livraison', render: (d) => dashRateCell(d.delivered, d.assigned) },
-      ]), dashLink('Voir tous', '/app/livreurs'))}
-      ${dashCard('Charge de travail', dashProgressRows(workload, { base: Math.max(1, assignedTotal) }))}
-    </div>`;
-  }
-
-  if (tab === 'demandes') {
-    const reqSeg = data.distributions.requestStatus.map((s) => ({ ...s, color: DASH_REQUEST_STATUS_COLOR[s.label] }));
-    const received = m.requestsReceived.value;
-    const kpis = [
-      dashKpi({ icon: DASH_ICONS.file, label: 'Demandes reçues', value: val(m.requestsReceived), delta: dashDelta(m.requestsReceived), tone: 'red' }),
-      dashKpi({ icon: DASH_ICONS.check, label: 'Validées', value: val(m.requestsConverted), delta: dashDelta(m.requestsConverted), tone: 'green' }),
-      dashKpi({ icon: DASH_ICONS.clock, label: 'À traiter', value: formatInteger(now.toProcess), tone: 'orange' }),
-      dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de validation', value: rate(m.conversionRate), delta: dashDeltaPoints(m.conversionRate.deltaPoints), tone: 'blue' }),
-    ];
-    const processing = [
-      { label: 'Demandes reçues', value: received, color: '#3b82f6' },
-      { label: 'Validées', value: m.requestsConverted.value, color: '#10b981' },
-      { label: 'À traiter', value: now.toProcess, color: '#f59e0b' },
-    ];
-    return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Demandes reçues par jour', dashLegend([{ color: '#3b82f6', label: 'Demandes reçues (total)' }, { color: '#10b981', label: 'Validées', line: true }]) + dashBarChart(data.series, { key: 'requestsReceived', color: '#93c5fd', barName: 'reçues', labelColor: '#2563eb', lineKey: 'requestsConverted', lineColor: '#10b981', lineName: 'validées' }), perJour)}
-      ${dashCard('Traitement des demandes', dashProgressRows(processing, { base: Math.max(1, received) }), cettePeriode)}
-    </div><div class="dash-grid-2">
-      ${dashCard('Demandes récentes', dashRecentRequests(data.tables.recentRequests), dashLink('Voir toutes', '/app/operations?vue=demandes'))}
-      ${dashCard('Délais de validation', dashProgressRows(data.distributions.validationDelay.map((d, i) => ({ label: d.label, value: d.value, color: i === 0 ? '#10b981' : '#3b82f6' }))), cettePeriode)}
-    </div>`;
-  }
-
-  if (tab === 'tournees') {
-    const seg = [
-      { label: 'Terminées', value: m.runsCompleted.value, color: '#10b981' },
-      { label: 'En cours', value: now.runsActive, color: '#3b82f6' },
-      { label: 'Annulées', value: m.runsCancelled.value, color: '#e11d2a' },
-    ];
-    const totalRuns = seg.reduce((s, x) => s + x.value, 0);
-    const kpis = [
-      dashKpi({ icon: DASH_ICONS.route, label: 'Tournées planifiées', value: val(m.runsPlanned), delta: dashDelta(m.runsPlanned), tone: 'red' }),
-      dashKpi({ icon: DASH_ICONS.check, label: 'Terminées', value: val(m.runsCompleted), delta: dashDelta(m.runsCompleted), tone: 'green' }),
-      dashKpi({ icon: DASH_ICONS.clock, label: 'En cours', value: formatInteger(now.runsActive), tone: 'blue' }),
-      dashKpi({ icon: DASH_ICONS.xcircle, label: 'Annulées', value: val(m.runsCancelled), delta: dashDelta(m.runsCancelled, true), tone: 'red' }),
-    ];
-    return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Tournées terminées par jour', dashLegend([{ color: '#e11d2a', label: 'Tournées terminées', line: true }, { color: '#c3ccd9', label: 'Période précédente', line: true }]) + dashDualLineChart(data.series, { aKey: 'runsCompleted', aColor: '#e11d2a', aName: 'terminées', bKey: 'prevRunsCompleted', bName: '(préc.)' }), perJour)}
-      ${dashCard('État des tournées', dashDonut(seg, { centerLabel: 'tournées totales', total: totalRuns }), cettePeriode)}
-    </div><div class="dash-grid-2">
-      ${dashCard('Tournées par livreur', dashPerfTable(data.tables.drivers, [
-        { label: 'Assignées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsAssigned)}</td>` },
-        { label: 'Terminées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsCompleted)}</td>` },
-        { label: 'En cours', num: true, render: (d) => `<td class="num">${formatInteger(d.runsInProgress)}</td>` },
-        { label: 'Annulées', num: true, render: (d) => `<td class="num">${formatInteger(d.runsCancelled)}</td>` },
-        { label: 'Taux de réalisation', render: (d) => dashRateCell(d.runsCompleted, d.runsAssigned) },
-      ]))}
-      ${dashCard('Livraisons par tournée', dashProgressRows(data.distributions.deliveriesPerRun.map((d, i) => ({ label: d.label, value: d.value, color: ['#3b82f6', '#10b981', '#f59e0b'][i] }))), dashLink('Voir toutes', '/app/operations?vue=tournees'))}
-    </div>`;
-  }
-
-  if (tab === 'incidents') {
-    const catSeg = data.distributions.incidentCategory.map((s) => ({ label: incidentCategoryLabels[s.label] || s.label, value: s.value, color: DASH_INCIDENT_COLOR[s.label] || '#e11d2a' }));
-    const catKeys = data.distributions.incidentCategory.map((s) => ({ key: s.label, color: DASH_INCIDENT_COLOR[s.label] || '#e11d2a', label: incidentCategoryLabels[s.label] || s.label }));
-    const resolution = [
-      { label: 'Résolus', value: m.incidentsResolved.value, color: '#10b981' },
-      { label: 'Ouverts', value: now.openIncidents, color: '#f59e0b' },
-    ];
-    const kpis = [
-      dashKpi({ icon: DASH_ICONS.alert, label: 'Incidents signalés', value: val(m.incidentsOpened), delta: dashDelta(m.incidentsOpened, true), tone: 'red' }),
-      dashKpi({ icon: DASH_ICONS.check, label: 'Résolus', value: val(m.incidentsResolved), delta: dashDelta(m.incidentsResolved), tone: 'green' }),
-      dashKpi({ icon: DASH_ICONS.clock, label: 'Ouverts', value: formatInteger(now.openIncidents), tone: 'blue' }),
-      dashKpi({ icon: DASH_ICONS.clock, label: 'Délai médian', value: dashDuration(m.incidentMedianDelay.value), delta: dashDelta(m.incidentMedianDelay, true), tone: 'orange' }),
-    ];
-    return dashKpiRow(kpis) + `<div class="dash-grid-2">
-      ${dashCard('Incidents signalés par jour', dashLegend(catKeys.slice(0, 4).map((c) => ({ color: c.color, label: c.label }))) + dashStackedChart(data.series, catKeys), perJour)}
-      ${dashCard('Types d’incident', dashProgressRows(catSeg, { base: catSeg.reduce((s, x) => s + x.value, 0) || 1 }), cettePeriode)}
-    </div><div class="dash-grid-2">
-      ${dashCard('Incidents récents', dashRecentIncidents(data.tables.recentIncidents), dashLink('Voir tous', '/app/operations?vue=incidents'))}
-      ${dashCard('Résolution', dashProgressRows(resolution, { base: (m.incidentsResolved.value + now.openIncidents) || 1 }))}
-    </div>`;
-  }
-
-  // Général
-  const kpis = [
-    dashKpi({ icon: DASH_ICONS.box, label: 'Commandes créées', value: val(m.ordersCreated), delta: dashDelta(m.ordersCreated), tone: 'red' }),
-    dashKpi({ icon: DASH_ICONS.percent, label: 'Taux de livraison', value: rate(m.deliveryRate), delta: dashDeltaPoints(m.deliveryRate.deltaPoints), tone: 'green' }),
-    dashKpi({ icon: DASH_ICONS.users, label: 'Livreurs actifs', value: val(m.driversActive), delta: dashDelta(m.driversActive), tone: 'navy' }),
-    dashKpi({ icon: DASH_ICONS.alert, label: 'Incidents ouverts', value: formatInteger(now.openIncidents), tone: 'orange' }),
-  ];
-  return dashKpiRow(kpis) + `<div class="dash-grid-2">
-    ${dashCard('Activité par jour', dashLegend([{ color: '#e11d2a', label: 'Commandes créées' }, { color: '#10b981', label: 'Livrées', line: true }]) + dashBarChart(data.series, { key: 'ordersCreated', color: '#e11d2a', barName: 'créées', lineKey: 'delivered', lineColor: '#10b981', lineName: 'livrées' }), perJour)}
-    ${dashCard('Répartition des commandes', dashDonut(orderStatusSeg, { centerLabel: 'commandes' }), cettePeriode)}
-  </div>` + dashCard('Dernières commandes', dashRecentOrders(data.tables.recentOrders), dashLink('Voir toutes', '/app/operations?vue=commandes'));
-}
-
-function dashKpiRow(kpis) { return `<div class="dash-kpis">${kpis.join('')}</div>`; }
-
-function dashRenderTab() {
-  const content = document.getElementById('dashContent');
-  if (!content || !dashboardState.data) return;
-  content.innerHTML = dashTabContent(dashboardState.tab, dashboardState.data);
-  document.querySelectorAll('.dash-tab').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === dashboardState.tab));
-}
-function dashUpdateMeta() {
-  const data = dashboardState.data;
-  if (!data) return;
-  dashCmpLabel = dashCompactRange(data.comparison.from, data.comparison.to);
-  const rangeEl = document.getElementById('dashRange');
-  if (rangeEl) rangeEl.textContent = dashFormatRange(data.range.from, data.range.to);
-  const cmpEl = document.getElementById('dashCompare');
-  if (cmpEl) cmpEl.textContent = `Comparé aux ${data.comparison.days} jours précédents`;
-}
-async function dashLoadData() {
-  const content = document.getElementById('dashContent');
-  if (content) content.innerHTML = '<div class="dash-loading"><span class="dash-spinner"></span>Chargement des indicateurs…</div>';
-  const custom = dashboardState.from && dashboardState.to;
-  const query = custom
-    ? `from=${encodeURIComponent(dashboardState.from)}&to=${encodeURIComponent(dashboardState.to)}`
-    : `period=${dashboardState.period}`;
-  try {
-    dashboardState.data = await api(`/api/app/dashboard?${query}`);
-    dashUpdateMeta();
-    dashRenderTab();
-  } catch (error) {
-    if (content) content.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-  }
-}
-function dashSyncUrl() {
-  const params = new URLSearchParams(location.search);
-  params.set('vue', dashboardState.tab);
-  if (dashboardState.from && dashboardState.to) {
-    params.set('from', dashboardState.from); params.set('to', dashboardState.to); params.delete('periode');
-  } else {
-    params.set('periode', String(dashboardState.period)); params.delete('from'); params.delete('to');
-  }
-  history.replaceState(null, '', `${location.pathname}?${params.toString()}`);
-}
-
+// Tableau de bord : rendu dans public/dashboard.js (kit « Dashboard Motion »).
 async function renderDashboard() {
   setHeader('Tableau de bord', 'Votre activité, période par période');
-  const params = new URLSearchParams(location.search);
-  const periodParam = Number(params.get('periode'));
-  dashboardState.period = [7, 30].includes(periodParam) ? periodParam : dashboardState.period;
-  const fromParam = params.get('from'); const toParam = params.get('to');
-  if (isDashDate(fromParam) && isDashDate(toParam) && fromParam <= toParam) {
-    dashboardState.from = fromParam; dashboardState.to = toParam;
-  } else { dashboardState.from = null; dashboardState.to = null; }
-  const tabParam = params.get('vue');
-  dashboardState.tab = DASH_TABS.some((t) => t.key === tabParam) ? tabParam : dashboardState.tab;
-  const custom = Boolean(dashboardState.from && dashboardState.to);
-
-  page.innerHTML = `
-    <div class="dash-topbar">
-      <div class="dash-title-block">
-        <h1>Tableau de bord</h1>
-        <p class="dash-subtitle">Analysez vos opérations par période</p>
-      </div>
-      <div class="dash-controls">
-        <div class="dash-daterange-wrap">
-          <button type="button" class="dash-daterange ${custom ? 'active' : ''}" id="dashRangeBtn" aria-haspopup="true" aria-expanded="false">${DASH_ICONS.calendar}<span id="dashRange">—</span>${DASH_ICONS.chevron}</button>
-          <div class="dash-range-pop" id="dashRangePop" hidden>
-            <div class="dash-range-title">Plage personnalisée</div>
-            <label class="dash-range-field"><span>Du</span><input type="date" id="dashFrom"></label>
-            <label class="dash-range-field"><span>Au</span><input type="date" id="dashTo"></label>
-            <div class="dash-range-actions">
-              <button type="button" class="dash-range-reset" id="dashRangeReset">Réinitialiser</button>
-              <button type="button" class="dash-range-apply" id="dashRangeApply">Appliquer</button>
-            </div>
-          </div>
-        </div>
-        <div class="dash-period" role="group" aria-label="Période">
-          <button type="button" class="dash-period-btn ${!custom && dashboardState.period === 7 ? 'active' : ''}" data-period="7">7 jours</button>
-          <button type="button" class="dash-period-btn ${!custom && dashboardState.period === 30 ? 'active' : ''}" data-period="30">30 jours</button>
-        </div>
-        <a class="button secondary dash-export" href="/app/rapports">${DASH_ICONS.download}<span>Exporter</span></a>
-        <p id="dashCompare" class="dash-compare">—</p>
-      </div>
-    </div>
-    <nav class="dash-tabs" aria-label="Vues">
-      ${DASH_TABS.map((t) => `<button type="button" class="dash-tab ${t.key === dashboardState.tab ? 'active' : ''}" data-tab="${t.key}">${escapeHtml(t.label)}</button>`).join('')}
-    </nav>
-    <div id="dashContent" class="dash-content"></div>`;
-
-  document.querySelectorAll('.dash-tab[data-tab]').forEach((btn) => btn.addEventListener('click', () => {
-    if (dashboardState.tab === btn.dataset.tab) return;
-    dashboardState.tab = btn.dataset.tab;
-    dashSyncUrl();
-    dashRenderTab();
-  }));
-  document.querySelectorAll('.dash-period-btn').forEach((btn) => btn.addEventListener('click', () => {
-    const p = Number(btn.dataset.period);
-    const wasCustom = Boolean(dashboardState.from);
-    if (!wasCustom && dashboardState.period === p) return;
-    dashboardState.period = p; dashboardState.from = null; dashboardState.to = null;
-    document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.toggle('active', b === btn));
-    document.getElementById('dashRangeBtn')?.classList.remove('active');
-    dashSyncUrl();
-    dashLoadData();
-  }));
-
-  // Sélecteur de plage personnalisée
-  const rangeBtn = document.getElementById('dashRangeBtn');
-  const rangePop = document.getElementById('dashRangePop');
-  const closeRange = () => { rangePop?.setAttribute('hidden', ''); rangeBtn?.setAttribute('aria-expanded', 'false'); };
-  rangeBtn?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const opening = rangePop.hasAttribute('hidden');
-    if (opening) {
-      const r = dashboardState.data && dashboardState.data.range;
-      const f = document.getElementById('dashFrom'); const t = document.getElementById('dashTo');
-      const today = new Date(Date.now() + 60 * 60000).toISOString().slice(0, 10);
-      if (f) { f.value = dashboardState.from || (r && r.from) || ''; f.max = today; }
-      if (t) { t.value = dashboardState.to || (r && r.to) || ''; t.max = today; }
-      rangePop.removeAttribute('hidden'); rangeBtn.setAttribute('aria-expanded', 'true');
-    } else closeRange();
-  });
-  rangePop?.addEventListener('click', (event) => event.stopPropagation());
-  document.getElementById('dashRangeApply')?.addEventListener('click', () => {
-    const f = document.getElementById('dashFrom').value; const t = document.getElementById('dashTo').value;
-    if (!isDashDate(f) || !isDashDate(t)) return;
-    const from = f <= t ? f : t; const to = f <= t ? t : f;
-    dashboardState.from = from; dashboardState.to = to;
-    document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.remove('active'));
-    rangeBtn.classList.add('active');
-    closeRange(); dashSyncUrl(); dashLoadData();
-  });
-  document.getElementById('dashRangeReset')?.addEventListener('click', () => {
-    dashboardState.from = null; dashboardState.to = null;
-    rangeBtn.classList.remove('active');
-    document.querySelectorAll('.dash-period-btn').forEach((b) => b.classList.toggle('active', Number(b.dataset.period) === dashboardState.period));
-    closeRange(); dashSyncUrl(); dashLoadData();
-  });
-  document.addEventListener('click', (event) => {
-    if (rangePop && !rangePop.hasAttribute('hidden') && !event.target.closest('.dash-daterange-wrap')) closeRange();
-  });
-
-  dashSyncUrl();
-  await dashLoadData();
+  await window.TraxoDashboard.render(page, { api, setHeader, openModal, uiToast });
 }
 
 async function renderNewOrder() {
-  setHeader('Nouvelle commande', 'Vous saisissez les informations du client');
-  const drivers = await api('/api/app/drivers');
-  page.innerHTML = `
-    <div class="page-header"><div><h1>Saisir une commande</h1><p class="subtitle">Vous connaissez déjà le client. Il recevra un lien pour suivre sa livraison.</p></div></div>
-    <section class="card"><form id="orderForm"><div class="form-grid">
-      <div class="field"><label>Nom du client</label><input name="customerName" required /></div>
-      <div class="field"><label>Téléphone du client</label><input name="customerPhone" inputmode="tel" placeholder="01 97 12 34 56" /></div>
-      <div class="field full"><label>Adresse et consignes</label><textarea name="deliveryAddress" required placeholder="Quartier, repère (ex. : portail vert, près de la pharmacie), consignes pour le livreur…"></textarea></div>
-      <div class="field full"><label>Livreur</label><select name="driverId" required><option value="">Sélectionner un livreur</option>${drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${['inactive', 'off_duty', 'incident'].includes(driver.operationalState) ? 'disabled' : ''}>${escapeHtml(driver.name)} — ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)} — ${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</option>`).join('')}</select></div>
-    </div><div class="actions" style="margin-top:20px"><button class="primary">Créer la commande</button></div></form><div id="orderResult"></div></section>`;
-  document.getElementById('orderForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
+  setHeader('Nouvelle commande', 'Vous connaissez déjà le client');
+  page.classList.add('page-no');
+  const C = window.TraxoClient;
+  const noIcon = {
+    arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
+    wa: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-2-1-1 .8c-1-.5-1.6-1.1-2.1-2.1l.8-1-1-2L9 9.5z"/></svg>',
+    sms: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+  };
+  const [drivers, rules] = await Promise.all([
+    api('/api/app/drivers').catch(() => []),
+    api('/api/app/settings/deliveries').catch(() => ({ internalEntryEnabled: true, customerFormEnabled: true })),
+  ]);
+  const unavailable = ['inactive', 'off_duty', 'incident'];
+  const sortedDrivers = drivers.filter((d) => d.active !== false)
+    .sort((a, b) => Number(unavailable.includes(a.operationalState)) - Number(unavailable.includes(b.operationalState)) || (a.activeOrders || 0) - (b.activeOrders || 0));
+  let mode = 'confirm';
+
+  const journeys = {
+    confirm: [
+      ['Vous saisissez ce que vous savez', 'Nom, téléphone, quartier.'],
+      ['Le client vérifie et confirme', 'Il corrige si besoin et partage sa position s’il le souhaite.'],
+      ['Vous affectez un livreur', 'Depuis Opérations › Demandes.'],
+      ['Le client suit sa livraison', 'En direct, avec le délai estimé s’il a partagé sa position.'],
+    ],
+    direct: [
+      ['Vous saisissez la commande', 'Toutes les informations sont sûres.'],
+      ['Vous choisissez le livreur', 'La commande rejoint sa tournée du jour.'],
+      ['Vous envoyez le lien de suivi', 'Par WhatsApp, SMS ou copier-coller.'],
+    ],
+  };
+  const journeyHtml = (steps, doneCount = 0) => `<ol class="no-journey">${steps.map(([t, s], i) => `<li class="${i < doneCount ? 'done' : i === doneCount ? 'now' : ''}" style="--i:${i}"><span class="dot" aria-hidden="true"></span><span><b>${escapeHtml(t)}</b><small>${escapeHtml(s)}</small></span></li>`).join('')}</ol>`;
+  const initialsOf = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
+  const driverCard = (d) => {
+    const off = unavailable.includes(d.operationalState);
+    const tone = off ? '' : ['busy', 'full'].includes(d.operationalState) ? 'busy' : ['available'].includes(d.operationalState) ? 'ok' : '';
+    const photo = d.hasPhoto ? `<img src="/api/app/drivers/${encodeURIComponent(d.id)}/photo?v=${encodeURIComponent(d.photoVersion || 0)}" alt="">` : escapeHtml(initialsOf(d.name));
+    return `<label class="no-driver"><input type="radio" name="driverId" value="${escapeHtml(d.id)}" ${off ? 'disabled' : ''}><span class="no-driver-body"><span class="no-av">${photo}</span><span class="no-driver-text"><strong>${escapeHtml(d.name)}</strong><small><span class="no-state ${tone}"></span>${escapeHtml(driverStateLabels[d.operationalState] || d.operationalState || '')} · ${escapeHtml(colisCount(d.activeOrders))}</small></span></span></label>`;
+  };
+
+  const confirmAllowed = rules.internalEntryEnabled !== false;
+  page.innerHTML = `<div class="no">
+    <div class="no-grid">
+      <aside class="no-aside">
+        <p class="no-eyebrow">Nouvelle commande</p>
+        <h1 class="no-title">Préparer une livraison</h1>
+        <p class="no-lead">Vous connaissez déjà votre client ? Saisissez ce que vous savez, TRAXO s’occupe du reste.</p>
+        <hr class="no-rule" />
+        <div class="no-modes" role="radiogroup" aria-label="Comment créer la commande">
+          <label class="no-mode"><input type="radio" name="noMode" value="confirm" checked ${confirmAllowed ? '' : 'disabled'}><span class="no-mode-body"><span class="no-mode-text"><strong>Le client confirme <span class="no-tag">Recommandé</span></strong><small>Il vérifie ses informations depuis son téléphone et partage sa position s’il le souhaite.</small></span></span></label>
+          <label class="no-mode"><input type="radio" name="noMode" value="direct" ${confirmAllowed ? '' : 'disabled'}><span class="no-mode-body"><span class="no-mode-text"><strong>Je crée la commande maintenant</strong><small>Tout est sûr : vous choisissez le livreur tout de suite.</small></span></span></label>
+        </div>
+        <div id="noJourney">${journeyHtml(journeys.confirm)}</div>
+        ${rules.customerFormEnabled !== false ? `<button type="button" class="no-textlink" id="noBlank">Le client remplit tout lui-même : envoyer un formulaire vierge ${noIcon.arrow}</button>` : ''}
+      </aside>
+      <div class="no-main" id="noMain">
+        ${confirmAllowed ? '' : '<p class="no-notice">La saisie par votre équipe est désactivée dans Paramètres › Livraisons.</p>'}
+        <form id="noForm" novalidate>
+          <div id="noError" role="alert"></div>
+          <section class="no-sec" style="--i:0">
+            <div class="no-sec-head"><span class="no-sec-num">01</span><h2 class="no-sec-title">Le client</h2></div>
+            <div class="no-row">
+              <div class="no-field"><label for="f-name">Nom et prénom *</label><input class="cl-input" id="f-name" name="customerName" autocomplete="off" required maxlength="120" /></div>
+              <div class="no-field"><label for="f-phone">Téléphone <span id="phoneReq">*</span></label>${C.phoneFieldHtml({})}<p class="no-hint" id="phoneHint">Pour le joindre à l’arrivée.</p></div>
+            </div>
+          </section>
+          <section class="no-sec" style="--i:1">
+            <div class="no-sec-head"><span class="no-sec-num">02</span><h2 class="no-sec-title">Lieu de livraison</h2></div>
+            <p class="no-sec-sub" id="placeSub">Le client pourra corriger ces informations et partager sa position exacte.</p>
+            <div class="no-field"><label for="f-zone">Quartier ou zone *</label><input class="cl-input" id="f-zone" name="neighborhood" required maxlength="160" placeholder="Ex. Akpakpa, Cotonou" /></div>
+            <div class="no-field"><label for="f-landmark">Repère <em>(facultatif)</em></label><input class="cl-input" id="f-landmark" name="landmark" maxlength="240" placeholder="Ex. portail vert, près de la pharmacie" /></div>
+            <div class="no-row">
+              <div class="no-field"><label for="f-time">Créneau souhaité <em>(facultatif)</em></label><input class="cl-input" id="f-time" name="requestedTime" maxlength="80" placeholder="Ex. 15 h – 17 h" /></div>
+              <div class="no-field"><label for="f-notes">Consigne pour le livreur <em>(facultatif)</em></label><input class="cl-input" id="f-notes" name="notes" maxlength="1000" placeholder="Ex. appeler en arrivant" /></div>
+            </div>
+          </section>
+          <div class="no-collapse" id="noDriverWrap" aria-hidden="true"><div>
+            <section class="no-sec" style="--i:2">
+              <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Livreur</h2></div>
+              ${sortedDrivers.length ? `<div class="no-drivers" role="radiogroup" aria-label="Livreur">${sortedDrivers.map(driverCard).join('')}</div>` : '<p class="no-empty">Aucun livreur actif. Ajoutez-en un depuis la page Livreurs.</p>'}
+            </section>
+          </div></div>
+          <div class="no-submit">
+            <button class="no-btn big" id="noSubmit" type="submit" ${confirmAllowed ? '' : 'disabled'}><span id="noSubmitLabel">Envoyer au client pour confirmation</span>${noIcon.arrow}</button>
+            <p class="no-hint" id="noSubmitHint">Vous obtenez un lien à envoyer par WhatsApp ou SMS.</p>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>`;
+
+  const form = document.getElementById('noForm');
+  const main = document.getElementById('noMain');
+  const errorBox = document.getElementById('noError');
+  const say = (text) => { errorBox.innerHTML = text ? `<p class="no-notice">${escapeHtml(text)}</p>` : ''; };
+  C.wirePhoneField(form);
+  // Le libellé d'aide du téléphone vient du composant client : on l'adapte au contexte.
+  const phoneHint = document.getElementById('phoneHint');
+  const setMode = (next) => {
+    mode = next;
+    const direct = mode === 'direct';
+    const wrap = document.getElementById('noDriverWrap');
+    wrap.classList.toggle('open', direct);
+    wrap.setAttribute('aria-hidden', String(!direct));
+    wrap.querySelectorAll('input').forEach((i) => { i.tabIndex = direct ? 0 : -1; });
+    document.getElementById('phoneReq').textContent = direct ? '' : '*';
+    document.getElementById('f-phone').required = !direct;
+    phoneHint.textContent = direct ? 'Pour le joindre à l’arrivée.' : 'Obligatoire : il reçoit le lien et s’en sert pour déverrouiller ses informations.';
+    document.getElementById('placeSub').textContent = direct ? 'Ces informations partent telles quelles au livreur.' : 'Le client pourra corriger ces informations et partager sa position exacte.';
+    document.getElementById('noSubmitLabel').textContent = direct ? 'Créer la commande' : 'Envoyer au client pour confirmation';
+    document.getElementById('noSubmitHint').textContent = direct ? 'Le lien de suivi est créé en même temps que la commande.' : 'Vous obtenez un lien à envoyer par WhatsApp ou SMS.';
+    document.getElementById('noJourney').innerHTML = journeyHtml(journeys[mode]);
+  };
+  document.querySelectorAll('input[name="noMode"]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
+  setMode('confirm');
+
+  const digitsOf = (phone) => String(phone || '').replace(/\D/g, '');
+  const shareScreen = ({ title, lead, url, message, phone, meta, doneCount, steps, next }) => {
+    const digits = digitsOf(phone);
+    main.innerHTML = `<div class="no-done" id="noDone" tabindex="-1">
+      <svg class="no-check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="30"/><path d="M20 33l8 8 16-17"/></svg>
+      <p class="no-eyebrow">${escapeHtml(meta.eyebrow)}</p>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(lead)}</p>
+      <div class="no-linkbox"><code>${escapeHtml(url)}</code><button type="button" data-copy="url">Copier</button></div>
+      <div class="no-share">
+        ${digits ? `<a class="no-btn no-wa" href="https://wa.me/${escapeHtml(digits)}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener">${noIcon.wa} WhatsApp</a>
+        <a class="no-btn outline" href="sms:+${escapeHtml(digits)}?&body=${encodeURIComponent(message)}">${noIcon.sms} SMS</a>` : ''}
+        <button type="button" class="no-btn ghost" data-copy="message">${noIcon.copy} Copier le message</button>
+      </div>
+      ${meta.note ? `<p class="no-meta">${escapeHtml(meta.note)}</p>` : ''}
+      ${journeyHtml(steps, doneCount)}
+      <div class="no-next">${next}<button type="button" class="no-btn ghost" id="noAgain">Saisir une autre commande</button></div>
+    </div>`;
+    const copy = async (text, label) => {
+      try { await navigator.clipboard.writeText(text); uiToast(label, 'success'); } catch { uiToast('Copie impossible : sélectionnez le texte à la main.', 'warning'); }
+    };
+    main.querySelector('[data-copy="url"]').addEventListener('click', () => copy(url, 'Lien copié.'));
+    main.querySelector('[data-copy="message"]').addEventListener('click', () => copy(message, 'Message copié.'));
+    main.querySelector('#noAgain').addEventListener('click', () => renderNewOrder());
+    document.getElementById('noDone').focus({ preventScroll: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  document.getElementById('noBlank')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
     button.disabled = true;
     try {
-      const result = await api('/api/app/orders', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
+      const link = await api('/api/app/request-links', { method: 'POST' });
+      const url = publicLink(link.path);
+      shareScreen({
+        title: 'Formulaire prêt à envoyer',
+        lead: 'Le client indique lui-même ses coordonnées et sa position. Sa demande arrive ensuite dans Opérations › Demandes.',
+        url, message: `Bonjour, pour préparer votre livraison, indiquez vos informations ici : ${url}`, phone: '',
+        meta: { eyebrow: 'Formulaire vierge', note: `Le lien expire le ${formatDateOnly(link.expiresAt)}.` },
+        steps: [['Vous envoyez le formulaire', ''], ['Le client le remplit', 'Coordonnées, position, photos du lieu.'], ['Vous validez et affectez un livreur', '']],
+        doneCount: 1,
+        next: '<a class="no-btn outline" href="/app/operations?vue=demandes">Voir les demandes</a>',
       });
-      const url = publicLink(result.path);
-      document.getElementById('orderResult').innerHTML = `<div class="notice success">Commande créée. Envoyez au client son <a href="${escapeHtml(url)}" target="_blank" rel="noopener">lien de suivi</a>.</div>`;
-      event.currentTarget.reset();
+    } catch (error) { uiToast(error.message, 'error'); button.disabled = false; }
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    say('');
+    const missing = C.firstMissing(form);
+    if (missing) { say('Merci de remplir les champs obligatoires.'); missing.focus(); return; }
+    const data = C.readFields(form);
+    const submit = document.getElementById('noSubmit');
+    const label = document.getElementById('noSubmitLabel');
+    const idle = label.textContent;
+    if (mode === 'direct' && !data.driverId) { say('Choisissez le livreur de cette commande.'); form.querySelector('input[name="driverId"]:not(:disabled)')?.focus(); return; }
+    submit.disabled = true;
+    label.textContent = mode === 'direct' ? 'Création…' : 'Préparation du lien…';
+    try {
+      if (mode === 'confirm') {
+        const result = await api('/api/app/requests/prefilled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        const firstName = data.customerName.split(/\s+/)[0];
+        shareScreen({
+          title: `Envoyez le lien à ${firstName}`,
+          lead: `${firstName} vérifiera ses informations et partagera sa position s’il le souhaite. Pour protéger ses données, on lui demandera les 4 derniers chiffres de son numéro.`,
+          url: publicLink(result.path), message: result.message.replace(result.url, publicLink(result.path)), phone: result.phone,
+          meta: { eyebrow: 'Lien de confirmation prêt', note: `Le lien expire le ${formatDateOnly(result.expiresAt)}. Vous le retrouvez aussi dans Opérations › Demandes.` },
+          steps: journeys.confirm, doneCount: 1,
+          next: `<a class="no-btn outline" href="/app/operations?vue=demandes&demande=${encodeURIComponent(result.id)}">Voir la demande</a>`,
+        });
+      } else {
+        const result = await api('/api/app/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        const url = publicLink(result.path);
+        const firstName = data.customerName.split(/\s+/)[0];
+        shareScreen({
+          title: 'Commande créée',
+          lead: `Envoyez à ${firstName} son lien de suivi : il verra son livreur en direct dès le départ.`,
+          url, message: `Bonjour ${firstName}, votre livraison est en préparation. Suivez-la ici : ${url}`, phone: result.customerPhone,
+          meta: { eyebrow: 'Lien de suivi', note: 'Le lien reste disponible dans le tiroir de la commande.' },
+          steps: journeys.direct, doneCount: 2,
+          next: `<a class="no-btn outline" href="/app/operations?vue=commandes&commande=${encodeURIComponent(result.orderId)}">Voir la commande</a>`,
+        });
+      }
     } catch (error) {
-      document.getElementById('orderResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-    } finally {
-      button.disabled = false;
+      say(error.message);
+      if (/téléphone/i.test(error.message)) C.markFieldError(form, 'customerPhone', error.message);
+      submit.disabled = false;
+      label.textContent = idle;
     }
   });
 }
@@ -6597,7 +6024,12 @@ async function start() {
     document.getElementById('companyName').textContent = context.company.name;
     document.getElementById('topCompany').textContent = context.company.name;
     document.getElementById('topRole').textContent = roleLabels[context.user.role] || context.user.role;
-    document.getElementById('userName').textContent = `${context.user.name} · ${context.user.email}`;
+    document.getElementById('userName').textContent = context.user.name || context.user.email;
+    document.getElementById('userEmail').textContent = context.user.email;
+    document.getElementById('umAvatar').textContent = String(context.user.name || context.user.email || '?').trim().charAt(0).toUpperCase();
+    document.getElementById('umCompany').textContent = context.company.name;
+    document.getElementById('umRole').textContent = roleLabels[context.user.role] || context.user.role;
+    document.getElementById('umCompanyItems').hidden = !['owner', 'manager'].includes(context.user.role);
     paintCompanyAvatar();
     if (!['owner', 'manager'].includes(context.user.role)) {
       document.querySelector('[data-route="/app/equipe"]')?.remove();
@@ -6629,6 +6061,7 @@ async function start() {
     if (path === '/app/clients') return await renderCustomers();
     if (path === '/app/rapports') return await renderReports();
     if (path === '/app/parametres') return await renderSettings();
+    if (path === '/app/notifications') return await renderNotificationsCenter();
   } catch (error) {
     renderError(error);
   }
@@ -6638,7 +6071,7 @@ document.getElementById('menuButton').addEventListener('click', () => sidebar.cl
 document.getElementById('cpTrigger')?.addEventListener('click', () => openCommandPalette());
 if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) { const kbd = document.querySelector('.cp-trigger-kbd'); if (kbd) kbd.textContent = '⌘ K'; }
 document.addEventListener('click', (event) => {
-  if (window.innerWidth <= 900 && sidebar.classList.contains('open') && !sidebar.contains(event.target) && event.target.id !== 'menuButton') {
+  if (window.innerWidth <= 900 && sidebar.classList.contains('open') && !sidebar.contains(event.target) && !event.target.closest('#menuButton')) {
     sidebar.classList.remove('open');
   }
 });
@@ -6657,8 +6090,15 @@ const userMenu = document.getElementById('userMenu');
 userMenuBtn?.addEventListener('click', (event) => {
   event.stopPropagation();
   const open = userMenu.hasAttribute('hidden');
+  // Un seul panneau à la fois : ouvrir le compte ferme les notifications.
+  if (open) document.dispatchEvent(new CustomEvent('traxo:close-popovers', { detail: 'account' }));
   if (open) userMenu.removeAttribute('hidden'); else userMenu.setAttribute('hidden', '');
   userMenuBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('traxo:close-popovers', (event) => {
+  if (event.detail === 'account' || !userMenu || userMenu.hasAttribute('hidden')) return;
+  userMenu.setAttribute('hidden', '');
+  userMenuBtn.setAttribute('aria-expanded', 'false');
 });
 document.addEventListener('click', (event) => {
   if (userMenu && !userMenu.hasAttribute('hidden') && !event.target.closest('.user-menu')) {
@@ -6670,195 +6110,377 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { 
 
 // Cloche de notifications : agrège les éléments actionnables (demandes à
 // vérifier, commandes à affecter, incidents, tournées brouillon, rétentions).
+// ---- Notifications (cloche, centre, préférences) -----------------------------
+const tnIcons = {
+  incident: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  requests: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  assign: '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 8.7 5 8.7-5"/>',
+  run: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+  delivered: '<path d="M20 6 9 17l-5-5"/>',
+  client: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/>',
+  security: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  sliders: '<path d="M21 5H3"/><path d="M15 12H3"/><path d="M17 19H3"/><circle cx="19" cy="12" r="2"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+  arrowUpRight: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+  arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+};
+const tnIcon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tnIcons[name] || ''}</svg>`;
+const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red' };
+const tnCategoryLabels = { incidents: 'Incident de livraison', requests: 'Demandes clients', deliveries: 'Livraisons', runs: 'Tournées', clients: 'Clients', security: 'Sécurité' };
+const tnTime = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''; };
+function tnDayGroup(iso) {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return { key: 'old', label: 'Plus anciennes', date: '' };
+  const day = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const now = new Date();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const date = d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
+  if (day(d) === day(now)) return { key: 'today', label: 'Aujourd’hui', date };
+  if (day(d) === day(yesterday)) return { key: 'yesterday', label: 'Hier', date };
+  return { key: day(d), label: d.toLocaleDateString('fr-FR', { weekday: 'long' }), date };
+}
+function tnRowsHtml(items, { withCta = false, selectedId = null, limit = Infinity } = {}) {
+  let lastGroup = null;
+  return items.slice(0, limit).map((it, i) => {
+    const g = tnDayGroup(it.at);
+    const head = g.key !== lastGroup ? `<div class="tn-group">${escapeHtml(g.label)}<span>${escapeHtml(g.date)}</span></div>` : '';
+    lastGroup = g.key;
+    const tag = it.priority === 'action' ? '<em class="tn-priority">À traiter</em>' : it.priority === 'security' ? '<em class="tn-priority sec">Sécurité</em>' : '';
+    return `${head}<div class="tn-row ${it.read ? '' : 'tn-unread'} ${selectedId === it.id ? 'tn-selected' : ''}" role="link" tabindex="0" data-nid="${escapeHtml(it.id)}" style="--i:${i}">
+      <span class="tn-type ${tnTone[it.type] || 'tn-neutral'}">${tnIcon(it.type)}</span>
+      <span class="tn-row-main"><span class="tn-row-title">${escapeHtml(it.title)}</span><p>${escapeHtml(it.summary)}</p>
+        <span class="tn-row-meta">${it.meta ? `<span>${escapeHtml(it.meta)}</span>` : ''}${tag}</span>
+        ${withCta && it.cta ? `<a class="tn-cta" href="${escapeHtml(it.href)}" data-open="${escapeHtml(it.id)}">${escapeHtml(it.cta)} ${tnIcon('arrowUpRight')}</a>` : ''}</span>
+      <span class="tn-row-end"><time>${escapeHtml(tnTime(it.at))}</time>${it.read ? '' : '<span class="tn-dot" aria-label="Non lue"></span>'}</span>
+    </div>`;
+  }).join('');
+}
+const tnEmpty = (title, text) => `<div class="tn-empty"><span class="tn-empty-icon">${tnIcon('inbox')}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(text)}</p></div>`;
+const tnSetState = (ids, action) => api('/api/app/notifications/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, action }) });
+const tnFilterTab = (items, tab) => {
+  if (tab === 'later') return items.filter((it) => it.later && !it.archived);
+  if (tab === 'archived') return items.filter((it) => it.archived);
+  const active = items.filter((it) => !it.archived && !it.later);
+  if (tab === 'action') return active.filter((it) => it.priority !== 'info');
+  if (tab === 'unread') return active.filter((it) => !it.read);
+  return active;
+};
+
 async function initNotifications() {
   const btn = document.getElementById('notifBtn');
   const pop = document.getElementById('notifPop');
   const dot = document.getElementById('notifDot');
   if (!btn || !pop || !dot) return;
-  // Suivi lu/non-lu par identifiant (localStorage). On borne le stockage aux
-  // notifications encore présentes pour éviter une croissance illimitée.
-  const READ_KEY = 'traxo.notif.read';
-  const readReadSet = () => { try { const a = JSON.parse(localStorage.getItem(READ_KEY) || '[]'); return new Set(Array.isArray(a) ? a : []); } catch { return new Set(); } };
-  const writeReadSet = (set, currentIds) => { try { localStorage.setItem(READ_KEY, JSON.stringify([...set].filter((id) => currentIds.has(id)))); } catch { /* stockage indisponible */ } };
-  const notifIcons = {
-    requests: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="8" height="4" x="8" y="2" rx="1" ry="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M12 11h4" /><path d="M12 16h4" /><path d="M8 11h.01" /><path d="M8 16h.01" /></svg>',
-    unassigned: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" /><path d="m7.5 4.27 9 5.15" /><polyline points="3.29 7 12 12 20.71 7" /><line x1="12" x2="12" y1="22" y2="12" /><circle cx="18.5" cy="15.5" r="2.5" /><path d="M20.27 17.27 22 19" /></svg>',
-    incidents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>',
-    runs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></svg>',
-    relaunch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>',
-  };
-  const relTime = (iso) => {
-    const t = new Date(iso).getTime();
-    if (!Number.isFinite(t)) return '';
-    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-    if (s < 60) return 'à l’instant';
-    const m = Math.floor(s / 60); if (m < 60) return `il y a ${m} min`;
-    const h = Math.floor(m / 60); if (h < 24) return `il y a ${h} h`;
-    const d = Math.floor(h / 24); if (d < 7) return `il y a ${d} j`;
-    return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-  };
-  const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; };
-  const dayBucket = (iso) => {
-    const now = new Date();
-    const y = new Date(now); y.setDate(now.getDate() - 1);
-    const k = dayKey(iso);
-    if (k === dayKey(now)) return 'today';
-    if (k === dayKey(y)) return 'yesterday';
-    return 'older';
-  };
-  const notifGroups = [['today', 'Aujourd’hui'], ['yesterday', 'Hier'], ['older', 'Plus anciennes']];
+  pop.classList.add('tn-pop');
   let open = false;
-  let notifTab = 'all';
-  let lastData = { items: [] };
-  const closeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-  const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-  const itemHtml = (it, isUnread) => `<div class="notif-item ${isUnread ? 'unread' : ''}" data-href="${escapeHtml(it.href)}" role="link" tabindex="0">
-      <span class="notif-item-ic notif-${escapeHtml(it.type)}">${notifIcons[it.type] || ''}</span>
-      <span class="notif-item-main"><strong>${escapeHtml(it.title)}</strong><small>${escapeHtml(it.summary)}</small></span>
-      <span class="notif-item-side"><span class="notif-item-time">${escapeHtml(relTime(it.at))}</span>${isUnread
-        ? `<span class="notif-item-udot" aria-label="Non lue"></span><button type="button" class="notif-read-btn" data-read="${escapeHtml(it.id)}" title="Marquer comme lu" aria-label="Marquer comme lu">${checkIcon}</button>`
-        : ''}</span>
-    </div>`;
-  const render = (data) => {
-    lastData = data || { items: [] };
-    const items = Array.isArray(lastData.items) ? lastData.items : [];
-    const ids = new Set(items.map((it) => it.id));
-    const readSet = readReadSet();
-    const isUnread = (it) => !readSet.has(it.id);
-    const unread = items.filter(isUnread).length;
-    if (unread > 0) { dot.hidden = false; dot.textContent = unread > 99 ? '99+' : String(unread); }
-    else { dot.hidden = true; dot.textContent = ''; }
-    const head = `<div class="notif-pop-head">
-        <strong>Notifications</strong>
-        <div class="notif-head-actions">${items.length ? '<button type="button" class="notif-readall">Tout marquer comme lu</button>' : ''}<button type="button" class="notif-close" aria-label="Fermer">${closeIcon}</button></div>
-      </div>
-      <div class="notif-tabs" role="tablist">
-        <button type="button" class="notif-tab ${notifTab === 'all' ? 'active' : ''}" data-tab="all">Toutes${unread ? `<span class="notif-tabbadge">${unread > 99 ? '99+' : unread}</span>` : ''}</button>
-        <button type="button" class="notif-tab ${notifTab === 'unread' ? 'active' : ''}" data-tab="unread">Non lues</button>
-      </div>`;
-    const shown = notifTab === 'unread' ? items.filter(isUnread) : items;
-    let feed;
-    if (!shown.length) {
-      feed = notifTab === 'unread'
-        ? '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Aucune notification non lue.</div>'
-        : '<div class="notif-empty"><span class="notif-empty-ic">✓</span>Tout est à jour. Aucune action en attente.</div>';
-    } else {
-      const buckets = { today: [], yesterday: [], older: [] };
-      shown.forEach((it) => buckets[dayBucket(it.at)].push(it));
-      feed = notifGroups.map(([key, label]) => buckets[key].length
-        ? `<div class="notif-group"><div class="notif-group-head">${label}</div>${buckets[key].map((it) => itemHtml(it, isUnread(it))).join('')}</div>`
-        : '').join('');
-    }
-    const canDigest = ['owner', 'manager'].includes(context?.user?.role);
-    const foot = canDigest
-      ? `<div class="notif-pop-foot">
-          <button type="button" class="notif-digest">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-            M’envoyer un récap par e-mail
-          </button>
-          <span class="notif-digest-msg" role="status" aria-live="polite"></span>
-        </div>`
-      : '';
-    pop.innerHTML = `${head}<div class="notif-pop-body">${feed}</div>${foot}`;
-    TraxoUI.mountNotifyCard(pop.querySelector('.notif-pop-body'), {
+  let tab = 'action';
+  let data = { items: [], counts: { action: 0, all: 0, unread: 0 } };
+  let undo = null;
+
+  const paintDot = () => {
+    const n = data.counts.unread || 0;
+    dot.hidden = n === 0;
+    dot.textContent = n > 99 ? '99+' : n ? String(n) : '';
+    btn.setAttribute('aria-label', n ? `Notifications, ${n} non lue${n > 1 ? 's' : ''}` : 'Notifications');
+  };
+  const close = () => { pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false'); };
+  let animate = false;
+  const render = () => {
+    paintDot();
+    if (!open) return;
+    const shown = tnFilterTab(data.items, tab);
+    const c = data.counts;
+    const tabBtn = (key, label, n) => `<button type="button" data-tab="${key}" aria-pressed="${tab === key}">${label}<span>${n}</span></button>`;
+    pop.innerHTML = `<div class="tn-pop-head"><div><h2>Notifications${c.unread ? ` <span>${c.unread}</span>` : ''}</h2><p>Votre activité, au bon moment.</p></div>
+        <div><a class="tn-icon" href="/app/notifications?vue=preferences" title="Mes préférences" aria-label="Mes préférences">${tnIcon('sliders')}</a><button type="button" class="tn-icon" data-close aria-label="Fermer">${tnIcon('x')}</button></div></div>
+      <div class="tn-tabs" role="group" aria-label="Filtrer">${tabBtn('action', 'À traiter', c.action)}${tabBtn('all', 'Toutes', c.all)}${tabBtn('unread', 'Non lues', c.unread)}</div>
+      <div class="tn-list${animate ? ' tn-anim' : ''}" id="tnList">${shown.length ? tnRowsHtml(shown, { limit: 4 }) : tab === 'unread' ? tnEmpty('Tout est lu', 'Aucune notification non lue pour le moment.') : tnEmpty('Rien à traiter', 'Vous êtes à jour. Les nouvelles demandes et les incidents apparaîtront ici.')}</div>
+      <div class="tn-pop-footer">${undo ? `<span class="tn-undo">${undo.count} notification${undo.count > 1 ? 's' : ''} marquée${undo.count > 1 ? 's' : ''} comme lue${undo.count > 1 ? 's' : ''}<button type="button" data-undo>Annuler</button></span>`
+        : `<button type="button" class="tn-link" data-readall ${c.unread ? '' : 'disabled'}>${tnIcon('checks')} Tout marquer comme lu</button>`}
+        <a class="tn-link red" href="/app/notifications">Ouvrir le centre ${tnIcon('arrowUpRight')}</a></div>`;
+    animate = false;
+    TraxoUI.mountNotifyCard(pop.querySelector('#tnList'), {
       prepend: true,
       title: 'Ne manquez aucune demande',
-      text: 'Activez les notifications : TRAXO vous prévient d’une nouvelle demande ou d’un incident, même dans un autre onglet.',
+      text: 'Soyez prévenu d’une nouvelle demande ou d’un incident, même dans un autre onglet.',
       onDone: (result) => {
         if (result === 'granted') TraxoUI.notifications.show('Notifications TRAXO activées', { body: 'Vous serez prévenu des nouvelles demandes, des commandes à affecter et des incidents.', tag: 'traxo-test' });
         else if (result === 'denied') uiToast('Notifications bloquées. Vous pourrez les autoriser dans les réglages du navigateur.', 'warning');
       },
     });
-    pop.querySelectorAll('.notif-tab').forEach((tab) => tab.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (notifTab === tab.dataset.tab) return;
-      notifTab = tab.dataset.tab;
-      render(lastData);
-    }));
-    pop.querySelector('.notif-close')?.addEventListener('click', (event) => {
-      event.stopPropagation();
-      pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false');
-    });
-    pop.querySelector('.notif-readall')?.addEventListener('click', (event) => {
-      event.stopPropagation();
-      items.forEach((it) => readSet.add(it.id));
-      writeReadSet(readSet, ids);
-      render(lastData);
-    });
-    // Marquer une notification comme lue (bouton ✓), sans naviguer.
-    pop.querySelectorAll('.notif-read-btn').forEach((b) => b.addEventListener('click', (event) => {
-      event.stopPropagation();
-      readSet.add(b.dataset.read);
-      writeReadSet(readSet, ids);
-      render(lastData);
-    }));
-    // Navigation de la ligne (div role=link) — hors clic sur le bouton ✓.
-    pop.querySelectorAll('.notif-item').forEach((row) => {
-      // Ouvrir une notification la marque comme lue.
-      const go = () => {
-        const readBtn = row.querySelector('.notif-read-btn');
-        if (readBtn) { readSet.add(readBtn.dataset.read); writeReadSet(readSet, ids); }
-        if (row.dataset.href) location.href = row.dataset.href;
-      };
-      row.addEventListener('click', (event) => { if (!event.target.closest('.notif-read-btn')) go(); });
-      row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); go(); } });
-    });
-    const digestBtn = pop.querySelector('.notif-digest');
-    digestBtn?.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      const msg = pop.querySelector('.notif-digest-msg');
-      const setMsg = (text, tone) => { if (msg) { msg.className = `notif-digest-msg${tone ? ` ${tone}` : ''}`; msg.textContent = text; } };
-      digestBtn.disabled = true;
-      setMsg('Envoi en cours…');
-      try {
-        const r = await api('/api/app/notifications/digest', { method: 'POST' });
-        if (r.sent) setMsg(`Récap envoyé à ${r.recipient || 'votre e-mail'}.`, 'ok');
-        else if (r.reason === 'nothing_to_send') setMsg('Rien à envoyer : aucune action en attente.');
-        else if (r.reason === 'email_not_configured') setMsg('Envoi d’e-mail non configuré.', 'err');
-        else if (r.reason === 'no_recipient') setMsg('Aucune adresse destinataire. Renseignez l’e-mail de l’entreprise dans Paramètres.', 'err');
-        else setMsg('Échec de l’envoi. Réessayez plus tard.', 'err');
-      } catch (error) {
-        setMsg(error.message || 'Échec de l’envoi.', 'err');
-      } finally {
-        digestBtn.disabled = false;
-      }
-    });
   };
-  // Notifications du navigateur : uniquement pour les éléments apparus depuis l'ouverture de TRAXO.
-  const ALERT_TYPES = new Set(['requests', 'unassigned', 'incidents']);
+  const openItem = async (id) => {
+    const it = data.items.find((x) => x.id === id);
+    if (!it) return;
+    if (!it.read) await tnSetState([id], 'read').catch(() => {});
+    location.href = it.href;
+  };
+  pop.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const t = event.target;
+    if (t.closest('[data-close]')) { close(); btn.focus(); return; }
+    const tabBtn = t.closest('[data-tab]');
+    if (tabBtn) { tab = tabBtn.dataset.tab; animate = true; render(); return; }
+    if (t.closest('[data-readall]')) {
+      const ids = data.items.filter((it) => !it.read && !it.archived && !it.later).map((it) => it.id);
+      if (!ids.length) return;
+      data.items.forEach((it) => { if (ids.includes(it.id)) it.read = true; });
+      data.counts.unread = 0;
+      undo = { ids, count: ids.length };
+      render();
+      tnSetState(ids, 'read').catch(() => load());
+      setTimeout(() => { if (undo && undo.ids === ids) { undo = null; render(); } }, 7000);
+      return;
+    }
+    if (t.closest('[data-undo]') && undo) {
+      const ids = undo.ids;
+      undo = null;
+      await tnSetState(ids, 'unread').catch(() => {});
+      load();
+      return;
+    }
+    const row = t.closest('[data-nid]');
+    if (row && !t.closest('a')) openItem(row.dataset.nid);
+  });
+  pop.addEventListener('keydown', (event) => {
+    const row = event.target.closest('[data-nid]');
+    if (row && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openItem(row.dataset.nid); }
+  });
+
+  // Notifications du navigateur : uniquement pour ce qui apparaît après l'ouverture de TRAXO.
+  const ALERT_TYPES = new Set(['requests', 'assign', 'incident', 'security']);
   let knownIds = null;
   const alertNew = (items) => {
     const ids = new Set(items.map((it) => it.id));
     if (!knownIds) { knownIds = ids; return; }
-    const fresh = items.filter((it) => !knownIds.has(it.id) && ALERT_TYPES.has(it.type));
+    const fresh = items.filter((it) => !knownIds.has(it.id) && ALERT_TYPES.has(it.type) && !it.read);
     knownIds = ids;
     if (!fresh.length || !TraxoUI.notifications.enabled() || document.visibilityState === 'visible') return;
-    if (fresh.length === 1) {
-      const it = fresh[0];
-      TraxoUI.notifications.show(it.title, { body: it.summary, tag: it.id, data: { url: it.href } });
-    } else {
-      TraxoUI.notifications.show(`${fresh.length} nouvelles actions dans TRAXO`, { body: fresh.slice(0, 3).map((it) => `${it.title} · ${it.summary}`).join('\n'), tag: 'traxo-batch', data: { url: '/app/operations?vue=demandes' } });
-    }
+    if (fresh.length === 1) TraxoUI.notifications.show(fresh[0].title, { body: fresh[0].summary, tag: fresh[0].id, data: { url: fresh[0].href } });
+    else TraxoUI.notifications.show(`${fresh.length} nouvelles notifications TRAXO`, { body: fresh.slice(0, 3).map((it) => it.title).join('\n'), tag: 'traxo-batch', data: { url: '/app/notifications' } });
   };
   const load = async () => {
     try {
-      const data = await api('/api/app/notifications');
-      alertNew(Array.isArray(data.items) ? data.items : []);
-      render(data);
+      const next = await api('/api/app/notifications');
+      const changed = JSON.stringify([next.items, next.counts]) !== JSON.stringify([data.items, data.counts]);
+      data = next;
+      alertNew(data.items);
+      // Pas de nouveau rendu si rien n'a changé : la liste ouverte ne clignote pas.
+      if (changed) render();
+      document.dispatchEvent(new CustomEvent('traxo:notifications', { detail: data }));
     } catch { /* silencieux */ }
   };
+  window.__tnReload = load;
   btn.addEventListener('click', (event) => {
     event.stopPropagation();
     open = !open;
-    if (open) { pop.removeAttribute('hidden'); render(lastData); load(); } else pop.setAttribute('hidden', '');
+    if (open) {
+      document.dispatchEvent(new CustomEvent('traxo:close-popovers', { detail: 'notifications' }));
+      pop.removeAttribute('hidden'); animate = true; render(); load();
+    } else close();
     btn.setAttribute('aria-expanded', String(open));
   });
-  document.addEventListener('click', (event) => {
-    if (open && !event.target.closest('.notif-menu')) { pop.setAttribute('hidden', ''); open = false; btn.setAttribute('aria-expanded', 'false'); }
-  });
+  document.addEventListener('traxo:close-popovers', (event) => { if (event.detail !== 'notifications' && open) close(); });
+  document.addEventListener('click', (event) => { if (open && !event.target.closest('.notif-menu')) close(); });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && open) { close(); btn.focus(); } });
   await load();
   setInterval(load, 60000);
 }
 initNotifications();
+
+async function renderNotificationsCenter() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('vue') === 'preferences') return renderNotificationPrefs();
+  setHeader('Notifications', 'Ce qui demande votre attention');
+  let data = await api('/api/app/notifications');
+  let tab = params.get('onglet') || 'action';
+  let query = '';
+  let type = 'all';
+  let selected = null;
+  let limit = 30;
+  let animate = true;
+  page.innerHTML = `<div class="tn-page">
+    <a class="tn-back" href="/app">${tnIcon('arrowLeft')} Tableau de bord</a>
+    <div class="tn-page-heading"><div><span class="tn-eyebrow">${escapeHtml(context.company.name)}</span><h1>Votre centre de notifications</h1><p>Retrouvez ce qui demande votre attention, puis reprenez votre activité.</p></div>
+      <a class="tn-btn" href="/app/notifications?vue=preferences">${tnIcon('sliders')} Mes préférences</a></div>
+    <div id="tnSummary"></div>
+    <div class="tn-layout"><section class="tn-card"><div class="tn-tabs" id="tnTabs" role="group" aria-label="Filtrer"></div>
+      <div class="tn-filters"><label>${tnIcon('search')}<input id="tnSearch" type="search" placeholder="Rechercher dans les notifications" aria-label="Rechercher dans les notifications"></label>
+        <select id="tnType" aria-label="Type"><option value="all">Tous les types</option>${Object.entries(tnCategoryLabels).map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}</select></div>
+      <div class="tn-results" id="tnResults"></div></section>
+      <aside id="tnDetail"></aside></div></div>`;
+  const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const list = () => tnFilterTab(data.items, tab).filter((it) => (type === 'all' || it.category === type)
+    && (!query || norm(`${it.title} ${it.summary} ${it.meta} ${it.ref}`).includes(norm(query))));
+  const paint = () => {
+    const c = data.counts;
+    document.getElementById('tnSummary').innerHTML = `<div class="tn-summary"><span class="tn-summary-dot"></span><strong>${c.action} notification${c.action > 1 ? 's' : ''} à traiter</strong><span>sur l’ensemble de votre espace</span>${c.unread ? `<button type="button" class="tn-link" id="tnReadAll">${tnIcon('checks')} Tout marquer comme lu</button>` : ''}</div>`;
+    const tabs = [['action', 'À traiter', c.action], ['all', 'Toutes', c.all], ['unread', 'Non lues', c.unread], ['later', 'Plus tard', c.later], ['archived', 'Archivées', c.archived]];
+    document.getElementById('tnTabs').innerHTML = tabs.map(([k, l, n]) => `<button type="button" data-tab="${k}" aria-pressed="${tab === k}">${l}<span>${n}</span></button>`).join('');
+    const shown = list();
+    const results = document.getElementById('tnResults');
+    results.classList.toggle('tn-anim', animate);
+    animate = false;
+    results.innerHTML = shown.length
+      ? `${tnRowsHtml(shown, { withCta: true, selectedId: selected, limit })}${shown.length > limit ? `<button type="button" class="tn-more" id="tnMore">Afficher ${Math.min(30, shown.length - limit)} de plus</button>` : ''}`
+      : tnEmpty(query ? 'Aucun résultat' : tab === 'archived' ? 'Aucune archive' : tab === 'later' ? 'Rien de côté' : 'Tout est à jour', query ? 'Essayez un autre mot ou un autre type.' : 'Les nouvelles notifications apparaîtront ici.');
+    paintDetail();
+  };
+  const paintDetail = () => {
+    const box = document.getElementById('tnDetail');
+    const it = data.items.find((x) => x.id === selected);
+    if (!it) {
+      box.innerHTML = `<div class="tn-detail tn-detail-empty"><span class="tn-empty-icon">${tnIcon('inbox')}</span><h2>Choisissez une notification</h2><p class="tn-note">Son détail et l’action à mener s’affichent ici.</p></div>`;
+      return;
+    }
+    const received = new Date(it.at);
+    box.innerHTML = `<div class="tn-detail" aria-live="polite">
+      <div class="tn-detail-top"><span class="tn-type ${tnTone[it.type] || 'tn-neutral'}">${tnIcon(it.type)}</span><button type="button" class="tn-icon" data-deselect aria-label="Fermer le détail">${tnIcon('x')}</button></div>
+      <span class="tn-eyebrow">${escapeHtml(tnCategoryLabels[it.category] || 'Notification')}</span>
+      <h2>${escapeHtml(it.title)}</h2><p>${escapeHtml(it.detail || it.summary)}</p>
+      <dl><div><dt>Élément concerné</dt><dd>${escapeHtml(it.ref || it.summary)}</dd></div>
+        <div><dt>Reçu</dt><dd>${escapeHtml(Number.isFinite(received.getTime()) && received.getTime() > 0 ? received.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }) : '—')}</dd></div>
+        <div><dt>État de lecture</dt><dd>${it.read ? 'Lu' : 'Non lu'}${it.priority === 'action' ? ' · Action toujours attendue' : ''}${it.archived ? ' · Archivée' : it.later ? ' · Gardée pour plus tard' : ''}</dd></div></dl>
+      <a class="tn-btn primary" href="${escapeHtml(it.href)}">${escapeHtml(it.cta || 'Ouvrir')} ${tnIcon('arrowUpRight')}</a>
+      <div class="tn-detail-actions">
+        <button type="button" data-act="${it.archived ? 'unarchive' : 'archive'}">${tnIcon(it.archived ? 'undo' : 'archive')} ${it.archived ? 'Restaurer' : 'Archiver'}</button>
+        <button type="button" data-act="unread">${tnIcon('mail')} Marquer comme non lu</button>
+        ${it.archived ? '' : `<button type="button" data-act="${it.later ? 'unlater' : 'later'}">${tnIcon('clock')} ${it.later ? 'Remettre dans la liste' : 'Garder pour plus tard'}</button>`}
+      </div>
+      <p class="tn-note">Marquer comme lu ou archiver ne clôture pas l’élément : la demande, l’incident ou la tournée reste à traiter dans TRAXO.</p></div>`;
+  };
+  const reload = async () => { data = await api('/api/app/notifications'); paint(); if (window.__tnReload) window.__tnReload(); };
+  const apply = async (ids, action, patch) => {
+    data.items.forEach((it) => { if (ids.includes(it.id)) Object.assign(it, patch); });
+    paint();
+    try { await tnSetState(ids, action); } catch (error) { uiToast(error.message, 'error'); }
+    reload();
+  };
+  page.addEventListener('click', async (event) => {
+    const t = event.target;
+    const tb = t.closest('#tnTabs [data-tab]');
+    if (tb) { tab = tb.dataset.tab; limit = 30; animate = true; paint(); return; }
+    if (t.closest('#tnMore')) { limit += 30; paint(); return; }
+    if (t.closest('#tnReadAll')) {
+      const ids = data.items.filter((it) => !it.read && !it.archived && !it.later).map((it) => it.id);
+      await apply(ids, 'read', { read: true });
+      uiToast(`${ids.length} notification${ids.length > 1 ? 's' : ''} marquée${ids.length > 1 ? 's' : ''} comme lue${ids.length > 1 ? 's' : ''}.`, 'success');
+      return;
+    }
+    if (t.closest('[data-deselect]')) { selected = null; paint(); return; }
+    const act = t.closest('#tnDetail [data-act]');
+    if (act && selected) {
+      const a = act.dataset.act;
+      const patch = { archive: { archived: true, read: true }, unarchive: { archived: false }, later: { later: true, read: true }, unlater: { later: false }, unread: { read: false } }[a];
+      const id = selected;
+      if (a === 'archive' || a === 'later') selected = null;
+      await apply([id], a, patch);
+      uiToast({ archive: 'Notification archivée.', unarchive: 'Notification restaurée.', later: 'Gardée pour plus tard.', unlater: 'Remise dans la liste.', unread: 'Marquée comme non lue.' }[a], 'success');
+      return;
+    }
+    const open = t.closest('[data-open]');
+    if (open) { const it = data.items.find((x) => x.id === open.dataset.open); if (it && !it.read) { event.preventDefault(); await tnSetState([it.id], 'read').catch(() => {}); location.href = it.href; } return; }
+    const row = t.closest('#tnResults [data-nid]');
+    if (row) {
+      selected = row.dataset.nid;
+      const it = data.items.find((x) => x.id === selected);
+      if (it && !it.read) { it.read = true; data.counts.unread = Math.max(0, data.counts.unread - 1); tnSetState([it.id], 'read').then(() => window.__tnReload && window.__tnReload()).catch(() => {}); }
+      paint();
+      if (window.matchMedia('(max-width: 860px)').matches) document.getElementById('tnDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+  page.addEventListener('keydown', (event) => {
+    const row = event.target.closest('#tnResults [data-nid]');
+    if (row && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); row.click(); }
+  });
+  document.getElementById('tnSearch').addEventListener('input', (e) => { query = e.target.value; limit = 30; paint(); });
+  document.getElementById('tnType').addEventListener('change', (e) => { type = e.target.value; limit = 30; paint(); });
+  paint();
+}
+
+async function renderNotificationPrefs() {
+  setHeader('Notifications', 'Vos préférences');
+  const prefs = await api('/api/app/notifications/preferences');
+  const saved = JSON.stringify({ categories: prefs.categories, digest: prefs.digest, digestHour: prefs.digestHour, digestDay: prefs.digestDay, timezone: prefs.timezone });
+  let state = JSON.parse(saved);
+  const catRows = [
+    ['incidents', 'Incidents de livraison', 'Adresse à préciser, client injoignable, colis endommagé…'],
+    ['requests', 'Demandes des clients', 'Formulaires reçus à valider, regroupés en une notification.'],
+    ['deliveries', 'Affectations et livraisons', 'Commandes à affecter, confirmées par le client, récapitulatif des livraisons terminées.'],
+    ['runs', 'Tournées', 'Tournées encore en préparation.'],
+    ['clients', 'Clients à relancer', 'Clients sans commande depuis plus d’un mois.'],
+  ];
+  const days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
+  const tzLabel = { 'Africa/Porto-Novo': 'Bénin — Cotonou (GMT+1)', 'Africa/Abidjan': 'Côte d’Ivoire — Abidjan (GMT)', 'Africa/Lome': 'Togo — Lomé (GMT)', 'Africa/Lagos': 'Nigeria — Lagos (GMT+1)', 'Africa/Dakar': 'Sénégal — Dakar (GMT)', 'Europe/Paris': 'France — Paris', UTC: 'UTC' };
+  page.innerHTML = `<div class="tn-page">
+    <a class="tn-back" href="/app/notifications">${tnIcon('arrowLeft')} Centre de notifications</a>
+    <div class="tn-page-heading"><div><span class="tn-eyebrow">Mon compte</span><h1>Mes notifications</h1><p>Choisissez ce qui mérite votre attention. Ces réglages ne concernent que vous.</p></div></div>
+    <form class="tn-settings" id="tnPrefs">
+      <section class="tn-settings-card"><div class="tn-settings-head"><h2>Dans TRAXO</h2><p>Les catégories affichées dans la cloche et le centre. Les masquer ne supprime rien : les éléments restent à traiter dans leurs pages.</p></div>
+        ${catRows.map(([k, t, d]) => `<div class="tn-setting-row"><div><label for="tn-cat-${k}">${escapeHtml(t)}</label><small>${escapeHtml(d)}</small></div>${TraxoUI.switchHtml({ id: `tn-cat-${k}`, name: k, checked: state.categories[k] !== false })}</div>`).join('')}
+        <div class="tn-setting-row"><div><label>Sécurité du compte</label><small>Nouvelles connexions à votre compte.</small></div><span class="tn-always">Toujours actives</span></div>
+        <div class="tn-setting-row"><div><label for="tn-device">Sur cet appareil</label><small>Une alerte du navigateur quand TRAXO est ouvert dans un autre onglet.</small></div>${TraxoUI.switchHtml({ id: 'tn-device', checked: TraxoUI.notifications.enabled(), disabled: ['unsupported', 'denied'].includes(TraxoUI.notifications.permission()) })}</div>
+      </section>
+      <section class="tn-settings-card"><div class="tn-settings-head"><span class="tn-type tn-blue">${tnIcon('mail')}</span><h2>Récapitulatif par e-mail</h2><p>Un seul e-mail avec ce qui reste à traiter et que vous n’avez pas encore lu. Rien n’est envoyé s’il n’y a rien.</p></div>
+        <div class="tn-segmented" role="group" aria-label="Fréquence">${[['off', 'Désactivé'], ['daily', 'Chaque jour'], ['weekly', 'Chaque semaine']].map(([v, l]) => `<button type="button" data-digest="${v}" aria-pressed="${state.digest === v}">${l}</button>`).join('')}</div>
+        <div class="tn-fields" id="tnDigestFields">
+          <label class="tn-field" id="tnDayWrap">Jour<select id="tnDay">${days.map((d, i) => `<option value="${i + 1}" ${state.digestDay === i + 1 ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+          <label class="tn-field">Heure<select id="tnHour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${state.digestHour === h ? 'selected' : ''}>${String(h).padStart(2, '0')} h 00</option>`).join('')}</select></label>
+          <label class="tn-field" style="grid-column:1/-1">Fuseau horaire<select id="tnTz">${(prefs.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${state.timezone === tz ? 'selected' : ''}>${escapeHtml(tzLabel[tz] || tz)}</option>`).join('')}</select></label>
+          <label class="tn-field" style="grid-column:1/-1">Envoyé à<input value="${escapeHtml(prefs.email || '')}" readonly></label>
+        </div>
+        ${prefs.emailConfigured ? '' : '<p class="tn-note">L’envoi d’e-mails n’est pas encore configuré sur ce serveur : le récapitulatif partira dès qu’il le sera.</p>'}
+        <div class="tn-security-note">${tnIcon('security')}<span>Les alertes de sécurité par e-mail (nouvelle connexion) se règlent dans Paramètres › Sécurité.</span></div>
+      </section>
+      <div class="tn-save" id="tnSave"><span id="tnSaveText">Aucune modification en attente</span><button type="submit" class="tn-btn primary" id="tnSaveBtn" disabled>Enregistrer</button></div>
+    </form></div>`;
+  const form = document.getElementById('tnPrefs');
+  const paintDigest = () => {
+    form.querySelectorAll('[data-digest]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.digest === state.digest)));
+    document.getElementById('tnDigestFields').hidden = state.digest === 'off';
+    document.getElementById('tnDayWrap').hidden = state.digest !== 'weekly';
+  };
+  const refresh = () => {
+    const dirty = JSON.stringify(state) !== saved;
+    document.getElementById('tnSave').classList.toggle('dirty', dirty);
+    document.getElementById('tnSaveText').textContent = dirty ? 'Modifications non enregistrées' : 'Aucune modification en attente';
+    document.getElementById('tnSaveBtn').disabled = !dirty;
+  };
+  form.addEventListener('click', (e) => { const b = e.target.closest('[data-digest]'); if (b) { state.digest = b.dataset.digest; paintDigest(); refresh(); } });
+  form.addEventListener('change', async (e) => {
+    const t = e.target;
+    if (t.id === 'tn-device') {
+      const result = await TraxoUI.notifications.setEnabled(t.checked);
+      if (!['granted', 'off'].includes(result)) { t.checked = false; uiToast(result === 'denied' ? 'Le navigateur a bloqué les notifications.' : 'Notifications non activées.', 'warning'); }
+      else uiToast(result === 'granted' ? 'Notifications activées sur cet appareil.' : 'Notifications désactivées sur cet appareil.', 'success');
+      return;
+    }
+    if (t.name && t.name in state.categories) state.categories[t.name] = t.checked;
+    if (t.id === 'tnHour') state.digestHour = Number(t.value);
+    if (t.id === 'tnDay') state.digestDay = Number(t.value);
+    if (t.id === 'tnTz') state.timezone = t.value;
+    refresh();
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const button = document.getElementById('tnSaveBtn');
+    button.disabled = true;
+    try {
+      await api('/api/app/notifications/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
+      uiToast('Préférences enregistrées.', 'success');
+      if (window.__tnReload) window.__tnReload();
+      renderNotificationPrefs();
+    } catch (error) { uiToast(error.message, 'error'); refresh(); }
+  });
+  window.addEventListener('beforeunload', (e) => { if (document.body.contains(form) && JSON.stringify(state) !== saved) { e.preventDefault(); e.returnValue = ''; } });
+  paintDigest();
+}
 
 start();

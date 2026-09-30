@@ -1776,3 +1776,54 @@ button.danger-solid:hover, .button.danger-solid:hover { background: var(--red-da
 @media (min-width: 901px) { .ops-legend, .ops-legend-toggle { left: auto; right: 64px; } }
 /* Panneau Flotte : les interrupteurs restent visibles en pied de panneau pendant le défilement. */
 #opsPanelBody .ops-fleet-foot { position: sticky; bottom: 0; z-index: 2; background: #fff; }
+
+/* ============================================================
+   Coquille claire (kits Dashboard et Notifications) :
+   navigation blanche, en-tête épuré, menu du compte.
+   ============================================================ */
+.sidebar { background: #fff; color: #62676d; border-right: 1px solid #eaedef; padding: 26px 14px 20px; }
+.brand { padding: 2px 10px 26px; }
+.brand-mark { color: #17191d; }
+.brand-word { color: #17191d; font-size: 20px; }
+.brand small { margin-top: 7px; color: #92979c; font-size: 10px; font-weight: 500; letter-spacing: 1.4px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+.nav { gap: 6px; }
+.nav a { min-height: 44px; padding: 11px 12px; border-radius: 12px; color: #62676d; font-size: 14px; }
+.nav a:hover { color: #25282d; background: #f5f6f7; }
+.nav a.active { color: #cb3040; background: #fff0f0; box-shadow: inset 3px 0 #e93849; font-weight: 600; }
+.nav a.active svg { stroke-width: 2.2; }
+.sidebar-footer { border-top-color: #eceeef; }
+.sidebar-toggle { background: transparent; color: #767c82; font-weight: 500; }
+.sidebar-toggle:hover { background: #f5f6f7; color: #25282d; }
+.topbar { border-bottom-color: #eaedef; }
+.topbar strong { font-size: 15px; }
+.cp-trigger { border-color: transparent; background: #f5f6f7; border-radius: 10px; }
+.cp-trigger:hover { background: #eff1f2; border-color: transparent; }
+.notif-btn { border: 0; border-radius: 50%; background: #f5f6f7; }
+.notif-btn:hover { background: #eceef0; }
+.user-btn { border: 0; border-left: 1px solid #edeef0; border-radius: 0; padding: 4px 4px 4px 12px; background: transparent; }
+.user-btn:hover { border-color: #edeef0; background: transparent; }
+@media (max-width: 900px) { .sidebar { box-shadow: none; } .sidebar.open { box-shadow: 18px 0 40px rgba(20, 30, 40, .16); } }
+
+/* Menu du compte */
+.user-pop.um { min-width: 320px; max-width: calc(100vw - 24px); padding: 14px; border-radius: 16px; box-shadow: 0 24px 60px -18px rgba(20, 30, 40, .28); animation: um-in .21s cubic-bezier(.2, .8, .2, 1); }
+@keyframes um-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } to { opacity: 1; transform: none; } }
+.um-head { display: flex; align-items: center; gap: 12px; padding: 6px 6px 14px; }
+.um-avatar { flex: 0 0 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: #fff0f0; color: #cb3040; font-size: 17px; font-weight: 600; }
+.um-id { min-width: 0; }
+.um-id strong { display: block; font-size: 15px; font-weight: 600; }
+.um-id small { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.um-space { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border: 1px solid #eceef0; border-radius: 11px; background: #fafbfb; font-size: 13px; font-weight: 600; }
+.um-space span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: .04em; font-size: 12px; }
+.um-role { flex: 0 0 auto; padding: 2px 8px; border-radius: 6px; background: #edf6f0; color: #23734c; font-size: 11px; font-weight: 600; }
+.um-label { margin: 16px 8px 6px; color: #92979c; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; }
+.um .user-pop-item { min-height: 40px; padding: 9px 8px; font-size: 14px; }
+.um .user-pop-item span { flex: 1; text-align: left; }
+.um .user-pop-item .um-chev { width: 15px; height: 15px; color: #b4b8bd; transition: transform .16s; }
+.um .user-pop-item:hover .um-chev { transform: translateX(2px); color: #62676d; }
+.um-foot { margin-top: 10px !important; padding-top: 8px; border-top: 1px solid #eceef0; }
+.um .user-pop-item.danger { color: #cb3040; }
+@media (prefers-reduced-motion: reduce) { .user-pop.um { animation: none; } }
+.um .user-pop-item { font-weight: 500; }
+.um .user-pop-item.danger { border: 0; background: transparent; box-shadow: none; }
+.um .user-pop-item.danger:hover { background: #fff0f0; }
+@media (max-width: 620px) { .cp-trigger-kbd { display: none; } }

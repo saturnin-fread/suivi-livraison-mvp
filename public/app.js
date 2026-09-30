@@ -6776,7 +6776,12 @@ async function start() {
     document.getElementById('companyName').textContent = context.company.name;
     document.getElementById('topCompany').textContent = context.company.name;
     document.getElementById('topRole').textContent = roleLabels[context.user.role] || context.user.role;
-    document.getElementById('userName').textContent = `${context.user.name} · ${context.user.email}`;
+    document.getElementById('userName').textContent = context.user.name || context.user.email;
+    document.getElementById('userEmail').textContent = context.user.email;
+    document.getElementById('umAvatar').textContent = String(context.user.name || context.user.email || '?').trim().charAt(0).toUpperCase();
+    document.getElementById('umCompany').textContent = context.company.name;
+    document.getElementById('umRole').textContent = roleLabels[context.user.role] || context.user.role;
+    document.getElementById('umCompanyItems').hidden = !['owner', 'manager'].includes(context.user.role);
     paintCompanyAvatar();
     if (!['owner', 'manager'].includes(context.user.role)) {
       document.querySelector('[data-route="/app/equipe"]')?.remove();
@@ -6817,7 +6822,7 @@ document.getElementById('menuButton').addEventListener('click', () => sidebar.cl
 document.getElementById('cpTrigger')?.addEventListener('click', () => openCommandPalette());
 if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) { const kbd = document.querySelector('.cp-trigger-kbd'); if (kbd) kbd.textContent = '⌘ K'; }
 document.addEventListener('click', (event) => {
-  if (window.innerWidth <= 900 && sidebar.classList.contains('open') && !sidebar.contains(event.target) && event.target.id !== 'menuButton') {
+  if (window.innerWidth <= 900 && sidebar.classList.contains('open') && !sidebar.contains(event.target) && !event.target.closest('#menuButton')) {
     sidebar.classList.remove('open');
   }
 });
@@ -6836,8 +6841,15 @@ const userMenu = document.getElementById('userMenu');
 userMenuBtn?.addEventListener('click', (event) => {
   event.stopPropagation();
   const open = userMenu.hasAttribute('hidden');
+  // Un seul panneau à la fois : ouvrir le compte ferme les notifications.
+  if (open) document.dispatchEvent(new CustomEvent('traxo:close-popovers', { detail: 'account' }));
   if (open) userMenu.removeAttribute('hidden'); else userMenu.setAttribute('hidden', '');
   userMenuBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('traxo:close-popovers', (event) => {
+  if (event.detail === 'account' || !userMenu || userMenu.hasAttribute('hidden')) return;
+  userMenu.setAttribute('hidden', '');
+  userMenuBtn.setAttribute('aria-expanded', 'false');
 });
 document.addEventListener('click', (event) => {
   if (userMenu && !userMenu.hasAttribute('hidden') && !event.target.closest('.user-menu')) {

@@ -3232,6 +3232,7 @@ const setIcons = {
   team: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
   security: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
   billing: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+  whatsapp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-2-1-1 .8c-1-.5-1.6-1.1-2.1-2.1l.8-1-1-2L9 9.5z"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
   screen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
@@ -3281,13 +3282,14 @@ async function renderSettings() {
   const logoMark = (size) => (context.company.logoUrl
     ? `<span class="set2-logo ${size} has-logo"><img src="${escapeHtml(context.company.logoUrl)}" alt="Logo de l’entreprise"></span>`
     : `<span class="set2-logo ${size}">${escapeHtml(initials)}</span>`);
+  const sections = context.user.isPlatformAdmin ? [...settingsSections, { key: 'whatsapp', label: 'WhatsApp TRAXO' }] : settingsSections;
   let section = (new URLSearchParams(location.search).get('section') || 'overview').toLowerCase();
-  if (!settingsSections.some((s) => s.key === section)) section = 'overview';
+  if (!sections.some((s) => s.key === section)) section = 'overview';
 
   page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Configurez TRAXO pour votre entreprise.</p></div></div>
     <div class="set2-hub">
       <nav class="set2-nav" id="set2Nav" aria-label="Sections des paramètres">
-        ${settingsSections.map((s) => `<button class="set2-navitem ${s.key === section ? 'active' : ''}" data-sec="${s.key}"><span class="set2-navic">${setIcons[s.key]}</span><span>${escapeHtml(s.label)}</span></button>`).join('')}
+        ${sections.map((s) => `<button class="set2-navitem ${s.key === section ? 'active' : ''}" data-sec="${s.key}"><span class="set2-navic">${setIcons[s.key]}</span><span>${escapeHtml(s.label)}</span></button>`).join('')}
       </nav>
       <div class="set2-content" id="set2Content"><div class="loading-state" style="padding:40px">Chargement…</div></div>
     </div>`;
@@ -3313,6 +3315,7 @@ async function renderSettings() {
       else if (section === 'team') await renderTeamSettings(box);
       else if (section === 'security') await renderSecurity(box);
       else if (section === 'billing') await renderBilling(box);
+      else if (section === 'whatsapp') await renderWhatsApp(box);
     } catch (error) {
       box.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
     }
@@ -3534,6 +3537,63 @@ async function renderSettings() {
     document.getElementById('mfaNewCodes')?.addEventListener('click', () => openMfaNewCodes(() => renderSecurity(box)));
     document.getElementById('editPwd').addEventListener('click', () => openPasswordModal());
     document.getElementById('viewSessions').addEventListener('click', () => openSessionsModal());
+  }
+
+  // ---- WhatsApp TRAXO (administrateur plateforme) ------------------------
+  async function renderWhatsApp(box) {
+    let timer = null;
+    const stillHere = () => document.body.contains(box) && section === 'whatsapp';
+    const post = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const steps = (last) => `<ol class="wa-steps"><li>Sur le téléphone du numéro TRAXO, ouvrez <strong>WhatsApp</strong>.</li><li>Touchez <strong>⋮</strong> (ou <strong>Réglages</strong> sur iPhone) puis <strong>Appareils connectés</strong>.</li><li>Touchez <strong>Connecter un appareil</strong>.</li><li>${last}</li></ol>`;
+    async function paint() {
+      clearTimeout(timer);
+      if (!stillHere()) return;
+      const s = await api('/api/app/whatsapp');
+      let body = '';
+      if (!s.enabled) {
+        body = '<div class="notice warning">Le canal WhatsApp n’est pas configuré sur ce serveur (clé de chiffrement manquante).</div>';
+      } else if (s.status === 'connected') {
+        body = `<div class="set2-optrow"><span class="set2-opt-ic">${setIcons.whatsapp}</span><div class="set2-opt-main"><strong>Relié : ${escapeHtml(s.number || '')} <span class="set2-pill ok">Actif</span></strong><small>Depuis le ${escapeHtml(formatDate(s.since))} · ${escapeHtml(s.sentLastHour)} message${s.sentLastHour > 1 ? 's' : ''} envoyé${s.sentLastHour > 1 ? 's' : ''} cette heure (limite ${escapeHtml(s.maxPerHour)})</small></div><button class="button danger small" id="waLogout">Délier</button></div>
+          <form id="waTest" class="wa-form"><div class="field"><label for="waTestPhone">Envoyer un message de test</label><input id="waTestPhone" type="tel" inputmode="tel" placeholder="+229 01 97 12 34 56" required></div><button class="button secondary" type="submit">Envoyer le test</button></form>
+          <p class="set2-blocksub">Les codes de connexion peuvent désormais être reçus sur WhatsApp par les utilisateurs dont le numéro est renseigné avec l’indicatif. L’e-mail reste disponible en secours.</p>`;
+      } else if (s.status === 'pairing') {
+        body = `<div class="wa-code" aria-live="polite">${escapeHtml(s.pairingCode || '')}</div>${steps('Touchez <strong>Connecter avec le numéro de téléphone</strong>, puis saisissez ce code.')}<p class="set2-blocksub">Le code expire au bout de quelques minutes. La page se met à jour toute seule.</p><button class="button secondary small" id="waCancel">Annuler</button>`;
+      } else if (s.status === 'qr') {
+        body = `<div class="wa-qr">${s.qr ? `<img src="${escapeHtml(s.qr)}" width="240" height="240" alt="QR code de liaison WhatsApp">` : '<div class="loading-state">Préparation du QR code…</div>'}</div>${steps('Scannez ce QR code.')}<button class="button secondary small" id="waCancel">Annuler</button>`;
+      } else if (s.status === 'connecting') {
+        body = `<div class="loading-state" style="padding:24px">Connexion à WhatsApp…</div>${s.slow ? '<p class="set2-blocksub">WhatsApp met du temps à répondre. Vérifiez le réseau du serveur ou recommencez dans quelques minutes.</p>' : ''}<button class="button secondary small" id="waCancel">Annuler</button>`;
+      } else {
+        body = `<div class="notice warning"><strong>Numéro dédié uniquement.</strong> Cette liaison utilise un client WhatsApp non officiel : WhatsApp peut restreindre ou bannir le numéro. N’utilisez jamais un numéro personnel ou professionnel important.</div>
+          <form id="waLinkCode" class="wa-form"><div class="field"><label for="waPhone">Numéro WhatsApp de TRAXO</label><input id="waPhone" type="tel" inputmode="tel" value="+229 01 40 05 67 66" required></div><button class="button primary" type="submit">Recevoir un code de liaison</button></form>
+          <p class="set2-blocksub">Ou, si l’ordinateur est à côté du téléphone : <button class="button secondary small" id="waLinkQr" type="button">Afficher un QR code</button></p>`;
+      }
+      box.innerHTML = `${head('WhatsApp TRAXO', 'Le numéro qui envoie les codes de connexion. Réservé à l’administrateur de la plateforme.')}
+        <section class="set2-card">${s.lastError && s.status !== 'connected' ? `<div class="notice error">${escapeHtml(s.lastError)}</div>` : ''}${body}</section>`;
+      box.querySelector('#waLinkCode')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try { await post('/api/app/whatsapp/link', { method: 'code', phone: box.querySelector('#waPhone').value }); } catch (error) { uiToast(error.message, 'error'); }
+        paint();
+      });
+      box.querySelector('#waLinkQr')?.addEventListener('click', async () => {
+        try { await post('/api/app/whatsapp/link', { method: 'qr' }); } catch (error) { uiToast(error.message, 'error'); }
+        paint();
+      });
+      box.querySelector('#waCancel')?.addEventListener('click', async () => { await post('/api/app/whatsapp/cancel').catch(() => {}); paint(); });
+      box.querySelector('#waLogout')?.addEventListener('click', async () => {
+        if (!(await uiConfirm('Délier ce numéro WhatsApp ?', { message: 'Les codes ne pourront plus être envoyés sur WhatsApp tant qu’un numéro n’est pas relié à nouveau.', tone: 'danger', confirmLabel: 'Délier' }))) return;
+        try { await post('/api/app/whatsapp/logout'); uiToast('Numéro délié.', 'success'); } catch (error) { uiToast(error.message, 'error'); }
+        paint();
+      });
+      box.querySelector('#waTest')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const button = e.target.querySelector('button');
+        button.disabled = true;
+        try { await post('/api/app/whatsapp/test', { phone: box.querySelector('#waTestPhone').value }); uiToast('Message de test envoyé.', 'success'); } catch (error) { uiToast(error.message, 'error'); }
+        button.disabled = false;
+      });
+      if (['qr', 'pairing', 'connecting'].includes(s.status)) timer = setTimeout(paint, 3000);
+    }
+    await paint();
   }
 
   // ---- Double authentification -----------------------------------------

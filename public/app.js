@@ -904,6 +904,7 @@ async function renderOperationsMap() {
   let baseStreet = null;
   let baseSatellite = null;
   let baseLabels = null;
+  let baseRoads = null;
   let layersConfigured = false;
   let activeLayer = 'street';
   let snapshot = null;
@@ -941,8 +942,9 @@ async function renderOperationsMap() {
     const cfg = snapshot.mapConfig;
     baseStreet = (window.TraxoMapBase ? window.TraxoMapBase.baseLayer(cfg.base)
       : L.tileLayer(cfg.base.url, { maxZoom: cfg.base.maxZoom, attribution: cfg.base.attribution })).addTo(map);
-    if (cfg.satellite) baseSatellite = L.tileLayer(cfg.satellite.url, { maxZoom: cfg.satellite.maxZoom, attribution: cfg.satellite.attribution });
+    if (cfg.satellite) baseSatellite = L.tileLayer(cfg.satellite.url, { maxZoom: 20, maxNativeZoom: cfg.satellite.maxNativeZoom || 18, attribution: cfg.satellite.attribution });
     if (cfg.labels) baseLabels = L.tileLayer(cfg.labels.url, { maxZoom: cfg.labels.maxZoom, attribution: cfg.labels.attribution, pane: 'overlayPane' });
+    if (cfg.roads) baseRoads = L.tileLayer(cfg.roads.url, { maxZoom: 20, maxNativeZoom: cfg.roads.maxNativeZoom || 18, attribution: cfg.roads.attribution, pane: 'overlayPane' });
     // Désactive les fonds indisponibles.
     document.querySelectorAll('.ops-layer-btn').forEach((btn) => {
       if (btn.dataset.layer === 'satellite' && !baseSatellite) btn.disabled = true;
@@ -954,10 +956,10 @@ async function renderOperationsMap() {
   function setLayer(name) {
     if (name === 'satellite' && !baseSatellite) return;
     if (name === 'hybrid' && !baseSatellite) return;
-    [baseStreet, baseSatellite, baseLabels].forEach((layer) => { if (layer && map.hasLayer(layer)) map.removeLayer(layer); });
+    [baseStreet, baseSatellite, baseRoads, baseLabels].forEach((layer) => { if (layer && map.hasLayer(layer)) map.removeLayer(layer); });
     if (name === 'street') { baseStreet.addTo(map); }
     else if (name === 'satellite') { baseSatellite.addTo(map); }
-    else if (name === 'hybrid') { baseSatellite.addTo(map); if (baseLabels) baseLabels.addTo(map); }
+    else if (name === 'hybrid') { baseSatellite.addTo(map); if (baseRoads) baseRoads.addTo(map); if (baseLabels) baseLabels.addTo(map); }
     activeLayer = name;
     document.querySelectorAll('.ops-layer-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.layer === name));
   }

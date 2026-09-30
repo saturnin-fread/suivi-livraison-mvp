@@ -80,7 +80,21 @@
   const GPS_MAX_WAIT_MS = 25000;      // au plus 25 s d'affinage sur téléphone
   const GPS_DESKTOP_WAIT_MS = 6000;   // un ordinateur n'a pas de puce GPS : inutile d'attendre
   const hasFinePointer = () => window.matchMedia && window.matchMedia('(pointer: fine)').matches && !window.matchMedia('(pointer: coarse)').matches;
-  function createGpsField(root, { initial, onChange } = {}) {
+  let qrLib = null;
+  function loadQrLib() {
+    if (window.qrcode) return Promise.resolve(window.qrcode);
+    if (!qrLib) {
+      qrLib = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = '/vendor/qrcode/qrcode.js';
+        script.onload = () => (window.qrcode ? resolve(window.qrcode) : reject(new Error('qrcode')));
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    }
+    return qrLib;
+  }
+  function createGpsField(root, { initial, onChange, handoff = false } = {}) {
     let position = initial && Number.isFinite(Number(initial.latitude)) ? {
       latitude: Number(initial.latitude), longitude: Number(initial.longitude),
       accuracy: initial.accuracy == null ? null : Number(initial.accuracy),
@@ -99,13 +113,38 @@
       </div>
       <div class="cl-gps-map" id="gpsMap" hidden aria-label="Carte : déplacez l’épingle si besoin"></div>
       <p class="cl-hint" id="gpsHint"></p>
-      <button type="button" class="cl-btn outline sm" id="gpsConfirm" hidden>L’épingle est au bon endroit</button>`;
+      <button type="button" class="cl-btn outline sm" id="gpsConfirm" hidden>L’épingle est au bon endroit</button>
+      <div class="cl-handoff" id="gpsHandoff" hidden>
+        <div class="cl-handoff-qr" id="gpsQr" aria-hidden="true"></div>
+        <div class="cl-handoff-text"><strong>Continuez sur votre téléphone</strong>
+          <span>Scannez ce code avec l’appareil photo de votre téléphone : sa puce GPS donne une position bien plus précise qu’un ordinateur. Remplissez ensuite le formulaire depuis le téléphone.</span>
+          <button type="button" class="cl-linkbtn" id="gpsCopy">Copier le lien</button></div>
+      </div>`;
     const box = root.querySelector('#gpsBox');
     const sub = root.querySelector('#gpsSub');
     const button = root.querySelector('#gpsBtn');
     const mapEl = root.querySelector('#gpsMap');
     const hint = root.querySelector('#gpsHint');
     const confirmBtn = root.querySelector('#gpsConfirm');
+    const handoffEl = root.querySelector('#gpsHandoff');
+    // Sur ordinateur, proposer de continuer sur le téléphone (lien de la page,
+    // sans paramètre) : utile seulement tant que le lien n'est lié à aucun appareil.
+    const offerHandoff = handoff && hasFinePointer();
+    let qrDrawn = false;
+    function drawQr() {
+      if (qrDrawn || !offerHandoff) return;
+      const url = `${location.origin}${location.pathname}`;
+      loadQrLib().then((qrcode) => {
+        const qr = qrcode(0, 'M');
+        qr.addData(url);
+        qr.make();
+        root.querySelector('#gpsQr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+        qrDrawn = true;
+      }).catch(() => { handoffEl.hidden = true; });
+      root.querySelector('#gpsCopy').onclick = async (event) => {
+        try { await navigator.clipboard.writeText(url); event.target.textContent = 'Lien copié'; } catch (_) { event.target.textContent = url; }
+      };
+    }
     const meters = (m) => (m >= 1000 ? `${Math.round(m / 1000)} km` : `${Math.round(m)} m`);
 
     function paint() {
@@ -132,6 +171,9 @@
           : position ? 'Si l’épingle n’est pas au bon endroit, déplacez-la sur la carte.' : 'Requis pour envoyer votre demande.';
       confirmBtn.hidden = busy || !imprecise();
       mapEl.hidden = !position;
+      // Proposé dès que l'ordinateur donne une position imprécise (ou aucune).
+      handoffEl.hidden = !offerHandoff || busy || usable() != null || !(imprecise() || error);
+      if (!handoffEl.hidden) drawQr();
     }
 
     function showMap({ recenter = true } = {}) {
@@ -143,7 +185,7 @@
       if (!map) {
         map = L.map(mapEl, { zoomControl: true, attributionControl: true, scrollWheelZoom: false }).setView(latLng, zoom);
         const created = map;
-        if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.baseLayer(config.base).addTo(created));
+        if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.layerSwitcher(created, config, { position: 'topright' }));
         marker = L.marker(latLng, { draggable: true, keyboard: true, title: 'Point de livraison' }).addTo(map);
         marker.on('dragstart', () => { if (stopWatch) stopWatch(false); });
         marker.on('dragend', () => {

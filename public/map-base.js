@@ -253,5 +253,86 @@
     return group;
   }
 
-  window.TraxoMapBase = { load, baseLayer, fallback: FALLBACK };
+  // ---- Choix du fond : Plan / Satellite / Hybride ----------------------
+  // Contrôle Leaflet commun (formulaire client, suivi, carte d'exploitation).
+  // Le choix est mémorisé par appareil. Imagerie satellite plafonnée à son
+  // zoom natif (18) puis agrandie : pas de tuiles grises « non disponible ».
+  const LAYER_KEY = 'traxo.mapLayer';
+  const LAYER_LABELS = { street: 'Plan', satellite: 'Satellite', hybrid: 'Hybride' };
+  let layerCss = false;
+  function injectLayerCss() {
+    if (layerCss) return;
+    layerCss = true;
+    const style = document.createElement('style');
+    style.textContent = `.tx-layers{display:inline-flex;gap:2px;padding:3px;border-radius:10px;background:#fff;box-shadow:0 4px 16px rgba(16,24,40,.16);border:1px solid rgba(16,24,40,.08)}
+.tx-layers button{min-height:30px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:#1f2933;font-family:inherit;font-weight:600;font-size:12px;line-height:1;cursor:pointer;transition:background .15s,color .15s}
+.tx-layers button:hover{background:#f2f4f7}
+.tx-layers button[aria-pressed="true"]{background:#1f2933;color:#fff}
+.tx-layers button:focus-visible{outline:2px solid #e11d2a;outline-offset:1px}
+@media (max-width:420px){.tx-layers button{padding:0 8px;font-size:11.5px}}`;
+    document.head.appendChild(style);
+  }
+  function rememberedLayer(fallback) {
+    try { const v = localStorage.getItem(LAYER_KEY); return LAYER_LABELS[v] ? v : fallback; } catch (_) { return fallback; }
+  }
+  function tile(conf, extra) {
+    if (!conf || typeof conf.url !== 'string' || !/^https:\/\//i.test(conf.url)) return null;
+    return L.tileLayer(conf.url, {
+      maxZoom: 20,
+      maxNativeZoom: zoom(conf.maxNativeZoom || conf.maxZoom, 18),
+      attribution: String(conf.attribution || ''),
+      ...extra,
+    });
+  }
+  function layerSwitcher(map, config, { position = 'topright', initial = 'street', onChange } = {}) {
+    injectLayerCss();
+    const layers = { street: baseLayer(config.base) };
+    layers.satellite = tile(config.satellite);
+    // Hybride : imagerie + routes + noms de lieux (couches transparentes).
+    const overlays = [tile(config.roads, { pane: 'overlayPane' }), tile(config.labels, { pane: 'overlayPane' })].filter(Boolean);
+    const hybridSatellite = tile(config.satellite);
+    const available = layers.satellite ? ['street', 'satellite', 'hybrid'] : ['street'];
+    let current = null;
+    const container = L.DomUtil.create('div', 'tx-layers');
+    container.setAttribute('role', 'group');
+    container.setAttribute('aria-label', 'Fond de carte');
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
+    container.innerHTML = available.map((name) => `<button type="button" data-layer="${name}" aria-pressed="false">${LAYER_LABELS[name]}</button>`).join('');
+    function set(name) {
+      if (!available.includes(name)) name = 'street';
+      if (name === current) return;
+      [layers.street, layers.satellite, hybridSatellite, ...overlays].forEach((layer) => { if (layer && map.hasLayer(layer)) map.removeLayer(layer); });
+      if (name === 'street') layers.street.addTo(map);
+      else if (name === 'satellite') layers.satellite.addTo(map);
+      else { hybridSatellite.addTo(map); overlays.forEach((layer) => layer.addTo(map)); }
+      current = name;
+      container.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layer === name)));
+      try { localStorage.setItem(LAYER_KEY, name); } catch (_) { /* stockage indisponible */ }
+      if (onChange) onChange(name);
+    }
+    container.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-layer]');
+      if (button) set(button.dataset.layer);
+    });
+    const Control = L.Control.extend({ options: { position }, onAdd: () => container });
+    const control = new Control();
+    // Un seul groupe de boutons : on ne l'ajoute que si un autre fond existe.
+    if (available.length > 1) control.addTo(map);
+    set(rememberedLayer(initial));
+    return {
+      set,
+      get: () => current,
+      element: container,
+      // Nouveau fond « Plan » annoncé par le serveur (tuiles vectorielles revenues…).
+      updateStreet(base) {
+        const wasStreet = current === 'street';
+        if (map.hasLayer(layers.street)) map.removeLayer(layers.street);
+        layers.street = baseLayer(base);
+        if (wasStreet) layers.street.addTo(map);
+      },
+    };
+  }
+
+  window.TraxoMapBase = { load, baseLayer, layerSwitcher, fallback: FALLBACK };
 })();

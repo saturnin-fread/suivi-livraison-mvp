@@ -63,7 +63,7 @@
               <p class="cl-hint" id="submitHint"></p>
             </div>`;
           C.wirePhoneField(form);
-          gps = C.createGpsField(document.getElementById('gpsField'), { onChange: refreshSubmit });
+          gps = C.createGpsField(document.getElementById('gpsField'), { onChange: refreshSubmit, handoff: true });
           photos = C.createPhotoPicker(document.getElementById('photoField'), { max: 3, onError: (text) => say(text, 'err') });
           refreshSubmit();
         }

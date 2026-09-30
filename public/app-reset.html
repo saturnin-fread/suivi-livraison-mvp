@@ -77,15 +77,15 @@
         <input type="hidden" name="token" id="token" />
         <label for="password">Nouveau mot de passe</label>
         <div class="pw">
-          <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="10" required />
           <button type="button" class="toggle" data-target="password" aria-label="Afficher le mot de passe">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
             <span>Voir</span>
           </button>
         </div>
-        <p class="hint">Au moins 8 caractères.</p>
+        <p class="hint">10 caractères minimum. Une courte phrase est plus facile à retenir.</p>
         <label for="confirm">Confirmer le mot de passe</label>
-        <input id="confirm" type="password" autocomplete="new-password" minlength="8" required />
+        <input id="confirm" type="password" autocomplete="new-password" minlength="10" required />
         <button class="submit" type="submit">Enregistrer le mot de passe</button>
         <p class="foot"><a class="link" href="/app/login">Retour à la connexion</a></p>
       </form>

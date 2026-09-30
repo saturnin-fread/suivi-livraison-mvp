@@ -64,8 +64,22 @@ const paymentAdjustmentLabels = {
 };
 const roleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
 const runStatusLabels = {
-  draft: 'Brouillon', planned: 'Planifiée', active: 'En cours', completed: 'Terminée', cancelled: 'Annulée',
+  draft: 'En préparation', planned: 'Planifiée', active: 'En cours', completed: 'Terminée', cancelled: 'Annulée',
 };
+// Libellés affichés des statuts de demande (les valeurs en base ne changent pas).
+// Voir docs/UX_WRITING_GUIDE.md.
+const requestStatusLabels = {
+  'En attente d’informations': 'En attente du client',
+  'À vérifier': 'À valider',
+  'Informations à compléter': 'À compléter par le client',
+  'Validée': 'Validée',
+  'Confirmée': 'Commande créée',
+  'Refusée': 'Refusée',
+  'Archivée': 'Archivée',
+};
+const requestStatusTone = { 'En attente d’informations': 'grey', 'À vérifier': 'amber', 'Informations à compléter': 'amber', 'Validée': 'blue', 'Confirmée': 'green', 'Refusée': 'red', 'Archivée': 'grey' };
+function requestStatusLabel(status) { return requestStatusLabels[status] || status || '—'; }
+function requestStatusChip(status) { return crmChip(requestStatusLabel(status), requestStatusTone[status] || 'grey'); }
 const runEventLabels = {
   created: 'Tournée créée', order_added: 'Colis ajouté', order_removed: 'Colis retiré',
   stops_reordered: 'Ordre des arrêts modifié', status_changed: 'État de la tournée modifié',
@@ -116,12 +130,12 @@ function renderPaymentSection(order) {
   const adjustments = order.paymentAdjustments || [];
   const canAdjust = canControl && order.isTerminal && configured && ['collected', 'reconciled'].includes(order.payment_status);
   const today = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
-  return `<section class="card" style="margin-top:18px"><h2>Encaissement à la livraison</h2>
-    ${configured ? `<div class="detail-grid"><div class="detail"><span>Montant attendu</span><strong>${escapeHtml(formatMoney(order.expected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>État financier</span><strong>${badge(paymentStatusLabels[order.payment_status] || order.payment_status)}</strong></div><div class="detail"><span>Montant reçu</span><strong>${escapeHtml(formatMoney(order.collected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>Mode</span><strong>${escapeHtml(paymentMethodLabels[order.collection_method] || order.collection_method || '—')}</strong></div><div class="detail"><span>Référence</span><strong>${escapeHtml(order.collection_reference || '—')}</strong></div><div class="detail"><span>Rapprochement</span><strong>${escapeHtml(formatDate(order.reconciled_at))}</strong></div></div>${order.discrepancy_reason ? `<div class="notice error"><strong>Écart déclaré :</strong> ${escapeHtml(order.discrepancy_reason)}</div>` : ''}` : '<p class="subtitle">Aucun paiement ne sera exigé tant qu’un montant n’est pas configuré.</p>'}
-    ${canConfigure ? `<form id="paymentConfigure" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Montant attendu en FCFA</label><input name="expectedAmountMinor" type="number" min="1" step="1" value="${configured && order.payment_status !== 'not_required' ? escapeHtml(order.expected_amount_minor) : ''}" required /></div><input type="hidden" name="currency" value="XOF" /></div><div class="actions" style="margin-top:12px"><button class="secondary">${configured ? 'Modifier le montant attendu' : 'Exiger un encaissement'}</button>${configured && order.payment_status === 'pending' ? '<button class="danger" type="button" id="removePaymentRequirement">Retirer cette exigence</button>' : ''}</div></form>` : ''}
-    ${canCollect ? `<form id="paymentCollect" style="margin-top:18px"><h3>Déclarer la somme reçue</h3><div class="form-grid"><div class="field"><label>Montant reçu en FCFA</label><input name="amountMinor" type="number" min="0" step="1" value="${escapeHtml(order.expected_amount_minor)}" required /></div><div class="field"><label>Mode d’encaissement</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Référence Mobile Money, reçu…" /></div><div class="field"><label>Motif en cas d’écart</label><textarea name="discrepancyReason" placeholder="Obligatoire si le montant reçu diffère"></textarea></div></div><div class="actions" style="margin-top:12px"><button class="primary">Enregistrer l’encaissement</button></div></form>` : configured && order.payment_status === 'pending' ? '<p class="notice">L’encaissement pourra être déclaré lorsque la commande sera « En livraison » ou « Arrivée ».</p>' : ''}
+  return `<section class="card" style="margin-top:18px"><h2>Paiement à la livraison</h2>
+    ${configured ? `<div class="detail-grid"><div class="detail"><span>Montant attendu</span><strong>${escapeHtml(formatMoney(order.expected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>État du paiement</span><strong>${badge(paymentStatusLabels[order.payment_status] || order.payment_status)}</strong></div><div class="detail"><span>Montant reçu</span><strong>${escapeHtml(formatMoney(order.collected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>Mode</span><strong>${escapeHtml(paymentMethodLabels[order.collection_method] || order.collection_method || '—')}</strong></div><div class="detail"><span>Référence</span><strong>${escapeHtml(order.collection_reference || '—')}</strong></div><div class="detail"><span>Rapprochement</span><strong>${escapeHtml(formatDate(order.reconciled_at))}</strong></div></div>${order.discrepancy_reason ? `<div class="notice error"><strong>Écart déclaré :</strong> ${escapeHtml(order.discrepancy_reason)}</div>` : ''}` : '<p class="subtitle">Indiquez un montant si le livreur doit encaisser à la remise. Sans montant, rien n’est demandé au client.</p>'}
+    ${canConfigure ? `<form id="paymentConfigure" style="margin-top:18px"><div class="form-grid"><div class="field"><label>Montant à encaisser (FCFA)</label><input name="expectedAmountMinor" type="number" min="1" step="1" value="${configured && order.payment_status !== 'not_required' ? escapeHtml(order.expected_amount_minor) : ''}" required /></div><input type="hidden" name="currency" value="XOF" /></div><div class="actions" style="margin-top:12px"><button class="secondary">${configured ? 'Modifier le montant' : 'Demander ce paiement'}</button>${configured && order.payment_status === 'pending' ? '<button class="danger" type="button" id="removePaymentRequirement">Ne plus demander de paiement</button>' : ''}</div></form>` : ''}
+    ${canCollect ? `<form id="paymentCollect" style="margin-top:18px"><h3>Déclarer la somme reçue</h3><div class="form-grid"><div class="field"><label>Montant reçu en FCFA</label><input name="amountMinor" type="number" min="0" step="1" value="${escapeHtml(order.expected_amount_minor)}" required /></div><div class="field"><label>Moyen de paiement</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Référence Mobile Money, reçu…" /></div><div class="field"><label>Motif en cas d’écart</label><textarea name="discrepancyReason" placeholder="Obligatoire si le montant reçu diffère"></textarea></div></div><div class="actions" style="margin-top:12px"><button class="primary">Enregistrer le paiement reçu</button></div></form>` : configured && order.payment_status === 'pending' ? '<p class="notice">L’encaissement pourra être déclaré lorsque la commande sera « En livraison » ou « Arrivée ».</p>' : ''}
     ${canReconcile ? `<form id="paymentReconcile" style="margin-top:18px"><div class="field"><label>Note de rapprochement ${order.payment_status === 'discrepancy' ? '(obligatoire)' : '(facultative)'}</label><textarea name="note" placeholder="Contrôle de caisse, justification de l’écart…"></textarea></div><div class="actions" style="margin-top:12px"><button class="primary">Marquer comme rapproché</button>${canReverse ? '<button class="danger" type="button" id="reversePayment">Annuler la saisie</button>' : ''}</div></form>` : ''}
-    ${order.isTerminal && configured ? `<section class="adjustment-panel"><h3>Ajustements après clôture</h3><p class="subtitle">L’encaissement d’origine reste inchangé. Chaque remboursement ou complément crée une nouvelle écriture traçable.</p><div class="detail-grid"><div class="detail"><span>Total d’origine</span><strong>${escapeHtml(formatMoney(order.collected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>Total net après ajustements</span><strong>${escapeHtml(formatMoney(order.paymentAdjustedTotalMinor, order.payment_currency))}</strong></div></div>${canAdjust ? `<details style="margin-top:14px"><summary>Enregistrer un ajustement</summary><form id="paymentAdjustment" style="margin-top:14px"><div class="form-grid"><div class="field"><label>Nature</label><select name="adjustmentType"><option value="refund">Remboursement au client</option><option value="additional_collection">Complément reçu</option></select></div><div class="field"><label>Montant en FCFA</label><input name="amountMinor" type="number" min="1" step="1" required /></div><div class="field"><label>Mode</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Date effective</label><input name="effectiveDate" type="date" max="${today}" value="${today}" required /></div><div class="field full"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Reçu, transaction Mobile Money…" /></div><div class="field full"><label>Motif détaillé</label><textarea name="reason" minlength="10" maxlength="1000" required placeholder="Pourquoi cet ajustement est-il nécessaire ?"></textarea></div></div><div class="notice warning" style="margin-top:12px">Vérifiez le sens et le montant. Une erreur sera corrigée par une écriture inverse, jamais par suppression.</div><div class="actions" style="margin-top:12px"><button class="primary">Enregistrer l’ajustement</button></div></form></details>` : '<div class="notice">Seuls le propriétaire et les managers peuvent créer un ajustement après clôture.</div>'}${adjustments.length ? `<ol class="timeline adjustment-timeline">${adjustments.map((adjustment) => `<li><strong>${escapeHtml(paymentAdjustmentLabels[adjustment.adjustment_type] || adjustment.adjustment_type)}</strong><span>${adjustment.direction === 'inflow' ? '+' : '−'} ${escapeHtml(formatMoney(adjustment.amount_minor, adjustment.currency))} · ${escapeHtml(paymentMethodLabels[adjustment.method] || adjustment.method)}</span><small>Date effective : ${escapeHtml(adjustment.effective_date)} · saisi le ${escapeHtml(formatDate(adjustment.created_at))} · ${escapeHtml(adjustment.actor_name)}</small><p>${escapeHtml(adjustment.reason)}</p>${adjustment.reference ? `<small>Référence : ${escapeHtml(adjustment.reference)}</small>` : ''}${adjustment.reversed ? '<div class="notice">Cette écriture possède une correction inverse.</div>' : canAdjust && adjustment.adjustment_type !== 'reversal' ? `<button class="secondary reverse-adjustment" type="button" data-adjustment-id="${escapeHtml(adjustment.id)}">Corriger cette écriture</button>` : ''}</li>`).join('')}</ol>` : '<p class="subtitle">Aucun ajustement après clôture.</p>'}</section>` : ''}
+    ${order.isTerminal && configured ? `<section class="adjustment-panel"><h3>Corrections après livraison</h3><p class="subtitle">Le paiement d’origine reste visible. Chaque remboursement ou complément est ajouté comme une nouvelle ligne.</p><div class="detail-grid"><div class="detail"><span>Total d’origine</span><strong>${escapeHtml(formatMoney(order.collected_amount_minor, order.payment_currency))}</strong></div><div class="detail"><span>Total après corrections</span><strong>${escapeHtml(formatMoney(order.paymentAdjustedTotalMinor, order.payment_currency))}</strong></div></div>${canAdjust ? `<details style="margin-top:14px"><summary>Ajouter une correction</summary><form id="paymentAdjustment" style="margin-top:14px"><div class="form-grid"><div class="field"><label>Nature</label><select name="adjustmentType"><option value="refund">Remboursement au client</option><option value="additional_collection">Complément reçu</option></select></div><div class="field"><label>Montant en FCFA</label><input name="amountMinor" type="number" min="1" step="1" required /></div><div class="field"><label>Mode</label><select name="method"><option value="cash">Espèces</option><option value="mobile_money">Mobile Money</option><option value="card">Carte</option><option value="bank_transfer">Virement</option><option value="other">Autre</option></select></div><div class="field"><label>Date effective</label><input name="effectiveDate" type="date" max="${today}" value="${today}" required /></div><div class="field full"><label>Référence facultative</label><input name="reference" maxlength="120" placeholder="Reçu, transaction Mobile Money…" /></div><div class="field full"><label>Motif détaillé</label><textarea name="reason" minlength="10" maxlength="1000" required placeholder="Pourquoi cet ajustement est-il nécessaire ?"></textarea></div></div><div class="notice warning" style="margin-top:12px">Vérifiez le sens et le montant. Une erreur sera corrigée par une écriture inverse, jamais par suppression.</div><div class="actions" style="margin-top:12px"><button class="primary">Enregistrer la correction</button></div></form></details>` : '<div class="notice">Seuls le propriétaire et les managers peuvent corriger un paiement après la livraison.</div>'}${adjustments.length ? `<ol class="timeline adjustment-timeline">${adjustments.map((adjustment) => `<li><strong>${escapeHtml(paymentAdjustmentLabels[adjustment.adjustment_type] || adjustment.adjustment_type)}</strong><span>${adjustment.direction === 'inflow' ? '+' : '−'} ${escapeHtml(formatMoney(adjustment.amount_minor, adjustment.currency))} · ${escapeHtml(paymentMethodLabels[adjustment.method] || adjustment.method)}</span><small>Date effective : ${escapeHtml(adjustment.effective_date)} · saisi le ${escapeHtml(formatDate(adjustment.created_at))} · ${escapeHtml(adjustment.actor_name)}</small><p>${escapeHtml(adjustment.reason)}</p>${adjustment.reference ? `<small>Référence : ${escapeHtml(adjustment.reference)}</small>` : ''}${adjustment.reversed ? '<div class="notice">Cette ligne a été annulée.</div>' : canAdjust && adjustment.adjustment_type !== 'reversal' ? `<button class="secondary reverse-adjustment" type="button" data-adjustment-id="${escapeHtml(adjustment.id)}">Annuler cette ligne</button>` : ''}</li>`).join('')}</ol>` : '<p class="subtitle">Aucune correction.</p>'}</section>` : ''}
     <div id="paymentResult"></div>
     ${events.length ? `<details style="margin-top:18px"><summary>Historique financier (${events.length})</summary><ol class="timeline" style="margin-top:16px">${events.map((event) => `<li><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(formatMoney(event.amount_minor, event.currency))}${event.method ? ` · ${escapeHtml(paymentMethodLabels[event.method] || event.method)}` : ''}</span><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></details>` : ''}
   </section>`;
@@ -595,12 +609,12 @@ function dashRequestCode(r) {
 function dashRecentRequests(rows) {
   if (!rows.length) return '<div class="dash-empty">Aucune demande</div>';
   return `<div class="dash-table-wrap"><table class="dash-table">
-    <thead><tr><th>ID</th><th>Client</th><th>Position</th><th>Statut</th><th>Reçue le</th></tr></thead>
+    <thead><tr><th>N°</th><th>Client</th><th>Position</th><th>Statut</th><th>Reçue le</th></tr></thead>
     <tbody>${rows.map((r) => `<tr onclick="location.href='/app/operations?vue=demandes&demande=${r.id}'">
       <td><strong>${escapeHtml(dashRequestCode(r))}</strong></td>
-      <td>${escapeHtml(r.customerName || 'À préciser')}</td>
+      <td>${escapeHtml(r.customerName || 'En attente du client')}</td>
       <td>${r.hasLocation ? `<span class="dash-pos">${DASH_ICONS.pin}Position reçue</span>` : '<span class="dash-muted">—</span>'}</td>
-      <td>${badge(r.status)}</td>
+      <td>${requestStatusChip(r.status)}</td>
       <td class="dash-muted">${escapeHtml(formatDate(r.createdAt))}</td>
     </tr>`).join('')}</tbody></table></div>`;
 }
@@ -842,7 +856,7 @@ function dashSyncUrl() {
 }
 
 async function renderDashboard() {
-  setHeader('Tableaux de bord', 'Analysez vos opérations par période');
+  setHeader('Tableau de bord', 'Votre activité, période par période');
   const params = new URLSearchParams(location.search);
   const periodParam = Number(params.get('periode'));
   dashboardState.period = [7, 30].includes(periodParam) ? periodParam : dashboardState.period;
@@ -857,7 +871,7 @@ async function renderDashboard() {
   page.innerHTML = `
     <div class="dash-topbar">
       <div class="dash-title-block">
-        <h1>Tableaux de bord</h1>
+        <h1>Tableau de bord</h1>
         <p class="dash-subtitle">Analysez vos opérations par période</p>
       </div>
       <div class="dash-controls">
@@ -944,16 +958,16 @@ async function renderDashboard() {
 }
 
 async function renderNewOrder() {
-  setHeader('Nouvelle commande', 'Création directe par l’entreprise');
+  setHeader('Nouvelle commande', 'Vous saisissez les informations du client');
   const drivers = await api('/api/app/drivers');
   page.innerHTML = `
-    <div class="page-header"><div><h1>Créer une commande directe</h1><p class="subtitle">À utiliser lorsque l’entreprise possède déjà les informations du client.</p></div></div>
+    <div class="page-header"><div><h1>Saisir une commande</h1><p class="subtitle">Vous connaissez déjà le client. Il recevra un lien pour suivre sa livraison.</p></div></div>
     <section class="card"><form id="orderForm"><div class="form-grid">
       <div class="field"><label>Nom du client</label><input name="customerName" required /></div>
-      <div class="field"><label>Téléphone du client</label><input name="customerPhone" inputmode="tel" placeholder="229XXXXXXXX" /></div>
-      <div class="field full"><label>Lieu et instructions de livraison</label><textarea name="deliveryAddress" required placeholder="Zone, repère, coordonnées ou instructions…"></textarea></div>
-      <div class="field full"><label>Livreur</label><select name="driverId" required><option value="">Sélectionner un livreur</option>${drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${['inactive', 'off_duty', 'incident'].includes(driver.operationalState) ? 'disabled' : ''}>${escapeHtml(driver.name)} — ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)} — ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</option>`).join('')}</select></div>
-    </div><div class="actions" style="margin-top:20px"><button class="primary">Créer le lien de suivi</button></div></form><div id="orderResult"></div></section>`;
+      <div class="field"><label>Téléphone du client</label><input name="customerPhone" inputmode="tel" placeholder="01 97 12 34 56" /></div>
+      <div class="field full"><label>Adresse et consignes</label><textarea name="deliveryAddress" required placeholder="Quartier, repère (ex. : portail vert, près de la pharmacie), consignes pour le livreur…"></textarea></div>
+      <div class="field full"><label>Livreur</label><select name="driverId" required><option value="">Sélectionner un livreur</option>${drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${['inactive', 'off_duty', 'incident'].includes(driver.operationalState) ? 'disabled' : ''}>${escapeHtml(driver.name)} — ${escapeHtml(driverStateLabels[driver.operationalState] || driver.operationalState)} — ${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</option>`).join('')}</select></div>
+    </div><div class="actions" style="margin-top:20px"><button class="primary">Créer la commande</button></div></form><div id="orderResult"></div></section>`;
   document.getElementById('orderForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = event.currentTarget.querySelector('button');
@@ -964,7 +978,7 @@ async function renderNewOrder() {
         body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))),
       });
       const url = publicLink(result.path);
-      document.getElementById('orderResult').innerHTML = `<div class="notice success">Commande créée. <a href="${escapeHtml(url)}" target="_blank" rel="noopener">Ouvrir le suivi</a></div>`;
+      document.getElementById('orderResult').innerHTML = `<div class="notice success">Commande créée. Envoyez au client son <a href="${escapeHtml(url)}" target="_blank" rel="noopener">lien de suivi</a>.</div>`;
       event.currentTarget.reset();
     } catch (error) {
       document.getElementById('orderResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
@@ -1003,20 +1017,20 @@ async function mountOrderActions(root, id, { refresh, order: prefetched } = {}) 
   };
   const trackingLinkUsable = ['active', 'terminal'].includes(trackingLink.state);
   root.innerHTML = `
-    ${!order.isTerminal && order.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Faire avancer la livraison</h2><p class="subtitle">Seules les étapes compatibles avec l’état actuel sont proposées.</p><form id="transitionForm" style="margin-top:16px"><div class="form-grid"><div class="field"><label>Nouvelle étape</label><select name="toStatus" required><option value="">Choisir une étape</option>${order.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('')}</select></div><div class="field"><label>Motif ou observation</label><textarea name="reason" placeholder="Obligatoire pour un échec, retour ou une annulation"></textarea></div></div><div class="actions" style="margin-top:16px"><button class="primary">Enregistrer l’étape</button></div></form><div id="transitionResult"></div></section>` : ''}
+    ${!order.isTerminal && order.allowedTransitions.length ? `<section class="card" style="margin-top:18px"><h2>Mettre à jour le statut</h2><p class="subtitle">Choisissez la prochaine étape : seules les étapes possibles à ce stade sont proposées.</p><form id="transitionForm" style="margin-top:16px"><div class="form-grid"><div class="field"><label>Prochaine étape</label><select name="toStatus" required><option value="">Choisir une étape</option>${order.allowedTransitions.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('')}</select></div><div class="field"><label>Motif ou remarque</label><textarea name="reason" placeholder="Obligatoire en cas d’échec, de retour ou d’annulation"></textarea></div></div><div class="actions" style="margin-top:16px"><button class="primary">Mettre à jour</button></div></form><div id="transitionResult"></div></section>` : ''}
 
-    ${(!order.isTerminal && canManage) ? `<section class="card" style="margin-top:18px"><h2>Réassigner le livreur</h2><p class="subtitle">Change le livreur affecté ; la commande passe automatiquement dans la tournée du jour du nouveau livreur.</p><form id="reassignForm" style="margin-top:14px"><div class="form-grid"><div class="field full"><label>Livreur</label><select name="driverId" required>${reassignDrivers.map((d) => `<option value="${escapeHtml(d.id)}" ${String(d.id) === String(order.driver_id) ? 'selected' : ''} ${(!d.active || ['inactive', 'off_duty', 'incident'].includes(d.operationalState)) && String(d.id) !== String(order.driver_id) ? 'disabled' : ''}>${escapeHtml(d.name)}${d.vehicleType ? ` · ${escapeHtml(d.vehicleType)}` : ''}${String(d.id) === String(order.driver_id) ? ' (actuel)' : ''}</option>`).join('')}</select></div></div><div class="actions" style="margin-top:14px"><button class="primary">Réassigner</button></div></form><div id="reassignResult"></div></section>` : ''}
+    ${(!order.isTerminal && canManage) ? `<section class="card" style="margin-top:18px"><h2>Changer de livreur</h2><p class="subtitle">La commande rejoint automatiquement la tournée du jour du nouveau livreur.</p><form id="reassignForm" style="margin-top:14px"><div class="form-grid"><div class="field full"><label>Livreur</label><select name="driverId" required>${reassignDrivers.map((d) => `<option value="${escapeHtml(d.id)}" ${String(d.id) === String(order.driver_id) ? 'selected' : ''} ${(!d.active || ['inactive', 'off_duty', 'incident'].includes(d.operationalState)) && String(d.id) !== String(order.driver_id) ? 'disabled' : ''}>${escapeHtml(d.name)}${d.vehicleType ? ` · ${escapeHtml(d.vehicleType)}` : ''}${String(d.id) === String(order.driver_id) ? ' (actuel)' : ''}</option>`).join('')}</select></div></div><div class="actions" style="margin-top:14px"><button class="primary">Changer de livreur</button></div></form><div id="reassignResult"></div></section>` : ''}
 
-    <section class="card" style="margin-top:18px"><h2>Lien de suivi client</h2><p class="subtitle">Ce lien donne accès uniquement au colis concerné. Il n’est révélé qu’à votre demande et chaque affichage est enregistré.</p><div class="detail-grid"><div class="detail"><span>État du lien</span><strong>${escapeHtml(trackingStateLabels[trackingLink.state] || trackingLink.state)}</strong></div><div class="detail"><span>Expiration</span><strong>${escapeHtml(formatDate(trackingLink.expiresAt))}</strong></div></div><div class="actions" style="margin-top:18px">${trackingLinkUsable ? '<button class="secondary" type="button" id="revealTrackingLink">Afficher et copier</button>' : ''}${!order.isTerminal ? `<label class="field" style="max-width:190px"><span>Nouvelle durée</span><select id="trackingTtl"><option value="1">1 jour</option><option value="3">3 jours</option><option value="7" selected>7 jours</option><option value="14">14 jours</option><option value="30">30 jours</option></select></label><button class="primary" type="button" id="rotateTrackingLink">${trackingLinkUsable ? 'Renouveler le lien' : 'Créer un nouveau lien'}</button>` : ''}${trackingLinkUsable ? '<button class="danger" type="button" id="revokeTrackingLink">Révoquer</button>' : ''}</div><div id="trackingLinkResult"></div></section>
+    <section class="card" style="margin-top:18px"><h2>Lien de suivi du client</h2><p class="subtitle">Le client voit uniquement cette livraison. Par sécurité, le lien ne s’affiche que sur demande et chaque affichage est enregistré.</p><div class="detail-grid"><div class="detail"><span>État du lien</span><strong>${escapeHtml(trackingStateLabels[trackingLink.state] || trackingLink.state)}</strong></div><div class="detail"><span>Expiration</span><strong>${escapeHtml(formatDate(trackingLink.expiresAt))}</strong></div></div><div class="actions" style="margin-top:18px">${trackingLinkUsable ? '<button class="secondary" type="button" id="revealTrackingLink">Afficher et copier</button>' : ''}${!order.isTerminal ? `<label class="field" style="max-width:190px"><span>Durée de validité</span><select id="trackingTtl"><option value="1">1 jour</option><option value="3">3 jours</option><option value="7" selected>7 jours</option><option value="14">14 jours</option><option value="30">30 jours</option></select></label><button class="primary" type="button" id="rotateTrackingLink">${trackingLinkUsable ? 'Renouveler le lien' : 'Créer un nouveau lien'}</button>` : ''}${trackingLinkUsable ? '<button class="danger" type="button" id="revokeTrackingLink">Révoquer</button>' : ''}</div><div id="trackingLinkResult"></div></section>
 
     ${renderPaymentSection(order)}
 
 
-    ${(order.photo_proof_mode !== 'off' || order.signature_proof_mode !== 'off' || order.evidence?.length) ? `<section class="card" style="margin-top:18px"><h2>Preuves complémentaires</h2><p class="subtitle">Visibles uniquement par l’entreprise et le livreur affecté. Elles ne sont pas publiées sur le lien client.</p><div class="evidence-grid">${['photo', 'signature'].filter((type) => order[`${type}_proof_mode`] !== 'off' || evidenceByType[type]).map((type) => { const item = evidenceByType[type]; const label = type === 'photo' ? 'Photo de remise' : 'Signature'; const mode = order[`${type}_proof_mode`]; return `<article class="evidence-card"><strong>${label}</strong><small>${mode === 'required' ? 'Obligatoire' : 'Facultative'}</small>${item ? `<a target="_blank" rel="noopener" href="/api/app/evidence/${escapeHtml(item.id)}"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="${label}" /></a><small>Ajoutée le ${escapeHtml(formatDate(item.created_at))}</small>` : '<div class="evidence-empty">Pas encore ajoutée</div>'}</article>`; }).join('')}</div></section>` : ''}
-    ${order.requiresOtpForDelivery ? `<section class="card" style="margin-top:18px"><h2>Confirmer la remise avec un code</h2><p class="subtitle">Le code est valable 30 minutes et ne peut être utilisé qu’une fois. Communiquez-le au destinataire par un canal fiable.</p>${order.paymentBlocksDelivery ? '<div class="notice error">Finalisez l’encaissement ou son rapprochement avant de confirmer la livraison.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<div class="actions" style="margin-top:16px"><button class="secondary" id="generateOtp">Générer un code de remise</button></div><div id="otpGenerated"></div><form id="verifyOtp" style="margin-top:18px"><div class="field"><label>Code communiqué par le destinataire</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><div class="actions" style="margin-top:12px"><button class="primary" ${order.paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Confirmer la livraison</button></div></form><div id="otpResult"></div></section>` : ''}
-    ${order.proof_id ? `<section class="card" style="margin-top:18px"><h2>Preuve de remise</h2><div class="notice success">Remise confirmée par code à usage unique le ${escapeHtml(formatDate(order.proof_verified_at))}.</div></section>` : ''}
+    ${(order.photo_proof_mode !== 'off' || order.signature_proof_mode !== 'off' || order.evidence?.length) ? `<section class="card" style="margin-top:18px"><h2>Preuves de livraison</h2><p class="subtitle">Photo et signature prises à la remise. Visibles par votre équipe et le livreur, jamais par le client.</p><div class="evidence-grid">${['photo', 'signature'].filter((type) => order[`${type}_proof_mode`] !== 'off' || evidenceByType[type]).map((type) => { const item = evidenceByType[type]; const label = type === 'photo' ? 'Photo de remise' : 'Signature'; const mode = order[`${type}_proof_mode`]; return `<article class="evidence-card"><strong>${label}</strong><small>${mode === 'required' ? 'Obligatoire' : 'Facultative'}</small>${item ? `<a target="_blank" rel="noopener" href="/api/app/evidence/${escapeHtml(item.id)}"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="${label}" /></a><small>Ajoutée le ${escapeHtml(formatDate(item.created_at))}</small>` : '<div class="evidence-empty">Pas encore ajoutée</div>'}</article>`; }).join('')}</div></section>` : ''}
+    ${order.requiresOtpForDelivery ? `<section class="card" style="margin-top:18px"><h2>Valider la remise avec le code</h2><p class="subtitle">Le destinataire donne ce code au livreur pour confirmer la remise. Valable 30 minutes, une seule fois : envoyez-le par SMS ou WhatsApp.</p>${order.paymentBlocksDelivery ? '<div class="notice error">Finalisez l’encaissement ou son rapprochement avant de confirmer la livraison.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<div class="actions" style="margin-top:16px"><button class="secondary" id="generateOtp">Générer un code de remise</button></div><div id="otpGenerated"></div><form id="verifyOtp" style="margin-top:18px"><div class="field"><label>Code communiqué par le destinataire</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><div class="actions" style="margin-top:12px"><button class="primary" ${order.paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Confirmer la livraison</button></div></form><div id="otpResult"></div></section>` : ''}
+    ${order.proof_id ? `<section class="card" style="margin-top:18px"><h2>Code de remise</h2><div class="notice success">Remise confirmée par code à usage unique le ${escapeHtml(formatDate(order.proof_verified_at))}.</div></section>` : ''}
 
-    <section class="card" style="margin-top:18px"><h2>Incidents</h2><form id="incidentForm"><div class="form-grid"><div class="field"><label>Type</label><select name="category">${incidentOptions}</select></div><div class="field"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div><div class="field full"><label>Description factuelle</label><textarea name="description" maxlength="2000" required placeholder="Décrivez ce qui s’est passé, sans supprimer les faits précédents."></textarea></div></div><div class="actions" style="margin-top:14px"><button class="secondary">Déclarer l’incident</button></div></form><div id="incidentResult"></div>
+    <section class="card" style="margin-top:18px"><h2>Incidents</h2><form id="incidentForm"><div class="form-grid"><div class="field"><label>Type</label><select name="category">${incidentOptions}</select></div><div class="field"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div><div class="field full"><label>Que s’est-il passé ?</label><textarea name="description" maxlength="2000" required placeholder="Décrivez ce qui s’est passé, sans supprimer les faits précédents."></textarea></div></div><div class="actions" style="margin-top:14px"><button class="secondary">Déclarer l’incident</button></div></form><div id="incidentResult"></div>
       <div class="incident-list">${order.incidents.length ? order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</strong> ${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}<p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))} · ${escapeHtml(incident.opened_by)} · gravité ${escapeHtml((incidentSeverityLabels[incident.severity] || incident.severity).toLowerCase())}</small>${incident.resolution ? `<p><strong>Résolution :</strong> ${escapeHtml(incident.resolution)}</p>` : ''}</div><a class="button secondary" href="/app/incidents/${escapeHtml(incident.id)}">Ouvrir le dossier</a></article>`).join('') : '<p class="subtitle">Aucun incident déclaré.</p>'}</div>
     </section>`;
 
@@ -1306,7 +1320,7 @@ const incidentEventLabels = {
 };
 
 async function renderIncidentDetail(id) {
-  setHeader('Dossier d’incident', 'Chronologie vérifiable et gel de conservation');
+  setHeader('Incident', 'Dossier imprimable et historique certifié');
   await mountIncidentDossier(page, id);
   if (new URLSearchParams(location.search).get('print') === '1') setTimeout(() => window.print(), 400);
 }
@@ -1323,21 +1337,21 @@ async function mountIncidentDossier(root, id, opts = {}) {
   const canControl = ['owner', 'manager'].includes(context.user.role);
   const reviewDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const chainNotice = dossier.eventChainValid === true
-    ? '<div class="notice success">Intégrité de la chronologie vérifiée.</div>'
+    ? '<div class="notice success">Historique certifié : aucune modification détectée.</div>'
     : dossier.eventChainValid === false
-      ? '<div class="notice error">L’intégrité de la chronologie ne peut pas être confirmée. Contactez le support avant d’utiliser ce dossier.</div>'
-      : '<div class="notice">Dossier antérieur au journal d’intégrité : aucune chaîne d’événements disponible.</div>';
+      ? '<div class="notice error">Cet historique a peut-être été modifié. Contactez le support avant de l’utiliser comme preuve.</div>'
+      : '<div class="notice">Incident ancien : l’historique n’est pas certifié.</div>';
   root.innerHTML = `${opts.drawer ? '' : `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>`}
     <section class="card incident-report"><div class="page-header"><div><h2>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</h2><p class="subtitle">Gravité ${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)}</p></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</div>
-      <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable du dossier</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>N° ${escapeHtml(incident.order_id)} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
-      <h3>Déclaration d’origine</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte n’est pas modifiable.</small>
+      <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
+      <h3>Déclaration initiale</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte ne peut plus être modifié.</small>
       ${incident.resolution ? `<h3>Résolution</h3><p>${escapeHtml(incident.resolution)}</p><small>Résolu par ${escapeHtml(incident.resolved_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.resolved_at))}</small>` : ''}
     </section>
-    <section class="card" style="margin-top:18px"><h2>Conservation du dossier</h2>${activeHold ? `<div class="notice ${holdOverdue ? 'error' : 'warning'}"><strong>${holdOverdue ? 'Révision du gel en retard.' : 'Gel actif.'}</strong> Aucune purge automatisée ne devra supprimer les données liées à cette commande. ${holdOverdue ? 'Une décision humaine est requise depuis le' : 'Révision prévue le'} ${escapeHtml(formatDate(activeHold.review_due_at))}.<br><small>Motif : ${escapeHtml(activeHold.reason)}</small></div>${canControl ? '<form id="releaseHold" class="print-hidden"><div class="field"><label>Motif de levée</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Pourquoi le dossier peut-il reprendre son cycle normal de conservation ?"></textarea></div><button class="secondary" style="margin-top:12px">Lever le gel</button></form>' : ''}` : `<p class="subtitle">Aucun gel actif. Les règles normales de conservation s’appliqueront lorsqu’elles seront automatisées.</p>${canControl ? `<form id="placeHold" class="print-hidden"><div class="form-grid"><div class="field full"><label>Motif précis du gel</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Réclamation, litige, contrôle ou demande officielle…"></textarea></div><div class="field"><label>Date de prochaine révision</label><input name="reviewDueAt" type="date" value="${reviewDate}" required /></div></div><button class="danger" style="margin-top:12px">Geler la conservation</button></form>` : ''}`}<div id="holdResult"></div>${dossier.holds.length ? `<details><summary>Historique des gels (${dossier.holds.length})</summary><ul>${dossier.holds.map((hold) => `<li>${escapeHtml(hold.status === 'active' ? 'Actif' : 'Levé')} · ${escapeHtml(formatDate(hold.placed_at))} · ${escapeHtml(hold.placed_by || 'Compte supprimé')} — ${escapeHtml(hold.reason)}${hold.release_reason ? ` · Levée : ${escapeHtml(hold.release_reason)}` : ''}</li>`).join('')}</ul></details>` : ''}</section>
-    <section class="card print-hidden" style="margin-top:18px"><h2>Actions sur le dossier</h2>${canControl ? `<form id="assignIncident"><div class="field"><label>Responsable</label><select name="userId" required><option value="">Sélectionner</option>${dossier.members.map((member) => `<option value="${escapeHtml(member.id)}" ${String(member.id) === String(incident.assigned_to_user_id) ? 'selected' : ''}>${escapeHtml(member.display_name)} — ${escapeHtml(roleLabels[member.role] || member.role)}</option>`).join('')}</select></div><button class="secondary" style="margin-top:12px">Attribuer</button></form>` : ''}<form id="incidentNote" style="margin-top:18px"><div class="field"><label>Ajouter une note factuelle</label><textarea name="note" minlength="3" maxlength="2000" required placeholder="Appel effectué, constat, information reçue… La note restera dans l’historique."></textarea></div><button class="secondary" style="margin-top:12px">Ajouter à la chronologie</button></form>${incident.status === 'open' ? '<form id="resolveIncidentForm" style="margin-top:18px"><div class="field"><label>Résolution finale</label><textarea name="resolution" minlength="5" maxlength="2000" required placeholder="Décision prise, accord obtenu, correction effectuée…"></textarea></div><button class="primary" style="margin-top:12px">Marquer comme résolu</button></form>' : ''}<div id="incidentActionResult"></div></section>
-    <section class="card" style="margin-top:18px"><h2>Chronologie du dossier</h2>${chainNotice}<ol class="timeline">${dossier.events.length ? dossier.events.map((event) => `<li><strong>${escapeHtml(incidentEventLabels[event.event_type] || event.event_type)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.body ? `<p>${escapeHtml(event.body)}</p>` : ''}${event.event_type === 'assigned' && event.details?.assignedToName ? `<p>Responsable : ${escapeHtml(event.details.assignedToName)}</p>` : ''}</li>`).join('') : '<li>Aucun événement d’intégrité disponible.</li>'}</ol></section>
-    ${dossier.evidence.some((item) => !item.superseded_at && !item.deleted_at) ? `<section class="card" style="margin-top:18px"><h2>Preuves complémentaires actives</h2><div class="evidence-grid">${dossier.evidence.filter((item) => !item.superseded_at && !item.deleted_at).map((item) => `<article class="evidence-card"><strong>${item.evidence_type === 'photo' ? 'Photo de remise' : 'Signature'}</strong><a href="/api/app/evidence/${escapeHtml(item.id)}" target="_blank" rel="noopener"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="Preuve ${escapeHtml(item.evidence_type)}" /></a><small>Empreinte : ${escapeHtml(item.content_sha256)}</small></article>`).join('')}</div></section>` : ''}
-    <section class="card" style="margin-top:18px"><h2>Chronologie de la commande</h2><ol class="timeline">${dossier.orderEvents.map((event) => `<li><strong>${escapeHtml(event.to_status)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
+    <section class="card" style="margin-top:18px"><h2>Protection des données (litige)</h2>${activeHold ? `<div class="notice ${holdOverdue ? 'error' : 'warning'}"><strong>${holdOverdue ? 'Révision en retard.' : 'Données protégées.'}</strong> Les données de cette commande ne seront pas supprimées. ${holdOverdue ? 'À réexaminer depuis le' : 'À réexaminer le'} ${escapeHtml(formatDate(activeHold.review_due_at))}.<br><small>Motif : ${escapeHtml(activeHold.reason)}</small></div>${canControl ? '<form id="releaseHold" class="print-hidden"><div class="field"><label>Pourquoi retirer la protection ?</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Ex. : litige réglé à l’amiable le 12/10"></textarea></div><button class="secondary" style="margin-top:12px">Retirer la protection</button></form>' : ''}` : `<p class="subtitle">En cas de réclamation ou de litige, protégez les données de cette commande pour qu’elles ne soient jamais supprimées.</p>${canControl ? `<form id="placeHold" class="print-hidden" style="margin-top:14px"><div class="form-grid"><div class="field full"><label>Pourquoi protéger ces données ?</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Ex. : réclamation du client, litige sur le paiement, demande de la police…"></textarea></div><div class="field"><label>À réexaminer le</label><input name="reviewDueAt" type="date" value="${reviewDate}" required /></div></div><button class="danger" style="margin-top:12px">Protéger les données</button></form>` : ''}`}<div id="holdResult"></div>${dossier.holds.length ? `<details><summary>Historique des protections (${dossier.holds.length})</summary><ul>${dossier.holds.map((hold) => `<li>${escapeHtml(hold.status === 'active' ? 'Actif' : 'Levé')} · ${escapeHtml(formatDate(hold.placed_at))} · ${escapeHtml(hold.placed_by || 'Compte supprimé')} — ${escapeHtml(hold.reason)}${hold.release_reason ? ` · Levée : ${escapeHtml(hold.release_reason)}` : ''}</li>`).join('')}</ul></details>` : ''}</section>
+    <section class="card print-hidden" style="margin-top:18px"><h2>Traiter l’incident</h2>${canControl ? `<form id="assignIncident"><div class="field"><label>Responsable</label><select name="userId" required><option value="">Sélectionner</option>${dossier.members.map((member) => `<option value="${escapeHtml(member.id)}" ${String(member.id) === String(incident.assigned_to_user_id) ? 'selected' : ''}>${escapeHtml(member.display_name)} — ${escapeHtml(roleLabels[member.role] || member.role)}</option>`).join('')}</select></div><button class="secondary" style="margin-top:12px">Attribuer</button></form>` : ''}<form id="incidentNote" style="margin-top:18px"><div class="field"><label>Ajouter une note</label><textarea name="note" minlength="3" maxlength="2000" required placeholder="Ex. : client rappelé à 14 h, il sera présent demain matin."></textarea></div><button class="secondary" style="margin-top:12px">Ajouter la note</button></form>${incident.status === 'open' ? '<form id="resolveIncidentForm" style="margin-top:18px"><div class="field"><label>Comment l’incident a-t-il été réglé ?</label><textarea name="resolution" minlength="5" maxlength="2000" required placeholder="Ex. : colis relivré le lendemain, client satisfait."></textarea></div><button class="primary" style="margin-top:12px">Marquer comme résolu</button></form>' : ''}<div id="incidentActionResult"></div></section>
+    <section class="card" style="margin-top:18px"><h2>Historique de l’incident</h2>${chainNotice}<ol class="timeline">${dossier.events.length ? dossier.events.map((event) => `<li><strong>${escapeHtml(incidentEventLabels[event.event_type] || event.event_type)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.body ? `<p>${escapeHtml(event.body)}</p>` : ''}${event.event_type === 'assigned' && event.details?.assignedToName ? `<p>Responsable : ${escapeHtml(event.details.assignedToName)}</p>` : ''}</li>`).join('') : '<li>Aucun événement d’intégrité disponible.</li>'}</ol></section>
+    ${dossier.evidence.some((item) => !item.superseded_at && !item.deleted_at) ? `<section class="card" style="margin-top:18px"><h2>Preuves de livraison</h2><div class="evidence-grid">${dossier.evidence.filter((item) => !item.superseded_at && !item.deleted_at).map((item) => `<article class="evidence-card"><strong>${item.evidence_type === 'photo' ? 'Photo de remise' : 'Signature'}</strong><a href="/api/app/evidence/${escapeHtml(item.id)}" target="_blank" rel="noopener"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="Preuve ${escapeHtml(item.evidence_type)}" /></a><small title="Empreinte : ${escapeHtml(item.content_sha256)}">Fichier d’origine certifié</small></article>`).join('')}</div></section>` : ''}
+    <section class="card" style="margin-top:18px"><h2>Historique de la commande</h2><ol class="timeline">${dossier.orderEvents.map((event) => `<li><strong>${escapeHtml(event.to_status)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
 
   $q('#printIncident')?.addEventListener('click', () => window.print());
   const bindForm = (formId, url, prefix) => {
@@ -1366,7 +1380,7 @@ async function mountIncidentDossier(root, id, opts = {}) {
 }
 
 async function renderOperationsMap() {
-  setHeader('Carte d’exploitation', 'Pilotez votre flotte et vos opérations en temps réel.');
+  setHeader('Carte d’exploitation', 'Vos livreurs et vos livraisons en direct');
   page.classList.add('page-map');
   const bikeSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';
   const playIcon = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
@@ -1384,7 +1398,7 @@ async function renderOperationsMap() {
   };
   const bucketMeta = {
     active: { label: 'En cours', dot: '#16a34a' },
-    stale: { label: 'GPS ancien', dot: '#d97706' },
+    stale: { label: 'Signal ancien', dot: '#d97706' },
     incident: { label: 'Incident', dot: '#e11d2a' },
     offline: { label: 'Hors ligne', dot: '#94a3b8' },
   };
@@ -1396,7 +1410,7 @@ async function renderOperationsMap() {
     <aside class="ops-panel ops-float" id="opsPanel" aria-label="Panneau des opérations">
       <div class="ops-bar" data-drag="opsPanel">
         <span class="ops-grip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
-        <span class="ops-bar-title">Déplacer</span>
+        <span class="ops-bar-title">Flotte</span>
         <button type="button" class="ops-mini" data-collapse="opsPanel" title="Replier / déplier"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
       </div>
       <div id="opsPanelBody"><div class="ops-loading">Chargement des opérations…</div></div>
@@ -1430,7 +1444,7 @@ async function renderOperationsMap() {
     <div class="ops-legend" id="opsLegend">
       <button type="button" class="ops-legend-x" id="legendClose" aria-label="Masquer la légende" title="Masquer la légende"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       <span class="ops-leg"><i class="dot" style="background:#16a34a"></i>En cours</span>
-      <span class="ops-leg"><i class="dot" style="background:#d97706"></i>GPS ancien</span>
+      <span class="ops-leg"><i class="dot" style="background:#d97706"></i>Signal ancien</span>
       <span class="ops-leg"><i class="dot" style="background:#e11d2a"></i>Incident</span>
       <span class="ops-leg"><i class="dot" style="background:#94a3b8"></i>Hors ligne</span>
     </div>
@@ -1531,7 +1545,7 @@ async function renderOperationsMap() {
       { label: 'Demandes en attente', value: s.pendingRequests || 0, dot: '#d97706' },
       { label: 'Commandes actives', value: s.activeOrders, dot: '#2563eb' },
       { label: 'Tournées ouvertes', value: s.openRuns, dot: '#94a3b8' },
-      { label: 'GPS à vérifier', value: s.staleDrivers, dot: '#d97706' },
+      { label: 'Signal ancien', value: s.staleDrivers, dot: '#d97706' },
       { label: 'Incidents ouverts', value: s.openIncidents, dot: '#e11d2a' },
     ];
     document.getElementById('opsKpis').innerHTML = tiles.map((t) => `<div class="ops-kpi">
@@ -1557,14 +1571,14 @@ async function renderOperationsMap() {
     const cards = filtered.map((driver) => {
       const b = statusBucket(driver.operationalState);
       const meta = bucketMeta[b];
-      const age = driver.lastUpdate ? formatAge(driver.lastUpdate) : 'sans position';
+      const age = driver.lastUpdate ? formatAge(driver.lastUpdate) : 'pas encore de position';
       const icon = vehicleIsCar(driver) ? truckIcon : bikeSvg;
       const sel = String(selectedDriverId) === String(driver.id);
       return `<button type="button" class="ops-dcard ${sel ? 'sel' : ''}" data-action="select" data-id="${escapeHtml(driver.id)}">
         <span class="ops-dcard-av bucket-${b}">${icon}</span>
         <span class="ops-dcard-main">
           <span class="ops-dcard-top"><strong>${escapeHtml(driver.name)}</strong><span class="ops-badge2 bucket-${b}"><i style="background:${meta.dot}"></i>${meta.label}</span></span>
-          <small class="ops-dcard-sub">${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</small>
+          <small class="ops-dcard-sub">${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</small>
           <small class="ops-dcard-loc"><span class="ops-dcard-pin">${pinIcon}</span>${escapeHtml(driverPlace(driver))} · ${escapeHtml(age)}</small>
         </span>
         <span class="ops-dcard-chev">${chevRight}</span>
@@ -1575,7 +1589,7 @@ async function renderOperationsMap() {
       <div class="ops-fchips">
         ${chip('all', 'Tous', null)}
         ${chip('active', 'En cours', '#16a34a')}
-        ${chip('stale', 'GPS ancien', '#d97706')}
+        ${chip('stale', 'Signal ancien', '#d97706')}
         ${chip('incident', 'Incident', '#e11d2a')}
         ${chip('offline', 'Hors ligne', '#94a3b8')}
       </div>
@@ -1590,7 +1604,7 @@ async function renderOperationsMap() {
     const speedKmh = driver.position?.speedKnots != null && Number.isFinite(Number(driver.position.speedKnots))
       ? Number(driver.position.speedKnots) * 1.852 : null;
     const phone = String(driver.phone || '').replace(/[^+\d]/g, '');
-    const runCards = (driver.runs || []).map((run) => `<section class="ops-run"><div class="ops-run-head"><div><strong>${escapeHtml(run.name)}</strong><small>${escapeHtml(formatDateOnly(run.serviceDate))} · ${escapeHtml(run.completedStops)}/${escapeHtml(run.totalStops)} arrêt(s)</small></div>${badge(runStatusLabels[run.status] || run.status)}</div>
+    const runCards = (driver.runs || []).map((run) => `<section class="ops-run"><div class="ops-run-head"><div><strong>${escapeHtml(run.name)}</strong><small>${escapeHtml(formatDateOnly(run.serviceDate))} · ${escapeHtml(run.completedStops)} sur ${escapeHtml(run.totalStops)} arrêt${Number(run.totalStops) > 1 ? 's' : ''} livré${Number(run.completedStops) > 1 ? 's' : ''}</small></div>${badge(runStatusLabels[run.status] || run.status)}</div>
       ${run.stops.length ? `<ol class="ops-stops">${run.stops.map((stop) => `<li><span class="stop-number">${escapeHtml(stop.sequence)}</span><div class="ops-stop-main"><strong>${escapeHtml(stop.customerName || `Commande n° ${stop.id}`)}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(stop.status)}</small>${stop.openIncidents ? `<span class="ops-inc">${escapeHtml(stop.openIncidents)} incident(s)</span>` : ''}</div><button type="button" class="ops-link" data-action="open-order" data-id="${escapeHtml(stop.id)}">Voir</button></li>`).join('')}</ol>` : '<p class="ops-empty">Aucun arrêt restant.</p>'}
       <button type="button" class="button secondary" data-action="open-run" data-id="${escapeHtml(run.id)}">Ouvrir la tournée</button></section>`).join('');
     const unplanned = (driver.unplannedOrders || []).length ? `<section class="ops-run"><strong class="ops-run-title">Hors tournée</strong><ol class="ops-stops">${driver.unplannedOrders.map((order) => `<li><span class="stop-number">•</span><div class="ops-stop-main"><strong>${escapeHtml(order.customerName || `Commande n° ${order.id}`)}</strong><small>${escapeHtml(order.neighborhood || order.landmark || order.deliveryAddress || 'Destination à compléter')} · ${escapeHtml(order.status)}</small></div><button type="button" class="ops-link" data-action="open-order" data-id="${escapeHtml(order.id)}">Voir</button></li>`).join('')}</ol></section>` : '';
@@ -1605,7 +1619,7 @@ async function renderOperationsMap() {
       </div>
       <div class="ops-detail-id">
         <span class="ops-dcard-av bucket-${b}">${icon}</span>
-        <div class="ops-detail-idmain"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(driver.activeOrders)}/${escapeHtml(driver.capacity)} colis</small></div>
+        <div class="ops-detail-idmain"><strong>${escapeHtml(driver.name)}</strong><small>${escapeHtml(driver.vehicleType || 'Véhicule')} · ${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</small></div>
         <span class="ops-badge2 bucket-${b}"><i style="background:${meta.dot}"></i>${meta.label}</span>
       </div>
       <div class="ops-metrics">
@@ -1616,12 +1630,12 @@ async function renderOperationsMap() {
       </div>
       <div class="ops-detail-actions">
         <button type="button" class="button secondary" data-action="center" ${driver.position ? '' : 'disabled'}>Centrer</button>
-        <button type="button" class="button ${isolate ? 'accent' : 'secondary'}" data-action="isolate">${isolate ? 'Voir toute la flotte' : 'Isoler'}</button>
+        <button type="button" class="button ${isolate ? 'accent' : 'secondary'}" data-action="isolate">${isolate ? 'Voir toute la flotte' : 'Voir ce livreur seul'}</button>
         ${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler</a>` : ''}
         <button type="button" class="button ${replay.active && String(replay.driverId) === String(driver.id) ? 'accent' : 'primary'}" data-action="replay">Voir le trajet</button>
       </div>
       <div id="opsReplay" class="ops-replay-slot"></div>
-      ${driver.position?.stale ? '<div class="ops-note warning">Position de plus de 10 minutes : ne pas présenter comme du direct.</div>' : !driver.position ? '<div class="ops-note warning">Aucune coordonnée GPS exploitable pour ce livreur.</div>' : ''}
+      ${driver.position?.stale ? '<div class="ops-note warning">Position de plus de 10 minutes : ne pas présenter comme du direct.</div>' : !driver.position ? '<div class="ops-note warning">Pas encore de position GPS pour ce livreur : elle apparaîtra dès qu’il se connectera à son appli.</div>' : ''}
       <div id="opsLiveRoute" class="ops-liveroute-slot">${liveRouteInfoHtml()}</div>
       ${runCards || '<div class="ops-empty">Aucune tournée ouverte.</div>'}${unplanned}`;
   }
@@ -1944,16 +1958,16 @@ async function renderOperationsMap() {
       const reasons = {
         driver_position_unavailable: 'Position du livreur trop ancienne pour tracer l’itinéraire.',
         route_not_found: 'Aucun itinéraire routier trouvé jusqu’à la destination.',
-        provider_disabled: 'Moteur d’itinéraire non configuré.',
+        provider_disabled: 'Itinéraire indisponible pour le moment.',
         not_enough_points: 'Pas assez de points pour tracer un itinéraire.',
       };
-      return `<div class="ops-liveroute unavailable">${escapeHtml(reasons[liveRoute.reason] || (liveRoute.planned ? 'Itinéraire prévisionnel indisponible pour l’instant.' : 'Itinéraire live indisponible pour l’instant.'))}</div>`;
+      return `<div class="ops-liveroute unavailable">${escapeHtml(reasons[liveRoute.reason] || (liveRoute.planned ? 'Itinéraire prévisionnel indisponible pour l’instant.' : 'Itinéraire en direct indisponible pour le moment.'))}</div>`;
     }
     const km = liveRoute.distanceMeters != null ? (liveRoute.distanceMeters / 1000).toFixed(1) : '—';
     const min = liveRoute.durationSeconds != null ? Math.round(liveRoute.durationSeconds / 60) : null;
     const title = liveRoute.planned
       ? `Itinéraire prévisionnel · ${escapeHtml(km)} km`
-      : `Itinéraire live · ${escapeHtml(km)} km restants`;
+      : `Itinéraire en direct · ${escapeHtml(km)} km restants`;
     return `<div class="ops-liveroute ${liveRoute.planned ? 'planned' : ''}"><span class="ops-liveroute-dot"></span><div><strong>${title}</strong><small>${min != null ? `~${min} min de route` : 'durée indisponible'} · durée routière brute, hors arrêts et remise</small></div></div>`;
   }
 
@@ -2326,7 +2340,7 @@ function openCommandPalette() {
         group: 'Commandes', icon: 'order', label: `${orderCode(o.reference, o.id)} · ${o.customer_name || 'Client'}`, hint: `${o.status}${o.neighborhood ? ` · ${o.neighborhood}` : ''}`, run: () => openOrderDrawer(o.id),
       })));
       out.push(...take(data.requests.filter((r) => match(`DEM-${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''}`)), 5).map((r) => ({
-        group: 'Demandes', icon: 'request', label: `DEM-${r.id} · ${r.customer_name || 'En attente du client'}`, hint: r.status, run: () => openRequestDrawer(r.id),
+        group: 'Demandes', icon: 'request', label: `DEM-${r.id} · ${r.customer_name || 'En attente du client'}`, hint: requestStatusLabel(r.status), run: () => openRequestDrawer(r.id),
       })));
       out.push(...take(data.runs.filter((r) => match(`${r.name || ''} TRN-${r.id} ${r.driver_name || ''}`)), 4).map((r) => ({
         group: 'Tournées', icon: 'run', label: r.name || `Tournée ${r.id}`, hint: `${r.driver_name || ''} · ${runStatusLabels[r.status] || r.status}`, run: () => openRunDrawer(r.id),
@@ -2499,7 +2513,7 @@ function openModal(title, bodyHtml, footHtml = '') {
 }
 
 async function renderDrivers() {
-  setHeader('Livreurs', 'Équipe et disponibilité');
+  setHeader('Livreurs', 'Qui est disponible, qui livre, et avec combien de colis');
   const canManage = ['owner', 'manager'].includes(context.user.role);
   let drivers = await api('/api/app/drivers');
   let filter = 'all';
@@ -2512,9 +2526,9 @@ async function renderDrivers() {
   const allColumns = [
     { key: 'activite', label: 'Activité' },
     { key: 'disponibilite', label: 'Disponibilité' },
-    { key: 'charge', label: 'Charge' },
+    { key: 'charge', label: 'Colis / capacité' },
     { key: 'position', label: 'Position' },
-    { key: 'compte', label: 'Compte' },
+    { key: 'compte', label: 'Accès appli' },
   ];
   let visibleCols = (() => { try { const a = JSON.parse(localStorage.getItem(COLS_KEY) || 'null'); return Array.isArray(a) && a.length ? new Set(a) : new Set(allColumns.map((c) => c.key)); } catch { return new Set(allColumns.map((c) => c.key)); } })();
   const colVisible = (key) => visibleCols.has(key);
@@ -2577,7 +2591,7 @@ async function renderDrivers() {
     && (!query || `${d.name} ${d.vehicleType} ${d.phone || ''} ${driverCode(d)} ${d.uniqueId}`.toLowerCase().includes(query));
 
   page.innerHTML = `<div class="page-header fleet-head">
-      <div><h1>Livreurs</h1><p class="subtitle">Équipe et disponibilité</p></div>
+      <div><h1>Livreurs</h1><p class="subtitle">Qui est disponible, qui livre, et avec combien de colis.</p></div>
       ${canManage ? `<button class="button accent" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
     </div>
     <div class="fleet-summary"><div id="fleetStats" class="fleet-stats"></div>${canManage ? `<button type="button" class="fleet-toconfig" id="fleetToConfig" hidden></button>` : ''}</div>
@@ -2606,7 +2620,7 @@ async function renderDrivers() {
       <span class="fs-sep">·</span> <strong>${horsLigne}</strong> hors ligne`;
     const cfg = document.getElementById('fleetToConfig');
     if (cfg) {
-      if (toConfig > 0) { cfg.hidden = false; cfg.innerHTML = `${warnIc} <strong>${toConfig}</strong> accès à configurer ${chevIc}`; }
+      if (toConfig > 0) { cfg.hidden = false; cfg.innerHTML = `${warnIc} <strong>${toConfig}</strong> livreur${toConfig > 1 ? 's' : ''} sans accès à l’appli ${chevIc}`; }
       else cfg.hidden = true;
     }
   }
@@ -2637,9 +2651,9 @@ async function renderDrivers() {
         <th>Livreur</th>
         ${th('activite', 'Activité')}
         ${th('disponibilite', 'Disponibilité')}
-        ${th('charge', 'Charge', 'num')}
+        ${th('charge', 'Colis / capacité', 'num')}
         ${th('position', 'Position')}
-        ${th('compte', 'Compte')}
+        ${th('compte', 'Accès appli')}
         <th class="fleet-actions-h"></th>
       </tr></thead>
       <tbody>${list.map((d) => {
@@ -2718,13 +2732,13 @@ async function renderDrivers() {
       <div class="field"><label>Téléphone / WhatsApp</label><input name="phone" inputmode="tel" maxlength="40" value="${escapeHtml(driver.phone || '')}" autocomplete="off"/></div>
       <div class="field"><label>Véhicule</label><select name="vehicleType">${vehicleOptions(driver.vehicleType)}</select></div>
       <div class="field"><label>Capacité (colis)</label><input name="capacity" type="number" min="1" max="50" value="${escapeHtml(driver.capacity || 3)}"/></div>
-      <div class="field full"><label>Identifiant GPS ${driver.id ? '' : '(optionnel)'}</label><input name="trackerId" maxlength="64" value="${escapeHtml(driver.uniqueId || '')}" placeholder="Vide = généré automatiquement" autocomplete="off"/></div>
+      <div class="field full"><label>Identifiant du traceur GPS ${driver.id ? '' : '(facultatif)'}</label><input name="trackerId" maxlength="64" value="${escapeHtml(driver.uniqueId || '')}" placeholder="Vide = généré automatiquement" autocomplete="off"/></div>
     </div>`;
   }
 
   function openAddModal() {
     const modal = openModal('Ajouter un livreur',
-      `<p class="subtitle" style="margin-top:0">Créez la fiche. Renseignez un e-mail pour générer aussitôt un lien d’accès à son espace (compte limité, rattaché à votre entreprise).</p>
+      `<p class="subtitle" style="margin-top:0">Ajoutez son e-mail pour lui envoyer tout de suite son accès à l’appli livreur. Il ne verra que ses propres livraisons.</p>
        <form id="driverForm">${driverFormFields()}<div class="field full"><label>E-mail (accès livreur, optionnel)</label><input name="email" type="email" autocomplete="off"/></div></form>
        <div id="modalResult"></div>`,
       `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="driverSubmit" type="submit" form="driverForm">Créer le livreur</button>`);
@@ -2993,11 +3007,11 @@ async function renderDrivers() {
     const body = `<div class="dd-sub">${escapeHtml(driver.vehicleType)} · ${escapeHtml(driverCode(driver))}</div>
       <div class="dd-status"><span class="fleet-activity"><span class="fleet-dot" style="background:${act.color}"></span>${act.label}</span><span class="badge ${avail.tone}">${avail.label}</span></div>
       <div class="dd-rows">
-        <div class="dd-row"><span>Charge</span><strong>${escapeHtml(driver.activeOrders)} / ${escapeHtml(driver.capacity)}</strong></div>
+        <div class="dd-row"><span>Colis en cours</span><strong>${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</strong></div>
         <div class="dd-row"><span>Dernière position</span><strong>${driver.lastUpdate ? escapeHtml(formatAge(driver.lastUpdate)) : 'Inconnue'}</strong></div>
         <div class="dd-row"><span>Compte</span><strong>${acc.configured ? '<span class="badge success">Actif</span>' : '<span class="badge warning">À configurer</span>'}</strong></div>
       </div>
-      <div id="ddActivity" class="dd-activity">${acc.configured ? '<div class="dd-loading">Chargement…</div>' : `<div class="dd-note">${warnIc}<span>Aucun suivi disponible tant que l’accès n’est pas configuré.</span></div>`}</div>`;
+      <div id="ddActivity" class="dd-activity">${acc.configured ? '<div class="dd-loading">Chargement…</div>' : `<div class="dd-note">${warnIc}<span>Pas de suivi GPS tant que ce livreur n’a pas d’accès à l’appli. Créez-le pour qu’il puisse se connecter.</span></div>`}</div>`;
     const foot = acc.configured
       ? `<button class="button secondary" data-modal-close type="button">Fermer</button><a class="button primary" href="/app/carte">Voir sur la carte</a>`
       : `<button class="button secondary" data-modal-close type="button">Fermer</button>${canManage ? '<button class="button primary" id="ddConfigure" type="button">Configurer l’accès</button>' : ''}`;
@@ -3116,7 +3130,7 @@ async function renderTeam() {
         </div>
         <div class="field team-driver-field" id="driverField" hidden><label>Profil livreur associé</label><select name="driverId" id="invitationDriver"><option value="">Sélectionner</option>${availableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join('')}</select></div>
       </form>
-      <div class="team-invite-foot"><button type="button" class="team-link" id="shareLinkBtn">Créer un lien à partager</button><span class="team-sepbar">|</span><span class="team-muted">Le lien expire après 48 h.</span></div>
+      <div class="team-invite-foot"><button type="button" class="team-link" id="shareLinkBtn">Créer un lien à partager</button><span class="team-sepbar">|</span><span class="team-muted">Le lien d’invitation reste valable 48 h.</span></div>
       <div id="invitationResult"></div>
     </section>
     <hr class="team-sep"/>
@@ -3346,7 +3360,15 @@ async function renderSettings() {
 
   async function renderGeneral(box) {
     const c = await api('/api/app/company');
-    const tzOptions = (c.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${tz === c.timezone ? 'selected' : ''}>${escapeHtml(tz)}</option>`).join('');
+    // Fuseaux affichés en clair (pays, ville, décalage) ; la valeur reste l'identifiant standard.
+    const tzLabels = {
+      'Africa/Porto-Novo': 'Bénin — Cotonou, Porto-Novo (GMT+1)', 'Africa/Abidjan': 'Côte d’Ivoire — Abidjan (GMT)',
+      'Africa/Accra': 'Ghana — Accra (GMT)', 'Africa/Lagos': 'Nigeria — Lagos (GMT+1)', 'Africa/Lome': 'Togo — Lomé (GMT)',
+      'Africa/Ouagadougou': 'Burkina Faso — Ouagadougou (GMT)', 'Africa/Dakar': 'Sénégal — Dakar (GMT)', 'Africa/Bamako': 'Mali — Bamako (GMT)',
+      'Africa/Niamey': 'Niger — Niamey (GMT+1)', 'Africa/Douala': 'Cameroun — Douala (GMT+1)', 'Africa/Kinshasa': 'RD Congo — Kinshasa (GMT+1)',
+      UTC: 'Temps universel (UTC)', 'Europe/Paris': 'France — Paris (GMT+1 / +2 en été)',
+    };
+    const tzOptions = (c.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${tz === c.timezone ? 'selected' : ''}>${escapeHtml(tzLabels[tz] || tz)}</option>`).join('');
     box.innerHTML = `${head('Général', 'Gérez l’identité et les informations de votre entreprise.')}
       <section class="set2-card">
         <h3 class="set2-blocktitle">Profil de l’entreprise</h3>
@@ -3354,7 +3376,7 @@ async function renderSettings() {
           <div class="set2-profile-logo" id="logoBox">${logoMark('lg')}${canEdit ? `<div class="set2-logo-acts"><button class="button secondary small" type="button" id="editLogo">${context.company.logoUrl ? 'Changer' : 'Importer un logo'}</button>${context.company.logoUrl ? '<button class="button danger small" type="button" id="removeLogo">Retirer</button>' : ''}</div><small class="set2-logo-hint">PNG, JPEG ou WebP · affiché sur vos pages client</small><input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" hidden>` : ''}</div>
           <form id="companyForm" class="set2-profile-form">
             <div class="field"><label>Nom de l’entreprise</label><input name="name" maxlength="120" value="${escapeHtml(c.name || '')}" ${canEdit ? '' : 'disabled'} required></div>
-            <div class="field"><label>Nom de l’espace</label><input name="slug" maxlength="80" value="${escapeHtml(c.slug || '')}" ${canEdit ? '' : 'disabled'} required></div>
+            <div class="field"><label>Identifiant de l’espace</label><input name="slug" maxlength="80" value="${escapeHtml(c.slug || '')}" ${canEdit ? '' : 'disabled'} required></div>
             <div class="field"><label>E-mail administratif</label><input name="adminEmail" type="email" value="${escapeHtml(c.admin_email || '')}" ${canEdit ? '' : 'disabled'}></div>
             <div class="field"><label>Fuseau horaire</label><select name="timezone" ${canEdit ? '' : 'disabled'}>${tzOptions}</select></div>
             ${canEdit ? '<div class="set2-formfoot"><button class="button primary">Enregistrer les modifications</button></div>' : ''}
@@ -3365,7 +3387,7 @@ async function renderSettings() {
       <section class="set2-card">
         <h3 class="set2-blocktitle">Informations de l’espace</h3>
         <div class="set2-info">
-          <div class="set2-inforow"><span class="set2-info-ic">#</span><span>ID de l’espace</span><strong>#${escapeHtml(c.id)}</strong></div>
+          <div class="set2-inforow"><span class="set2-info-ic">#</span><span>N° de l’espace</span><strong>#${escapeHtml(c.id)}</strong></div>
           <div class="set2-inforow"><span class="set2-info-ic">${setIcons.crown}</span><span>Propriétaire</span><strong>${escapeHtml(c.owner_name || company.name)}</strong></div>
           <div class="set2-inforow"><span class="set2-info-ic">${setIcons.overview}</span><span>Créé le</span><strong>${escapeHtml(formatDateOnly(c.created_at))}</strong></div>
         </div>
@@ -3415,20 +3437,20 @@ async function renderSettings() {
   async function renderDeliveries(box) {
     const d = await api('/api/app/settings/deliveries');
     const row = (name, title, desc) => `<div class="set2-optrow"><span class="set2-opt-ic">${setIcons.play}</span><div class="set2-opt-main"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(desc)}</small></div>${setToggle(name, d[name], !canEdit)}</div>`;
-    box.innerHTML = `${head('Livraisons', 'Définissez les règles opérationnelles des commandes dans TRAXO.')}
+    box.innerHTML = `${head('Livraisons', 'Vos règles de validation et de création des commandes.')}
       <section class="set2-card">
         <h3 class="set2-blocktitle">Validation d’une commande</h3>
-        <p class="set2-blocksub">Configurez les règles de validation et d’activation des commandes.</p>
-        ${row('validateBeforeTracking', 'Validation avant activation du suivi client', 'Lorsque le client a partagé sa position, le suivi ne devient visible qu’après validation de la commande par l’entreprise.')}
-        ${row('driverAssignmentRequired', 'Attribution du livreur obligatoire', 'Une commande doit avoir un livreur attribué avant de pouvoir être validée.')}
-        ${row('allowEditAfterValidation', 'Autoriser la modification après validation', 'Permet de modifier certains détails d’une commande après sa validation.')}
+        <p class="set2-blocksub">Ce qui doit être fait avant qu’une commande parte en livraison.</p>
+        ${row('validateBeforeTracking', 'Valider avant d’ouvrir le suivi au client', 'Le client ne voit son suivi qu’après validation de sa demande par votre équipe.')}
+        ${row('driverAssignmentRequired', 'Livreur obligatoire pour valider', 'Une demande ne peut être validée qu’avec un livreur affecté.')}
+        ${row('allowEditAfterValidation', 'Modifier une commande après validation', 'Votre équipe peut encore corriger certains détails après la validation.')}
       </section>
       <section class="set2-card">
         <h3 class="set2-blocktitle">Création des demandes</h3>
-        <p class="set2-blocksub">Choisissez comment les demandes de livraison peuvent être créées dans TRAXO.</p>
-        ${row('customerFormEnabled', 'Formulaire client activé', 'Le client remplit un formulaire pour créer une demande et peut partager une position.')}
-        ${row('internalEntryEnabled', 'Saisie interne activée', 'L’entreprise peut créer elle-même des demandes depuis son interface.')}
-        ${row('manualValidation', 'Validation manuelle par l’entreprise', 'Une demande issue du formulaire ne devient une commande active qu’après validation.')}
+        <p class="set2-blocksub">Les façons de créer une nouvelle livraison.</p>
+        ${row('customerFormEnabled', 'Lien envoyé au client', 'Le client remplit lui-même ses informations et partage sa position exacte.')}
+        ${row('internalEntryEnabled', 'Saisie par votre équipe', 'Votre équipe peut créer une commande en saisissant elle-même les informations.')}
+        ${row('manualValidation', 'Validation par votre équipe', 'Une demande reçue par lien ne devient une commande qu’une fois validée.')}
         ${canEdit ? '<div class="set2-formfoot"><button class="button primary" id="saveDeliveries">Enregistrer les règles</button></div>' : ''}
         <div id="setResult"></div>
       </section>`;
@@ -3454,9 +3476,10 @@ async function renderSettings() {
     if (!canEdit) { box.innerHTML = `${head('Équipe & permissions', 'Gérez les accès, les rôles et les droits de votre espace.')}<section class="set2-card"><div class="notice">Seul un propriétaire ou un manager peut gérer l’équipe.</div></section>`; return; }
     const data = await api('/api/app/team');
     const roleCards = [
-      { ic: setIcons.crown, name: 'Propriétaire', desc: 'Accès complet à l’espace et à la facturation.' },
-      { ic: setIcons.user, name: 'Opérateur', desc: 'Gère les commandes, demandes et tournées.' },
-      { ic: setIcons.bike, name: 'Livreur', desc: 'Accède uniquement à ses tournées et au suivi GPS.' },
+      { ic: setIcons.crown, name: 'Propriétaire', desc: 'Tous les droits, y compris la facturation et la formule.' },
+      { ic: setIcons.team, name: 'Manager', desc: 'Gère l’équipe, les livreurs et les réglages. Pas d’accès à la facturation.' },
+      { ic: setIcons.user, name: 'Opérateur', desc: 'Traite les demandes, les commandes, les tournées et les incidents au quotidien.' },
+      { ic: setIcons.bike, name: 'Livreur', desc: 'Voit uniquement ses propres livraisons, dans l’appli livreur.' },
     ];
     const av = (name) => `<span class="set2-av">${escapeHtml(String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?')}</span>`;
     const memberRows = (data.members || []).map((m) => `<tr><td><div class="set2-user">${av(m.display_name || m.driver_name)}<div><strong>${escapeHtml(m.display_name || m.driver_name || '—')}</strong><small>${escapeHtml(m.email || '')}</small></div></div></td><td>${escapeHtml(traxoRoleLabels[m.role] || m.role)}</td><td>${m.disabled ? '<span class="set2-badge grey">Suspendu</span>' : '<span class="set2-badge green">Actif</span>'}</td></tr>`).join('');
@@ -3611,7 +3634,7 @@ async function renderSettings() {
 
   function openPasswordModal() {
     const modal = openModal('Modifier le mot de passe',
-      `<form id="pwdForm"><div class="field"><label>Mot de passe actuel</label><input name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label>Nouveau mot de passe (10 caractères min.)</label><input name="newPassword" type="password" autocomplete="new-password" minlength="10" required></div></form><p class="subtitle" style="margin:10px 0 0">Par sécurité, vos autres sessions seront déconnectées.</p><div id="modalResult"></div>`,
+      `<form id="pwdForm"><div class="field"><label>Mot de passe actuel</label><input name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label>Nouveau mot de passe (10 caractères minimum)</label><input name="newPassword" type="password" autocomplete="new-password" minlength="10" required></div></form><p class="subtitle" style="margin:10px 0 0">Par sécurité, vos autres sessions seront déconnectées.</p><div id="modalResult"></div>`,
       `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" type="submit" form="pwdForm">Enregistrer</button>`);
     modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
     modal.backdrop.querySelector('#pwdForm').addEventListener('submit', async (e) => {
@@ -3792,6 +3815,9 @@ function crmInitials(name) {
 }
 // Numéro métier lisible : la référence CMD-AAAA-NNNN si présente, sinon repli
 // sur l'identifiant technique.
+// Charge d'un livreur, lisible sans calcul : « 25 colis · capacité 3 ».
+function colisCount(n) { const v = Number(n) || 0; return v === 0 ? 'aucun colis' : `${v} colis`; }
+function loadText(active, capacity) { return `${colisCount(active)} · capacité ${Number(capacity) || 0}`; }
 function orderCode(reference, id) {
   return reference || `CMD-${id}`;
 }
@@ -3886,7 +3912,7 @@ async function openOrderDrawer(orderId, opts = {}) {
     const eventFor = (status) => (o.events || []).find((e) => e.to_status === status);
     const steps = [
       { label: 'Confirmée', at: eventFor('Confirmée') },
-      { label: 'Préparation', at: eventFor('Récupérée') },
+      { label: 'Récupérée', at: eventFor('Récupérée') },
       { label: 'En livraison', at: eventFor('En livraison') },
       { label: 'Livrée', at: eventFor('Livrée') },
     ];
@@ -3928,11 +3954,11 @@ async function openOrderDrawer(orderId, opts = {}) {
           <div class="crm-kv"><span>Pièces jointes</span><strong>${evidence}</strong></div>
         </section>
         <div class="od-actions" id="odActions"><div class="loading-state">Chargement des actions…</div></div>
-        <section data-od="Historique" id="odHistory"><h4><span class="crm-sec-ic">${secIc.note}</span>Notes et historique</h4><ul class="crm-hist">${history}</ul></section>
+        <section data-od="Historique" id="odHistory"><h4><span class="crm-sec-ic">${secIc.note}</span>Historique</h4><ul class="crm-hist">${history}</ul></section>
       </div>
       <div class="crm-drawer-foot">
         ${linkUsable ? '<button class="button secondary" type="button" id="odCopyLink">Copier le lien de suivi</button>' : '<button class="button secondary" type="button" id="odGoIncident">Déclarer un incident</button>'}
-        ${canAdvance ? '<button class="button primary" type="button" id="odAdvance">Faire avancer la livraison</button>' : '<button class="button primary" type="button" id="odGoHistory">Voir l’historique</button>'}
+        ${canAdvance ? '<button class="button primary" type="button" id="odAdvance">Mettre à jour le statut</button>' : '<button class="button primary" type="button" id="odGoHistory">Voir l’historique</button>'}
       </div>`;
     drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
     drawer.querySelector('#odBack')?.addEventListener('click', () => { close(); opts.onBack(); });
@@ -3947,8 +3973,8 @@ async function openOrderDrawer(orderId, opts = {}) {
     // Sections d'action : titre = entrée du menu.
     drawer.querySelectorAll('#odActions > section.card').forEach((section) => {
       const title = section.querySelector('h2')?.textContent || '';
-      const short = /avancer/i.test(title) ? 'Étape' : /Réassigner/i.test(title) ? 'Livreur' : /suivi/i.test(title) ? 'Lien client'
-        : /Encaissement/i.test(title) ? 'Encaissement' : /Incidents/i.test(title) ? 'Incidents' : /code|Preuve/i.test(title) ? 'Remise' : '';
+      const short = /statut/i.test(title) ? 'Statut' : /Changer de livreur/i.test(title) ? 'Livreur' : /suivi/i.test(title) ? 'Lien client'
+        : /Paiement/i.test(title) ? 'Paiement' : /Incidents/i.test(title) ? 'Incidents' : /code|Preuve/i.test(title) ? 'Preuves' : '';
       if (short && !drawer.querySelector(`[data-od="${short}"]`)) section.dataset.od = short;
     });
     const sections = [...body.querySelectorAll('[data-od]')];
@@ -3978,7 +4004,7 @@ async function openOrderDrawer(orderId, opts = {}) {
     }));
     body.addEventListener('scroll', markActive, { passive: true });
     const byName = (name) => sections.find((section) => section.dataset.od === name);
-    drawer.querySelector('#odAdvance')?.addEventListener('click', () => goTo(byName('Étape'), 'select'));
+    drawer.querySelector('#odAdvance')?.addEventListener('click', () => goTo(byName('Statut'), 'select'));
     drawer.querySelector('#odGoHistory')?.addEventListener('click', () => goTo(byName('Historique')));
     drawer.querySelector('#odGoIncident')?.addEventListener('click', () => goTo(byName('Incidents'), 'textarea'));
     drawer.querySelector('#odCopyLink')?.addEventListener('click', () => {
@@ -4456,15 +4482,15 @@ async function openRequestDrawer(requestId, opts = {}) {
           <option value="">${usableDrivers.length ? 'Sélectionner un livreur' : 'Aucun livreur disponible'}</option>
           ${drivers.map((d) => {
             const off = !d.active || ['inactive', 'off_duty', 'incident'].includes(d.operationalState);
-            return `<option value="${escapeHtml(d.id)}"${off ? ' disabled' : ''}>${escapeHtml(d.name)} — ${escapeHtml(driverStateLabels[d.operationalState] || d.operationalState)} — ${escapeHtml(d.activeOrders)}/${escapeHtml(d.capacity)} colis</option>`;
+            return `<option value="${escapeHtml(d.id)}"${off ? ' disabled' : ''}>${escapeHtml(d.name)} — ${escapeHtml(driverStateLabels[d.operationalState] || d.operationalState)} — ${escapeHtml(loadText(d.activeOrders, d.capacity))}</option>`;
           }).join('')}
         </select>
-        <p class="req-assign-msg" id="reqAssignMsg" role="status" aria-live="polite">${editable ? 'Valider verrouille les informations du client.' : 'Demande déjà validée : informations du client verrouillées.'}</p>
+        <p class="req-assign-msg" id="reqAssignMsg" role="status" aria-live="polite">${editable ? 'Après validation, le client ne peut plus modifier sa demande.' : 'Demande déjà validée : informations du client verrouillées.'}</p>
       </div>` : '';
     wrap.querySelector('.crm-drawer').innerHTML = `
       <div class="crm-drawer-head">
-        <div><div class="crm-drawer-title">DEM-${escapeHtml(r.id)} ${crmChip(r.status)}</div>
-          <small>Créée le ${escapeHtml(formatDate(r.created_at))}${r.submitted_at ? ' · via formulaire client' : ''}</small></div>
+        <div><div class="crm-drawer-title">DEM-${escapeHtml(r.id)} ${requestStatusChip(r.status)}</div>
+          <small>Créée le ${escapeHtml(formatDate(r.created_at))}${r.submitted_at ? ` · remplie par le client le ${escapeHtml(formatDate(r.submitted_at))}` : ' · lien pas encore rempli'}</small></div>
         <div class="crm-drawer-headact">
           <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
@@ -4478,15 +4504,13 @@ async function openRequestDrawer(requestId, opts = {}) {
         <section><h4><span class="crm-sec-ic">${secIc.pin}</span>Localisation</h4>
           <div class="crm-kv"><span>Zone / quartier</span><strong>${escapeHtml(r.neighborhood || '—')}</strong></div>
           <div class="crm-kv"><span>Repère</span><strong>${escapeHtml(r.landmark || '—')}</strong></div>
-          <div class="crm-kv"><span>Position GPS</span><strong>${shared ? crmChip('Partagée', 'green') : crmChip('Non partagée', 'red')}</strong></div>
+          <div class="crm-kv"><span>Position GPS</span><strong>${shared ? crmChip('Partagée', 'green') : crmChip('Manquante', 'red')}</strong></div>
           <div class="crm-kv"><span>Précision</span><strong>${r.location_accuracy != null
             ? `± ${escapeHtml(Math.round(r.location_accuracy).toLocaleString('fr-FR'))} m${r.location_accuracy > 150 ? ` ${crmChip('Imprécise', 'red')}` : ''}`
             : (shared ? 'Placée par le client' : '—')}</strong></div>
         </section>
-        <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Traitement</h4>
-          <div class="crm-kv"><span>Source</span><strong>${r.submitted_at ? crmChip('Formulaire client', 'blue') : crmChip('Saisie interne', 'purple')}</strong></div>
-          <div class="crm-kv"><span>Validation</span><strong>${validated ? crmChip('Validée', 'green') : crmChip('À valider', 'amber')}</strong></div>
-          <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(r.notes || 'Aucune')}</strong></div>
+        <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Détails</h4>
+          <div class="crm-kv"><span>Consigne pour le livreur</span><strong>${escapeHtml(r.notes || 'Aucune')}</strong></div>
           <div class="crm-kv"><span>Photos</span><strong>${photoIds.length
             ? `<span class="req-photos">${photoIds.map((photoId, i) => `<a href="${photoSrc(photoId)}" target="_blank" rel="noopener"><img src="${photoSrc(photoId)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</span>`
             : 'Aucune'}</strong></div>
@@ -4615,19 +4639,19 @@ async function renderOperations() {
 function renderOperationsHome() {
   page.innerHTML = `
     <div class="ops-accent"></div>
-    <div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Accédez rapidement aux outils essentiels.</p></div></div>
+    <div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Lancez une livraison ou suivez celles en cours.</p></div></div>
     <div class="ops-home">
       <a class="ops-home-card tint-red" href="/app/operations?vue=creer">
         <span class="ops-home-ic">${opsIco.form}</span>
-        <h3>Créer un formulaire</h3>
-        <p>Concevez et configurez la capture d’un nouveau client en quelques clics.</p>
+        <h3>Nouvelle livraison</h3>
+        <p>Envoyez un lien au client ou saisissez vous-même son adresse.</p>
         <span class="ops-home-arrow">${opsIco.arrow}</span>
         <span class="ops-home-art">${opsArt.form}</span>
       </a>
       <a class="ops-home-card tint-slate" href="/app/operations?vue=commandes">
         <span class="ops-home-ic">${opsIco.box}</span>
-        <h3>Commandes</h3>
-        <p>Gérez et suivez vos commandes, demandes, tournées et incidents en toute simplicité.</p>
+        <h3>Suivre l’activité</h3>
+        <p>Commandes, demandes, tournées et incidents au même endroit.</p>
         <span class="ops-home-arrow">${opsIco.arrow}</span>
         <span class="ops-home-art">${opsArt.package}</span>
       </a>
@@ -4637,21 +4661,21 @@ function renderOperationsHome() {
 // Niveau 2 : « Créer un formulaire » — deux façons de capter un client.
 function renderOperationsCreate() {
   page.innerHTML = `
-    <div class="ops-breadcrumb"><a href="/app/operations">Opérations</a><span class="sep">›</span><span>Créer un formulaire</span></div>
-    <div class="page-header"><div><h1>Créer un formulaire</h1><p class="subtitle">Choisissez comment récupérer les informations du client.</p></div></div>
+    <div class="ops-breadcrumb"><a href="/app/operations">Opérations</a><span class="sep">›</span><span>Nouvelle livraison</span></div>
+    <div class="page-header"><div><h1>Nouvelle livraison</h1><p class="subtitle">Comment voulez-vous obtenir l’adresse du client ?</p></div></div>
     <div class="ops-create">
       <div class="ops-create-card">
         <span class="ops-create-ic">${opsIco.pin}</span>
-        <h3>Le client partage sa position</h3>
-        <p>Envoyez un lien au client. Il remplit ses infos et partage sa position GPS exacte directement depuis son téléphone.</p>
-        <button type="button" class="button primary" id="opsGenLink">Générer ce lien ${opsIco.arrow}</button>
+        <h3>Le client la donne lui-même</h3>
+        <p>Vous lui envoyez un lien (WhatsApp, SMS). Il indique son nom, son téléphone et sa position exacte depuis son téléphone. Vous validez ensuite.</p>
+        <button type="button" class="button primary" id="opsGenLink">Créer le lien ${opsIco.arrow}</button>
         <span class="ops-create-art"><img src="/img/ops-share-location.webp" alt="" loading="lazy"/></span>
       </div>
       <a class="ops-create-card ops-create-link" href="/app/nouvelle-commande">
         <span class="ops-create-ic">${opsIco.ride}</span>
-        <h3>Vous remplissez, il suit le livreur</h3>
-        <p>Vous saisissez les infos du client vous-même. Il reçoit un lien pour suivre la position du livreur assigné en temps réel, sans révéler sa propre position.</p>
-        <span class="button primary">Créer et assigner ${opsIco.arrow}</span>
+        <h3>Vous la saisissez</h3>
+        <p>Vous connaissez déjà le client : saisissez ses coordonnées et choisissez un livreur. Le client reçoit un lien pour suivre sa livraison.</p>
+        <span class="button primary">Saisir la commande ${opsIco.arrow}</span>
         <span class="ops-create-art"><img src="/img/ops-assign-rider.webp" alt="" loading="lazy"/></span>
       </a>
     </div>
@@ -4667,9 +4691,9 @@ function renderOperationsCreate() {
       const fullUrl = publicLink(result.path);
       const waText = encodeURIComponent(`Bonjour, pour organiser votre livraison, merci de remplir vos informations ici : ${fullUrl}`);
       panel.innerHTML = `<div class="card ops-linkpanel">
-        <strong class="ops-linkpanel-title">Lien prêt à envoyer</strong>
-        <p class="ops-modal-note" style="margin:6px 0 14px">Le client remplit ses infos et épingle sa position. Valable 7 jours, une seule fois.</p>
-        <div class="ops-linkout"><input type="text" readonly value="${escapeHtml(fullUrl)}" id="capLink" aria-label="Lien du formulaire"/><button type="button" class="button secondary" id="capCopy">Copier</button></div>
+        <strong class="ops-linkpanel-title">Lien prêt : envoyez-le au client</strong>
+        <p class="ops-modal-note" style="margin:6px 0 14px">Il remplit ses informations et partage sa position. Le lien est valable 7 jours. Vous serez prévenu dès qu’il l’aura rempli.</p>
+        <div class="ops-linkout"><input type="text" readonly value="${escapeHtml(fullUrl)}" id="capLink" aria-label="Lien à envoyer au client"/><button type="button" class="button secondary" id="capCopy">Copier</button></div>
         <div class="ops-linkactions"><a class="button primary" target="_blank" rel="noopener" href="https://wa.me/?text=${waText}">Partager sur WhatsApp</a><a class="button secondary" target="_blank" rel="noopener" href="${escapeHtml(fullUrl)}">Ouvrir l’aperçu</a></div>
       </div>`;
       panel.querySelector('#capCopy').addEventListener('click', (copyEvent) => {
@@ -4747,7 +4771,7 @@ async function renderOperationsWorkspace(initialSegment) {
     tournees: {
       title: 'Tournées', newLabel: '', newHref: null, placeholder: 'Rechercher une tournée, un livreur…', countKey: 'open_runs',
       endpoint: () => '/api/app/runs', drawerFn: (id) => openRunDrawer(id, { onChange: loadSegment }), href: (r) => `/app/tournees/${r.id}`,
-      statusValues: ['draft', 'planned', 'active', 'completed', 'cancelled'],
+      statusValues: ['draft', 'planned', 'active', 'completed', 'cancelled'], statusLabelMap: runStatusLabels,
       groupCols: [['status', 'État'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? (runStatusLabels[r.status] || r.status) : (r.driver_name || '—'),
       filterTest: (r, v) => r.status === v,
@@ -4764,20 +4788,17 @@ async function renderOperationsWorkspace(initialSegment) {
     demandes: {
       title: 'Demandes', newLabel: 'Nouvelle demande', newHref: '/app/operations?vue=creer', placeholder: 'Rechercher une demande, un client…', countKey: 'active_requests',
       endpoint: () => `/api/app/requests?scope=${encodeURIComponent(scopeState.demandes)}`, drawerFn: (id) => openRequestDrawer(id, { onChange: loadSegment }), href: (r) => `/app/demandes/${r.id}`,
-      rowArchive: { title: 'Archiver', confirm: (id) => `Archiver la demande DEM-${id} ? Elle quittera la file active (réversible via l'onglet Archives).`, endpoint: (id) => `/api/app/requests/${encodeURIComponent(id)}/status`, body: { status: 'Archivée' } },
-      statusValues: [], filterTest: (r, v) => r.status === v,
-      groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['position', 'Position client']],
-      groupVal: (r, k) => k === 'status' ? (r.status || '—') : k === 'zone' ? (r.neighborhood || '—') : (reqShared(r) ? 'Partagée' : 'Non partagée'),
-      text: (r) => `${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.status || ''}`.toLowerCase(),
+      rowArchive: { title: 'Archiver', confirm: (id) => `Archiver la demande DEM-${id} ?`, endpoint: (id) => `/api/app/requests/${encodeURIComponent(id)}/status`, body: { status: 'Archivée' } },
+      statusValues: [], statusLabelMap: requestStatusLabels, filterTest: (r, v) => r.status === v,
+      groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['position', 'Position GPS']],
+      groupVal: (r, k) => k === 'status' ? requestStatusLabel(r.status) : k === 'zone' ? (r.neighborhood || '—') : (reqShared(r) ? 'Partagée' : 'Manquante'),
+      text: (r) => `${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${requestStatusLabel(r.status)}`.toLowerCase(),
       columns: [
         { key: 'id', label: 'N° Demande', cell: (r) => `<span class="crm-code">DEM-${escapeHtml(r.id)}</span>`, sortVal: (r) => Number(r.id) },
         { key: 'client', label: 'Client', cell: (r) => `<div class="crm-strong">${escapeHtml(r.customer_name || 'En attente du client')}</div>${r.customer_phone ? `<div class="crm-sub">${escapeHtml(r.customer_phone)}</div>` : ''}`, sortVal: (r) => (r.customer_name || '').toLowerCase() },
         { key: 'zone', label: 'Zone', cell: (r) => `${escapeHtml(r.neighborhood || '—')}${r.landmark ? `<div class="crm-sub">${escapeHtml(r.landmark)}</div>` : ''}`, sortVal: (r) => (r.neighborhood || '').toLowerCase() },
-        { key: 'source', label: 'Source', cell: (r) => r.submitted_at ? crmChip('Formulaire client', 'blue') : crmChip('Saisie interne', 'purple'), sortVal: (r) => r.submitted_at ? 0 : 1 },
-        { key: 'position', label: 'Position client', cell: (r) => reqShared(r) ? crmChip('Partagée', 'green') : crmChip('Non partagée', 'red'), sortVal: (r) => reqShared(r) ? 0 : 1 },
-        { key: 'validation', label: 'Validation', cell: (r) => reqValidated(r) ? crmChip('Validée', 'green') : crmChip('À valider', 'amber'), sortVal: (r) => reqValidated(r) ? 0 : 1 },
-        { key: 'acces', label: 'Accès client', cell: (r) => reqShared(r) ? crmChip('Projection + suivi', 'blue') : crmChip('Tracking livreur', 'indigo'), sortVal: (r) => reqShared(r) ? 0 : 1 },
-        { key: 'status', label: 'Statut', cell: (r) => crmChip(r.status), sortVal: (r) => r.status },
+        { key: 'position', label: 'Position GPS', cell: (r) => reqShared(r) ? crmChip('Partagée', 'green') : crmChip(r.submitted_at ? 'Manquante' : '—', r.submitted_at ? 'red' : 'grey'), sortVal: (r) => reqShared(r) ? 0 : 1 },
+        { key: 'status', label: 'Statut', cell: (r) => requestStatusChip(r.status), sortVal: (r) => r.status },
         { key: 'date', label: 'Date', cell: (r) => escapeHtml(formatDate(r.created_at)), sortVal: (r) => +new Date(r.created_at) },
       ],
     },
@@ -5219,9 +5240,9 @@ async function renderCustomers() {
   page.innerHTML = `<div class="cli">
     <div class="cli-toolbar">
       <div class="cli-tabs" role="tablist">
-        <button type="button" class="cli-tab" data-view="crm">${ic.crm}<span>CRM</span></button>
-        <button type="button" class="cli-tab" data-view="gallery">${ic.gallery}<span>Gallery</span></button>
-        <button type="button" class="cli-tab" data-view="pipeline">${ic.pipeline}<span>Pipeline</span></button>
+        <button type="button" class="cli-tab" data-view="crm">${ic.crm}<span>Liste</span></button>
+        <button type="button" class="cli-tab" data-view="gallery">${ic.gallery}<span>Cartes</span></button>
+        <button type="button" class="cli-tab" data-view="pipeline">${ic.pipeline}<span>Par étape</span></button>
       </div>
       <div class="cli-tools">
         <div class="cli-search"><span class="cli-search-ic">${ic.search}</span><input type="search" id="cliQuery" placeholder="Rechercher un client, un téléphone ou une adresse…" autocomplete="off" value="${escapeHtml(state.q)}"></div>
@@ -5577,7 +5598,7 @@ async function renderCustomers() {
         body.innerHTML = `<div class="cli-table-wrap"><table class="cli-table">
           <thead><tr>
             <th class="cli-check"><input type="checkbox" id="cliAll" aria-label="Tout sélectionner"></th>
-            <th>ID client</th><th>Nom du client</th><th>Téléphone</th><th>Statut</th><th>Cmds</th><th>Lieux connus</th><th>Dernière activité</th><th>Actions</th>
+            <th>N° client</th><th>Nom du client</th><th>Téléphone</th><th>Statut</th><th>Commandes</th><th>Lieux connus</th><th>Dernière activité</th><th>Actions</th>
           </tr></thead>
           <tbody>${rows.map(crmRow).join('')}</tbody>
         </table></div>${pagerHtml(pagination)}`;

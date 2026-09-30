@@ -135,7 +135,7 @@
             <!-- Login -->
             <form id="loginForm" method="post" action="/app/login">
               <h1>Bon retour</h1>
-              <p class="sub">Connectez-vous pour piloter vos livraisons.</p>
+              <p class="sub">Connectez-vous pour suivre vos livraisons.</p>
               <label for="loginEmail">Adresse e-mail</label>
               <input id="loginEmail" name="user" type="email" inputmode="email" autocomplete="username" required />
               <label for="loginPassword">Mot de passe</label>
@@ -166,7 +166,7 @@
             <!-- Register -->
             <form id="registerForm" method="post" action="/app/register" hidden>
               <h1>Créer votre espace</h1>
-              <p class="sub">Quelques informations et vous découvrez TRAXO en aperçu.</p>
+              <p class="sub">Deux minutes suffisent. Vous découvrez TRAXO en aperçu, sans engagement.</p>
               <label for="regCompany">Nom de l'entreprise <span class="req">*</span></label>
               <input id="regCompany" name="companyName" type="text" autocomplete="organization" maxlength="120" required />
               <label for="regName">Votre nom complet <span class="req">*</span></label>
@@ -177,13 +177,13 @@
               <input id="regPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" required />
               <label for="regPassword">Mot de passe <span class="req">*</span></label>
               <div class="pw">
-                <input id="regPassword" name="password" type="password" autocomplete="new-password" minlength="8" required />
+                <input id="regPassword" name="password" type="password" autocomplete="new-password" minlength="10" required />
                 <button type="button" class="toggle" data-target="regPassword" aria-label="Afficher le mot de passe">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
                   <span>Voir</span>
                 </button>
               </div>
-              <p class="hint">Au moins 8 caractères.</p>
+              <p class="hint">10 caractères minimum. Une courte phrase est plus facile à retenir.</p>
               <label class="check"><input type="checkbox" required /> <span>J'accepte les conditions d'utilisation et la politique de confidentialité de TRAXO.</span></label>
               <button class="submit" type="submit">Créer mon compte</button>
               <p class="foot">Votre compte démarre en mode aperçu. Les fonctionnalités s'activent après paiement.</p>
@@ -209,7 +209,7 @@
           email: "Vérifiez votre adresse e-mail.",
           email_taken: "Un compte existe déjà avec cet e-mail. Connectez-vous.",
           phone: "Indiquez un numéro de téléphone valide.",
-          password: "Le mot de passe doit contenir au moins 8 caractères.",
+          password: "Le mot de passe doit contenir au moins 10 caractères.",
           server: "Impossible de créer le compte pour le moment. Réessayez.",
         };
 

@@ -209,7 +209,7 @@
         function renderHeader(data) {
           const name = String(data.companyName || '').trim();
           if (name) {
-            el.brand.innerHTML = `<span class="cl-brand-mark" aria-hidden="true">${C.esc(name[0].toUpperCase())}</span><span class="cl-brand-name">${C.esc(name)}</span>`;
+            el.brand.innerHTML = `${C.brandMark(name, data.companyLogoUrl)}<span class="cl-brand-name">${C.esc(name)}</span>`;
             document.title = `Suivi de votre livraison — ${name}`;
           }
           if (data.displayNumber) el.number.textContent = `Livraison #${data.displayNumber}`;

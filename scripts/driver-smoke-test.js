@@ -417,6 +417,13 @@ async function run() {
       if (invitationId) await client.query('DELETE FROM user_invitations WHERE id = $1', [invitationId]);
       if (driverIds.length) {
         await client.query("DELETE FROM audit_logs WHERE entity_type = 'driver' AND entity_id = ANY($1::bigint[])", [driverIds]);
+        // Tournées créées automatiquement pour les livreurs de test (rattachement du jour).
+        const runIds = (await client.query('SELECT id FROM delivery_runs WHERE driver_id = ANY($1::bigint[])', [driverIds])).rows.map((row) => row.id);
+        if (runIds.length) {
+          await client.query('DELETE FROM delivery_run_events WHERE run_id = ANY($1::bigint[])', [runIds]);
+          await client.query('DELETE FROM delivery_stops WHERE run_id = ANY($1::bigint[])', [runIds]);
+          await client.query('DELETE FROM delivery_runs WHERE id = ANY($1::bigint[])', [runIds]);
+        }
         await client.query('DELETE FROM drivers WHERE id = ANY($1::bigint[])', [driverIds]);
       }
       await client.query('COMMIT');

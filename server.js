@@ -11,6 +11,8 @@ const { Pool } = require('pg');
 const { parsePhoneNumberFromString } = require('libphonenumber-js/max');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
+const totpLib = require('./lib/totp');
+const QRCode = require('qrcode');
 const {
   applyCrmSchema,
   ensureOrderCrmSnapshot,
@@ -859,6 +861,9 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS delivery_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_code TEXT;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'monthly';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_data BYTEA;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_mime TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_updated_at TIMESTAMPTZ;
 
       UPDATE companies
       SET slug = 'chicago-consulting-group', updated_at = NOW()
@@ -882,6 +887,20 @@ async function initDatabase() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS login_alerts BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_pending_secret TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_recovery_hashes JSONB NOT NULL DEFAULT '[]'::jsonb;
+      CREATE TABLE IF NOT EXISTS mfa_challenges (
+        token_hash TEXT PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        company_id BIGINT,
+        role TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
 
       CREATE TABLE IF NOT EXISTS company_memberships (
         id BIGSERIAL PRIMARY KEY,
@@ -1542,7 +1561,7 @@ async function readSession(req, scope) {
   const result = await pool.query(
     `SELECT s.user_id, s.company_id, s.scope, s.expires_at,
             u.email, u.display_name, u.is_platform_admin, u.disabled,
-            c.name AS company_name, c.slug AS company_slug, c.activation_status, m.role, m.driver_id,
+            c.name AS company_name, c.slug AS company_slug, c.activation_status, c.logo_updated_at AS company_logo_at, m.role, m.driver_id,
             d.active AS driver_active
      FROM app_sessions s
      JOIN users u ON u.id = s.user_id
@@ -1951,7 +1970,7 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).send('Base métier non configurée.');
   const email = normalizeEmail(req.body.user);
   const result = await pool.query(
-    `SELECT u.id, u.password_salt, u.password_hash, u.disabled, m.company_id, m.role
+    `SELECT u.id, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role
      FROM users u JOIN company_memberships m ON m.user_id = u.id
      WHERE u.email = $1 ORDER BY m.id LIMIT 1`,
     [email]
@@ -1960,8 +1979,109 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   if (!user || user.disabled || !passwordMatches(req.body.password, user.password_salt, user.password_hash)) {
     return res.redirect('/app/login?error=1');
   }
+  // Double authentification : mot de passe correct, mais la session n'est
+  // ouverte qu'après le code (défi à usage unique, 5 min, 5 essais).
+  if (user.totp_enabled_at) {
+    const challenge = randomToken();
+    await pool.query('DELETE FROM mfa_challenges WHERE user_id = $1 OR expires_at < NOW()', [user.id]);
+    await pool.query(
+      `INSERT INTO mfa_challenges (token_hash, user_id, company_id, role, expires_at)
+       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '5 minutes')`,
+      [digest(challenge), user.id, user.company_id, user.role]
+    );
+    setMfaCookie(req, res, challenge, 300);
+    return res.redirect('/app/login?step=2fa');
+  }
   await createSession(req, res, user.id, user.company_id, 'company');
   return res.redirect(user.role === 'driver' ? '/driver' : '/app');
+}));
+
+function setMfaCookie(req, res, value, maxAge) {
+  const secure = req.secure || req.get('x-forwarded-proto') === 'https';
+  res.append('Set-Cookie', `traxo_mfa=${encodeURIComponent(value)}; Path=/app/login; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
+}
+
+// Secret TOTP chiffré au repos (AES-256-GCM), clé dérivée du secret serveur.
+function mfaKey() {
+  const secret = process.env.MFA_SECRET || trackingTokenSecret();
+  if (!secret || Buffer.byteLength(secret) < 16) {
+    throw Object.assign(new Error('La double authentification n’est pas configurée sur ce serveur.'), { statusCode: 503 });
+  }
+  return crypto.createHash('sha256').update(`mfa-totp:v1:${secret}`).digest();
+}
+function encryptMfaSecret(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', mfaKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
+  return `v1.${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${ciphertext.toString('base64url')}`;
+}
+function decryptMfaSecret(value) {
+  const [version, iv, tag, data] = String(value || '').split('.');
+  if (version !== 'v1' || !iv || !tag || !data) return null;
+  const decipher = crypto.createDecipheriv('aes-256-gcm', mfaKey(), Buffer.from(iv, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(data, 'base64url')), decipher.final()]).toString('utf8');
+}
+const recoveryHash = (code) => digest(`mfa-recovery:${code}`);
+
+// Vérifie un code d'application ou un code de secours ; consomme le code
+// (anti-rejeu / usage unique). Renvoie 'totp', 'recovery' ou null.
+async function consumeSecondFactor(queryable, userId, rawCode) {
+  const row = (await queryable.query(
+    'SELECT totp_secret, totp_last_step, totp_recovery_hashes FROM users WHERE id = $1 FOR UPDATE',
+    [userId]
+  )).rows[0];
+  if (!row || !row.totp_secret) return null;
+  const secret = decryptMfaSecret(row.totp_secret);
+  const step = totpLib.verifyTotp(secret, rawCode, { lastStep: row.totp_last_step });
+  if (step != null) {
+    await queryable.query('UPDATE users SET totp_last_step = $1 WHERE id = $2', [step, userId]);
+    return 'totp';
+  }
+  const recovery = totpLib.normalizeRecoveryCode(rawCode);
+  const hashes = Array.isArray(row.totp_recovery_hashes) ? row.totp_recovery_hashes : [];
+  if (recovery && hashes.includes(recoveryHash(recovery))) {
+    const remaining = hashes.filter((hash) => hash !== recoveryHash(recovery));
+    await queryable.query('UPDATE users SET totp_recovery_hashes = $1::jsonb WHERE id = $2', [JSON.stringify(remaining), userId]);
+    return 'recovery';
+  }
+  return null;
+}
+
+app.post('/app/login/2fa', loginRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).send('Base métier non configurée.');
+  const challenge = String(parseCookies(req).traxo_mfa || '');
+  if (!challenge) return res.redirect('/app/login?error=expired');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = (await client.query(
+      'SELECT * FROM mfa_challenges WHERE token_hash = $1 AND expires_at > NOW() FOR UPDATE',
+      [digest(challenge)]
+    )).rows[0];
+    if (!found || found.attempts >= 5) {
+      if (found) await client.query('DELETE FROM mfa_challenges WHERE token_hash = $1', [found.token_hash]);
+      await client.query('COMMIT');
+      setMfaCookie(req, res, '', 0);
+      return res.redirect('/app/login?error=expired');
+    }
+    const method = await consumeSecondFactor(client, found.user_id, req.body.code);
+    if (!method) {
+      await client.query('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE token_hash = $1', [found.token_hash]);
+      await client.query('COMMIT');
+      return res.redirect(`/app/login?step=2fa&error=code&left=${Math.max(0, 4 - found.attempts)}`);
+    }
+    await client.query('DELETE FROM mfa_challenges WHERE token_hash = $1', [found.token_hash]);
+    await client.query('COMMIT');
+    await createSession(req, res, found.user_id, found.company_id, 'company');
+    setMfaCookie(req, res, '', 0);
+    return res.redirect(found.role === 'driver' ? '/driver' : '/app');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 app.post('/app/logout', asyncRoute(async (req, res) => {
@@ -2460,7 +2580,8 @@ app.post('/api/app/invitations/:id/revoke', requireCompanyApi, requireCompanyRol
 
 app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
   user: { id: req.auth.user_id, email: req.auth.email, name: req.auth.display_name, role: req.auth.role },
-  company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug, activationStatus: req.auth.activation_status || 'active' },
+  company: { id: req.auth.company_id, name: req.auth.company_name, slug: req.auth.company_slug, activationStatus: req.auth.activation_status || 'active', logoUrl: companyLogoUrl(req.auth.company_id, req.auth.company_logo_at) },
+  supportEmail: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(process.env.SUPPORT_EMAIL || '')) ? process.env.SUPPORT_EMAIL : null,
   // Domaine canonique des liens partagés aux clients (APP_BASE_URL), quel que
   // soit le domaine par lequel l'entreprise consulte l'application.
   publicBaseUrl: publicBaseUrl(req),
@@ -2867,7 +2988,7 @@ const companyTimezones = [
 
 app.get('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT c.id, c.name, c.slug, c.admin_email, c.timezone, c.created_at,
+    `SELECT c.id, c.name, c.slug, c.admin_email, c.timezone, c.created_at, c.logo_updated_at,
             (SELECT u.display_name FROM company_memberships m JOIN users u ON u.id = m.user_id
              WHERE m.company_id = c.id AND m.role = 'owner' ORDER BY m.id LIMIT 1) AS owner_name,
             (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers
@@ -2875,7 +2996,8 @@ app.get('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'man
     [req.auth.company_id]
   );
   if (!result.rows[0]) return res.status(404).json({ error: 'Entreprise introuvable.' });
-  return res.json({ ...result.rows[0], timezones: companyTimezones });
+  const { logo_updated_at: logoAt, ...company } = result.rows[0];
+  return res.json({ ...company, logoUrl: companyLogoUrl(company.id, logoAt), timezones: companyTimezones });
 }));
 
 app.patch('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
@@ -3024,7 +3146,7 @@ app.post('/api/app/billing/plan', requireCompanyApi, requireCompanyRoles('owner'
 // --- Paramètres > Sécurité : compte utilisateur ---
 app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, res) => {
   const [user, sessions] = await Promise.all([
-    pool.query('SELECT password_changed_at, login_alerts FROM users WHERE id = $1', [req.auth.user_id]),
+    pool.query('SELECT password_changed_at, login_alerts, totp_enabled_at, totp_recovery_hashes FROM users WHERE id = $1', [req.auth.user_id]),
     pool.query('SELECT COUNT(*)::int AS n FROM app_sessions WHERE user_id = $1 AND expires_at > NOW()', [req.auth.user_id]),
   ]);
   const row = user.rows[0] || {};
@@ -3032,7 +3154,9 @@ app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, r
     passwordChangedAt: row.password_changed_at || null,
     loginAlerts: row.login_alerts !== false,
     activeSessions: sessions.rows[0].n,
-    twoFactorEnabled: false,
+    twoFactorEnabled: !!row.totp_enabled_at,
+    twoFactorEnabledAt: row.totp_enabled_at || null,
+    recoveryCodesLeft: Array.isArray(row.totp_recovery_hashes) ? row.totp_recovery_hashes.length : 0,
   });
 }));
 
@@ -3050,6 +3174,82 @@ app.get('/api/app/account/sessions', requireCompanyApi, asyncRoute(async (req, r
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   })));
+}));
+
+// --- Double authentification (application d'authentification) ---
+async function issueRecoveryCodes(queryable, userId) {
+  const codes = totpLib.generateRecoveryCodes();
+  await queryable.query('UPDATE users SET totp_recovery_hashes = $1::jsonb WHERE id = $2', [JSON.stringify(codes.map(recoveryHash)), userId]);
+  return codes;
+}
+
+app.post('/api/app/account/2fa/setup', requireCompanyApi, asyncRoute(async (req, res) => {
+  const user = (await pool.query('SELECT email, totp_enabled_at FROM users WHERE id = $1', [req.auth.user_id])).rows[0];
+  if (!user) return res.status(404).json({ error: 'Compte introuvable.' });
+  if (user.totp_enabled_at) return res.status(409).json({ error: 'La double authentification est déjà activée.' });
+  const secret = totpLib.generateSecret();
+  await pool.query('UPDATE users SET totp_pending_secret = $1 WHERE id = $2', [encryptMfaSecret(secret), req.auth.user_id]);
+  const url = totpLib.otpauthUrl({ secret, account: user.email, issuer: 'TRAXO' });
+  const qrSvg = await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0c0d10', light: '#ffffff' } });
+  return res.json({ secret: secret.match(/.{1,4}/g).join(' '), otpauthUrl: url, qrSvg });
+}));
+
+app.post('/api/app/account/2fa/enable', requireCompanyApi, asyncRoute(async (req, res) => {
+  const row = (await pool.query('SELECT totp_pending_secret, totp_enabled_at FROM users WHERE id = $1', [req.auth.user_id])).rows[0];
+  if (!row || !row.totp_pending_secret) return res.status(400).json({ error: 'Relancez la configuration : aucun QR code en attente.' });
+  if (row.totp_enabled_at) return res.status(409).json({ error: 'La double authentification est déjà activée.' });
+  const secret = decryptMfaSecret(row.totp_pending_secret);
+  const step = totpLib.verifyTotp(secret, req.body.code);
+  if (step == null) return res.status(400).json({ error: 'Code incorrect. Vérifiez l’heure du téléphone et saisissez le code affiché.' });
+  await pool.query(
+    `UPDATE users SET totp_secret = totp_pending_secret, totp_pending_secret = NULL, totp_enabled_at = NOW(), totp_last_step = $1 WHERE id = $2`,
+    [step, req.auth.user_id]
+  );
+  const codes = await issueRecoveryCodes(pool, req.auth.user_id);
+  await writeAudit(req.auth, 'user', req.auth.user_id, 'mfa_enabled', {});
+  return res.json({ enabled: true, recoveryCodes: codes });
+}));
+
+app.post('/api/app/account/2fa/disable', requireCompanyApi, asyncRoute(async (req, res) => {
+  const user = (await pool.query('SELECT password_salt, password_hash, totp_enabled_at FROM users WHERE id = $1', [req.auth.user_id])).rows[0];
+  if (!user || !user.totp_enabled_at) return res.status(400).json({ error: 'La double authentification n’est pas activée.' });
+  if (!passwordMatches(String(req.body.password || ''), user.password_salt, user.password_hash)) return res.status(400).json({ error: 'Mot de passe incorrect.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const method = await consumeSecondFactor(client, req.auth.user_id, req.body.code);
+    if (!method) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Code incorrect.' }); }
+    await client.query(
+      `UPDATE users SET totp_secret = NULL, totp_pending_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL, totp_recovery_hashes = '[]'::jsonb WHERE id = $1`,
+      [req.auth.user_id]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  await writeAudit(req.auth, 'user', req.auth.user_id, 'mfa_disabled', {});
+  return res.json({ enabled: false });
+}));
+
+app.post('/api/app/account/2fa/recovery-codes', requireCompanyApi, asyncRoute(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const method = await consumeSecondFactor(client, req.auth.user_id, req.body.code);
+    if (!method) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Code incorrect.' }); }
+    const codes = await issueRecoveryCodes(client, req.auth.user_id);
+    await client.query('COMMIT');
+    await writeAudit(req.auth, 'user', req.auth.user_id, 'mfa_recovery_regenerated', {});
+    return res.json({ recoveryCodes: codes });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 app.post('/api/app/account/password', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -4408,7 +4608,7 @@ app.get('/api/app/requests', requireCompanyApi, asyncRoute(async (req, res) => {
 
 app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time,
+    `SELECT r.id, r.token, r.status, r.customer_name, r.customer_phone, r.requested_time,
             r.location_lat, r.location_lng, r.location_accuracy, r.location_at,
             r.neighborhood, r.landmark, r.notes, r.created_at, r.submitted_at, r.updated_at,
             r.expires_at, r.archived_at, r.validated_at, r.version,
@@ -5111,6 +5311,52 @@ app.get('/api/app/drivers/:id/photo', requireCompanyApi, asyncRoute(async (req, 
   res.setHeader('Cache-Control', 'private, max-age=86400');
   if (row.photo_updated_at) res.setHeader('ETag', `"${new Date(row.photo_updated_at).getTime()}"`);
   return res.end(row.photo_data);
+}));
+
+// Logo de l'entreprise : même contrôle que les photos de livreurs (data URL,
+// JPEG/PNG/WebP, 600 Ko max). Servi publiquement (image de marque affichée
+// sur les pages client), sans aucune donnée personnelle.
+function companyLogoUrl(companyId, updatedAt) {
+  return updatedAt && companyId ? `/brand/logo/${encodeURIComponent(companyId)}?v=${new Date(updatedAt).getTime()}` : null;
+}
+
+app.post('/api/app/company/logo', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const dataUrl = String(req.body.dataUrl || '');
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match || !driverPhotoMimes[match[1]]) return res.status(400).json({ error: 'Image invalide (JPEG, PNG ou WebP attendu).' });
+  const buffer = Buffer.from(match[2], 'base64');
+  if (buffer.length < 64 || buffer.length > 600 * 1024) return res.status(400).json({ error: 'Image trop lourde (max 600 Ko) ou vide.' });
+  if (detectImageMime(buffer) !== match[1]) return res.status(400).json({ error: 'Le contenu du fichier ne correspond pas à une image valide.' });
+  const result = await pool.query(
+    `UPDATE companies SET logo_data = $1, logo_mime = $2, logo_updated_at = NOW(), updated_at = NOW()
+     WHERE id = $3 RETURNING id, logo_updated_at`,
+    [buffer, match[1], req.auth.company_id]
+  );
+  await writeAudit(req.auth, 'company', req.auth.company_id, 'logo_updated', {});
+  return res.json({ logoUrl: companyLogoUrl(result.rows[0].id, result.rows[0].logo_updated_at) });
+}));
+
+app.delete('/api/app/company/logo', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  await pool.query(
+    'UPDATE companies SET logo_data = NULL, logo_mime = NULL, logo_updated_at = NULL, updated_at = NOW() WHERE id = $1',
+    [req.auth.company_id]
+  );
+  await writeAudit(req.auth, 'company', req.auth.company_id, 'logo_removed', {});
+  return res.json({ logoUrl: null });
+}));
+
+app.get('/brand/logo/:companyId', asyncRoute(async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.companyId) || !pool) return res.status(404).end();
+  const result = await pool.query('SELECT logo_data, logo_mime FROM companies WHERE id = $1', [req.params.companyId]);
+  const row = result.rows[0];
+  if (!row || !row.logo_data) return res.status(404).end();
+  res.set({
+    'Content-Type': row.logo_mime || 'image/png',
+    'Cache-Control': 'public, max-age=604800, immutable',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'; sandbox",
+  });
+  return res.end(row.logo_data);
 }));
 
 // Nettoyage d'une trace GPS brute : retire le jitter (points quasi immobiles),
@@ -7559,7 +7805,7 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   const result = await pool.query(
     `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time, r.location_lat, r.location_lng,
             r.location_accuracy, r.neighborhood, r.landmark, r.notes, r.submitted_at, r.updated_at,
-            r.validated_at, r.archived_at, r.edit_token_hash, r.version, c.name AS company_name,
+            r.validated_at, r.archived_at, r.edit_token_hash, r.version, c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at,
             o.id AS order_id, o.status AS order_status, o.status_changed_at AS order_status_changed_at,
             d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
             t.token AS tracking_token, t.token_ciphertext AS tracking_token_ciphertext,
@@ -7580,7 +7826,7 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   res.set('Cache-Control', 'private, no-store');
   const stage = publicRequestStage(row);
   // Formulaire pas encore rempli : rien de personnel à protéger.
-  if (stage === 'pending') return res.json({ stage, companyName: row.company_name });
+  if (stage === 'pending') return res.json({ stage, companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) });
   let deviceOk = Boolean(row.edit_token_hash && requestDeviceSecret(req)
     && digest(requestDeviceSecret(req)) === row.edit_token_hash);
   // Anciens liens « ?edit=… » (avant ce changement) : échange UNIQUE contre un
@@ -7598,7 +7844,7 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     }
   }
   // Autre appareil : la demande existe, mais ses données ne sont pas montrées.
-  if (!deviceOk) return res.json({ stage: 'other_device', companyName: row.company_name });
+  if (!deviceOk) return res.json({ stage: 'other_device', companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) });
   const canEdit = editableRequestStatuses.includes(row.status) && !row.archived_at;
   // Le client garde le même lien : dès qu'un livreur est affecté, sa page de
   // demande lui donne accès au suivi (détenir ce lien suffit déjà à voir la demande).
@@ -7627,6 +7873,7 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     validated_at: row.validated_at,
     version: row.version,
     companyName: row.company_name,
+    companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at),
     stage,
     canEdit,
     photoIds: row.photo_ids || [],
@@ -7811,7 +8058,7 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
                o.id AS order_id, o.reference AS order_reference, o.customer_request_id,
                o.status, o.status_changed_at, o.requested_time, o.neighborhood, o.landmark,
                o.destination_lat, o.destination_lng, o.destination_accuracy, o.created_at AS order_created_at,
-               c.name AS company_name, r.validated_at AS request_validated_at,
+               c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at, r.validated_at AS request_validated_at,
                t.id AS tracking_link_id, t.expires_at, t.created_at, t.revoked_at
         FROM tracking_links t
         JOIN orders o ON o.id = t.order_id AND o.company_id = t.company_id
@@ -7844,6 +8091,7 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
       driverName: row.driver_name,
       driverVehicleType: row.driver_vehicle_type,
       companyName: row.company_name,
+      companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at),
       // Même numéro que la demande côté client (« Demande #55 » → « Livraison #55 »).
       displayNumber: row.customer_request_id ? String(row.customer_request_id) : (row.order_reference || String(row.order_id)),
       steps: await publicTrackingSteps(row),
@@ -7859,6 +8107,7 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
     landmark: tracking.landmark,
     driver: tracking.driverName ? { name: tracking.driverName, vehicleType: tracking.driverVehicleType } : null,
     companyName: tracking.companyName,
+    companyLogoUrl: tracking.companyLogoUrl || null,
     displayNumber: tracking.displayNumber,
     steps: tracking.steps,
     mapConfig: mapConfiguration(),

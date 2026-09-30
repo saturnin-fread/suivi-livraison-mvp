@@ -43,9 +43,17 @@
     return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   }
 
-  function renderHeader(root, companyName, rightHtml) {
+  // Marque de l'entreprise : son logo s'il existe, sinon son initiale.
+  function brandMark(name, logoUrl) {
+    const safe = typeof logoUrl === 'string' && /^\/brand\/logo\/\d+(\?v=\d+)?$/.test(logoUrl) ? logoUrl : '';
+    return safe
+      ? `<span class="cl-brand-mark has-logo" aria-hidden="true"><img src="${esc(safe)}" alt=""></span>`
+      : `<span class="cl-brand-mark" aria-hidden="true">${esc(name[0].toUpperCase())}</span>`;
+  }
+
+  function renderHeader(root, companyName, rightHtml, logoUrl) {
     const name = String(companyName || '').trim() || 'Livraison';
-    root.innerHTML = `<div class="cl-brand"><span class="cl-brand-mark" aria-hidden="true">${esc(name[0].toUpperCase())}</span><span class="cl-brand-name">${esc(name)}</span></div><div class="cl-head-right">${rightHtml || ''}</div>`;
+    root.innerHTML = `<div class="cl-brand">${brandMark(name, logoUrl)}<span class="cl-brand-name">${esc(name)}</span></div><div class="cl-head-right">${rightHtml || ''}</div>`;
   }
 
   async function fetchJson(url, options) {
@@ -398,7 +406,7 @@
   }
 
   window.TraxoClient = {
-    icon, esc, initials, isCar, formatTime, renderHeader, fetchJson, requestTokenFromPath,
+    icon, esc, initials, isCar, formatTime, renderHeader, brandMark, fetchJson, requestTokenFromPath,
     createGpsField, createPhotoPicker, compressImage, uploadPhoto, deletePhoto,
     requestFieldsHtml, readFields, firstMissing, wirePhoneField, markFieldError,
   };

@@ -81,7 +81,7 @@ async function run() {
     await page.goto(`${baseUrl}/app/login`);
     await page.locator('input[name="user"]').fill(email);
     await page.locator('input[name="password"]').fill(password);
-    await Promise.all([page.waitForURL('**/driver'), page.locator('button.primary').click()]);
+    await Promise.all([page.waitForURL('**/driver'), page.locator('#loginForm button[type="submit"]').click()]);
     const owner = `${ids.company}:${ids.user}:${ids.driver}`;
 
     await page.goto(`${baseUrl}/driver/commandes/${ids.orders[0]}`);

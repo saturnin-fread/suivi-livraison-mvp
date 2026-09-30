@@ -3,274 +3,123 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>TRAXO — Connexion</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --black: #111111;
-        --red: #e11d2a;
-        --red-dark: #b3141f;
-        --muted: #6a7382;
-        --line: #e2e7ef;
-        --bg: #f4f6fa;
-        --field: #eef1f6;
-        font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      }
-      * { box-sizing: border-box; }
-      [hidden] { display: none !important; }
-      body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--black); overflow-x: hidden; }
-      .wrap { min-height: 100vh; display: flex; }
-      /* Desktop: full-bleed split screen, no floating card, no empty margins. */
-      .auth { flex: 1; min-height: 100vh; background: #fff; display: grid; grid-template-columns: 1.05fr 1fr; }
-
-      /* Brand side */
-      .brand { position: relative; min-height: 100vh; color: #fff; background: linear-gradient(155deg, var(--red) 0%, var(--red-dark) 100%); padding: 56px clamp(40px, 5vw, 80px); display: flex; flex-direction: column; justify-content: center; gap: 20px; }
-      .brand h2 { margin: 6px 0 0; font-size: clamp(24px, 2.4vw, 34px); line-height: 1.18; max-width: 15ch; }
-      .brand p { margin: 0; opacity: .92; font-size: 15.5px; line-height: 1.55; max-width: 40ch; }
-      .brand ul { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
-      .brand li { display: flex; align-items: center; gap: 11px; font-size: 15px; opacity: .96; }
-      .brand li svg { flex: 0 0 auto; }
-
-      /* Logo lockup */
-      .logo { display: inline-flex; align-items: center; gap: 10px; }
-      .logo .mark { width: 36px; height: 36px; }
-      .logo .word { font-weight: 900; letter-spacing: .06em; font-size: 25px; }
-      .logo .dot { fill: var(--red); }
-
-      /* Form side */
-      .panel { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 48px clamp(24px, 4vw, 64px); }
-      .panel-inner { width: 100%; max-width: 430px; }
-      .panel-inner > .logo { display: none; color: var(--black); margin-bottom: 22px; }
-      .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--field); border-radius: 12px; margin-bottom: 24px; }
-      .tabs button { border: 0; background: transparent; padding: 11px; border-radius: 9px; font: inherit; font-weight: 700; color: var(--muted); cursor: pointer; }
-      .tabs button[aria-selected="true"] { background: #fff; color: var(--black); box-shadow: 0 2px 8px #10203a14; }
-      h1 { margin: 0 0 4px; font-size: 24px; }
-      .sub { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
-      label { display: block; margin: 14px 0 6px; font-size: 13px; font-weight: 700; }
-      .req { color: var(--red); }
-      input { width: 100%; min-height: 46px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 11px; font: inherit; background: #fff; }
-      input:focus { outline: 2px solid var(--red); outline-offset: 1px; border-color: transparent; }
-      .pw { position: relative; }
-      .pw input { padding-right: 78px; }
-      .pw button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; height: 36px; padding: 0 8px; border-radius: 8px; cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 700; }
-      .pw button svg { width: 17px; height: 17px; }
-      .hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
-      .row { display: flex; align-items: center; justify-content: flex-end; margin-top: 12px; }
-      .check { display: flex; align-items: flex-start; gap: 9px; margin-top: 14px; font-size: 13px; color: var(--muted); }
-      .check input { width: 18px; min-height: 18px; margin-top: 1px; accent-color: var(--red); }
-      .link { color: var(--red); text-decoration: none; font-size: 13px; font-weight: 700; }
-      .link:hover { text-decoration: underline; }
-      .submit { width: 100%; min-height: 50px; margin-top: 22px; border: 0; border-radius: 12px; background: var(--black); color: #fff; font: inherit; font-weight: 800; letter-spacing: .02em; cursor: pointer; }
-      .submit:hover { background: #000; }
-      .banner { margin-bottom: 16px; padding: 11px 13px; border-radius: 11px; font-size: 13.5px; line-height: 1.45; display: flex; align-items: flex-start; gap: 9px; }
-      .banner svg { flex: 0 0 auto; margin-top: 1px; }
-      .banner.error { background: #fdecec; color: #99101a; border: 1px solid #f6c9cc; }
-      .banner.success { background: #e7f7ee; color: #166534; border: 1px solid #b7e4c7; }
-      .foot { margin-top: 20px; text-align: center; font-size: 12px; color: var(--muted); }
-
-      /* Mobile: stacked, brand header above the form (validated layout). */
-      @media (max-width: 760px) {
-        .wrap { display: block; }
-        .auth { grid-template-columns: 1fr; min-height: 100vh; }
-        .brand { min-height: 0; padding: 26px 22px calc(24px + env(safe-area-inset-top)); padding-top: calc(26px + env(safe-area-inset-top)); gap: 12px; }
-        .brand h2 { font-size: 21px; max-width: none; }
-        .brand p, .brand ul { display: none; }
-        .panel { min-height: 0; align-items: stretch; justify-content: flex-start; padding: 24px 20px calc(30px + env(safe-area-inset-bottom)); }
-        .panel-inner { max-width: none; }
-      }
-          .mfa-code { font-size: 22px; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }
-      .mfa-hint { margin: 8px 0 18px; color: #66758c; font-size: 13px; line-height: 1.45; }
-    </style>
+    <title>Se connecter — TRAXO</title>
+    <meta name="description" content="Connectez-vous à TRAXO pour préparer, attribuer et suivre vos livraisons." />
+    <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="stylesheet" href="/auth.css" />
   </head>
   <body>
-    <div class="wrap">
-      <main class="auth">
-        <!-- Brand side -->
-        <aside class="brand">
-          <span class="logo" aria-label="TRAXO">
-            <svg class="mark" viewBox="0 0 64 64" role="img" aria-hidden="true">
-              <path d="M32 5c-11 0-20 8.7-20 19.6 0 13.8 20 34.4 20 34.4s20-20.6 20-34.4C52 13.7 43 5 32 5Z" fill="currentColor"/>
-              <circle cx="32" cy="24" r="10.5" fill="#fff"/>
-              <circle cx="32" cy="24" r="5.6" class="dot"/>
-              <rect x="1.5" y="41" width="15" height="4.4" rx="2.2" fill="currentColor"/>
-              <rect x="5.5" y="49.5" width="15" height="4.4" rx="2.2" fill="currentColor"/>
-              <path d="M19 42.5l10.5 6.4L19 55.3" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span class="word">TRAXO</span>
-          </span>
-          <h2>Le suivi de vos colis et livreurs, en temps réel.</h2>
-          <p>La plateforme qui aide les entreprises de livraison à préparer, affecter et suivre chaque course — sur le terrain comme au bureau.</p>
-          <ul>
-            <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 12 2 2 4-4"/><circle cx="12" cy="12" r="9.5"/></svg> Suivi carte en direct</li>
-            <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 12 2 2 4-4"/><circle cx="12" cy="12" r="9.5"/></svg> Preuve de livraison et encaissement</li>
-            <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 12 2 2 4-4"/><circle cx="12" cy="12" r="9.5"/></svg> Rapports et exports Excel</li>
-          </ul>
-        </aside>
+    <header class="ax-header">
+      <a class="ax-logo" href="/app/login"><img src="/brand/traxo-logo.png" width="160" height="34" alt="TRAXO" /></a>
+      <p class="ax-header-link"><span>Nouveau sur TRAXO ?</span><a href="/app/register">Créer un compte</a></p>
+    </header>
 
-        <!-- Form side -->
-        <section class="panel">
-          <div class="panel-inner">
-            <span class="logo" style="color:var(--black)">
-              <svg class="mark" viewBox="0 0 64 64" role="img" aria-hidden="true">
-                <path d="M32 5c-11 0-20 8.7-20 19.6 0 13.8 20 34.4 20 34.4s20-20.6 20-34.4C52 13.7 43 5 32 5Z" fill="currentColor"/>
-                <circle cx="32" cy="24" r="10.5" fill="#fff"/>
-                <circle cx="32" cy="24" r="5.6" class="dot"/>
-                <rect x="1.5" y="41" width="15" height="4.4" rx="2.2" fill="currentColor"/>
-                <rect x="5.5" y="49.5" width="15" height="4.4" rx="2.2" fill="currentColor"/>
-                <path d="M19 42.5l10.5 6.4L19 55.3" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span class="word">TRAXO</span>
-            </span>
+    <main class="ax-main">
+      <section class="ax-form-col" aria-labelledby="title">
+        <h1 class="ax-title" id="title">Se connecter</h1>
+        <p class="ax-sub">Retrouvez vos commandes et vos livreurs.</p>
 
-            <div class="tabs" role="tablist">
-              <button type="button" id="tabLogin" role="tab" aria-selected="true" aria-controls="loginForm">Se connecter</button>
-              <button type="button" id="tabRegister" role="tab" aria-selected="false" aria-controls="registerForm">Créer un compte</button>
-            </div>
+        <div class="ax-banner error" id="banner" role="alert" hidden></div>
 
-            <div class="banner error" id="banner" hidden>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
-              <span id="bannerText"></span>
-            </div>
+        <div data-google-block hidden>
+          <a class="ax-google" href="/app/auth/google" data-google="login">
+            <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+            Continuer avec Google
+          </a>
+          <div class="ax-or">ou</div>
+        </div>
 
-            <!-- Login -->
-            <form id="loginForm" method="post" action="/app/login">
-              <h1>Bon retour</h1>
-              <p class="sub">Connectez-vous pour suivre vos livraisons.</p>
-              <label for="loginEmail">Adresse e-mail</label>
-              <input id="loginEmail" name="user" type="email" inputmode="email" autocomplete="username" required />
-              <label for="loginPassword">Mot de passe</label>
-              <div class="pw">
-                <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
-                <button type="button" class="toggle" data-target="loginPassword" aria-label="Afficher le mot de passe">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                  <span>Voir</span>
-                </button>
-              </div>
-              <div class="row">
-                <a class="link" href="/app/forgot">Mot de passe oublié ?</a>
-              </div>
-              <button class="submit" type="submit">Se connecter</button>
-            </form>
-
-            <!-- Double authentification -->
-            <form id="mfaForm" method="post" action="/app/login/2fa" hidden>
-              <h1>Vérification en deux étapes</h1>
-              <p class="sub">Saisissez le code à 6 chiffres affiché dans votre application d’authentification.</p>
-              <label for="mfaCode">Code de vérification</label>
-              <input id="mfaCode" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="9" pattern="[0-9A-Za-z\- ]{6,9}" placeholder="123 456" required class="mfa-code" />
-              <p class="mfa-hint" id="mfaHint">Téléphone perdu ? Saisissez l’un de vos codes de secours (format ABCD-EFGH).</p>
-              <button class="submit" type="submit">Vérifier et se connecter</button>
-              <div class="row"><a class="link" href="/app/login">← Revenir à la connexion</a></div>
-            </form>
-
-            <!-- Register -->
-            <form id="registerForm" method="post" action="/app/register" hidden>
-              <h1>Créer votre espace</h1>
-              <p class="sub">Deux minutes suffisent. Vous découvrez TRAXO en aperçu, sans engagement.</p>
-              <label for="regCompany">Nom de l'entreprise <span class="req">*</span></label>
-              <input id="regCompany" name="companyName" type="text" autocomplete="organization" maxlength="120" required />
-              <label for="regName">Votre nom complet <span class="req">*</span></label>
-              <input id="regName" name="ownerName" type="text" autocomplete="name" maxlength="120" required />
-              <label for="regEmail">E-mail professionnel <span class="req">*</span></label>
-              <input id="regEmail" name="email" type="email" inputmode="email" autocomplete="email" maxlength="200" required />
-              <label for="regPhone">Téléphone / WhatsApp <span class="req">*</span></label>
-              <input id="regPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" required />
-              <label for="regPassword">Mot de passe <span class="req">*</span></label>
-              <div class="pw">
-                <input id="regPassword" name="password" type="password" autocomplete="new-password" minlength="10" required />
-                <button type="button" class="toggle" data-target="regPassword" aria-label="Afficher le mot de passe">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                  <span>Voir</span>
-                </button>
-              </div>
-              <p class="hint">10 caractères minimum. Une courte phrase est plus facile à retenir.</p>
-              <label class="check"><input type="checkbox" required /> <span>J'accepte les conditions d'utilisation et la politique de confidentialité de TRAXO.</span></label>
-              <button class="submit" type="submit">Créer mon compte</button>
-              <p class="foot">Votre compte démarre en mode aperçu. Les fonctionnalités s'activent après paiement.</p>
-            </form>
+        <form id="loginForm" method="post" action="/app/login" data-busy-form novalidate>
+          <div class="ax-field">
+            <label class="ax-label" for="loginEmail">Adresse e-mail</label>
+            <input class="ax-input" id="loginEmail" name="user" type="email" inputmode="email" autocomplete="username" placeholder="vous@exemple.com" required />
           </div>
-        </section>
-      </main>
-    </div>
+          <div class="ax-field">
+            <div class="ax-label-row">
+              <label class="ax-label" for="loginPassword">Mot de passe</label>
+              <a href="/app/forgot">Mot de passe oublié ?</a>
+            </div>
+            <div class="ax-pw">
+              <input class="ax-input" id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Votre mot de passe" required />
+              <button type="button" data-toggle-pw="loginPassword" aria-pressed="false" aria-label="Afficher le mot de passe">Afficher</button>
+            </div>
+          </div>
+          <label class="ax-check" for="remember">
+            <input type="checkbox" id="remember" name="remember" value="1" />
+            <span>Rester connecté pendant 30 jours<small>À cocher uniquement sur un appareil personnel.</small></span>
+          </label>
+          <button class="ax-submit" type="submit" data-busy="Connexion…"><span class="ax-spin" aria-hidden="true"></span><span data-label>Se connecter</span></button>
+        </form>
+      </section>
 
+      <aside class="ax-visual" aria-hidden="true">
+        <h2>Vos livraisons,<br />bien coordonnées.</h2>
+        <p>Préparez, attribuez et suivez chaque commande.</p>
+        <div class="ax-photo"></div>
+        <small>Pour les commerces, restaurants et équipes de livraison.</small>
+      </aside>
+    </main>
+
+    <footer class="ax-footer">
+      <span>© TRAXO</span>
+      <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
+    </footer>
+
+    <div class="tx-busy" id="txBusy" aria-hidden="true"><div class="tx-busy-inner" role="status"><div class="tx-speeder" aria-hidden="true"><div class="sp-body"><span><span></span><span></span><span></span><span></span></span><div class="sp-base"><span></span><div class="sp-face"></div></div></div><div class="sp-lines"><span></span><span></span><span></span><span></span></div></div><p>Chargement…</p></div></div>
+
+    <script src="/auth.js"></script>
     <script>
       (function () {
         var params = new URLSearchParams(location.search);
-        var tabLogin = document.getElementById('tabLogin');
-        var tabRegister = document.getElementById('tabRegister');
-        var loginForm = document.getElementById('loginForm');
-        var registerForm = document.getElementById('registerForm');
-        var banner = document.getElementById('banner');
-        var bannerText = document.getElementById('bannerText');
+        // Anciennes adresses (onglet inscription, 2FA) : redirection douce.
+        if (params.get('tab') === 'register') { location.replace('/app/register' + (params.get('error') ? '?error=' + encodeURIComponent(params.get('error')) : '')); return; }
+        if (params.get('step') === '2fa') { location.replace('/app/login/2fa'); return; }
 
-        var messages = {
-          company: "Indiquez le nom de votre entreprise.",
-          name: "Indiquez votre nom complet.",
-          email: "Vérifiez votre adresse e-mail.",
-          email_taken: "Un compte existe déjà avec cet e-mail. Connectez-vous.",
-          phone: "Indiquez un numéro de téléphone valide.",
-          password: "Le mot de passe doit contenir au moins 10 caractères.",
-          server: "Impossible de créer le compte pour le moment. Réessayez.",
-        };
-
-        function showBanner(text, type) {
-          var ok = type === 'success';
-          banner.className = 'banner ' + (ok ? 'success' : 'error');
-          banner.innerHTML = (ok
-            ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
-            : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>')
-            + '<span></span>';
-          banner.querySelector('span').textContent = text;
-          banner.hidden = false;
-        }
-
-        function show(tab) {
-          var isRegister = tab === 'register';
-          tabRegister.setAttribute('aria-selected', String(isRegister));
-          tabLogin.setAttribute('aria-selected', String(!isRegister));
-          registerForm.hidden = !isRegister;
-          loginForm.hidden = isRegister;
-        }
-        tabLogin.addEventListener('click', function () { show('login'); banner.hidden = true; });
-        tabRegister.addEventListener('click', function () { show('register'); banner.hidden = true; });
-
-        document.querySelectorAll('.toggle').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var input = document.getElementById(btn.dataset.target);
-            var showing = input.type === 'text';
-            input.type = showing ? 'password' : 'text';
-            btn.querySelector('span').textContent = showing ? 'Voir' : 'Cacher';
-          });
-        });
-
-        var tab = params.get('tab');
+        var form = document.getElementById('loginForm');
+        var email = document.getElementById('loginEmail');
+        var password = document.getElementById('loginPassword');
         var error = params.get('error');
-        var mfaForm = document.getElementById('mfaForm');
-        if (params.get('step') === '2fa') {
-          loginForm.hidden = true; registerForm.hidden = true;
-          document.querySelector('.tabs').hidden = true;
-          mfaForm.hidden = false;
-          var mfaInput = document.getElementById('mfaCode');
-          mfaInput.focus();
-          if (error === 'code') {
-            var left = Number(params.get('left'));
-            showBanner('Code incorrect.' + (left >= 0 && left < 5 ? ' Encore ' + left + ' essai' + (left > 1 ? 's' : '') + '.' : ''), 'error');
+        var messages = {
+          '1': 'Adresse e-mail ou mot de passe incorrect. Vérifiez les majuscules, ou utilisez « Mot de passe oublié ? ».',
+          expired: 'La vérification a expiré. Connectez-vous à nouveau pour recevoir un nouveau code.',
+          code_send: 'Nous n’avons pas pu vous envoyer le code par e-mail. Réessayez dans un instant.',
+          google: 'La connexion avec Google n’a pas abouti. Réessayez, ou utilisez votre e-mail et votre mot de passe.',
+          google_cancel: 'Connexion avec Google annulée.',
+          google_off: 'La connexion avec Google n’est pas encore disponible. Utilisez votre e-mail et votre mot de passe.',
+          google_other: 'Ce compte TRAXO est déjà relié à un autre compte Google.',
+          disabled: 'Ce compte a été désactivé. Contactez le responsable de votre entreprise.',
+          no_company: 'Ce compte n’est rattaché à aucune entreprise.',
+          server: 'Un problème technique nous empêche de vous connecter. Réessayez dans un instant.',
+        };
+        if (params.get('reset') === '1') TraxoAuth.showBanner('Mot de passe modifié. Connectez-vous avec le nouveau.', 'success');
+        else if (params.get('created') === '1' && error !== 'code_send') TraxoAuth.showBanner('Compte créé. Connectez-vous pour continuer.', 'success');
+        else if (error && messages[error]) TraxoAuth.showBanner(messages[error], 'error');
+        if (error === '1') password.setAttribute('aria-invalid', 'true');
+        // Après une erreur, l'adresse saisie est conservée (sur cet onglet seulement).
+        try {
+          var remembered = sessionStorage.getItem('traxo-login-email');
+          if (error && remembered && !email.value) email.value = remembered;
+        } catch (e) { /* stockage bloqué */ }
+
+        form.addEventListener('submit', function (event) {
+          try { sessionStorage.setItem('traxo-login-email', email.value.trim()); } catch (e) { /* ignoré */ }
+          [email, password].forEach(function (input) { input.removeAttribute('aria-invalid'); });
+          if (!email.value.trim() || !email.checkValidity()) {
+            event.preventDefault();
+            email.setAttribute('aria-invalid', 'true');
+            TraxoAuth.showBanner(email.value.trim() ? 'Cette adresse e‑mail semble incomplète (ex. : vous@exemple.com).' : 'Indiquez votre adresse e‑mail.', 'error');
+            email.focus();
+            return;
           }
-          return;
-        }
-        if (error === 'expired') showBanner('La vérification a expiré. Reconnectez-vous.', 'error');
-        if (params.get('created') === '1') {
-          show('login');
-          showBanner('Compte créé. Connectez-vous avec vos identifiants.', 'success');
-        } else if (params.get('reset') === '1') {
-          show('login');
-          showBanner('Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe.', 'success');
-        } else if (tab === 'register') {
-          show('register');
-          if (error && messages[error]) showBanner(messages[error], 'error');
-        } else if (error === '1') {
-          showBanner('Adresse e-mail ou mot de passe incorrect.', 'error');
-        }
+          if (!password.value) {
+            event.preventDefault();
+            password.setAttribute('aria-invalid', 'true');
+            TraxoAuth.showBanner('Indiquez votre mot de passe.', 'error');
+            password.focus();
+          }
+        }, true);
+        (email.value ? password : email).focus({ preventScroll: true });
       })();
     </script>
   </body>

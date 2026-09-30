@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Vérification — TRAXO</title>
+    <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="stylesheet" href="/auth.css" />
+  </head>
+  <body>
+    <header class="ax-header">
+      <a class="ax-logo" href="/app/login"><img src="/brand/traxo-logo.png" width="160" height="34" alt="TRAXO" /></a>
+    </header>
+
+    <main class="ax-center">
+      <section class="ax-card" aria-labelledby="title">
+        <div class="ax-badge" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4M12 15v2"/></svg>
+        </div>
+        <h1 class="ax-title" id="title">Vérification</h1>
+        <p class="ax-sub" id="subtitle">Saisissez le code à 6 chiffres.</p>
+        <p class="ax-target" id="target"></p>
+
+        <div class="ax-banner error" id="banner" role="alert" hidden></div>
+
+        <form id="codeForm" method="post" action="/app/login/code" data-busy-form>
+          <input type="hidden" name="code" id="codeValue" />
+          <div class="ax-otp" id="otp" role="group" aria-label="Code à 6 chiffres">
+            <input type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="Chiffre 1" />
+            <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 2" />
+            <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 3" />
+            <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 4" />
+            <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 5" />
+            <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 6" />
+          </div>
+          <div class="ax-recovery" id="recoveryWrap" hidden>
+            <label class="ax-label" for="recoveryInput">Code de secours</label>
+            <input class="ax-input" id="recoveryInput" type="text" autocomplete="off" maxlength="9" placeholder="ABCD-EFGH" />
+          </div>
+          <button class="ax-submit" type="submit" data-busy="Vérification…"><span class="ax-spin" aria-hidden="true"></span><span data-label>Vérifier le code</span></button>
+        </form>
+
+        <div class="ax-resend" id="resendBlock" hidden>
+          <div id="resendWait">Vous pourrez demander un nouveau code dans <span class="ax-timer" id="timer">0:30</span></div>
+          <button type="button" class="ax-link-btn" id="resendBtn" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5"/></svg>
+            Renvoyer le code
+          </button>
+        </div>
+        <div class="ax-resend" id="recoveryToggleBlock" hidden>
+          <button type="button" class="ax-link-btn" id="recoveryToggle">Utiliser un code de secours</button>
+        </div>
+        <p class="ax-help" id="help"></p>
+        <a class="ax-back" href="/app/login">Revenir à la connexion</a>
+      </section>
+    </main>
+
+    <footer class="ax-footer">
+      <span>© TRAXO</span>
+      <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
+    </footer>
+
+    <script src="/auth.js"></script>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var isTotp = location.pathname === '/app/login/2fa';
+        var form = document.getElementById('codeForm');
+        var hidden = document.getElementById('codeValue');
+        var otpRoot = document.getElementById('otp');
+        var submit = form.querySelector('.ax-submit');
+        var recoveryWrap = document.getElementById('recoveryWrap');
+        var recoveryInput = document.getElementById('recoveryInput');
+        var useRecovery = false;
+
+        var otp = TraxoAuth.mountOtp(otpRoot, hidden, function () {
+          // Code complet : envoi automatique (une seule fois).
+          if (form.dataset.sending !== '1') { form.requestSubmit ? form.requestSubmit() : form.submit(); }
+        });
+
+        var left = Number(params.get('left'));
+        if (params.get('error') === 'code') {
+          TraxoAuth.showBanner('Code incorrect.' + (left >= 0 && left < 5 ? ' Encore ' + left + ' essai' + (left > 1 ? 's' : '') + '.' : ''), 'error');
+          otpRoot.classList.add('has-error');
+        }
+
+        form.addEventListener('submit', function (event) {
+          if (useRecovery) hidden.value = recoveryInput.value.trim();
+          var ok = useRecovery ? /^[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}$/.test(hidden.value) : /^\d{6}$/.test(hidden.value);
+          if (!ok) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            TraxoAuth.showBanner(useRecovery ? 'Un code de secours a le format ABCD-EFGH.' : 'Saisissez les 6 chiffres du code.', 'error');
+            if (useRecovery) recoveryInput.focus(); else otp.focus();
+          }
+        }, true);
+
+        if (isTotp) {
+          form.action = '/app/login/2fa';
+          document.title = 'Vérification en deux étapes — TRAXO';
+          document.getElementById('title').textContent = 'Vérification en deux étapes';
+          document.getElementById('subtitle').textContent = 'Ouvrez votre application d’authentification et saisissez le code à 6 chiffres affiché pour TRAXO.';
+          document.getElementById('target').hidden = true;
+          document.getElementById('recoveryToggleBlock').hidden = false;
+          document.getElementById('help').textContent = 'Le code change toutes les 30 secondes. Téléphone perdu ? Utilisez l’un des codes de secours reçus lors de l’activation.';
+          document.getElementById('recoveryToggle').addEventListener('click', function () {
+            useRecovery = !useRecovery;
+            otpRoot.hidden = useRecovery;
+            recoveryWrap.hidden = !useRecovery;
+            this.textContent = useRecovery ? 'Utiliser le code de l’application' : 'Utiliser un code de secours';
+            (useRecovery ? recoveryInput : otpRoot.querySelector('input')).focus();
+          });
+          otp.focus();
+          return;
+        }
+
+        // Code envoyé par e-mail
+        var resendBlock = document.getElementById('resendBlock');
+        var resendBtn = document.getElementById('resendBtn');
+        var resendWait = document.getElementById('resendWait');
+        var timerEl = document.getElementById('timer');
+        var tick = null;
+        function countdown(seconds) {
+          clearInterval(tick);
+          resendBlock.hidden = false;
+          if (seconds == null) { resendWait.textContent = 'Nombre maximal d’envois atteint pour ce code.'; resendBtn.disabled = true; return; }
+          var remaining = seconds;
+          function paint() {
+            timerEl.textContent = Math.floor(remaining / 60) + ':' + String(remaining % 60).padStart(2, '0');
+            resendWait.hidden = remaining <= 0;
+            resendBtn.disabled = remaining > 0;
+          }
+          paint();
+          tick = setInterval(function () { remaining -= 1; paint(); if (remaining <= 0) clearInterval(tick); }, 1000);
+        }
+        fetch('/app/login/code/state', { credentials: 'same-origin' }).then(function (r) {
+          if (r.status === 410) { location.replace('/app/login?error=expired'); return null; }
+          return r.json();
+        }).then(function (state) {
+          if (!state) return;
+          var signup = state.purpose === 'signup';
+          document.title = (signup ? 'Confirmez votre adresse' : 'Code de connexion') + ' — TRAXO';
+          document.getElementById('title').textContent = signup ? 'Confirmez votre adresse e‑mail' : 'Confirmez qu’il s’agit bien de vous';
+          document.getElementById('subtitle').textContent = signup
+            ? 'Nous venons d’envoyer un code à 6 chiffres à'
+            : 'Première connexion sur cet appareil : nous avons envoyé un code à 6 chiffres à';
+          document.getElementById('target').textContent = state.email;
+          document.getElementById('help').textContent = 'Le code est valable 10 minutes. Vous ne trouvez pas l’e‑mail ? Regardez dans les courriers indésirables.';
+          countdown(state.resendIn);
+        }).catch(function () {});
+
+        resendBtn.addEventListener('click', function () {
+          resendBtn.disabled = true;
+          fetch('/app/login/code/resend', { method: 'POST', credentials: 'same-origin' }).then(function (r) {
+            return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+          }).then(function (res) {
+            if (res.status === 410) { location.replace('/app/login?error=expired'); return; }
+            if (!res.ok) { TraxoAuth.showBanner(res.data.error || 'Le code n’a pas pu être renvoyé.', 'error'); countdown(res.data.resendIn === undefined ? 30 : res.data.resendIn); return; }
+            TraxoAuth.showBanner('Nouveau code envoyé. L’ancien ne fonctionne plus.', 'success');
+            otpRoot.classList.remove('has-error');
+            countdown(res.data.resendIn);
+            otp.focus();
+          }).catch(function () { TraxoAuth.showBanner('Connexion impossible. Vérifiez votre réseau puis réessayez.', 'error'); resendBtn.disabled = false; });
+        });
+        otp.focus();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Créer un compte — TRAXO</title>
+    <meta name="description" content="Créez votre compte TRAXO : un seul espace pour vos commandes et vos livreurs." />
+    <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="stylesheet" href="/auth.css" />
+  </head>
+  <body>
+    <header class="ax-header">
+      <a class="ax-logo" href="/app/login"><img src="/brand/traxo-logo.png" width="160" height="34" alt="TRAXO" /></a>
+      <p class="ax-header-link"><span>Déjà un compte ?</span><a href="/app/login">Se connecter</a></p>
+    </header>
+
+    <main class="ax-main">
+      <section class="ax-form-col" aria-labelledby="title">
+        <h1 class="ax-title" id="title">Créer votre compte</h1>
+        <p class="ax-sub">Un seul espace pour vos commandes et vos livreurs.</p>
+
+        <div class="ax-banner error" id="banner" role="alert" hidden></div>
+
+        <div data-google-block hidden>
+          <a class="ax-google" href="/app/auth/google" data-google="register">
+            <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+            Continuer avec Google
+          </a>
+          <div class="ax-or">ou</div>
+        </div>
+
+        <form id="registerForm" method="post" action="/app/register" data-busy-form novalidate>
+          <div class="ax-field">
+            <label class="ax-label" for="regEmail">Adresse e-mail</label>
+            <input class="ax-input" id="regEmail" name="email" type="email" inputmode="email" autocomplete="email" maxlength="200" placeholder="vous@exemple.com" aria-describedby="regEmailHint" required />
+            <p class="ax-hint" id="regEmailHint">Votre adresse personnelle convient aussi.</p>
+          </div>
+          <div class="ax-field">
+            <label class="ax-label" for="regPassword">Créer un mot de passe</label>
+            <div class="ax-pw">
+              <input class="ax-input" id="regPassword" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="200" placeholder="Votre mot de passe" aria-describedby="regPasswordHint" required />
+              <button type="button" data-toggle-pw="regPassword" aria-pressed="false" aria-label="Afficher le mot de passe">Afficher</button>
+            </div>
+            <p class="ax-hint" id="regPasswordHint">10 caractères minimum. Une courte phrase est plus facile à retenir.</p>
+          </div>
+          <button class="ax-submit" type="submit" data-busy="Création du compte…"><span class="ax-spin" aria-hidden="true"></span><span data-label>Créer mon compte</span></button>
+          <p class="ax-legal">En créant un compte, vous acceptez nos <a href="/conditions" target="_blank" rel="noopener">Conditions d’utilisation</a> et notre <a href="/confidentialite" target="_blank" rel="noopener">Politique de confidentialité</a>.</p>
+        </form>
+      </section>
+
+      <aside class="ax-visual" aria-hidden="true">
+        <h2>Vos livraisons,<br />bien coordonnées.</h2>
+        <p>Préparez, attribuez et suivez chaque commande.</p>
+        <div class="ax-photo"></div>
+        <small>Pour les commerces, restaurants et équipes de livraison.</small>
+      </aside>
+    </main>
+
+    <footer class="ax-footer">
+      <span>© TRAXO</span>
+      <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
+    </footer>
+
+    <div class="tx-busy" id="txBusy" aria-hidden="true"><div class="tx-busy-inner" role="status"><div class="tx-speeder" aria-hidden="true"><div class="sp-body"><span><span></span><span></span><span></span><span></span></span><div class="sp-base"><span></span><div class="sp-face"></div></div></div><div class="sp-lines"><span></span><span></span><span></span><span></span></div></div><p>Chargement…</p></div></div>
+
+    <script src="/auth.js"></script>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var form = document.getElementById('registerForm');
+        var email = document.getElementById('regEmail');
+        var password = document.getElementById('regPassword');
+        var messages = {
+          email: 'Cette adresse e‑mail semble incomplète (ex. : vous@exemple.com).',
+          email_taken: 'Un compte existe déjà avec cette adresse. Connectez-vous, ou utilisez « Mot de passe oublié ? ».',
+          password: 'Choisissez un mot de passe d’au moins 10 caractères.',
+          company: 'Le nom de l’entreprise doit contenir entre 2 et 120 caractères.',
+          phone: 'Ce numéro de téléphone semble incorrect.',
+          server: 'Votre compte n’a pas pu être créé à cause d’un problème technique. Réessayez dans un instant.',
+          google: 'L’inscription avec Google n’a pas abouti. Réessayez, ou utilisez votre e-mail.',
+          google_cancel: 'Inscription avec Google annulée.',
+          google_off: 'L’inscription avec Google n’est pas encore disponible. Utilisez votre e-mail.',
+        };
+        var error = params.get('error');
+        if (error && messages[error]) {
+          TraxoAuth.showBanner(messages[error], 'error');
+          if (error === 'email_taken') {
+            var banner = document.getElementById('banner');
+            banner.querySelector('span').innerHTML = 'Un compte existe déjà avec cette adresse. <a href="/app/login">Se connecter</a> ou <a href="/app/forgot">réinitialiser le mot de passe</a>.';
+          }
+        }
+        form.addEventListener('submit', function (event) {
+          [email, password].forEach(function (input) { input.removeAttribute('aria-invalid'); });
+          if (!email.value.trim() || !email.checkValidity()) {
+            event.preventDefault();
+            email.setAttribute('aria-invalid', 'true');
+            TraxoAuth.showBanner(email.value.trim() ? messages.email : 'Indiquez votre adresse e‑mail.', 'error');
+            email.focus();
+            return;
+          }
+          if (password.value.length < 10) {
+            event.preventDefault();
+            password.setAttribute('aria-invalid', 'true');
+            TraxoAuth.showBanner(password.value ? 'Encore ' + (10 - password.value.length) + ' caractère' + (10 - password.value.length > 1 ? 's' : '') + ' : le mot de passe doit en contenir au moins 10.' : 'Choisissez un mot de passe.', 'error');
+            password.focus();
+          }
+        }, true);
+      })();
+    </script>
+  </body>
+</html>

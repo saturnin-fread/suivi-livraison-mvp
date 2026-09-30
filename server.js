@@ -13,6 +13,7 @@ const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
 const totpLib = require('./lib/totp');
 const { WhatsAppChannel, internationalDigits, maskPhone } = require('./lib/whatsapp');
+const { buildIncidentPdf } = require('./lib/incident-pdf');
 const QRCode = require('qrcode');
 const {
   applyCrmSchema,
@@ -85,6 +86,10 @@ const editableRequestStatuses = ['À vérifier', 'Informations à compléter'];
 // « Validée » : l'entreprise a validé la demande (infos client verrouillées)
 // sans avoir encore affecté de livreur. La conversion en commande reste possible.
 const convertibleRequestStatuses = [...editableRequestStatuses, 'Validée'];
+// Réglage Livraisons « Le client peut corriger sa demande après validation » :
+// une demande « Validée » (pas encore convertie en commande) reste modifiable.
+const publicEditableSql = `(status = ANY($EDIT::text[]) OR (status = 'Validée' AND COALESCE((
+  SELECT (c.delivery_settings->>'allowEditAfterValidation')::boolean FROM companies c WHERE c.id = customer_requests.company_id), FALSE)))`;
 const REQUEST_PHOTO_MAX = 3;
 const REQUEST_PHOTO_MAX_BYTES = 700 * 1024;
 const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
@@ -490,7 +495,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -952,6 +957,8 @@ async function initDatabase() {
         last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (token_hash, user_id)
       );
+      -- Appareil reconnu uniquement si l'utilisateur a coché « Rester connecté ».
+      ALTER TABLE trusted_devices ADD COLUMN IF NOT EXISTS remembered BOOLEAN NOT NULL DEFAULT FALSE;
 
       CREATE TABLE IF NOT EXISTS company_memberships (
         id BIGSERIAL PRIMARY KEY,
@@ -1671,7 +1678,10 @@ function requireCompanyApi(req, res, next) {
     // everything but cannot perform any write until the account is activated. This
     // single gate backs the paywall: the UI blurs the same actions.
     const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
-    if (isWrite && session.activation_status === 'preview') {
+    // Exceptions : la sécurité du compte personnel (mot de passe, double
+    // authentification, sessions, numéro) et la demande de devis restent possibles.
+    const previewAllowed = req.path.startsWith('/api/app/account/') || req.path === '/api/app/billing/quote-request';
+    if (isWrite && session.activation_status === 'preview' && !previewAllowed) {
       return res.status(402).json({
         error: 'Votre compte est en mode aperçu. Activez-le pour utiliser cette fonctionnalité.',
         code: 'ACCOUNT_PREVIEW',
@@ -2085,7 +2095,7 @@ async function isTrustedDevice(req, userId) {
   if (!token) return false;
   const result = await pool.query(
     `UPDATE trusted_devices SET last_used_at = NOW()
-     WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW() RETURNING 1`,
+     WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW() AND remembered = TRUE RETURNING 1`,
     [digest(token), userId]
   );
   return result.rowCount > 0;
@@ -2095,12 +2105,41 @@ async function trustDevice(req, res, userId) {
   if (!/^[A-Za-z0-9_-]{32,64}$/.test(token)) token = randomToken();
   const userAgent = String(req.headers['user-agent'] || '').slice(0, 400) || null;
   await pool.query(
-    `INSERT INTO trusted_devices (token_hash, user_id, user_agent, expires_at)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (token_hash, user_id) DO UPDATE SET expires_at = EXCLUDED.expires_at, user_agent = EXCLUDED.user_agent, last_used_at = NOW()`,
+    `INSERT INTO trusted_devices (token_hash, user_id, user_agent, expires_at, remembered)
+     VALUES ($1, $2, $3, $4, TRUE)
+     ON CONFLICT (token_hash, user_id) DO UPDATE SET expires_at = EXCLUDED.expires_at, user_agent = EXCLUDED.user_agent, remembered = TRUE, last_used_at = NOW()`,
     [digest(token), userId, userAgent, new Date(Date.now() + TRUSTED_DEVICE_MS)]
   );
   res.append('Set-Cookie', `traxo_device=${encodeURIComponent(token)}; Path=/app; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(TRUSTED_DEVICE_MS / 1000)}${cookieFlags(req)}`);
+}
+// Alerte de connexion : e-mail envoyé lorsqu'une session s'ouvre sur un
+// appareil non reconnu, si l'utilisateur l'a activée (par défaut : oui).
+function describeDevice(userAgent) {
+  const ua = String(userAgent || '');
+  const os = /android/i.test(ua) ? 'Android' : /iphone|ipad/i.test(ua) ? 'iPhone / iPad' : /windows/i.test(ua) ? 'Windows' : /mac os/i.test(ua) ? 'Mac' : /linux/i.test(ua) ? 'Linux' : 'Appareil inconnu';
+  const browser = /edg\//i.test(ua) ? 'Edge' : /chrome|crios/i.test(ua) ? 'Chrome' : /firefox|fxios/i.test(ua) ? 'Firefox' : /safari/i.test(ua) ? 'Safari' : 'Navigateur';
+  return `${browser} sur ${os}`;
+}
+async function notifyNewLogin(req, userId, method) {
+  const row = (await pool.query(
+    `SELECT u.email, u.login_alerts, c.timezone FROM users u
+     LEFT JOIN company_memberships m ON m.user_id = u.id LEFT JOIN companies c ON c.id = m.company_id
+     WHERE u.id = $1 ORDER BY m.id LIMIT 1`, [userId])).rows[0];
+  if (!row || row.login_alerts === false) return;
+  const when = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeStyle: 'short', timeZone: row.timezone || 'Africa/Porto-Novo' }).format(new Date());
+  const how = { code: 'mot de passe + code de vérification', totp: 'mot de passe + application d’authentification', google: 'compte Google' }[method] || method;
+  const device = describeDevice(req.headers['user-agent']);
+  const base = publicBaseUrl(req);
+  const html = renderEmailShell({
+    baseUrl: base,
+    heading: 'Nouvelle connexion à votre compte',
+    introHtml: 'Une connexion à votre compte TRAXO vient d’avoir lieu depuis un appareil qui n’était pas reconnu.',
+    bodyHtml: `<table role="presentation" style="font-family:Arial,sans-serif;font-size:14px;color:#344054;margin:14px 0"><tr><td style="padding:4px 16px 4px 0;color:#667085">Quand</td><td>${escHtmlServer(when)}</td></tr><tr><td style="padding:4px 16px 4px 0;color:#667085">Appareil</td><td>${escHtmlServer(device)}</td></tr><tr><td style="padding:4px 16px 4px 0;color:#667085">Méthode</td><td>${escHtmlServer(how)}</td></tr></table>`,
+    ctaLabel: 'Voir mes sessions',
+    ctaUrl: `${base}/app/parametres?section=security`,
+    footerNote: 'C’est bien vous ? Aucune action n’est nécessaire. Sinon, changez votre mot de passe et fermez les autres sessions depuis Paramètres › Sécurité.',
+  });
+  await sendEmail({ to: row.email, subject: 'TRAXO — Nouvelle connexion à votre compte', html, text: `Nouvelle connexion à votre compte TRAXO\nQuand : ${when}\nAppareil : ${device}\nMéthode : ${how}\n\nCe n’est pas vous ? Changez votre mot de passe.` });
 }
 function newLoginCode() {
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -2150,15 +2189,23 @@ async function sendLoginCodeWhatsApp(phone, code, purpose) {
 
 // Crée le défi, envoie le code et pose le cookie ; renvoie false si l'e-mail
 // n'a pas pu partir (l'appelant affiche alors une erreur).
-async function startLoginCode(req, res, { userId, email, companyId, role, purpose, remember }) {
+// channel 'pending' : aucun code envoyé, l'utilisateur choisit d'abord
+// e-mail ou WhatsApp sur la page du code.
+async function startLoginCode(req, res, { userId, email, companyId, role, purpose, remember, channel = 'email' }) {
   const challenge = randomToken();
   const code = newLoginCode();
   await pool.query('DELETE FROM login_codes WHERE user_id = $1 OR expires_at < NOW()', [userId]);
   await pool.query(
-    `INSERT INTO login_codes (token_hash, user_id, company_id, role, purpose, code_hash, remember, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [digest(challenge), userId, companyId, role, purpose, loginCodeHash(challenge, code), Boolean(remember), new Date(Date.now() + LOGIN_CODE_TTL_MS)]
+    `INSERT INTO login_codes (token_hash, user_id, company_id, role, purpose, code_hash, remember, expires_at, channel, sends)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [digest(challenge), userId, companyId, role, purpose,
+      channel === 'pending' ? loginCodeHash(challenge, randomToken(12)) : loginCodeHash(challenge, code),
+      Boolean(remember), new Date(Date.now() + LOGIN_CODE_TTL_MS), channel, channel === 'pending' ? 0 : 1]
   );
+  if (channel === 'pending') {
+    setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
+    return true;
+  }
   const sent = await sendLoginCodeEmail(req, email, code, purpose);
   if (!sent.sent) {
     console.error('Login code e-mail failed:', sent.reason, sent.detail || '');
@@ -2174,7 +2221,7 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   const email = normalizeEmail(req.body.user);
   const remember = wantsRemember(req.body.remember);
   const result = await pool.query(
-    `SELECT u.id, u.email, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
+    `SELECT u.id, u.email, u.phone, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
      FROM users u JOIN company_memberships m ON m.user_id = u.id
      JOIN companies c ON c.id = m.company_id
      WHERE u.email = $1 ORDER BY m.id LIMIT 1`,
@@ -2188,10 +2235,12 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
     await startTotpChallenge(req, res, { userId: user.id, companyId: user.company_id, role: user.role, remember });
     return res.redirect('/app/login/2fa');
   }
-  // Nouvel appareil : code envoyé par e-mail avant d'ouvrir la session.
+  // Appareil non reconnu : code avant d'ouvrir la session. Si WhatsApp est
+  // possible, l'utilisateur choisit d'abord où le recevoir.
   if (loginCodesEnabled() && !(await isTrustedDevice(req, user.id))) {
     const started = await startLoginCode(req, res, {
       userId: user.id, email: user.email, companyId: user.company_id, role: user.role, purpose: 'login', remember,
+      channel: whatsappAvailableFor(user.phone) ? 'pending' : 'email',
     });
     if (!started) return res.redirect('/app/login?error=code_send');
     return res.redirect('/app/login/code');
@@ -2290,7 +2339,7 @@ app.post('/app/login/code', loginRateLimit, asyncRoute(async (req, res) => {
     }
     const expected = Buffer.from(found.code_hash, 'hex');
     const actual = Buffer.from(loginCodeHash(lookup.challenge, code), 'hex');
-    if (code.length !== 6 || !crypto.timingSafeEqual(expected, actual)) {
+    if (found.channel === 'pending' || code.length !== 6 || !crypto.timingSafeEqual(expected, actual)) {
       await client.query('UPDATE login_codes SET attempts = attempts + 1 WHERE token_hash = $1', [found.token_hash]);
       await client.query('COMMIT');
       return res.redirect(`/app/login/code?error=code&left=${Math.max(0, LOGIN_CODE_MAX_ATTEMPTS - 1 - found.attempts)}`);
@@ -2310,9 +2359,10 @@ app.post('/app/login/code', loginRateLimit, asyncRoute(async (req, res) => {
     [found.user_id, found.company_id]
   )).rows[0];
   if (!status) return res.redirect('/app/login?error=1');
-  await trustDevice(req, res, found.user_id);
+  if (found.remember) await trustDevice(req, res, found.user_id);
   await createSession(req, res, found.user_id, found.company_id, 'company', { remember: found.remember });
   setVerifyCookie(req, res, '', 0);
+  notifyNewLogin(req, found.user_id, 'code').catch(() => {});
   return res.redirect(homeAfterLogin(status.role, status.onboarding_status));
 }));
 
@@ -2405,9 +2455,10 @@ app.post('/app/login/2fa', loginRateLimit, asyncRoute(async (req, res) => {
     await client.query('DELETE FROM mfa_challenges WHERE token_hash = $1', [found.token_hash]);
     await client.query('COMMIT');
     const status = (await pool.query('SELECT onboarding_status FROM companies WHERE id = $1', [found.company_id])).rows[0];
-    await trustDevice(req, res, found.user_id);
+    if (found.remember) await trustDevice(req, res, found.user_id);
     await createSession(req, res, found.user_id, found.company_id, 'company', { remember: found.remember });
     setMfaCookie(req, res, '', 0);
+    notifyNewLogin(req, found.user_id, 'totp').catch(() => {});
     return res.redirect(homeAfterLogin(found.role, status && status.onboarding_status));
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2677,8 +2728,9 @@ app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res)
     await startTotpChallenge(req, res, { userId: user.id, companyId: user.company_id, role: user.role, remember: saved.remember });
     return res.redirect('/app/login/2fa');
   }
-  await trustDevice(req, res, user.id);
+  if (saved.remember) await trustDevice(req, res, user.id);
   await createSession(req, res, user.id, user.company_id, 'company', { remember: saved.remember });
+  notifyNewLogin(req, user.id, 'google').catch(() => {});
   return res.redirect(homeAfterLogin(user.role, user.onboarding_status));
 }));
 
@@ -3697,7 +3749,7 @@ app.patch('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'm
 // --- Paramètres > Livraisons : règles opérationnelles ---
 const deliverySettingKeys = ['validateBeforeTracking', 'driverAssignmentRequired', 'allowEditAfterValidation', 'customerFormEnabled', 'internalEntryEnabled', 'manualValidation'];
 const defaultDeliverySettings = {
-  validateBeforeTracking: true, driverAssignmentRequired: true, allowEditAfterValidation: false,
+  validateBeforeTracking: true, driverAssignmentRequired: false, allowEditAfterValidation: false,
   customerFormEnabled: true, internalEntryEnabled: true, manualValidation: true,
 };
 function normalizeDeliverySettings(stored) {
@@ -3726,11 +3778,15 @@ app.get('/api/app/settings/deliveries', requireCompanyApi, asyncRoute(async (req
 }));
 
 app.patch('/api/app/settings/deliveries', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
-  const incoming = {};
+  const current = (await pool.query('SELECT delivery_settings FROM companies WHERE id = $1', [req.auth.company_id])).rows[0];
+  const merged = normalizeDeliverySettings(current && current.delivery_settings);
   for (const key of deliverySettingKeys) {
-    if (typeof req.body[key] === 'boolean') incoming[key] = req.body[key];
+    if (key in (req.body || {}) && typeof req.body[key] !== 'boolean') return res.status(400).json({ error: 'Réglage invalide.', field: key });
+    if (typeof req.body[key] === 'boolean') merged[key] = req.body[key];
   }
-  const merged = normalizeDeliverySettings(incoming);
+  if (!merged.customerFormEnabled && !merged.internalEntryEnabled) {
+    return res.status(400).json({ error: 'Gardez au moins une façon de créer une livraison : le lien client ou la saisie par votre équipe.' });
+  }
   const result = await pool.query(
     `UPDATE companies SET delivery_settings = $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING delivery_settings`,
     [JSON.stringify(merged), req.auth.company_id]
@@ -3750,7 +3806,7 @@ const billingCycleDiscounts = {
 const billingPlans = [
   { code: 'trial', name: 'Essai gratuit', microcopy: 'Découvrez TRAXO sans engagement.', kind: 'trial', monthly: 0, max: 0, capacityLabel: 'pendant 3 jours', tag: 'Première connexion uniquement', cta: 'Commencer l’essai', features: ['Toutes les fonctionnalités essentielles', 'Suivi de flotte en temps réel', 'Support par e-mail'] },
   { code: 'flexible', name: 'Flexible', microcopy: 'Pour les petites flottes.', kind: 'per_driver', monthly: 1000, max: 9, capacityLabel: '1 à 9 livreurs', features: ['1 à 9 livreurs', 'Fonctionnalités essentielles', 'Suivi de flotte', 'Support standard'] },
-  { code: 'equipe', name: 'Équipe', microcopy: 'Le meilleur choix pour votre flotte actuelle.', kind: 'flat', monthly: 10000, max: 12, capacityLabel: 'Jusqu’à 12 livreurs', features: ['Jusqu’à 12 livreurs', 'Fonctionnalités essentielles', 'Suivi de flotte avancé', 'Meilleur rapport capacité-prix', 'Support prioritaire'] },
+  { code: 'equipe', name: 'Équipe', microcopy: 'Un forfait pour toute votre équipe.', kind: 'flat', monthly: 10000, max: 12, capacityLabel: 'Jusqu’à 12 livreurs', features: ['Jusqu’à 12 livreurs', 'Fonctionnalités essentielles', 'Suivi de flotte avancé', 'Meilleur rapport capacité-prix', 'Support prioritaire'] },
   { code: 'croissance', name: 'Croissance', microcopy: 'Pour les flottes en expansion.', kind: 'flat', monthly: 18000, max: 25, capacityLabel: 'Jusqu’à 25 livreurs', features: ['Jusqu’à 25 livreurs', 'Fonctionnalités avancées', 'Suivi de flotte avancé', 'Rapports détaillés', 'Support prioritaire'] },
   { code: 'business', name: 'Business', microcopy: 'Pour les opérations structurées.', kind: 'flat', monthly: 30000, max: 50, capacityLabel: 'Jusqu’à 50 livreurs', compact: true, features: [] },
   { code: 'grande', name: 'Grande flotte', microcopy: 'Pour les grandes flottes et les besoins spécifiques.', kind: 'custom', monthly: null, max: null, capacityLabel: '51 livreurs et plus', compact: true, features: [] },
@@ -3788,6 +3844,27 @@ app.get('/api/app/billing/plans', requireCompanyApi, asyncRoute(async (req, res)
   });
 }));
 
+// Calcul officiel d'une formule : équivalent mensuel et total de la période.
+const billingCycleMonths = { monthly: 1, quarterly: 3, yearly: 12 };
+function billingQuote(planCode, cycle, drivers) {
+  const plan = billingPlans.find((p) => p.code === planCode);
+  if (!plan || !billingCycleMonths[cycle] || plan.kind === 'trial' || plan.kind === 'custom') return null;
+  const count = Math.max(1, Math.min(500, Math.round(Number(drivers) || 1)));
+  const base = plan.kind === 'per_driver' ? plan.monthly * count : plan.monthly;
+  const monthly = Math.round(base * (1 - (billingCycleDiscounts[cycle] || 0)));
+  return {
+    planCode, planName: plan.name, cycle, drivers: count, capacity: plan.max,
+    fits: plan.max == null || count <= plan.max,
+    monthlyBase: base, monthlyEquivalent: monthly, periodMonths: billingCycleMonths[cycle],
+    periodTotal: monthly * billingCycleMonths[cycle], discount: billingCycleDiscounts[cycle] || 0, currency: 'XOF',
+  };
+}
+app.get('/api/app/billing/quote', requireCompanyApi, asyncRoute(async (req, res) => {
+  const quote = billingQuote(String(req.query.plan || ''), String(req.query.cycle || 'monthly'), req.query.drivers);
+  if (!quote) return res.status(400).json({ error: 'Formule ou périodicité inconnue.' });
+  return res.json(quote);
+}));
+
 app.post('/api/app/billing/plan', requireCompanyApi, requireCompanyRoles('owner'), asyncRoute(async (req, res) => {
   const planCode = String(req.body.planCode || '');
   const billingCycle = String(req.body.billingCycle || 'monthly');
@@ -3811,10 +3888,54 @@ app.post('/api/app/billing/plan', requireCompanyApi, requireCompanyRoles('owner'
   return res.json({ planCode, billingCycle });
 }));
 
+// Demande de devis « Grande flotte » : envoyée par e-mail à l'équipe TRAXO
+// (SUPPORT_EMAIL, à défaut le premier administrateur plateforme).
+app.post('/api/app/billing/quote-request', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const drivers = Math.round(Number(req.body.drivers));
+  const message = String(req.body.message || '').trim().slice(0, 1000);
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: 'Indiquez une adresse e-mail valide pour vous répondre.' });
+  if (!Number.isInteger(drivers) || drivers < 1 || drivers > 100000) return res.status(400).json({ error: 'Indiquez le nombre de livreurs de votre flotte.' });
+  const support = String(process.env.SUPPORT_EMAIL || '').trim();
+  const recipient = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(support)
+    ? support
+    : String(process.env.PLATFORM_ADMIN_EMAILS || '').split(',').map(normalizeEmail).find(Boolean);
+  if (!recipient) return res.status(503).json({ error: 'Les demandes de devis ne sont pas encore ouvertes. Réessayez plus tard.' });
+  const recent = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM audit_logs
+     WHERE company_id = $1 AND action = 'quote_requested' AND created_at > NOW() - INTERVAL '1 hour'`,
+    [req.auth.company_id]
+  );
+  if (recent.rows[0].n >= 3) return res.status(429).json({ error: 'Votre demande a bien été reçue. Patientez avant d’en envoyer une nouvelle.' });
+  const company = (await pool.query('SELECT name, slug FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
+  const lines = [
+    `Entreprise : ${company.name || '—'} (espace #${req.auth.company_id}, ${company.slug || '—'})`,
+    `Demandé par : ${req.auth.display_name || req.auth.email} <${req.auth.email}>`,
+    `E-mail de réponse : ${email}`,
+    `Livreurs : ${drivers}`,
+    `Besoin : ${message || '—'}`,
+  ];
+  const result = await sendEmail({
+    to: recipient,
+    subject: `Devis Grande flotte — ${company.name || `espace #${req.auth.company_id}`} (${drivers} livreurs)`,
+    html: renderEmailShell({
+      baseUrl: publicBaseUrl(req),
+      heading: 'Nouvelle demande de devis Grande flotte',
+      introHtml: lines.map((l) => escHtmlServer(l)).join('<br>'),
+      bodyHtml: '',
+      footerNote: 'Répondez directement à l’adresse indiquée par le client.',
+    }),
+    text: lines.join('\n'),
+  });
+  if (!result || !result.sent) return res.status(502).json({ error: 'La demande n’a pas pu être envoyée. Réessayez dans quelques minutes.' });
+  await writeAudit(req.auth, 'company', req.auth.company_id, 'quote_requested', { drivers });
+  return res.status(201).json({ sent: true });
+}));
+
 // --- Paramètres > Sécurité : compte utilisateur ---
 app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, res) => {
   const [user, sessions] = await Promise.all([
-    pool.query('SELECT password_changed_at, login_alerts, totp_enabled_at, totp_recovery_hashes FROM users WHERE id = $1', [req.auth.user_id]),
+    pool.query('SELECT password_changed_at, login_alerts, totp_enabled_at, totp_recovery_hashes, phone, google_sub FROM users WHERE id = $1', [req.auth.user_id]),
     pool.query('SELECT COUNT(*)::int AS n FROM app_sessions WHERE user_id = $1 AND expires_at > NOW()', [req.auth.user_id]),
   ]);
   const row = user.rows[0] || {};
@@ -3825,6 +3946,11 @@ app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, r
     twoFactorEnabled: !!row.totp_enabled_at,
     twoFactorEnabledAt: row.totp_enabled_at || null,
     recoveryCodesLeft: Array.isArray(row.totp_recovery_hashes) ? row.totp_recovery_hashes.length : 0,
+    phone: row.phone || '',
+    phoneInternational: Boolean(internationalDigits(row.phone)),
+    googleLinked: Boolean(row.google_sub),
+    whatsappChannel: whatsapp.isReady(),
+    loginCodes: loginCodesEnabled(),
   });
 }));
 
@@ -3949,6 +4075,36 @@ app.post('/api/app/account/password', requireCompanyApi, asyncRoute(async (req, 
   }
   await writeAudit(req.auth, 'user', req.auth.user_id, 'password_changed', {});
   return res.json({ ok: true });
+}));
+
+// Numéro de l'utilisateur (codes de connexion par WhatsApp) : format international obligatoire.
+app.patch('/api/app/account/phone', requireCompanyApi, asyncRoute(async (req, res) => {
+  const raw = String(req.body.phone || '').trim();
+  if (raw && !internationalDigits(raw)) {
+    return res.status(400).json({ error: 'Indiquez le numéro avec son indicatif, par exemple +229 01 97 12 34 56.' });
+  }
+  const phone = raw ? `+${internationalDigits(raw)}` : null;
+  await pool.query('UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2', [phone, req.auth.user_id]);
+  await writeAudit(req.auth, 'user', req.auth.user_id, 'phone_changed', {});
+  return res.json({ phone: phone || '', phoneInternational: Boolean(phone) });
+}));
+
+// Ferme une session (autre appareil) ou toutes les autres sessions.
+app.post('/api/app/account/sessions/revoke', requireCompanyApi, asyncRoute(async (req, res) => {
+  const currentHash = digest(String(parseCookies(req).delivery_session || ''));
+  const target = String(req.body.id || '');
+  let result;
+  if (target === 'others') {
+    result = await pool.query('DELETE FROM app_sessions WHERE user_id = $1 AND token_hash <> $2', [req.auth.user_id, currentHash]);
+    await pool.query('DELETE FROM trusted_devices WHERE user_id = $1', [req.auth.user_id]);
+  } else if (/^[0-9a-f]{12}$/.test(target)) {
+    if (currentHash.startsWith(target)) return res.status(400).json({ error: 'Pour fermer cette session, utilisez « Se déconnecter ».' });
+    result = await pool.query('DELETE FROM app_sessions WHERE user_id = $1 AND left(token_hash, 12) = $2 AND token_hash <> $3', [req.auth.user_id, target, currentHash]);
+  } else {
+    return res.status(400).json({ error: 'Session inconnue.' });
+  }
+  await writeAudit(req.auth, 'user', req.auth.user_id, 'sessions_revoked', { scope: target === 'others' ? 'others' : 'one', count: result.rowCount });
+  return res.json({ closed: result.rowCount });
 }));
 
 app.patch('/api/app/account/preferences', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -5341,6 +5497,12 @@ app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (re
 // Validation sans livreur : verrouille les informations du client. L'affectation
 // d'un livreur (conversion en commande) peut se faire ensuite.
 app.post('/api/app/requests/:id/validate', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (await companyDeliverySetting(req.auth.company_id, 'driverAssignmentRequired')) {
+    return res.status(409).json({
+      error: 'Vos règles de livraison exigent un livreur pour valider. Choisissez un livreur : la demande sera validée et la commande créée.',
+      code: 'DRIVER_REQUIRED',
+    });
+  }
   const result = await pool.query(
     `UPDATE customer_requests
      SET status = 'Validée', validated_at = NOW(), version = version + 1, updated_at = NOW()
@@ -7733,7 +7895,10 @@ app.post('/api/app/incidents/:id/retention-hold/release', requireCompanyApi, req
 app.get('/api/app/incidents/:id/export', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const dossier = await loadIncidentDossier(req.auth.company_id, req.params.id);
   if (!dossier) return res.status(404).json({ error: 'Incident introuvable.' });
-  const company = await pool.query('SELECT id, name, slug FROM companies WHERE id = $1', [req.auth.company_id]);
+  const company = await pool.query('SELECT id, name, slug, timezone FROM companies WHERE id = $1', [req.auth.company_id]);
+  const format = req.query.format === 'json' ? 'json' : 'pdf';
+  const { timezone, ...companyInfo } = company.rows[0];
+  company.rows[0] = companyInfo;
   const generatedAt = new Date().toISOString();
   const manifest = {
     schemaVersion: 1,
@@ -7752,8 +7917,20 @@ app.get('/api/app/incidents/:id/export', requireCompanyApi, requireCompanyRoles(
   };
   const manifestSha256 = digest(canonicalJson(manifest));
   await writeAudit(req.auth, 'order', dossier.incident.order_id, 'incident_dossier_exported', {
-    incidentId: dossier.incident.id, manifestSha256, eventChainValid: dossier.eventChainValid,
+    incidentId: dossier.incident.id, manifestSha256, eventChainValid: dossier.eventChainValid, format,
   });
+  if (format === 'pdf') {
+    const pdf = await buildIncidentPdf({
+      dossier, company: companyInfo, generatedBy: req.auth.display_name, generatedAt, manifestSha256, timezone: timezone || 'Africa/Porto-Novo',
+    });
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="TRAXO-incident-INC-${dossier.incident.id}.pdf"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.send(pdf);
+  }
   res.set({
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Disposition': `attachment; filename="incident-${dossier.incident.id}-dossier.json"`,
@@ -8431,7 +8608,7 @@ async function editableRequestForPhotos(token, deviceSecret) {
   if (!deviceSecret) return null;
   const result = await pool.query(
     `SELECT id, company_id FROM customer_requests
-     WHERE token = $1 AND edit_token_hash = $2 AND status = ANY($3::text[]) AND archived_at IS NULL`,
+     WHERE token = $1 AND edit_token_hash = $2 AND ${publicEditableSql.replace('$EDIT', '$3')} AND archived_at IS NULL`,
     [token, digest(deviceSecret), editableRequestStatuses]
   );
   return result.rows[0] || null;
@@ -8451,10 +8628,13 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
   if (owning.rows[0] && !(await companyDeliverySetting(owning.rows[0].company_id, 'customerFormEnabled'))) {
     return res.status(403).json({ error: 'Ce formulaire n’est plus actif.' });
   }
+  const verifyFirst = owning.rows[0] ? await companyDeliverySetting(owning.rows[0].company_id, 'manualValidation') : true;
   const editToken = randomToken(24);
   const result = await pool.query(
     `UPDATE customer_requests
-     SET status = 'À vérifier', customer_name = $1, customer_phone = $2,
+     SET status = CASE WHEN $12 THEN 'À vérifier' ELSE 'Validée' END,
+         validated_at = CASE WHEN $12 THEN validated_at ELSE NOW() END,
+         customer_name = $1, customer_phone = $2,
          requested_time = $3, location_lat = $4, location_lng = $5, location_accuracy = $6,
          location_at = NOW(),
          neighborhood = $7, landmark = $8, notes = $9,
@@ -8465,11 +8645,11 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
     [
       String(customerName).trim(), phone, requestedTime || null,
       gps.lat, gps.lng, gps.accuracy,
-      String(neighborhood).trim(), landmark || null, notes || null, digest(editToken), req.params.token,
+      String(neighborhood).trim(), landmark || null, notes || null, digest(editToken), req.params.token, verifyFirst,
     ]
   );
   if (!result.rows[0]) return res.status(409).json({ error: 'Ce formulaire a déjà été envoyé ou a expiré.' });
-  await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, 'submitted');
+  await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, verifyFirst ? 'submitted' : 'submitted_auto_validated');
   // Le secret reste dans ce navigateur (cookie HttpOnly), jamais dans l'URL.
   setRequestDeviceCookie(req, res, req.params.token, editToken);
   const redirect = `/demande/${encodeURIComponent(req.params.token)}/confirmation`;
@@ -8521,7 +8701,8 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   }
   // Autre appareil : la demande existe, mais ses données ne sont pas montrées.
   if (!deviceOk) return res.json({ stage: 'other_device', companyName: row.company_name, companyLogoUrl: companyLogoUrl(row.company_ref, row.company_logo_at) });
-  const canEdit = editableRequestStatuses.includes(row.status) && !row.archived_at;
+  const canEdit = !row.archived_at && !row.order_id && (editableRequestStatuses.includes(row.status)
+    || (row.status === 'Validée' && await companyDeliverySetting(row.company_ref, 'allowEditAfterValidation')));
   // Le client garde le même lien : dès qu'un livreur est affecté, sa page de
   // demande lui donne accès au suivi (détenir ce lien suffit déjà à voir la demande).
   let trackingPath = null;
@@ -8582,7 +8763,7 @@ app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
                               OR location_lng IS DISTINCT FROM $5::double precision THEN NOW() ELSE location_at END,
          location_lat = $4, location_lng = $5, location_accuracy = $6,
          neighborhood = $7, landmark = $8, notes = $9, version = version + 1, updated_at = NOW()
-     WHERE token = $10 AND edit_token_hash = $11 AND version = $12 AND status = ANY($13::text[]) AND archived_at IS NULL
+     WHERE token = $10 AND edit_token_hash = $11 AND version = $12 AND ${publicEditableSql.replace('$EDIT', '$13')} AND archived_at IS NULL
      RETURNING id, company_id, version`,
     [
       String(customerName).trim(), phone, requestedTime || null,

@@ -1341,7 +1341,7 @@ async function mountIncidentDossier(root, id, opts = {}) {
     : dossier.eventChainValid === false
       ? '<div class="notice error">Cet historique a peut-être été modifié. Contactez le support avant de l’utiliser comme preuve.</div>'
       : '<div class="notice">Incident ancien : l’historique n’est pas certifié.</div>';
-  root.innerHTML = `${opts.drawer ? '' : `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger les données</a>` : ''}</div></div>`}
+  root.innerHTML = `${opts.drawer ? '' : `<div class="page-header print-hidden"><div><a href="/app/operations?vue=incidents">← Retour aux incidents</a><h1 style="margin-top:12px">Incident n° ${escapeHtml(incident.id)}</h1><p class="subtitle">${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</p></div><div class="actions"><button class="secondary" id="printIncident">Imprimer / enregistrer en PDF</button>${canControl ? `<a class="button secondary" href="/api/app/incidents/${escapeHtml(incident.id)}/export">Télécharger le PDF</a>` : ''}</div></div>`}
     <section class="card incident-report"><div class="page-header"><div><h2>${escapeHtml(incidentCategoryLabels[incident.category] || incident.category)}</h2><p class="subtitle">Gravité ${escapeHtml(incidentSeverityLabels[incident.severity] || incident.severity)}</p></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</div>
       <div class="detail-grid"><div class="detail"><span>Client</span><strong>${escapeHtml(incident.customer_name || '—')}</strong><small>${escapeHtml(incident.customer_phone || '')}</small></div><div class="detail"><span>Livreur</span><strong>${escapeHtml(incident.driver_name)}</strong><small>${escapeHtml(incident.driver_vehicle_type || '')}</small></div><div class="detail"><span>Responsable</span><strong>${escapeHtml(incident.assigned_to || 'Non attribué')}</strong></div><div class="detail"><span>Commande</span><strong>${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ${escapeHtml(incident.order_status)}</strong></div><div class="detail" style="grid-column:span 2"><span>Destination</span><strong>${escapeHtml([incident.neighborhood, incident.landmark, incident.delivery_address].filter(Boolean).join(' — ') || '—')}</strong></div></div>
       <h3>Déclaration initiale</h3><p class="immutable-fact">${escapeHtml(incident.description)}</p><small>Déclarée par ${escapeHtml(incident.opened_by || 'Compte supprimé')} le ${escapeHtml(formatDate(incident.created_at))}. Ce texte ne peut plus être modifié.</small>
@@ -1349,7 +1349,7 @@ async function mountIncidentDossier(root, id, opts = {}) {
     </section>
     <section class="card" style="margin-top:18px"><h2>Protection des données (litige)</h2>${activeHold ? `<div class="notice ${holdOverdue ? 'error' : 'warning'}"><strong>${holdOverdue ? 'Révision en retard.' : 'Données protégées.'}</strong> Les données de cette commande ne seront pas supprimées. ${holdOverdue ? 'À réexaminer depuis le' : 'À réexaminer le'} ${escapeHtml(formatDate(activeHold.review_due_at))}.<br><small>Motif : ${escapeHtml(activeHold.reason)}</small></div>${canControl ? '<form id="releaseHold" class="print-hidden"><div class="field"><label>Pourquoi retirer la protection ?</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Ex. : litige réglé à l’amiable le 12/10"></textarea></div><button class="secondary" style="margin-top:12px">Retirer la protection</button></form>' : ''}` : `<p class="subtitle">En cas de réclamation ou de litige, protégez les données de cette commande pour qu’elles ne soient jamais supprimées.</p>${canControl ? `<form id="placeHold" class="print-hidden" style="margin-top:14px"><div class="form-grid"><div class="field full"><label>Pourquoi protéger ces données ?</label><textarea name="reason" minlength="10" maxlength="2000" required placeholder="Ex. : réclamation du client, litige sur le paiement, demande de la police…"></textarea></div><div class="field"><label>À réexaminer le</label><input name="reviewDueAt" type="date" value="${reviewDate}" required /></div></div><button class="danger" style="margin-top:12px">Protéger les données</button></form>` : ''}`}<div id="holdResult"></div>${dossier.holds.length ? `<details><summary>Historique des protections (${dossier.holds.length})</summary><ul>${dossier.holds.map((hold) => `<li>${escapeHtml(hold.status === 'active' ? 'Actif' : 'Levé')} · ${escapeHtml(formatDate(hold.placed_at))} · ${escapeHtml(hold.placed_by || 'Compte supprimé')} — ${escapeHtml(hold.reason)}${hold.release_reason ? ` · Levée : ${escapeHtml(hold.release_reason)}` : ''}</li>`).join('')}</ul></details>` : ''}</section>
     <section class="card print-hidden" style="margin-top:18px"><h2>Traiter l’incident</h2>${canControl ? `<form id="assignIncident"><div class="field"><label>Responsable</label><select name="userId" required><option value="">Sélectionner</option>${dossier.members.map((member) => `<option value="${escapeHtml(member.id)}" ${String(member.id) === String(incident.assigned_to_user_id) ? 'selected' : ''}>${escapeHtml(member.display_name)} — ${escapeHtml(roleLabels[member.role] || member.role)}</option>`).join('')}</select></div><button class="secondary" style="margin-top:12px">Attribuer</button></form>` : ''}<form id="incidentNote" style="margin-top:18px"><div class="field"><label>Ajouter une note</label><textarea name="note" minlength="3" maxlength="2000" required placeholder="Ex. : client rappelé à 14 h, il sera présent demain matin."></textarea></div><button class="secondary" style="margin-top:12px">Ajouter la note</button></form>${incident.status === 'open' ? '<form id="resolveIncidentForm" style="margin-top:18px"><div class="field"><label>Comment l’incident a-t-il été réglé ?</label><textarea name="resolution" minlength="5" maxlength="2000" required placeholder="Ex. : colis relivré le lendemain, client satisfait."></textarea></div><button class="primary" style="margin-top:12px">Marquer comme résolu</button></form>' : ''}<div id="incidentActionResult"></div></section>
-    <section class="card" style="margin-top:18px"><h2>Historique de l’incident</h2>${chainNotice}<ol class="timeline">${dossier.events.length ? dossier.events.map((event) => `<li><strong>${escapeHtml(incidentEventLabels[event.event_type] || event.event_type)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.body ? `<p>${escapeHtml(event.body)}</p>` : ''}${event.event_type === 'assigned' && event.details?.assignedToName ? `<p>Responsable : ${escapeHtml(event.details.assignedToName)}</p>` : ''}</li>`).join('') : '<li>Aucun événement d’intégrité disponible.</li>'}</ol></section>
+    <section class="card" style="margin-top:18px"><h2>Historique de l’incident</h2>${chainNotice}${['owner', 'manager'].includes(context.user.role) ? `<p class="subtitle print-hidden" style="margin:0 0 10px"><a href="/api/app/incidents/${escapeHtml(incident.id)}/export?format=json">Télécharger les données certifiées (JSON)</a> — pour un expert ou un avocat : chaque événement y est signé par empreinte.</p>` : ''}<ol class="timeline">${dossier.events.length ? dossier.events.map((event) => `<li><strong>${escapeHtml(incidentEventLabels[event.event_type] || event.event_type)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.body ? `<p>${escapeHtml(event.body)}</p>` : ''}${event.event_type === 'assigned' && event.details?.assignedToName ? `<p>Responsable : ${escapeHtml(event.details.assignedToName)}</p>` : ''}</li>`).join('') : '<li>Aucun événement d’intégrité disponible.</li>'}</ol></section>
     ${dossier.evidence.some((item) => !item.superseded_at && !item.deleted_at) ? `<section class="card" style="margin-top:18px"><h2>Preuves de livraison</h2><div class="evidence-grid">${dossier.evidence.filter((item) => !item.superseded_at && !item.deleted_at).map((item) => `<article class="evidence-card"><strong>${item.evidence_type === 'photo' ? 'Photo de remise' : 'Signature'}</strong><a href="/api/app/evidence/${escapeHtml(item.id)}" target="_blank" rel="noopener"><img src="/api/app/evidence/${escapeHtml(item.id)}" alt="Preuve ${escapeHtml(item.evidence_type)}" /></a><small title="Empreinte : ${escapeHtml(item.content_sha256)}">Fichier d’origine certifié</small></article>`).join('')}</div></section>` : ''}
     <section class="card" style="margin-top:18px"><h2>Historique de la commande</h2><ol class="timeline">${dossier.orderEvents.map((event) => `<li><strong>${escapeHtml(event.to_status)}</strong><small>${escapeHtml(formatDate(event.created_at))} · ${escapeHtml(event.actor_name)}</small>${event.reason ? `<p>${escapeHtml(event.reason)}</p>` : ''}</li>`).join('')}</ol></section>`;
 
@@ -2495,10 +2495,10 @@ function uiDialog({ title, message = '', tone = 'default', confirmLabel = 'Confi
 const uiConfirm = (title, options = {}) => uiDialog({ title, ...options });
 const uiPrompt = (title, field, options = {}) => uiDialog({ title, field, confirmLabel: 'Valider', ...options });
 
-function openModal(title, bodyHtml, footHtml = '') {
+function openModal(title, bodyHtml, footHtml = '', { className = '' } = {}) {
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
-  backdrop.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+  backdrop.innerHTML = `<div class="modal ${escapeHtml(className)}" role="dialog" aria-modal="true">
     <div class="modal-head"><h2>${escapeHtml(title)}</h2><button class="modal-close" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div>
     <div class="modal-body">${bodyHtml}</div>
     ${footHtml ? `<div class="modal-foot">${footHtml}</div>` : ''}
@@ -3226,144 +3226,210 @@ async function renderTeam() {
 }
 
 const setIcons = {
-  overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
-  general: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
-  deliveries: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
-  team: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
-  security: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-  billing: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
   whatsapp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-2-1-1 .8c-1-.5-1.6-1.1-2.1-2.1l.8-1-1-2L9 9.5z"/></svg>',
-  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
-  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-  screen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
-  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
-  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
-  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
-  play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
-  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
-  crown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7l5 5 5-8 5 8 5-5-2 12H4z"/></svg>',
-  bike: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM12 17.5V14l-3-3 4-3 2 3h2"/></svg>',
 };
 
 const traxoRoleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
 
-function recommendPlan(n) {
-  const count = Number(n) || 0;
-  if (count <= 9) return { code: 'flexible', name: 'Flexible', monthly: Math.max(1, count) * 1000, capacity: 'Jusqu’à 9 livreurs' };
-  if (count <= 12) return { code: 'equipe', name: 'Équipe', monthly: 10000, capacity: 'Jusqu’à 12 livreurs' };
-  if (count <= 25) return { code: 'croissance', name: 'Croissance', monthly: 18000, capacity: 'Jusqu’à 25 livreurs' };
-  if (count <= 50) return { code: 'business', name: 'Business', monthly: 30000, capacity: 'Jusqu’à 50 livreurs' };
-  return { code: 'grande', name: 'Grande flotte', monthly: null, capacity: '51 livreurs et plus' };
-}
-function planCapacityFor(code) {
-  return ({ flexible: 9, equipe: 12, croissance: 25, business: 50, grande: Infinity })[code] || 12;
-}
-const fmtFcfaMonth = (n) => n == null ? 'Sur devis' : `${Number(n).toLocaleString('fr-FR')} FCFA / mois`;
+// Pictogrammes Lucide (licence ISC) du kit Paramètres.
+const txPaths = {
+  'bike': '<circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/>',
+  'crown': '<path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z"/><path d="M5 21h14"/>',
+  'credit-card': '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
+  'building-2': '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/>',
+  'package-check': '<path d="m16 16 2 2 4-4"/><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14"/><path d="m7.5 4.27 9 5.15"/><polyline points="3.29 7 12 12 20.71 7"/><line x1="12" x2="12" y1="22" y2="12"/>',
+  'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  'shield-check': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+  'arrow-up-right': '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+  'arrow-right': '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  'upload': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
+  'eye': '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+  'check': '<path d="M20 6 9 17l-5-5"/>',
+  'circle-dot': '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
+  'circle-help': '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+  'plus': '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  'mail': '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  'user-round': '<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>',
+  'lock-keyhole': '<circle cx="12" cy="16" r="1"/><rect x="3" y="10" width="18" height="12" rx="2"/><path d="M7 10V7a5 5 0 0 1 10 0v3"/>',
+  'monitor': '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+  'smartphone': '<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
+  'file-text': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  'x': '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  'bell': '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
+  'package': '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/>',
+};
+const txIcon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${txPaths[name] || ''}</svg>`;
 
-const settingsSections = [
+const settingsTabs = [
   { key: 'overview', label: 'Vue d’ensemble' },
-  { key: 'general', label: 'Général' },
+  { key: 'general', label: 'Général', editors: true },
   { key: 'deliveries', label: 'Livraisons' },
-  { key: 'team', label: 'Équipe & permissions' },
+  { key: 'team', label: 'Équipe & permissions', editors: true },
   { key: 'security', label: 'Sécurité' },
   { key: 'billing', label: 'Facturation' },
 ];
-
-function setToggle(name, on, disabled) {
-  return `<button type="button" class="set-toggle ${on ? 'on' : ''}" role="switch" aria-checked="${on ? 'true' : 'false'}" data-toggle="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}><span class="set-toggle-knob"></span></button>`;
-}
+const txMoney = (n) => Number(n || 0).toLocaleString('fr-FR');
+const txCycleLabels = { monthly: 'Mensuel', quarterly: 'Trimestriel', yearly: 'Annuel' };
+const txCyclePeriod = { monthly: 'mois', quarterly: 'trimestre', yearly: 'an' };
+const txCycleMonths = { monthly: 1, quarterly: 3, yearly: 12 };
+const txPlural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+const txInitials = (text) => String(text || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
 
 async function renderSettings() {
-  setHeader('Paramètres', 'Configurez TRAXO pour votre entreprise.');
+  setHeader('Paramètres', 'Votre entreprise, à votre façon.');
   const canEdit = ['owner', 'manager'].includes(context.user.role);
-  const company = context.company;
-  const initials = String(company.name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
-  const logoMark = (size) => (context.company.logoUrl
-    ? `<span class="set2-logo ${size} has-logo"><img src="${escapeHtml(context.company.logoUrl)}" alt="Logo de l’entreprise"></span>`
-    : `<span class="set2-logo ${size}">${escapeHtml(initials)}</span>`);
-  const sections = context.user.isPlatformAdmin ? [...settingsSections, { key: 'whatsapp', label: 'WhatsApp TRAXO' }] : settingsSections;
-  let section = (new URLSearchParams(location.search).get('section') || 'overview').toLowerCase();
-  if (!sections.some((s) => s.key === section)) section = 'overview';
+  const isOwner = context.user.role === 'owner';
+  const tabs = [
+    ...settingsTabs.filter((t) => canEdit || !t.editors),
+    ...(context.user.isPlatformAdmin ? [{ key: 'whatsapp', label: 'WhatsApp TRAXO' }] : []),
+  ];
+  const params = new URLSearchParams(location.search);
+  let section = (params.get('section') || 'overview').toLowerCase();
+  if (section === 'billing' && params.get('plans') === '1') section = 'plans';
+  if (section !== 'plans' && !tabs.some((t) => t.key === section)) section = 'overview';
+  // Formulaire en cours : renvoie true s'il reste des modifications non enregistrées.
+  let isDirty = () => false;
 
-  page.innerHTML = `<div class="page-header"><div><h1>Paramètres</h1><p class="subtitle">Configurez TRAXO pour votre entreprise.</p></div></div>
-    <div class="set2-hub">
-      <nav class="set2-nav" id="set2Nav" aria-label="Sections des paramètres">
-        ${sections.map((s) => `<button class="set2-navitem ${s.key === section ? 'active' : ''}" data-sec="${s.key}"><span class="set2-navic">${setIcons[s.key]}</span><span>${escapeHtml(s.label)}</span></button>`).join('')}
-      </nav>
-      <div class="set2-content" id="set2Content"><div class="loading-state" style="padding:40px">Chargement…</div></div>
+  page.innerHTML = `<div id="traxo-settings">
+      <nav class="tx-settings-tabs" aria-label="Rubriques des paramètres">${tabs.map((t) => `<button type="button" data-route="${t.key}">${escapeHtml(t.label)}</button>`).join('')}</nav>
+      <div id="txContent"></div>
     </div>`;
+  const root = document.getElementById('traxo-settings');
+  const content = document.getElementById('txContent');
 
-  document.getElementById('set2Nav').addEventListener('click', (e) => {
-    const item = e.target.closest('[data-sec]');
-    if (!item) return;
-    section = item.dataset.sec;
-    document.querySelectorAll('#set2Nav .set2-navitem').forEach((n) => n.classList.toggle('active', n.dataset.sec === section));
-    try { history.replaceState(null, '', `/app/parametres?section=${section}`); } catch { /* ignore */ }
-    loadSection();
+  if (window.__txBeforeUnload) window.removeEventListener('beforeunload', window.__txBeforeUnload);
+  window.__txBeforeUnload = (event) => { if (document.body.contains(root) && isDirty()) { event.preventDefault(); event.returnValue = ''; } };
+  window.addEventListener('beforeunload', window.__txBeforeUnload);
+
+  root.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-route]');
+    if (target && root.contains(target)) go(target.dataset.route);
   });
 
-  function notify(html) { const el = document.getElementById('setResult'); if (el) el.innerHTML = html; }
+  async function go(route) {
+    if (route === section && route !== 'plans') return;
+    if (isDirty() && !(await uiConfirm('Quitter sans enregistrer ?', { message: 'Vos modifications de cette rubrique seront perdues.', confirmLabel: 'Quitter sans enregistrer', cancelLabel: 'Rester ici' }))) return;
+    section = route;
+    const query = route === 'plans' ? 'section=billing&plans=1' : `section=${route}`;
+    try { history.replaceState(null, '', `/app/parametres?${query}`); } catch { /* ignore */ }
+    load();
+    root.scrollIntoView({ block: 'start' });
+  }
 
-  async function loadSection() {
-    const box = document.getElementById('set2Content');
-    box.innerHTML = '<div class="loading-state" style="padding:40px">Chargement…</div>';
+  async function load() {
+    isDirty = () => false;
+    root.dataset.screen = section;
+    const active = section === 'plans' ? 'billing' : section;
+    root.querySelectorAll('.tx-settings-tabs button').forEach((b) => {
+      const yes = b.dataset.route === active;
+      b.classList.toggle('tx-selected', yes);
+      if (yes) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    content.innerHTML = '<div class="loading-state" style="padding:40px">Chargement…</div>';
+    const views = { overview, general, deliveries, team, security, billing, plans: plansView, whatsapp: renderWhatsApp };
     try {
-      if (section === 'overview') await renderOverview(box);
-      else if (section === 'general') await renderGeneral(box);
-      else if (section === 'deliveries') await renderDeliveries(box);
-      else if (section === 'team') await renderTeamSettings(box);
-      else if (section === 'security') await renderSecurity(box);
-      else if (section === 'billing') await renderBilling(box);
-      else if (section === 'whatsapp') await renderWhatsApp(box);
+      await views[section](content);
+      if (context.company.activationStatus === 'preview' && ['general', 'deliveries', 'team', 'billing', 'plans'].includes(section)) {
+        content.insertAdjacentHTML('afterbegin', `<div class="tx-preview-note" role="note">${txIcon('eye')}<span><strong>Votre espace est en mode aperçu.</strong> Vous pouvez tout consulter ; les réglages de l’entreprise pourront être enregistrés une fois l’espace activé. La sécurité de votre compte reste modifiable dès maintenant.</span></div>`);
+      }
     } catch (error) {
-      box.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      content.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
     }
   }
 
-  function head(title, subtitle) {
-    return `<div class="set2-head"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div>`;
+  // ---- Briques communes -------------------------------------------------
+  const txButton = (html, attrs = '', kind = '') => `<button type="button" class="tx-button ${kind}" ${attrs}>${html}</button>`;
+  const heading = (title, desc, action = '', eyebrow = '') => `<div class="tx-heading"><div>${eyebrow ? `<span class="tx-eyebrow">${escapeHtml(eyebrow)}</span>` : ''}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(desc)}</p></div>${action}</div>`;
+  const infoStrip = (text) => `<p class="tx-info-strip">${txIcon('circle-help')}<span>${text}</span></p>`;
+  const toggleRow = (id, title, desc, on, disabled = false) => `<div class="tx-setting-row"><div><label for="tx-${id}">${escapeHtml(title)}</label><p>${escapeHtml(desc)}</p></div><input class="tx-switch" type="checkbox" id="tx-${id}" name="${id}" role="switch" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}></div>`;
+  const savebar = (label) => `<div class="tx-savebar"><span class="tx-save-status" aria-live="polite">${txIcon('check')} Aucune modification en attente</span><div class="tx-inline-actions"><button type="button" class="tx-button tx-button-quiet" data-reset disabled>Annuler</button><button type="submit" class="tx-button tx-button-primary" data-save disabled>${escapeHtml(label)}</button></div></div>`;
+  const logoBox = (url, alt = 'Logo de l’entreprise') => (url ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">` : `<span class="tx-org-initials">${escapeHtml(txInitials(context.company.name))}</span>`);
+
+  // Barre d'enregistrement : suit l'écart avec l'état enregistré, annule, enregistre.
+  function mountSavebar(form, { snapshot, save, reset, savedMessage }) {
+    let initial = snapshot();
+    const bar = form.querySelector('.tx-savebar');
+    const status = bar.querySelector('.tx-save-status');
+    const saveBtn = bar.querySelector('[data-save]');
+    const resetBtn = bar.querySelector('[data-reset]');
+    const label = saveBtn.textContent;
+    let busy = false;
+    const dirty = () => snapshot() !== initial;
+    const refresh = () => {
+      const d = dirty();
+      bar.classList.toggle('tx-dirty', d);
+      status.innerHTML = `${txIcon(d ? 'circle-dot' : 'check')} ${d ? 'Modifications non enregistrées' : 'Aucune modification en attente'}`;
+      saveBtn.disabled = !d || busy;
+      resetBtn.disabled = !d || busy;
+    };
+    form.addEventListener('input', refresh);
+    form.addEventListener('change', refresh);
+    resetBtn.addEventListener('click', () => { reset(); refresh(); });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!dirty() || !form.reportValidity()) return;
+      busy = true; saveBtn.textContent = 'Enregistrement…'; refresh();
+      try {
+        await save();
+        initial = snapshot();
+        uiToast(savedMessage, 'success');
+      } catch (error) {
+        uiToast(error.message, 'error');
+      } finally {
+        busy = false; saveBtn.textContent = label; refresh();
+      }
+    });
+    isDirty = () => document.body.contains(form) && dirty();
+    refresh();
+    return { refresh };
   }
 
-  async function renderOverview(box) {
-    let drivers = 0;
-    let plan = recommendPlan(0);
-    try {
-      const b = await api('/api/app/billing/plans');
-      drivers = Number(b.activeDrivers || 0);
-      const cur = b.plans.find((p) => p.code === (b.currentPlan || b.recommended));
-      plan = { name: cur ? cur.name : recommendPlan(drivers).name, monthly: cur ? cur.monthly : recommendPlan(drivers).monthly };
-    } catch { plan = recommendPlan(drivers); }
-    const cats = [
-      { key: 'general', title: 'Général', desc: 'Nom de l’entreprise, espace de travail, fuseau horaire et informations de base.' },
-      { key: 'deliveries', title: 'Livraisons', desc: 'Validation, attribution et gestion des demandes de livraison.' },
-      { key: 'team', title: 'Équipe & permissions', desc: 'Gérez les utilisateurs, les rôles et les permissions.' },
-      { key: 'security', title: 'Sécurité', desc: 'Mot de passe, sessions, connexion et authentification à deux facteurs.' },
-      { key: 'billing', title: 'Facturation', desc: 'Gérez votre abonnement, vos factures et votre paiement.', right: `${drivers} livreur${drivers > 1 ? 's' : ''} · ${fmtFcfaMonth(plan.monthly)}` },
-    ];
-    box.innerHTML = `
-      <section class="set2-card set2-summary">
-        ${logoMark('')}
-        <div class="set2-summary-main"><h3>${escapeHtml(company.name)}</h3><span class="set2-slug">${escapeHtml(company.slug || '')}</span></div>
-        ${canEdit ? '<button class="button secondary small" id="editGeneral">Modifier</button>' : ''}
-        <div class="set2-summary-stats">
-          <div><span class="set2-ic">${setIcons.team}</span><div><strong>${drivers}</strong><small>livreur${drivers > 1 ? 's' : ''} actif${drivers > 1 ? 's' : ''}</small></div></div>
-          <div><span class="set2-ic">${setIcons.crown}</span><div><strong>${escapeHtml(traxoRoleLabels[context.user.role] || context.user.role)}</strong><small>Votre rôle</small></div></div>
-          <div><span class="set2-ic">${setIcons.billing}</span><div><strong>${escapeHtml(plan.name)}</strong><small>Formule</small></div></div>
+  // ---- Vue d'ensemble ---------------------------------------------------
+  async function overview(box) {
+    const [billingData, sec] = await Promise.all([api('/api/app/billing/plans'), api('/api/app/account/security').catch(() => null)]);
+    const drivers = Number(billingData.activeDrivers || 0);
+    const plan = billingData.plans.find((p) => p.code === billingData.currentPlan) || billingData.plans.find((p) => p.code === billingData.recommended);
+    const cycle = billingData.billingCycle || 'monthly';
+    const quote = await api(`/api/app/billing/quote?plan=${encodeURIComponent(plan.code)}&cycle=${cycle}&drivers=${Math.max(1, drivers)}`).catch(() => null);
+    const roleLabel = traxoRoleLabels[context.user.role] || context.user.role;
+    const quick = [
+      canEdit && ['general', 'building-2', 'Votre entreprise', 'Logo, coordonnées et préférences de votre espace.'],
+      ['deliveries', 'package-check', 'Vos livraisons', 'Choisissez comment créer et valider les commandes.'],
+      canEdit && ['team', 'users', 'Votre équipe', 'Invitez vos collaborateurs et donnez les bons accès.'],
+      ['security', 'shield-check', 'Votre sécurité', 'Gérez les connexions et protégez votre compte.'],
+      !canEdit && ['billing', 'credit-card', 'Votre abonnement', 'La formule de votre espace et ce qu’elle coûte.'],
+    ].filter(Boolean);
+    const unit = plan.kind === 'per_driver' ? `${txMoney(plan.monthly)} FCFA par livreur et par mois` : plan.kind === 'custom' ? 'Une offre sur mesure' : `Forfait ${plan.capacityLabel.toLowerCase()}`;
+    const priceHtml = quote
+      ? `<div class="tx-subscription-price"><strong>${txMoney(quote.monthlyEquivalent)}</strong><span>FCFA / mois${cycle !== 'monthly' ? ` · ${txCycleLabels[cycle].toLowerCase()}` : ''}</span></div>`
+      : '<div class="tx-subscription-price"><strong>Sur devis</strong></div>';
+    const callout = sec && !sec.twoFactorEnabled
+      ? `<div class="tx-security-callout">${txIcon('shield-check')}<div><h3>Un compte mieux protégé</h3><p>Ajoutez une seconde vérification à la connexion.</p><button type="button" class="tx-text-button" data-route="security">Configurer la double authentification</button></div></div>`
+      : sec ? `<div class="tx-security-callout tx-callout-ok">${txIcon('shield-check')}<div><h3>Double authentification activée</h3><p>Un code de votre application est demandé à chaque connexion.</p><button type="button" class="tx-text-button" data-route="security">Voir la sécurité du compte</button></div></div>` : '';
+    box.innerHTML = `${heading('Votre espace, vos règles.', 'Tout ce qu’il faut pour adapter TRAXO à votre quotidien.', '', 'Les paramètres de votre entreprise')}
+      <section class="tx-panel">
+        <div class="tx-org"><div class="tx-org-logo">${logoBox(context.company.logoUrl)}</div><div><h2>${escapeHtml(context.company.name)}</h2><div class="tx-org-meta"><span>${escapeHtml(context.company.slug || '')}</span><span aria-hidden="true">·</span><span class="tx-badge">Espace de travail</span></div></div>${canEdit ? txButton('Modifier le profil', 'data-route="general"') : ''}</div>
+        <div class="tx-stats">
+          <div class="tx-stat">${txIcon('bike')}<div><strong>${drivers}</strong><small>${drivers > 1 ? 'Livreurs actifs' : 'Livreur actif'}</small></div></div>
+          <div class="tx-stat">${txIcon('crown')}<div><strong>${escapeHtml(roleLabel)}</strong><small>Votre rôle</small></div></div>
+          <div class="tx-stat">${txIcon('credit-card')}<div><strong>${escapeHtml(plan.name)}</strong><small>Votre formule</small></div></div>
         </div>
       </section>
-      <section class="set2-card">
-        <div class="set2-head"><h2>Paramètres de l’espace</h2><p>Gérez les principaux paramètres de votre entreprise.</p></div>
-        <div class="set2-cats">${cats.map((c) => `<button class="set2-cat" data-go="${c.key}"><span class="set2-cat-ic">${setIcons[c.key]}</span><span class="set2-cat-main"><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml(c.desc)}</small></span>${c.right ? `<span class="set2-cat-right">${escapeHtml(c.right)}</span>` : ''}<span class="set2-cat-chev">${setIcons.chevron}</span></button>`).join('')}</div>
-      </section>`;
-    box.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => { document.querySelector(`#set2Nav [data-sec="${b.dataset.go}"]`).click(); }));
-    const eg = document.getElementById('editGeneral');
-    if (eg) eg.addEventListener('click', () => document.querySelector('#set2Nav [data-sec="general"]').click());
+      <div class="tx-overview-grid">
+        <section><div class="tx-section-label"><h2>Les essentiels</h2><span class="tx-muted"><small>À portée de main</small></span></div>
+          <div class="tx-quick-grid">${quick.map(([r, i, t, d]) => `<button class="tx-quick" data-route="${r}" type="button"><span class="tx-quick-icon">${txIcon(i)}</span><strong>${t}</strong><p>${d}</p>${txIcon('arrow-up-right')}</button>`).join('')}</div>
+        </section>
+        <aside class="tx-overview-aside"><div class="tx-section-label"><h2>Votre abonnement</h2></div>
+          <div class="tx-subscription"><span class="tx-eyebrow">Une formule qui vous suit</span><h2>${escapeHtml(plan.name)}</h2><p>${drivers ? `Pour vos ${txPlural(drivers, 'livreur actif', 'livreurs actifs')}.` : 'Aucun livreur actif pour le moment.'}</p>${priceHtml}<p>${escapeHtml(unit)}</p>${txButton(`Gérer mon abonnement ${txIcon('arrow-right')}`, 'data-route="billing"')}</div>
+          ${callout}
+        </aside>
+      </div>`;
   }
 
-  async function renderGeneral(box) {
+  // ---- Général ------------------------------------------------------------
+  async function general(box) {
     const c = await api('/api/app/company');
-    // Fuseaux affichés en clair (pays, ville, décalage) ; la valeur reste l'identifiant standard.
     const tzLabels = {
       'Africa/Porto-Novo': 'Bénin — Cotonou, Porto-Novo (GMT+1)', 'Africa/Abidjan': 'Côte d’Ivoire — Abidjan (GMT)',
       'Africa/Accra': 'Ghana — Accra (GMT)', 'Africa/Lagos': 'Nigeria — Lagos (GMT+1)', 'Africa/Lome': 'Togo — Lomé (GMT)',
@@ -3371,172 +3437,468 @@ async function renderSettings() {
       'Africa/Niamey': 'Niger — Niamey (GMT+1)', 'Africa/Douala': 'Cameroun — Douala (GMT+1)', 'Africa/Kinshasa': 'RD Congo — Kinshasa (GMT+1)',
       UTC: 'Temps universel (UTC)', 'Europe/Paris': 'France — Paris (GMT+1 / +2 en été)',
     };
-    const tzOptions = (c.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${tz === c.timezone ? 'selected' : ''}>${escapeHtml(tzLabels[tz] || tz)}</option>`).join('');
-    box.innerHTML = `${head('Général', 'Gérez l’identité et les informations de votre entreprise.')}
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Profil de l’entreprise</h3>
-        <div class="set2-profile">
-          <div class="set2-profile-logo" id="logoBox">${logoMark('lg')}${canEdit ? `<div class="set2-logo-acts"><button class="button secondary small" type="button" id="editLogo">${context.company.logoUrl ? 'Changer' : 'Importer un logo'}</button>${context.company.logoUrl ? '<button class="button danger small" type="button" id="removeLogo">Retirer</button>' : ''}</div><small class="set2-logo-hint">PNG, JPEG ou WebP · affiché sur vos pages client</small><input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" hidden>` : ''}</div>
-          <form id="companyForm" class="set2-profile-form">
-            <div class="field"><label>Nom de l’entreprise</label><input name="name" maxlength="120" value="${escapeHtml(c.name || '')}" ${canEdit ? '' : 'disabled'} required></div>
-            <div class="field"><label>Identifiant de l’espace</label><input name="slug" maxlength="80" value="${escapeHtml(c.slug || '')}" ${canEdit ? '' : 'disabled'} required></div>
-            <div class="field"><label>E-mail administratif</label><input name="adminEmail" type="email" value="${escapeHtml(c.admin_email || '')}" ${canEdit ? '' : 'disabled'}></div>
-            <div class="field"><label>Fuseau horaire</label><select name="timezone" ${canEdit ? '' : 'disabled'}>${tzOptions}</select></div>
-            ${canEdit ? '<div class="set2-formfoot"><button class="button primary">Enregistrer les modifications</button></div>' : ''}
-            <div id="setResult"></div>
-          </form>
+    const saved = { name: c.name || '', slug: c.slug || '', adminEmail: c.admin_email || '', timezone: c.timezone || 'Africa/Porto-Novo' };
+    // logo : undefined = inchangé, null = à retirer, chaîne = nouvelle image (data URL)
+    let logoDraft;
+    const field = (label, name, value, type, help, full, extra = '') => `<label class="tx-field ${full ? 'tx-field-full' : ''}" for="tx-${name}">${label}<input id="tx-${name}" name="${name}" type="${type}" value="${escapeHtml(value)}" ${extra}>${help ? `<small>${help}</small>` : ''}</label>`;
+    box.innerHTML = `${heading('Votre entreprise', 'Gardez vos informations à jour, pour votre équipe et vos clients.')}
+      <form id="txGeneralForm" novalidate>
+        <div class="tx-form-layout">
+          <section class="tx-panel">
+            <div class="tx-panel-head"><div><h2>Profil de l’entreprise</h2><p>Les informations qui présentent votre activité.</p></div></div>
+            <div class="tx-panel-body">
+              <div class="tx-logo-editor"><div class="tx-org-logo" id="txLogoPreview">${logoBox(context.company.logoUrl)}</div><div><div class="tx-inline-actions">${txButton(`${txIcon('upload')} ${context.company.logoUrl ? 'Changer le logo' : 'Importer un logo'}`, 'id="txLogoPick"')}${txButton('Retirer', `id="txLogoRemove" ${context.company.logoUrl ? '' : 'hidden'}`, 'tx-button-quiet')}</div><small>PNG, JPEG ou WebP · 8 Mo maximum. Affiché sur les pages de suivi de vos clients.</small><input type="file" accept="image/png,image/jpeg,image/webp" id="txLogoFile" hidden></div></div>
+              <div class="tx-fields">
+                ${field('Nom de l’entreprise', 'name', saved.name, 'text', '', false, 'required minlength="2" maxlength="120"')}
+                ${field('Identifiant de l’espace', 'slug', saved.slug, 'text', 'Lettres minuscules, chiffres et tirets.', false, 'required minlength="2" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" autocapitalize="off" spellcheck="false"')}
+                ${field('E-mail administratif', 'adminEmail', saved.adminEmail, 'email', 'Pour les informations importantes concernant votre espace.', true, 'maxlength="160"')}
+                <label class="tx-field tx-field-full" for="tx-timezone">Fuseau horaire<select id="tx-timezone" name="timezone">${(c.timezones || []).map((tz) => `<option value="${escapeHtml(tz)}" ${tz === saved.timezone ? 'selected' : ''}>${escapeHtml(tzLabels[tz] || tz)}</option>`).join('')}</select><small>Utilisé pour afficher vos horaires et vos rapports.</small></label>
+              </div>
+            </div>
+          </section>
+          <aside class="tx-form-aside">
+            <section class="tx-panel tx-panel-body"><span class="tx-eyebrow">Votre espace</span><h2>Les repères utiles</h2>
+              <dl class="tx-detail-list"><div><dt>N° de l’espace</dt><dd>#${escapeHtml(c.id)}</dd></div><div><dt>Propriétaire</dt><dd>${escapeHtml(c.owner_name || '—')}</dd></div><div><dt>Votre rôle</dt><dd>${escapeHtml(traxoRoleLabels[context.user.role] || context.user.role)}</dd></div><div><dt>Livreurs actifs</dt><dd>${escapeHtml(c.active_drivers ?? 0)}</dd></div><div><dt>Création</dt><dd>${escapeHtml(formatDateOnly(c.created_at))}</dd></div></dl>
+            </section>
+            <div class="tx-aside-note">${txIcon('eye')}<div><strong>Ce que vos clients voient</strong>Votre logo et le nom de votre entreprise apparaissent sur leurs pages de demande et de suivi.</div></div>
+          </aside>
         </div>
-      </section>
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Informations de l’espace</h3>
-        <div class="set2-info">
-          <div class="set2-inforow"><span class="set2-info-ic">#</span><span>N° de l’espace</span><strong>#${escapeHtml(c.id)}</strong></div>
-          <div class="set2-inforow"><span class="set2-info-ic">${setIcons.crown}</span><span>Propriétaire</span><strong>${escapeHtml(c.owner_name || company.name)}</strong></div>
-          <div class="set2-inforow"><span class="set2-info-ic">${setIcons.overview}</span><span>Créé le</span><strong>${escapeHtml(formatDateOnly(c.created_at))}</strong></div>
-        </div>
-      </section>`;
-    const logoBtn = document.getElementById('editLogo');
-    const logoFile = document.getElementById('logoFile');
-    const applyLogo = (logoUrl) => { context.company.logoUrl = logoUrl; paintCompanyAvatar(); renderGeneral(box); };
-    if (logoBtn && logoFile) {
-      logoBtn.addEventListener('click', () => logoFile.click());
-      logoFile.addEventListener('change', async () => {
-        const file = logoFile.files && logoFile.files[0];
-        if (!file) return;
-        logoBtn.disabled = true; logoBtn.textContent = 'Envoi…';
-        try {
-          const dataUrl = await readLogoFile(file);
-          const saved = await api('/api/app/company/logo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl }) });
-          uiToast('Logo mis à jour. Il apparaît déjà sur vos pages client.', 'success');
-          applyLogo(saved.logoUrl);
-        } catch (error) {
-          uiToast(error.message, 'error');
-          logoBtn.disabled = false; logoBtn.textContent = context.company.logoUrl ? 'Changer' : 'Importer un logo';
+        ${savebar('Enregistrer les modifications')}
+      </form>`;
+    const form = box.querySelector('#txGeneralForm');
+    const preview = box.querySelector('#txLogoPreview');
+    const pick = box.querySelector('#txLogoPick');
+    const removeBtn = box.querySelector('#txLogoRemove');
+    const fileInput = box.querySelector('#txLogoFile');
+    const values = () => Object.fromEntries(new FormData(form));
+    const paintLogo = () => {
+      const url = logoDraft === undefined ? context.company.logoUrl : logoDraft;
+      preview.innerHTML = logoBox(url, 'Aperçu du logo');
+      removeBtn.hidden = !url;
+    };
+    pick.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      try { logoDraft = await readLogoFile(file); paintLogo(); bar.refresh(); } catch (error) { uiToast(error.message, 'error'); }
+    });
+    removeBtn.addEventListener('click', () => { logoDraft = context.company.logoUrl ? null : undefined; paintLogo(); bar.refresh(); });
+    const bar = mountSavebar(form, {
+      snapshot: () => JSON.stringify([values(), logoDraft === undefined ? 'same' : logoDraft === null ? 'none' : logoDraft.length]),
+      reset: () => {
+        form.elements.name.value = saved.name; form.elements.slug.value = saved.slug;
+        form.elements.adminEmail.value = saved.adminEmail; form.elements.timezone.value = saved.timezone;
+        logoDraft = undefined; paintLogo();
+      },
+      savedMessage: 'Profil enregistré.',
+      save: async () => {
+        const data = values();
+        data.slug = String(data.slug || '').trim().toLowerCase();
+        const changed = ['name', 'slug', 'adminEmail', 'timezone'].some((k) => String(data[k] || '').trim() !== saved[k]);
+        if (changed) {
+          const result = await api('/api/app/company', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+          Object.assign(saved, { name: result.name, slug: result.slug, adminEmail: result.admin_email || '', timezone: result.timezone });
+          context.company.name = result.name; context.company.slug = result.slug;
+          form.elements.slug.value = result.slug;
         }
-      });
-    }
-    document.getElementById('removeLogo')?.addEventListener('click', async () => {
-      if (!(await uiConfirm('Retirer le logo ?', { message: 'L’initiale de l’entreprise sera affichée à la place.', confirmLabel: 'Retirer' }))) return;
-      try {
-        await api('/api/app/company/logo', { method: 'DELETE' });
-        uiToast('Logo retiré.', 'success');
-        applyLogo(null);
-      } catch (error) { uiToast(error.message, 'error'); }
-    });
-    const form = document.getElementById('companyForm');
-    if (canEdit && form) form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const data = Object.fromEntries(new FormData(form));
-      const btn = form.querySelector('button.primary'); btn.disabled = true;
-      try {
-        const saved = await api('/api/app/company', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-        context.company.name = saved.name; context.company.slug = saved.slug;
-        notify('<div class="notice success">Profil enregistré.</div>');
-      } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); }
-      finally { btn.disabled = false; }
+        if (logoDraft === null) {
+          await api('/api/app/company/logo', { method: 'DELETE' });
+          context.company.logoUrl = null;
+        } else if (typeof logoDraft === 'string') {
+          const result = await api('/api/app/company/logo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl: logoDraft }) });
+          context.company.logoUrl = result.logoUrl;
+        }
+        logoDraft = undefined; paintLogo();
+        pick.innerHTML = `${txIcon('upload')} ${context.company.logoUrl ? 'Changer le logo' : 'Importer un logo'}`;
+        paintCompanyAvatar();
+      },
     });
   }
 
-  async function renderDeliveries(box) {
-    const d = await api('/api/app/settings/deliveries');
-    const row = (name, title, desc) => `<div class="set2-optrow"><span class="set2-opt-ic">${setIcons.play}</span><div class="set2-opt-main"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(desc)}</small></div>${setToggle(name, d[name], !canEdit)}</div>`;
-    box.innerHTML = `${head('Livraisons', 'Vos règles de validation et de création des commandes.')}
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Validation d’une commande</h3>
-        <p class="set2-blocksub">Ce qui doit être fait avant qu’une commande parte en livraison.</p>
-        ${row('validateBeforeTracking', 'Valider avant d’ouvrir le suivi au client', 'Le client ne voit son suivi qu’après validation de sa demande par votre équipe.')}
-        ${row('driverAssignmentRequired', 'Livreur obligatoire pour valider', 'Une demande ne peut être validée qu’avec un livreur affecté.')}
-        ${row('allowEditAfterValidation', 'Modifier une commande après validation', 'Votre équipe peut encore corriger certains détails après la validation.')}
-      </section>
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Création des demandes</h3>
-        <p class="set2-blocksub">Les façons de créer une nouvelle livraison.</p>
-        ${row('customerFormEnabled', 'Lien envoyé au client', 'Le client remplit lui-même ses informations et partage sa position exacte.')}
-        ${row('internalEntryEnabled', 'Saisie par votre équipe', 'Votre équipe peut créer une commande en saisissant elle-même les informations.')}
-        ${row('manualValidation', 'Validation par votre équipe', 'Une demande reçue par lien ne devient une commande qu’une fois validée.')}
-        ${canEdit ? '<div class="set2-formfoot"><button class="button primary" id="saveDeliveries">Enregistrer les règles</button></div>' : ''}
-        <div id="setResult"></div>
-      </section>`;
-    const state = { ...d };
-    box.querySelectorAll('[data-toggle]').forEach((btn) => btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      const on = !btn.classList.contains('on');
-      btn.classList.toggle('on', on); btn.setAttribute('aria-checked', on ? 'true' : 'false');
-      state[btn.dataset.toggle] = on;
-    }));
-    const save = document.getElementById('saveDeliveries');
-    if (save) save.addEventListener('click', async () => {
-      save.disabled = true;
-      try {
-        await api('/api/app/settings/deliveries', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
-        notify('<div class="notice success">Règles enregistrées.</div>');
-      } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); }
-      finally { save.disabled = false; }
+  // ---- Livraisons ---------------------------------------------------------
+  async function deliveries(box) {
+    const [rules, proofs] = await Promise.all([api('/api/app/settings/deliveries'), api('/api/app/settings/proofs')]);
+    const savedRules = { ...rules };
+    const savedProofs = { photoMode: proofs.photo_proof_mode || 'off', signatureMode: proofs.signature_proof_mode || 'off' };
+    const ro = !canEdit;
+    const proofRow = (name, title, desc, value) => `<div class="tx-setting-row tx-proof-row"><div><span class="tx-row-title" id="tx-${name}-label">${escapeHtml(title)}</span><p>${escapeHtml(desc)}</p></div>
+      <div class="tx-segmented tx-proof-choice" role="radiogroup" aria-labelledby="tx-${name}-label">${[['off', 'Désactivée'], ['optional', 'Facultative'], ['required', 'Obligatoire']].map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${value === v ? 'checked' : ''} ${ro ? 'disabled' : ''}><span>${l}</span></label>`).join('')}</div></div>`;
+    box.innerHTML = `${heading('Vos règles de livraison', 'Définissez comment votre équipe crée, valide et clôture les livraisons.')}
+      <form id="txDeliveriesForm" novalidate>
+        <div class="tx-settings-columns">
+          <section class="tx-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">À la réception</span><h2>Création des demandes</h2><p>Choisissez comment recevoir les informations.</p></div></div><div class="tx-panel-body">
+            ${toggleRow('customerFormEnabled', 'Laisser le client remplir sa demande', 'Vous envoyez un lien : le client renseigne ses informations et partage sa position exacte.', rules.customerFormEnabled, ro)}
+            ${toggleRow('internalEntryEnabled', 'Permettre la saisie par votre équipe', 'Vos collaborateurs créent eux-mêmes une commande pour le client.', rules.internalEntryEnabled, ro)}
+            ${toggleRow('manualValidation', 'Vérifier les demandes reçues par lien', 'Activé : une demande arrive « À vérifier » et votre équipe la valide. Désactivé : elle est validée dès l’envoi du client.', rules.manualValidation, ro || !rules.customerFormEnabled)}
+          </div></section>
+          <section class="tx-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">Avant le départ</span><h2>Validation des commandes</h2><p>Gardez la main sur les départs en livraison.</p></div></div><div class="tx-panel-body">
+            ${toggleRow('driverAssignmentRequired', 'Affecter un livreur pour valider', 'Une demande ne peut être validée qu’en choisissant son livreur : la commande est créée dans la foulée.', rules.driverAssignmentRequired, ro)}
+            ${toggleRow('allowEditAfterValidation', 'Laisser le client corriger après validation', 'Tant que la commande n’est pas créée, le client peut encore modifier sa demande depuis son lien.', rules.allowEditAfterValidation, ro)}
+          </div></section>
+        </div>
+        <section class="tx-panel tx-proofs-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">À l’arrivée</span><h2>Preuves de livraison</h2><p>Ce que le livreur doit fournir pour clôturer une livraison dans son application.</p></div></div><div class="tx-panel-body">
+          ${proofRow('photoMode', 'Photo du colis livré', 'Une photo prise au moment de la remise.', savedProofs.photoMode)}
+          ${proofRow('signatureMode', 'Signature du client', 'Le client signe sur l’écran du livreur.', savedProofs.signatureMode)}
+        </div></section>
+        ${infoStrip('Ces règles s’appliquent aux nouvelles demandes et aux prochaines livraisons. Les commandes déjà en cours ne changent pas.')}
+        <p class="tx-error" id="txDeliveryError" role="alert" hidden></p>
+        ${ro ? infoStrip('Seul un propriétaire ou un manager peut modifier ces règles.') : savebar('Enregistrer les règles')}
+      </form>`;
+    if (ro) return;
+    const form = box.querySelector('#txDeliveriesForm');
+    const err = box.querySelector('#txDeliveryError');
+    const keys = ['customerFormEnabled', 'internalEntryEnabled', 'manualValidation', 'driverAssignmentRequired', 'allowEditAfterValidation'];
+    const current = () => ({
+      rules: Object.fromEntries(keys.map((k) => [k, form.elements[k].checked])),
+      proofs: { photoMode: form.elements.photoMode.value, signatureMode: form.elements.signatureMode.value },
+    });
+    const syncDependencies = () => {
+      form.elements.manualValidation.disabled = !form.elements.customerFormEnabled.checked;
+      err.hidden = true;
+    };
+    form.addEventListener('change', syncDependencies);
+    mountSavebar(form, {
+      snapshot: () => JSON.stringify(current()),
+      reset: () => {
+        keys.forEach((k) => { form.elements[k].checked = savedRules[k]; });
+        form.elements.photoMode.value = savedProofs.photoMode; form.elements.signatureMode.value = savedProofs.signatureMode;
+        syncDependencies();
+      },
+      savedMessage: 'Règles enregistrées.',
+      save: async () => {
+        const next = current();
+        if (!next.rules.customerFormEnabled && !next.rules.internalEntryEnabled) {
+          err.textContent = 'Gardez au moins une façon de créer une livraison : le lien client ou la saisie par votre équipe.';
+          err.hidden = false;
+          throw new Error('Aucune façon de créer une livraison n’est activée.');
+        }
+        if (keys.some((k) => next.rules[k] !== savedRules[k])) {
+          const result = await api('/api/app/settings/deliveries', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next.rules) });
+          keys.forEach((k) => { savedRules[k] = result[k]; });
+        }
+        if (next.proofs.photoMode !== savedProofs.photoMode || next.proofs.signatureMode !== savedProofs.signatureMode) {
+          const result = await api('/api/app/settings/proofs', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next.proofs) });
+          savedProofs.photoMode = result.photo_proof_mode; savedProofs.signatureMode = result.signature_proof_mode;
+        }
+      },
     });
   }
 
-  async function renderTeamSettings(box) {
-    if (!canEdit) { box.innerHTML = `${head('Équipe & permissions', 'Gérez les accès, les rôles et les droits de votre espace.')}<section class="set2-card"><div class="notice">Seul un propriétaire ou un manager peut gérer l’équipe.</div></section>`; return; }
+  // ---- Équipe & permissions -----------------------------------------------
+  async function team(box) {
     const data = await api('/api/app/team');
-    const roleCards = [
-      { ic: setIcons.crown, name: 'Propriétaire', desc: 'Tous les droits, y compris la facturation et la formule.' },
-      { ic: setIcons.team, name: 'Manager', desc: 'Gère l’équipe, les livreurs et les réglages. Pas d’accès à la facturation.' },
-      { ic: setIcons.user, name: 'Opérateur', desc: 'Traite les demandes, les commandes, les tournées et les incidents au quotidien.' },
-      { ic: setIcons.bike, name: 'Livreur', desc: 'Voit uniquement ses propres livraisons, dans l’appli livreur.' },
+    const me = String(context.user.email || '').toLowerCase();
+    const members = data.members || [];
+    const invitations = (data.invitations || []).filter((i) => i.role !== 'driver');
+    const driverInvites = (data.invitations || []).length - invitations.length;
+    const memberRow = (m) => `<div class="tx-member-row"><div class="tx-person"><span class="tx-avatar">${escapeHtml(txInitials(m.display_name || m.driver_name || m.email))}</span><div><strong>${escapeHtml(m.display_name || m.driver_name || m.email)}${String(m.email || '').toLowerCase() === me ? ' <span class="tx-muted">· Vous</span>' : ''}</strong><p>${escapeHtml(m.email || '')}</p></div></div><span>${escapeHtml(traxoRoleLabels[m.role] || m.role)}</span><span>${m.disabled ? '<span class="tx-badge">Suspendu</span>' : '<span class="tx-badge tx-badge-green">Actif</span>'}</span></div>`;
+    const inviteRow = (i) => {
+      const canRevoke = isOwner || i.role !== 'manager';
+      return `<div class="tx-member-row"><div class="tx-person"><span class="tx-avatar">${txIcon('mail')}</span><div><strong>${escapeHtml(i.display_name || i.email)}</strong><p>${escapeHtml(i.email)} · invitation valable jusqu’au ${escapeHtml(formatDate(i.expires_at))}</p></div></div><span>${escapeHtml(traxoRoleLabels[i.role] || i.role)}</span><span class="tx-member-acts"><span class="tx-badge tx-badge-amber">Invité</span>${canRevoke ? `<button type="button" class="tx-text-button" data-revoke="${escapeHtml(i.id)}">Annuler</button>` : ''}</span></div>`;
+    };
+    const roles = [
+      ['crown', 'Propriétaire', 'Tous les accès, y compris la facturation et le choix de la formule.'],
+      ['users', 'Manager', 'L’équipe, les livreurs et les réglages. La facturation reste réservée au propriétaire.'],
+      ['user-round', 'Opérateur', 'Les demandes, les commandes, les tournées et les incidents.'],
+      ['bike', 'Livreur', 'Ses propres livraisons, depuis l’application livreur.'],
     ];
-    const av = (name) => `<span class="set2-av">${escapeHtml(String(name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?')}</span>`;
-    const memberRows = (data.members || []).map((m) => `<tr><td><div class="set2-user">${av(m.display_name || m.driver_name)}<div><strong>${escapeHtml(m.display_name || m.driver_name || '—')}</strong><small>${escapeHtml(m.email || '')}</small></div></div></td><td>${escapeHtml(traxoRoleLabels[m.role] || m.role)}</td><td>${m.disabled ? '<span class="set2-badge grey">Suspendu</span>' : '<span class="set2-badge green">Actif</span>'}</td></tr>`).join('');
-    const inviteRows = (data.invitations || []).map((i) => `<tr><td><div class="set2-user">${av(i.display_name || i.email)}<div><strong>${escapeHtml(i.display_name || i.email)}</strong><small>${escapeHtml(i.email || '')}</small></div></div></td><td>${escapeHtml(traxoRoleLabels[i.role] || i.role)}</td><td><span class="set2-badge amber">Invité</span></td></tr>`).join('');
-    box.innerHTML = `${head('Équipe & permissions', 'Gérez les accès, les rôles et les droits de votre espace.')}
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Rôles</h3>
-        <div class="set2-roles">${roleCards.map((r) => `<div class="set2-role"><span class="set2-role-ic">${r.ic}</span><div><strong>${escapeHtml(r.name)}</strong><small>${escapeHtml(r.desc)}</small></div></div>`).join('')}</div>
+    box.innerHTML = `${heading('Équipe et permissions', 'Chacun sait ce qu’il peut faire, et vous gardez le contrôle.', txButton(`${txIcon('plus')} Inviter un membre`, 'id="txInvite"', 'tx-button-primary'))}
+      <section class="tx-panel"><div class="tx-panel-head"><div><h2>Membres de l’espace <span class="tx-badge">${members.length + invitations.length}</span></h2><p>Les personnes qui accèdent à votre espace TRAXO.</p></div><a class="tx-button tx-button-quiet" href="/app/equipe">Gérer les accès ${txIcon('arrow-right')}</a></div>
+        <div class="tx-member-row tx-table-head"><span>Membre</span><span>Rôle</span><span>Statut</span></div>
+        ${members.map(memberRow).join('')}${invitations.map(inviteRow).join('')}
       </section>
-      <section class="set2-card">
-        <div class="set2-blockhead"><h3 class="set2-blocktitle">Utilisateurs</h3><button class="button primary small" id="inviteUser">${setIcons.user} Inviter un utilisateur</button></div>
-        <div class="crm-scroll"><table class="set2-table"><thead><tr><th>Nom</th><th>Rôle</th><th>Statut</th></tr></thead><tbody>${memberRows}${inviteRows}</tbody></table></div>
-        <div id="setResult"></div>
-      </section>`;
-    const invite = document.getElementById('inviteUser');
-    if (invite) invite.addEventListener('click', () => { location.href = '/app/equipe'; });
+      <section class="tx-panel tx-role-section"><h2>Qui peut faire quoi ?</h2><div class="tx-role-grid">${roles.map(([i, t, d]) => `<div class="tx-role">${txIcon(i)}<h3>${t}</h3><p>${d}</p></div>`).join('')}</div></section>
+      ${infoStrip(`Les comptes livreurs se créent depuis <a href="/app/equipe">Équipe et accès</a>, à partir d’une fiche livreur${driverInvites ? ` (${txPlural(driverInvites, 'invitation livreur', 'invitations livreur')} en attente)` : ''}. Pour changer un rôle ou suspendre un accès, passez aussi par cette page.`)}`;
+    box.querySelector('#txInvite').addEventListener('click', () => openInviteDialog(() => team(box)));
+    box.querySelectorAll('[data-revoke]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await uiConfirm('Annuler cette invitation ?', { message: 'Le lien envoyé ne fonctionnera plus.', tone: 'danger', confirmLabel: 'Annuler l’invitation', cancelLabel: 'Garder' }))) return;
+      try { await api(`/api/app/invitations/${encodeURIComponent(b.dataset.revoke)}/revoke`, { method: 'POST' }); uiToast('Invitation annulée.', 'success'); team(box); } catch (error) { uiToast(error.message, 'error'); }
+    }));
   }
 
-  async function renderSecurity(box) {
+  function openInviteDialog(onDone) {
+    const roleHelp = { operator: 'Traite les demandes, les commandes, les tournées et les incidents au quotidien.', manager: 'Gère l’équipe, les livreurs et les réglages. Aucun accès à la facturation.' };
+    const modal = openModal('Inviter un membre', `<p class="tx-dialog-intro">Travaillez ensemble, avec les accès adaptés à son rôle.</p>
+      <form id="txInviteForm">
+        <label class="tx-field" for="txInvName">Nom<input id="txInvName" name="displayName" required minlength="2" maxlength="100" autocomplete="off"></label>
+        <label class="tx-field" for="txInvEmail">Adresse e-mail<input id="txInvEmail" name="email" type="email" required autocomplete="off"></label>
+        <label class="tx-field" for="txInvRole">Rôle<select id="txInvRole" name="role"><option value="operator">Opérateur</option>${isOwner ? '<option value="manager">Manager</option>' : ''}</select><small id="txInvRoleHelp">${roleHelp.operator}</small></label>
+        <label class="tx-check"><input type="checkbox" name="notify" checked> Envoyer l’invitation par e-mail</label>
+        <p class="tx-error" id="txInvError" role="alert" hidden></p>
+      </form>`, '<button class="button secondary" type="button" data-modal-close>Annuler</button><button class="button primary" type="submit" form="txInviteForm">Inviter</button>', { className: 'tx-modal' });
+    const $m = (s) => modal.backdrop.querySelector(s);
+    $m('[data-modal-close]').addEventListener('click', modal.close);
+    $m('#txInvRole').addEventListener('change', (e) => { $m('#txInvRoleHelp').textContent = roleHelp[e.target.value]; });
+    $m('#txInviteForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const f = event.currentTarget;
+      const submit = modal.backdrop.querySelector('button.primary');
+      submit.disabled = true;
+      try {
+        const result = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName: f.displayName.value.trim(), email: f.email.value.trim(), role: f.role.value, notify: f.notify.checked ? 'email' : '' }) });
+        modal.close();
+        showInviteLink(result, f.email.value.trim(), onDone);
+      } catch (error) {
+        $m('#txInvError').textContent = error.message; $m('#txInvError').hidden = false; submit.disabled = false;
+      }
+    });
+    setTimeout(() => $m('#txInvName')?.focus(), 50);
+  }
+
+  function showInviteLink(result, email, onDone) {
+    const modal = openModal('Invitation créée', `<p class="tx-dialog-intro">${result.emailed ? `Un e-mail a été envoyé à <strong>${escapeHtml(email)}</strong>.` : 'Aucun e-mail n’a été envoyé : partagez ce lien vous-même.'} Le lien est valable 48 heures et ne sert qu’une fois.</p>
+      <label class="tx-field" for="txInvLink">Lien d’invitation<input id="txInvLink" value="${escapeHtml(result.url)}" readonly></label>`,
+    '<button class="button secondary" type="button" id="txInvCopy">Copier le lien</button><button class="button primary" type="button" data-modal-close>Terminé</button>', { className: 'tx-modal' });
+    const close = () => { modal.close(); onDone(); };
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', close);
+    modal.backdrop.querySelector('.modal-close').addEventListener('click', onDone);
+    modal.backdrop.querySelector('#txInvCopy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(result.url); uiToast('Lien copié.', 'success'); } catch { modal.backdrop.querySelector('#txInvLink').select(); uiToast('Copiez le lien sélectionné.', 'info'); }
+    });
+  }
+
+  // ---- Sécurité -----------------------------------------------------------
+  async function security(box) {
     const s = await api('/api/app/account/security');
     const days = s.passwordChangedAt ? Math.max(0, Math.round((Date.now() - new Date(s.passwordChangedAt).getTime()) / 86400000)) : null;
-    const pwdSub = days == null ? 'Jamais modifié depuis la création' : `Dernière modification il y a ${days} jour${days > 1 ? 's' : ''}`;
-    box.innerHTML = `${head('Sécurité', 'Protégez votre compte et contrôlez les connexions à votre espace.')}
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Sécurité du compte</h3>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.lock}</span><div class="set2-opt-main"><strong>Mot de passe</strong><small>${escapeHtml(pwdSub)}</small></div><button class="button secondary small" id="editPwd">${setIcons.edit} Modifier</button></div>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.shield}</span><div class="set2-opt-main"><strong>Authentification à deux facteurs ${s.twoFactorEnabled ? '<span class="set2-pill ok">Activée</span>' : ''}</strong><small>${s.twoFactorEnabled ? `Code demandé à chaque connexion · ${escapeHtml(s.recoveryCodesLeft)} code${s.recoveryCodesLeft > 1 ? 's' : ''} de secours restant${s.recoveryCodesLeft > 1 ? 's' : ''}` : 'Protégez la connexion avec un code généré par une application (Google Authenticator, Authy…)'}</small></div>${s.twoFactorEnabled
-          ? '<div class="set2-opt-acts"><button class="button secondary small" id="mfaNewCodes">Nouveaux codes</button><button class="button danger small" id="mfaDisable">Désactiver</button></div>'
-          : '<button class="button primary small" id="cfg2fa">Activer</button>'}</div>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.screen}</span><div class="set2-opt-main"><strong>Sessions actives</strong><small>${escapeHtml(s.activeSessions)} appareil${s.activeSessions > 1 ? 's' : ''} connecté${s.activeSessions > 1 ? 's' : ''}</small></div><button class="button secondary small" id="viewSessions">Voir les sessions</button></div>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.bell}</span><div class="set2-opt-main"><strong>Alertes de connexion</strong><small>Recevoir un e-mail lors d’une nouvelle connexion</small></div>${setToggle('loginAlerts', s.loginAlerts, false)}</div>
-        <div id="setResult"></div>
-      </section>
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Protection de l’espace</h3>
-        <p class="set2-blocksub">Votre espace TRAXO est conçu pour assurer la sécurité de vos données.</p>
-        <div class="set2-guarantees">
-          <div class="set2-guarantee"><span class="set2-g-ic">${setIcons.check}</span><div><strong>Données isolées par entreprise</strong><small>Vos données sont strictement séparées de celles des autres entreprises.</small></div></div>
-          <div class="set2-guarantee"><span class="set2-g-ic">${setIcons.check}</span><div><strong>Connexions protégées</strong><small>Toutes les connexions sont chiffrées et sécurisées.</small></div></div>
-          <div class="set2-guarantee"><span class="set2-g-ic">${setIcons.check}</span><div><strong>Sessions sécurisées</strong><small>Vos sessions sont protégées et automatiquement expirées en cas d’inactivité.</small></div></div>
+    const pwdSub = days == null ? 'Jamais modifié depuis la création du compte.' : days === 0 ? 'Modifié aujourd’hui.' : `Dernière modification il y a ${txPlural(days, 'jour', 'jours')}.`;
+    const channelNote = !s.loginCodes ? 'La vérification par code n’est pas active sur ce serveur : la connexion se fait avec le mot de passe (et la double authentification si elle est activée).'
+      : s.twoFactorEnabled
+      ? 'Votre double authentification est active : c’est le code de votre application qui est demandé, pas un code par e-mail ou WhatsApp.'
+      : s.whatsappChannel ? 'À la connexion depuis un nouvel appareil, vous choisirez de recevoir le code par e-mail ou sur WhatsApp.' : 'À la connexion depuis un nouvel appareil, le code est envoyé par e-mail. WhatsApp est momentanément indisponible.';
+    box.innerHTML = `${heading('Sécurité du compte', 'Choisissez comment vous connecter et gardez un œil sur vos accès.')}
+      <div class="tx-form-layout">
+        <div class="tx-stack">
+          <section class="tx-panel"><div class="tx-panel-head"><div><h2>Connexion et protection</h2><p>${escapeHtml(context.user.email)}${s.googleLinked ? ' · compte Google relié' : ''}</p></div></div><div class="tx-panel-body">
+            <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('lock-keyhole')}<div><h3>Mot de passe</h3><p>${escapeHtml(pwdSub)}</p></div></div>${txButton('Modifier', 'id="txPwd"')}</div>
+            <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('shield-check')}<div><h3>Double authentification</h3><p>${s.twoFactorEnabled ? `Un code de votre application à chaque connexion · ${txPlural(s.recoveryCodesLeft, 'code de secours restant', 'codes de secours restants')}.` : 'Un code de votre application en plus de votre mot de passe.'}</p><span class="tx-badge ${s.twoFactorEnabled ? 'tx-badge-green' : 'tx-badge-red'}">${s.twoFactorEnabled ? 'Activée' : 'À activer'}</span></div></div>${s.twoFactorEnabled ? `<div class="tx-inline-actions">${txButton('Nouveaux codes', 'id="txMfaCodes"')}${txButton('Désactiver', 'id="txMfaOff"', 'tx-button-quiet')}</div>` : txButton('Configurer', 'id="txMfaOn"', 'tx-button-primary')}</div>
+            <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('monitor')}<div><h3>Sessions actives</h3><p>${txPlural(s.activeSessions, 'appareil connecté', 'appareils connectés')} à votre compte.</p></div></div>${txButton('Voir', 'id="txSessions"')}</div>
+            ${toggleRow('loginAlerts', 'M’avertir des nouvelles connexions', 'Recevez un e-mail lorsqu’un appareil se connecte à votre compte.', s.loginAlerts)}
+          </div></section>
+          <section class="tx-panel"><div class="tx-panel-head"><div><h2>Codes de connexion</h2><p>${escapeHtml(channelNote)}</p></div></div><div class="tx-panel-body">
+            <form id="txPhoneForm" class="tx-phone-form" novalidate>
+              <label class="tx-field" for="txPhone">Votre numéro WhatsApp<input id="txPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+229 01 97 12 34 56" value="${escapeHtml(s.phone || '')}"><small>Avec l’indicatif du pays. Laissez vide pour recevoir vos codes uniquement par e-mail.</small></label>
+              <button type="submit" class="tx-button" id="txPhoneSave" disabled>Enregistrer</button>
+            </form>
+            ${s.phone && !s.phoneInternational ? '<p class="tx-error">Ce numéro n’a pas d’indicatif : ajoutez-le (+229…) pour recevoir vos codes sur WhatsApp.</p>' : ''}
+          </div></section>
         </div>
-      </section>`;
-    const alertsToggle = box.querySelector('[data-toggle="loginAlerts"]');
-    if (alertsToggle) alertsToggle.addEventListener('click', async () => {
-      const on = !alertsToggle.classList.contains('on');
-      alertsToggle.classList.toggle('on', on); alertsToggle.setAttribute('aria-checked', on ? 'true' : 'false');
-      try { await api('/api/app/account/preferences', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ loginAlerts: on }) }); }
-      catch { alertsToggle.classList.toggle('on', !on); }
+        <aside class="tx-form-aside"><section class="tx-panel tx-panel-body tx-security-aside"><div class="tx-security-title">${txIcon('shield-check')}<h2>Une étape de plus.<br>Une protection en plus.</h2></div><p class="tx-muted tx-aside-text">Même si quelqu’un connaît votre mot de passe, il lui faudra aussi le code de votre application d’authentification.</p><div class="tx-session">${txIcon('smartphone')}<div><strong>Votre application habituelle</strong><p>Google Authenticator, Microsoft Authenticator, Authy ou 1Password.</p></div></div></section></aside>
+      </div>`;
+    const refresh = () => security(box);
+    box.querySelector('#txPwd').addEventListener('click', () => openPasswordModal(refresh));
+    box.querySelector('#txMfaOn')?.addEventListener('click', () => openMfaSetup(refresh));
+    box.querySelector('#txMfaOff')?.addEventListener('click', () => openMfaDisable(refresh));
+    box.querySelector('#txMfaCodes')?.addEventListener('click', () => openMfaNewCodes(refresh));
+    box.querySelector('#txSessions').addEventListener('click', () => openSessionsModal(refresh));
+    const alerts = box.querySelector('#tx-loginAlerts');
+    alerts.addEventListener('change', async () => {
+      alerts.disabled = true;
+      try {
+        await api('/api/app/account/preferences', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ loginAlerts: alerts.checked }) });
+        uiToast(alerts.checked ? 'Vous serez averti par e-mail des nouvelles connexions.' : 'Alertes de connexion désactivées.', 'success');
+      } catch (error) { alerts.checked = !alerts.checked; uiToast(error.message, 'error'); }
+      alerts.disabled = false;
     });
-    document.getElementById('cfg2fa')?.addEventListener('click', () => openMfaSetup(() => renderSecurity(box)));
-    document.getElementById('mfaDisable')?.addEventListener('click', () => openMfaDisable(() => renderSecurity(box)));
-    document.getElementById('mfaNewCodes')?.addEventListener('click', () => openMfaNewCodes(() => renderSecurity(box)));
-    document.getElementById('editPwd').addEventListener('click', () => openPasswordModal());
-    document.getElementById('viewSessions').addEventListener('click', () => openSessionsModal());
+    const phoneForm = box.querySelector('#txPhoneForm');
+    const phoneSave = box.querySelector('#txPhoneSave');
+    let savedPhone = s.phone || '';
+    phoneForm.addEventListener('input', () => { phoneSave.disabled = phoneForm.elements.phone.value.trim() === savedPhone; });
+    phoneForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      phoneSave.disabled = true;
+      try {
+        const result = await api('/api/app/account/phone', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phoneForm.elements.phone.value }) });
+        savedPhone = result.phone; phoneForm.elements.phone.value = result.phone;
+        uiToast(result.phone ? 'Numéro enregistré.' : 'Numéro retiré : vos codes arriveront par e-mail.', 'success');
+      } catch (error) { uiToast(error.message, 'error'); phoneSave.disabled = false; }
+    });
+    isDirty = () => document.body.contains(phoneForm) && phoneForm.elements.phone.value.trim() !== savedPhone;
+  }
+
+  // ---- Facturation --------------------------------------------------------
+  async function billing(box) {
+    const data = await api('/api/app/billing/plans');
+    const drivers = Number(data.activeDrivers || 0);
+    const plan = data.plans.find((p) => p.code === data.currentPlan) || data.plans.find((p) => p.code === data.recommended);
+    const cycle = data.billingCycle || 'monthly';
+    const quote = await api(`/api/app/billing/quote?plan=${encodeURIComponent(plan.code)}&cycle=${cycle}&drivers=${Math.max(1, drivers)}`).catch(() => null);
+    const cap = plan.max == null ? null : plan.max;
+    const free = cap == null ? null : Math.max(0, cap - drivers);
+    const seatsHtml = cap != null && cap <= 12
+      ? `<div class="tx-seats" style="grid-template-columns:repeat(${cap},minmax(0,1fr))" role="img" aria-label="${drivers} places utilisées sur ${cap}">${Array.from({ length: cap }, (_, i) => `<span class="${i < drivers ? 'tx-seat-used' : ''}">${i < drivers ? txIcon('user-round') : ''}</span>`).join('')}</div>`
+      : `<div class="tx-capacity-meter" role="img" aria-label="${drivers} places utilisées${cap ? ` sur ${cap}` : ''}"><span style="width:${cap ? Math.min(100, Math.round((drivers / cap) * 100)) : 100}%"></span></div>`;
+    const detail = plan.kind === 'per_driver' ? `${txPlural(Math.max(1, drivers), 'livreur', 'livreurs')} × ${txMoney(plan.monthly)} FCFA` : plan.kind === 'custom' ? 'Offre sur mesure' : `Forfait ${plan.capacityLabel.toLowerCase()}`;
+    const periodNote = quote && cycle !== 'monthly' ? `<p class="tx-membership-period">Soit ${txMoney(quote.periodTotal)} FCFA par ${txCyclePeriod[cycle]} · remise de ${Math.round(quote.discount * 100)} %</p>` : '';
+    box.innerHTML = `${heading('Abonnement et facturation', 'Une vue claire sur votre formule et ce qu’elle vous coûte.')}
+      <section class="tx-membership">
+        <div class="tx-membership-main">
+          <div class="tx-membership-top"><span class="tx-pass-label"><span></span> VOTRE FORMULE ACTUELLE</span><span class="tx-dark-badge">${escapeHtml(txCycleLabels[cycle] || 'Mensuel')}</span></div>
+          <h2>${escapeHtml(plan.name)}<span class="tx-red">.</span></h2>
+          <p>${escapeHtml(plan.microcopy || 'Votre rythme. Votre équipe. Votre formule.')}</p>
+          <div class="tx-membership-price"><strong>${quote ? txMoney(quote.monthlyEquivalent) : 'Sur devis'}</strong>${quote ? '<div>FCFA<span>par mois</span></div>' : ''}</div>
+          ${periodNote}
+          <div class="tx-membership-bottom"><span>${escapeHtml(detail)}</span>${txButton(`Comparer les formules ${txIcon('arrow-up-right')}`, 'data-route="plans"', 'tx-button-red')}</div>
+        </div>
+        <div class="tx-capacity"><span class="tx-eyebrow">De la place pour grandir</span>
+          <div class="tx-capacity-count"><strong>${drivers}</strong><span>/ ${cap == null ? '∞' : cap}</span></div>
+          <p>Livreurs actifs dans votre formule</p>
+          ${seatsHtml}
+          <div class="tx-capacity-note"><span class="tx-capacity-dot"></span> ${free == null ? 'Capacité adaptée à votre contrat' : free > 0 ? `Encore ${txPlural(free, 'place disponible', 'places disponibles')}` : 'Formule complète'}</div>
+          <p class="tx-capacity-help">${free === 0 ? 'Pour ajouter un livreur, passez à une formule plus grande.' : 'Ajoutez des livreurs quand vous en avez besoin.'}</p>
+        </div>
+      </section>
+      <div class="tx-billing-bottom">
+        <section class="tx-payment-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Moyens de paiement</span><h2>À vous de choisir.</h2></div><span class="tx-badge">Bientôt disponible</span></div>
+          <div class="tx-payment-methods"><div>${txIcon('smartphone')}<span><strong>Mobile Money</strong><small>Depuis votre téléphone</small></span></div><div>${txIcon('credit-card')}<span><strong>Carte bancaire</strong><small>En quelques instants</small></span></div></div>
+          <p class="tx-payment-note">Le paiement en ligne arrive bientôt. Votre formule reste active ; aucun prélèvement n’est effectué pour le moment.</p></section>
+        <section class="tx-invoice-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Vos documents</span><h2>Factures</h2></div>${txIcon('file-text')}</div>
+          <div class="tx-invoice-empty"><span class="tx-invoice-line"></span><h3>Tout sera rangé ici.</h3><p>Retrouvez vos factures au même endroit dès que le paiement en ligne sera disponible.</p></div></section>
+      </div>
+      <div class="tx-billing-contact"><span>Une question sur votre abonnement ?</span>${txButton(`On vous aide ${txIcon('arrow-right')}`, 'id="txBillingHelp"', 'tx-button-quiet')}</div>`;
+    box.querySelector('#txBillingHelp').addEventListener('click', () => {
+      const text = quote
+        ? `Votre formule ${plan.name} (${plan.capacityLabel.toLowerCase()}) revient à ${txMoney(quote.monthlyEquivalent)} FCFA par mois avec ${txPlural(drivers, 'livreur actif', 'livreurs actifs')}. Aucun prélèvement n’est effectué pour le moment.`
+        : `Votre formule ${plan.name} fait l’objet d’un devis. Aucun prélèvement n’est effectué pour le moment.`;
+      const modal = openModal('Votre abonnement TRAXO', `<p class="tx-dialog-intro">${escapeHtml(text)}</p>${context.supportEmail ? `<div class="tx-dialog-note">Une question précise ? Écrivez-nous à <a href="mailto:${escapeHtml(context.supportEmail)}?subject=${encodeURIComponent('Abonnement TRAXO')}">${escapeHtml(context.supportEmail)}</a>.</div>` : ''}`,
+        '<button class="button secondary" type="button" data-modal-close>Fermer</button><button class="button primary" type="button" id="txHelpPlans">Comparer les formules</button>', { className: 'tx-modal' });
+      modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+      modal.backdrop.querySelector('#txHelpPlans').addEventListener('click', () => { modal.close(); go('plans'); });
+    });
+  }
+
+  // ---- Comparateur de formules -------------------------------------------
+  async function plansView(box) {
+    const data = await api('/api/app/billing/plans');
+    const byCode = Object.fromEntries(data.plans.map((p) => [p.code, p]));
+    const priced = ['flexible', 'equipe', 'croissance', 'business'].map((c) => byCode[c]).filter(Boolean);
+    const state = { drivers: Math.max(1, Number(data.activeDrivers || 0)), period: data.billingCycle || 'monthly' };
+    const periods = ['monthly', 'quarterly', 'yearly'];
+    const monthlyPrice = (p) => Math.round((p.kind === 'per_driver' ? p.monthly * state.drivers : p.monthly) * (1 - (data.discounts[state.period] || 0)));
+    const fits = (p) => p.max == null || state.drivers <= p.max;
+    const recommended = () => (priced.filter(fits).sort((a, b) => monthlyPrice(a) - monthlyPrice(b))[0] || {}).code || 'grande';
+    const pct = (c) => Math.round((data.discounts[c] || 0) * 100);
+    const badgeFor = (p) => {
+      if (recommended() === p.code) return '<span class="tx-badge tx-badge-red">Adapté à votre flotte</span>';
+      if (data.currentPlan === p.code) return '<span class="tx-badge">Votre formule actuelle</span>';
+      return `<span class="tx-badge">${escapeHtml(p.capacityLabel)}</span>`;
+    };
+    const offer = (p) => {
+      const reco = recommended() === p.code;
+      const price = monthlyPrice(p);
+      return `<section class="tx-offer ${reco ? 'tx-recommended' : ''}">${badgeFor(p)}<h2>${escapeHtml(p.name)}</h2><p>${escapeHtml(p.microcopy)}</p>
+        <div class="tx-price"><span data-price-key="${p.code}" data-value="${price}">${txMoney(price)}</span><small>FCFA / mois${p.kind === 'per_driver' ? ` pour ${txPlural(state.drivers, 'livreur', 'livreurs')}` : ''}</small></div>
+        <p class="tx-offer-period">${txMoney(price * txCycleMonths[state.period])} FCFA / ${txCyclePeriod[state.period]}</p>
+        <ul>${(p.features || []).map((f) => `<li>${txIcon('check')}${escapeHtml(f)}</li>`).join('')}</ul>
+        ${txButton(fits(p) ? 'Voir le récapitulatif' : 'Capacité dépassée', `data-plan="${p.code}" ${fits(p) ? '' : 'disabled'}`, reco ? 'tx-button-red' : '')}</section>`;
+    };
+    const offersHtml = () => {
+      const business = byCode.business;
+      return `<div class="tx-plans-grid">${priced.filter((p) => p.code !== 'business').map(offer).join('')}</div>
+        <div class="tx-other-plans">
+          ${business ? `<section class="tx-mini-offer"><div><h3>Business</h3><p>${escapeHtml(business.capacityLabel)} · <span data-price-key="business" data-value="${monthlyPrice(business)}">${txMoney(monthlyPrice(business))}</span> FCFA / mois</p>${recommended() === 'business' ? '<span class="tx-badge tx-badge-red">Adapté à votre flotte</span>' : ''}</div>${txButton(`Voir l’offre ${txIcon('arrow-up-right')}`, `data-plan="business" ${fits(business) ? '' : 'disabled'}`)}</section>` : ''}
+          <section class="tx-mini-offer"><div><h3>Grande flotte</h3><p>51 livreurs et plus · une offre sur mesure</p>${recommended() === 'grande' ? '<span class="tx-badge tx-badge-red">Adapté à votre flotte</span>' : ''}</div>${txButton(`Parlons-en ${txIcon('arrow-up-right')}`, 'id="txQuote"')}</section>
+        </div>`;
+    };
+    box.innerHTML = `<button class="tx-back" type="button" data-route="billing">${txIcon('arrow-left')} Votre abonnement</button>
+      ${heading('Faites de la place à vos ambitions.', 'Ajustez votre flotte. Trouvez la formule qui vous correspond.', '', 'Les formules TRAXO')}
+      <div class="tx-estimate-bar">
+        <div class="tx-fleet-control"><label class="tx-counter" for="txDrivers">Votre flotte <input id="txDrivers" type="number" value="${state.drivers}" min="1" max="500" step="1" inputmode="numeric"> <span>livreurs</span></label>
+          <input class="tx-fleet-range" id="txRange" type="range" min="1" max="50" value="${Math.min(50, state.drivers)}" aria-label="Ajuster la flotte de 1 à 50 livreurs"></div>
+        <div class="tx-segmented" role="group" aria-label="Période de facturation">${periods.map((id) => `<button type="button" data-period="${id}" aria-pressed="${state.period === id}">${txCycleLabels[id]}${pct(id) ? `<small>−${pct(id)} %</small>` : ''}</button>`).join('')}</div>
+      </div>
+      <div id="txOffers">${offersHtml()}</div>
+      ${infoStrip(`Vous avez aujourd’hui ${txPlural(Number(data.activeDrivers || 0), 'livreur actif', 'livreurs actifs')}. L’essai de 3 jours est réservé à la première connexion. Les remises s’appliquent au paiement de la période entière.`)}`;
+    const range = box.querySelector('#txRange');
+    const input = box.querySelector('#txDrivers');
+    const seg = box.querySelector('.tx-segmented');
+    const paintControls = () => {
+      range.value = Math.min(50, state.drivers);
+      range.style.setProperty('--tx-fill', `${((Math.min(50, state.drivers) - 1) / 49) * 100}%`);
+      seg.style.setProperty('--tx-period', periods.indexOf(state.period));
+      seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.period === state.period)));
+    };
+    const refreshOffers = () => {
+      const previous = Object.fromEntries([...box.querySelectorAll('[data-price-key]')].map((el) => [el.dataset.priceKey, Number(el.dataset.value)]));
+      box.querySelector('#txOffers').innerHTML = offersHtml();
+      bindOffers();
+      paintControls();
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      const items = [...box.querySelectorAll('[data-price-key]')];
+      const start = performance.now();
+      const tick = (now) => {
+        const progress = Math.min(1, (now - start) / 360);
+        const ease = 1 - (1 - progress) ** 3;
+        items.forEach((el) => {
+          if (!el.isConnected) return;
+          const value = Number(el.dataset.value);
+          const from = previous[el.dataset.priceKey] ?? value;
+          el.textContent = txMoney(Math.round(from + (value - from) * ease));
+        });
+        if (progress < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+    range.addEventListener('input', () => { state.drivers = Number(range.value); input.value = state.drivers; refreshOffers(); });
+    input.addEventListener('input', () => { const n = Number(input.value); if (Number.isInteger(n) && n >= 1 && n <= 500) { state.drivers = n; refreshOffers(); } });
+    input.addEventListener('change', () => { const n = Math.round(Number(input.value)); state.drivers = Number.isFinite(n) ? Math.max(1, Math.min(500, n)) : 1; input.value = state.drivers; refreshOffers(); });
+    seg.addEventListener('click', (event) => { const b = event.target.closest('[data-period]'); if (!b) return; state.period = b.dataset.period; refreshOffers(); });
+    function bindOffers() {
+      box.querySelectorAll('[data-plan]').forEach((b) => b.addEventListener('click', () => openPlanRecap(b.dataset.plan)));
+      box.querySelector('#txQuote')?.addEventListener('click', openQuoteDialog);
+    }
+    bindOffers();
+    paintControls();
+
+    async function openPlanRecap(code) {
+      let quote;
+      try { quote = await api(`/api/app/billing/quote?plan=${encodeURIComponent(code)}&cycle=${state.period}&drivers=${state.drivers}`); } catch (error) { uiToast(error.message, 'error'); return; }
+      const current = data.currentPlan === code && data.billingCycle === state.period;
+      const activeFits = quote.capacity == null || Number(data.activeDrivers || 0) <= quote.capacity;
+      let note = 'Le paiement en ligne est en préparation : retenir cette formule ne déclenche aucun prélèvement.';
+      if (!isOwner) note = 'Seul le propriétaire de l’espace peut changer de formule.';
+      else if (!activeFits) note = `Cette formule accepte ${quote.capacity} livreurs : vous en avez ${data.activeDrivers} actifs aujourd’hui. Archivez des livreurs ou choisissez une formule plus grande.`;
+      const modal = openModal('Votre formule en détail', `<span class="tx-eyebrow">${escapeHtml(quote.planName)} · ${escapeHtml(txCycleLabels[quote.cycle])}</span>
+        <div class="tx-price tx-recap-price">${txMoney(quote.periodTotal)} <small>FCFA / ${txCyclePeriod[quote.cycle]}</small></div>
+        <dl class="tx-detail-list"><div><dt>Flotte simulée</dt><dd>${txPlural(quote.drivers, 'livreur', 'livreurs')}</dd></div><div><dt>Capacité de la formule</dt><dd>${quote.capacity == null ? 'Sans limite' : `Jusqu’à ${quote.capacity} livreurs`}</dd></div><div><dt>Équivalent mensuel</dt><dd>${txMoney(quote.monthlyEquivalent)} FCFA</dd></div><div><dt>Période</dt><dd>${txPlural(quote.periodMonths, 'mois', 'mois')}${quote.discount ? ` · remise de ${Math.round(quote.discount * 100)} %` : ''}</dd></div></dl>
+        <p class="tx-dialog-note">${escapeHtml(note)}</p>`,
+      `<button class="button secondary" type="button" data-modal-close>Continuer à comparer</button><button class="button accent" type="button" id="txRetain" ${isOwner && activeFits && !current ? '' : 'disabled'}>${current ? 'Formule actuelle' : 'Retenir cette formule'}</button>`, { className: 'tx-modal' });
+      modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+      modal.backdrop.querySelector('#txRetain').addEventListener('click', async (event) => {
+        event.currentTarget.disabled = true;
+        try {
+          await api('/api/app/billing/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planCode: code, billingCycle: state.period }) });
+          data.currentPlan = code; data.billingCycle = state.period;
+          modal.close();
+          uiToast(`Formule ${quote.planName} retenue. Aucun prélèvement tant que le paiement en ligne n’est pas activé.`, 'success');
+          refreshOffers();
+        } catch (error) { uiToast(error.message, 'error'); event.currentTarget.disabled = false; }
+      });
+    }
+
+    function openQuoteDialog() {
+      const modal = openModal('Parlons de votre flotte', `<p class="tx-dialog-intro">Une grande équipe mérite une formule adaptée. Dites-nous en un peu plus : l’équipe TRAXO vous répond par e-mail.</p>
+        <form id="txQuoteForm">
+          <label class="tx-field" for="txQuoteEmail">E-mail de contact<input id="txQuoteEmail" name="email" type="email" required value="${escapeHtml(context.user.email || '')}"></label>
+          <label class="tx-field" for="txQuoteDrivers">Nombre de livreurs<input id="txQuoteDrivers" name="drivers" type="number" min="1" max="100000" required value="${Math.max(51, state.drivers)}"></label>
+          <label class="tx-field" for="txQuoteMsg">Votre besoin (facultatif)<textarea id="txQuoteMsg" name="message" rows="3" maxlength="1000" placeholder="Villes couvertes, volume de livraisons, date de démarrage…"></textarea></label>
+          <p class="tx-error" id="txQuoteErr" role="alert" hidden></p>
+        </form>`, '<button class="button secondary" type="button" data-modal-close>Annuler</button><button class="button primary" type="submit" form="txQuoteForm">Envoyer la demande</button>', { className: 'tx-modal' });
+      const $m = (s) => modal.backdrop.querySelector(s);
+      $m('[data-modal-close]').addEventListener('click', modal.close);
+      $m('#txQuoteForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const f = event.currentTarget;
+        const submit = modal.backdrop.querySelector('button.primary');
+        submit.disabled = true;
+        try {
+          await api('/api/app/billing/quote-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: f.email.value.trim(), drivers: Number(f.drivers.value), message: f.message.value.trim() }) });
+          modal.close();
+          uiToast('Demande envoyée. L’équipe TRAXO vous répond par e-mail.', 'success');
+        } catch (error) { $m('#txQuoteErr').textContent = error.message; $m('#txQuoteErr').hidden = false; submit.disabled = false; }
+      });
+    }
   }
 
   // ---- WhatsApp TRAXO (administrateur plateforme) ------------------------
@@ -3553,22 +3915,22 @@ async function renderSettings() {
       if (!s.enabled) {
         body = '<div class="notice warning">Le canal WhatsApp n’est pas configuré sur ce serveur (clé de chiffrement manquante).</div>';
       } else if (s.status === 'connected') {
-        body = `<div class="set2-optrow"><span class="set2-opt-ic">${setIcons.whatsapp}</span><div class="set2-opt-main"><strong>Relié : ${escapeHtml(s.number || '')} <span class="set2-pill ok">Actif</span></strong><small>Depuis le ${escapeHtml(formatDate(s.since))} · ${escapeHtml(s.sentLastHour)} message${s.sentLastHour > 1 ? 's' : ''} envoyé${s.sentLastHour > 1 ? 's' : ''} cette heure (limite ${escapeHtml(s.maxPerHour)})</small></div><button class="button danger small" id="waLogout">Délier</button></div>
+        body = `<div class="tx-setting-row"><div class="tx-row-with-icon">${setIcons.whatsapp}<div><h3>Relié : ${escapeHtml(s.number || '')} <span class="tx-badge tx-badge-green">Actif</span></h3><p>Depuis le ${escapeHtml(formatDate(s.since))} · ${escapeHtml(s.sentLastHour)} message${s.sentLastHour > 1 ? 's' : ''} envoyé${s.sentLastHour > 1 ? 's' : ''} cette heure (limite ${escapeHtml(s.maxPerHour)})</p></div></div><button class="tx-button" type="button" id="waLogout">Délier</button></div>
           <form id="waTest" class="wa-form"><div class="field"><label for="waTestPhone">Envoyer un message de test</label><input id="waTestPhone" type="tel" inputmode="tel" placeholder="+229 01 97 12 34 56" required></div><button class="button secondary" type="submit">Envoyer le test</button></form>
-          <p class="set2-blocksub">Les codes de connexion peuvent désormais être reçus sur WhatsApp par les utilisateurs dont le numéro est renseigné avec l’indicatif. L’e-mail reste disponible en secours.</p>`;
+          <p class="tx-wa-note">Les codes de connexion peuvent désormais être reçus sur WhatsApp par les utilisateurs dont le numéro est renseigné avec l’indicatif. L’e-mail reste disponible en secours.</p>`;
       } else if (s.status === 'pairing') {
-        body = `<div class="wa-code" aria-live="polite">${escapeHtml(s.pairingCode || '')}</div>${steps('Touchez <strong>Connecter avec le numéro de téléphone</strong>, puis saisissez ce code.')}<p class="set2-blocksub">Le code expire au bout de quelques minutes. La page se met à jour toute seule.</p><button class="button secondary small" id="waCancel">Annuler</button>`;
+        body = `<div class="wa-code" aria-live="polite">${escapeHtml(s.pairingCode || '')}</div>${steps('Touchez <strong>Connecter avec le numéro de téléphone</strong>, puis saisissez ce code.')}<p class="tx-wa-note">Le code expire au bout de quelques minutes. La page se met à jour toute seule.</p><button class="button secondary small" id="waCancel">Annuler</button>`;
       } else if (s.status === 'qr') {
         body = `<div class="wa-qr">${s.qr ? `<img src="${escapeHtml(s.qr)}" width="240" height="240" alt="QR code de liaison WhatsApp">` : '<div class="loading-state">Préparation du QR code…</div>'}</div>${steps('Scannez ce QR code.')}<button class="button secondary small" id="waCancel">Annuler</button>`;
       } else if (s.status === 'connecting') {
-        body = `<div class="loading-state" style="padding:24px">Connexion à WhatsApp…</div>${s.slow ? '<p class="set2-blocksub">WhatsApp met du temps à répondre. Vérifiez le réseau du serveur ou recommencez dans quelques minutes.</p>' : ''}<button class="button secondary small" id="waCancel">Annuler</button>`;
+        body = `<div class="loading-state" style="padding:24px">Connexion à WhatsApp…</div>${s.slow ? '<p class="tx-wa-note">WhatsApp met du temps à répondre. Vérifiez le réseau du serveur ou recommencez dans quelques minutes.</p>' : ''}<button class="button secondary small" id="waCancel">Annuler</button>`;
       } else {
         body = `<div class="notice warning"><strong>Numéro dédié uniquement.</strong> Cette liaison utilise un client WhatsApp non officiel : WhatsApp peut restreindre ou bannir le numéro. N’utilisez jamais un numéro personnel ou professionnel important.</div>
           <form id="waLinkCode" class="wa-form"><div class="field"><label for="waPhone">Numéro WhatsApp de TRAXO</label><input id="waPhone" type="tel" inputmode="tel" value="+229 01 40 05 67 66" required></div><button class="button primary" type="submit">Recevoir un code de liaison</button></form>
-          <p class="set2-blocksub">Ou, si l’ordinateur est à côté du téléphone : <button class="button secondary small" id="waLinkQr" type="button">Afficher un QR code</button></p>`;
+          <p class="tx-wa-note">Ou, si l’ordinateur est à côté du téléphone : <button class="button secondary small" id="waLinkQr" type="button">Afficher un QR code</button></p>`;
       }
-      box.innerHTML = `${head('WhatsApp TRAXO', 'Le numéro qui envoie les codes de connexion. Réservé à l’administrateur de la plateforme.')}
-        <section class="set2-card">${s.lastError && s.status !== 'connected' ? `<div class="notice error">${escapeHtml(s.lastError)}</div>` : ''}${body}</section>`;
+      box.innerHTML = `${heading('WhatsApp TRAXO', 'Le numéro qui envoie les codes de connexion. Réservé à l’administrateur de la plateforme.', '', 'Plateforme')}
+        <section class="tx-panel"><div class="tx-panel-body tx-wa">${s.lastError && s.status !== 'connected' ? `<div class="notice error">${escapeHtml(s.lastError)}</div>` : ''}${body}</div></section>`;
       box.querySelector('#waLinkCode')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         try { await post('/api/app/whatsapp/link', { method: 'code', phone: box.querySelector('#waPhone').value }); } catch (error) { uiToast(error.message, 'error'); }
@@ -3692,156 +4054,68 @@ async function renderSettings() {
     });
   }
 
-  function openPasswordModal() {
+  function openPasswordModal(onDone) {
     const modal = openModal('Modifier le mot de passe',
-      `<form id="pwdForm"><div class="field"><label>Mot de passe actuel</label><input name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label>Nouveau mot de passe (10 caractères minimum)</label><input name="newPassword" type="password" autocomplete="new-password" minlength="10" required></div></form><p class="subtitle" style="margin:10px 0 0">Par sécurité, vos autres sessions seront déconnectées.</p><div id="modalResult"></div>`,
-      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" type="submit" form="pwdForm">Enregistrer</button>`);
+      `<form id="pwdForm"><label class="tx-field" for="pwdCurrent">Mot de passe actuel<input id="pwdCurrent" name="currentPassword" type="password" autocomplete="current-password" required></label><label class="tx-field" for="pwdNew">Nouveau mot de passe<input id="pwdNew" name="newPassword" type="password" autocomplete="new-password" minlength="10" required><small>10 caractères minimum.</small></label><label class="tx-field" for="pwdConfirm">Confirmez le nouveau mot de passe<input id="pwdConfirm" name="confirmPassword" type="password" autocomplete="new-password" minlength="10" required></label></form><p class="tx-dialog-note">Par sécurité, vos autres sessions seront déconnectées.</p><p class="tx-error" id="pwdErr" role="alert" hidden></p>`,
+      '<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" type="submit" form="pwdForm">Enregistrer</button>', { className: 'tx-modal' });
+    const err = modal.backdrop.querySelector('#pwdErr');
     modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
     modal.backdrop.querySelector('#pwdForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.currentTarget));
+      if (data.newPassword !== data.confirmPassword) { err.textContent = 'Les deux nouveaux mots de passe ne correspondent pas.'; err.hidden = false; return; }
       const btn = modal.backdrop.querySelector('button.primary'); btn.disabled = true;
       try {
-        await api('/api/app/account/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        await api('/api/app/account/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: data.currentPassword, newPassword: data.newPassword }) });
         modal.close();
-        notify('<div class="notice success">Mot de passe mis à jour.</div>');
-      } catch (error) { modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; btn.disabled = false; }
+        uiToast('Mot de passe mis à jour. Vos autres sessions ont été fermées.', 'success');
+        onDone();
+      } catch (error) { err.textContent = error.message; err.hidden = false; btn.disabled = false; }
     });
+    setTimeout(() => modal.backdrop.querySelector('#pwdCurrent')?.focus(), 50);
   }
 
-  async function openSessionsModal() {
-    const modal = openModal('Sessions actives',
-      '<div id="sessList"><div class="loading-state">Chargement…</div></div>',
-      '<button class="button secondary" data-modal-close type="button">Fermer</button>');
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    try {
-      const list = await api('/api/app/account/sessions');
-      const uaLabel = (ua) => {
-        if (!ua) return 'Appareil inconnu';
-        if (/mobile|android|iphone/i.test(ua)) return 'Mobile';
-        if (/mac|windows|linux/i.test(ua)) return 'Ordinateur';
-        return 'Navigateur';
-      };
-      modal.backdrop.querySelector('#sessList').innerHTML = list.length ? `<div class="set2-sessions">${list.map((s) => `<div class="set2-session"><div><strong>${escapeHtml(uaLabel(s.userAgent))}${s.current ? ' <span class="set2-badge green">Cet appareil</span>' : ''}</strong><small>Ouverte le ${escapeHtml(formatDate(s.createdAt))} · expire le ${escapeHtml(formatDateOnly(s.expiresAt))}</small></div></div>`).join('')}</div>` : '<div class="notice">Aucune session active.</div>';
-    } catch (error) { modal.backdrop.querySelector('#sessList').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; }
-  }
-
-  async function renderBilling(box) {
-    if (new URLSearchParams(location.search).get('plans') === '1') return renderPlans(box);
-    const data = await api('/api/app/billing/plans');
-    const current = data.plans.find((p) => p.code === data.currentPlan) || data.plans.find((p) => p.code === data.recommended);
-    const drivers = data.activeDrivers;
-    const cap = current && current.max != null ? current.max : Infinity;
-    const capLabel = cap === Infinity ? '∞' : cap;
-    const pct = cap === Infinity ? 100 : Math.min(100, Math.round((drivers / cap) * 100));
-    const remaining = cap === Infinity ? null : Math.max(0, cap - drivers);
-    const priceLabel = current.kind === 'per_driver' ? `${(current.monthly).toLocaleString('fr-FR')} FCFA / livreur / mois` : fmtFcfaMonth(current.monthly);
-    box.innerHTML = `${head('Facturation', 'Suivez le coût de votre flotte et gérez votre abonnement.')}
-      <section class="set2-card">
-        <div class="set2-blockhead"><h3 class="set2-blocktitle">Votre plan actuel</h3><button class="button secondary small" id="seePlans">Changer de formule</button></div>
-        <div class="set2-plan">
-          <div><span class="set2-plan-name">${escapeHtml(current.name)}</span><span class="set2-plan-price">${escapeHtml(priceLabel)}</span></div>
-          <div class="set2-plan-usage"><div class="set2-usebar"><i style="width:${pct}%"></i></div><small>${drivers} / ${escapeHtml(capLabel)} places utilisées${remaining != null ? ` · vous pouvez encore ajouter ${remaining} livreur${remaining > 1 ? 's' : ''} sans changer de formule` : ''}</small></div>
-        </div>
-      </section>
-      <section class="set2-card">
-        <h3 class="set2-blocktitle">Paiement</h3>
-        <div class="set2-optrow"><span class="set2-opt-ic">${setIcons.billing}</span><div class="set2-opt-main"><strong>Paiement en ligne <span class="set2-pill soon">En préparation</span></strong><small>Mobile Money et carte bancaire seront proposés ici. D’ici là, votre formule reste active et aucun prélèvement n’est effectué.</small></div>${context.supportEmail ? `<a class="button secondary small" href="mailto:${escapeHtml(context.supportEmail)}?subject=Facturation%20TRAXO">Nous contacter</a>` : ''}</div>
-        <div id="setResult"></div>
-      </section>`;
-    document.getElementById('seePlans').addEventListener('click', () => { try { history.replaceState(null, '', '/app/parametres?section=billing&plans=1'); } catch { /* ignore */ } renderBilling(box); });
-  }
-
-  function planCyclePrice(plan, cycle, discounts) {
-    if (plan.kind === 'trial') return { amount: 0, big: '0 FCFA', unit: 'pendant 3 jours' };
-    if (plan.kind === 'custom') return { amount: null, big: 'Sur devis', unit: '' };
-    const mult = cycle === 'monthly' ? 1 : cycle === 'quarterly' ? 3 : 12;
-    const per = cycle === 'monthly' ? '/ mois' : cycle === 'quarterly' ? '/ trimestre' : '/ an';
-    const amount = Math.round(plan.monthly * mult * (1 - (discounts[cycle] || 0)));
-    return { amount, big: `${amount.toLocaleString('fr-FR')} FCFA`, unit: plan.kind === 'per_driver' ? `/ livreur ${per}` : per };
-  }
-
-  async function renderPlans(box) {
-    const data = await api('/api/app/billing/plans');
-    const planIcons = {
-      trial: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/><path d="M12 8S9.5 3 7.5 4.5 9 8 12 8zM12 8s2.5-5 4.5-3.5S15 8 12 8z"/></svg>',
-      flexible: setIcons.user, equipe: setIcons.team,
-      croissance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="4" width="3" height="14"/></svg>',
-      business: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M8 7h.01M12 7h.01M16 7h.01M8 11h.01M12 11h.01M16 11h.01"/></svg>',
-      grande: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M8 7h.01M12 7h.01M16 7h.01M8 11h.01M12 11h.01M16 11h.01"/></svg>',
+  async function openSessionsModal(onDone) {
+    const modal = openModal('Vos sessions actives',
+      '<p class="tx-dialog-intro">Les appareils actuellement connectés à votre compte. Fermez ceux que vous ne reconnaissez pas.</p><div id="sessList"><div class="loading-state">Chargement…</div></div>',
+      '<button class="button secondary" type="button" id="sessOthers" hidden>Fermer les autres sessions</button><button class="button primary" data-modal-close type="button">Fermer</button>', { className: 'tx-modal' });
+    const close = () => { modal.close(); onDone(); };
+    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', close);
+    modal.backdrop.querySelector('.modal-close').addEventListener('click', onDone);
+    const device = (ua) => {
+      if (!ua) return { icon: 'monitor', label: 'Appareil inconnu' };
+      const browser = /edg\//i.test(ua) ? 'Edge' : /opr\/|opera/i.test(ua) ? 'Opera' : /chrome|crios/i.test(ua) ? 'Chrome' : /firefox|fxios/i.test(ua) ? 'Firefox' : /safari/i.test(ua) ? 'Safari' : 'Navigateur';
+      const os = /android/i.test(ua) ? 'Android' : /iphone|ipad/i.test(ua) ? 'iPhone / iPad' : /windows/i.test(ua) ? 'Windows' : /mac os/i.test(ua) ? 'Mac' : /linux/i.test(ua) ? 'Linux' : '';
+      return { icon: /mobile|android|iphone/i.test(ua) ? 'smartphone' : 'monitor', label: os ? `${browser} · ${os}` : browser };
     };
-    let cycle = data.billingCycle || 'monthly';
-    const trialDismissed = (() => { try { return sessionStorage.getItem('traxo.trialBanner') === 'off'; } catch { return false; } })();
-
-    const draw = () => {
-      const pct = (c) => Math.round((data.discounts[c] || 0) * 100);
-      const cycleBtn = (key, label) => `<button class="plan-cyc ${cycle === key ? 'active' : ''}" data-cyc="${key}">${label}${data.discounts[key] ? `<span class="plan-cyc-off">-${pct(key)}%</span>` : ''}</button>`;
-      const isCurrent = (p) => p.code === data.currentPlan;
-      const isReco = (p) => p.code === data.recommended;
-      const canPick = (p) => data.activeDrivers <= (p.max == null ? Infinity : p.max);
-      const card = (p) => {
-        const pr = planCyclePrice(p, cycle, data.discounts);
-        const reco = isReco(p) && p.kind !== 'trial';
-        const current = isCurrent(p) && p.kind !== 'trial' && p.kind !== 'custom';
-        const badges = `${reco ? '<span class="plan-badge reco">Recommandé</span>' : ''}${current ? '<span class="plan-badge cur">Plan actuel</span>' : ''}`;
-        const feats = (p.features || []).map((f) => `<li><span class="plan-check ${reco ? 'red' : ''}">${setIcons.check}</span>${escapeHtml(f)}</li>`).join('');
-        let cta;
-        if (p.kind === 'trial') cta = `<button class="button dark full" data-act="trial">${escapeHtml(p.cta || 'Commencer l’essai')}</button>`;
-        else if (p.kind === 'custom') cta = '<button class="button secondary full" data-act="contact">Nous contacter</button>';
-        else if (current) cta = `<button class="button accent full" disabled>${setIcons.check} Plan actuel</button>`;
-        else cta = `<button class="button ${reco ? 'accent' : 'secondary'} full" data-pick="${p.code}" ${canPick(p) ? '' : 'disabled title="Trop de livreurs actifs pour cette formule"'}>Choisir ce plan</button>`;
-        return `<article class="plan-card ${reco ? 'reco' : ''}">
-          <div class="plan-top"><span class="plan-ic">${planIcons[p.code] || setIcons.billing}</span><div class="plan-titles"><h3>${escapeHtml(p.name)}${badges ? `<div class="plan-badges">${badges}</div>` : ''}</h3><p>${escapeHtml(p.microcopy)}</p></div></div>
-          ${p.tag ? `<span class="plan-tag">${escapeHtml(p.tag)}</span>` : ''}
-          <div class="plan-price"><strong>${pr.big}</strong>${pr.unit ? `<small>${escapeHtml(pr.unit)}</small>` : ''}${p.kind === 'trial' ? '<small>Découvrez TRAXO sans engagement pendant 3 jours.</small>' : ''}</div>
-          <ul class="plan-feats">${feats}</ul>
-          <div class="plan-cta">${cta}</div>
-        </article>`;
-      };
-      const mains = data.plans.filter((p) => !p.compact);
-      const compacts = data.plans.filter((p) => p.compact);
-      const compactRow = (p) => {
-        const pr = planCyclePrice(p, cycle, data.discounts);
-        const cta = p.kind === 'custom' ? '<button class="button secondary small" data-act="contact">Nous contacter</button>' : `<button class="button secondary small" data-pick="${p.code}" ${data.activeDrivers <= (p.max || Infinity) ? '' : 'disabled'}>Choisir ce plan</button>`;
-        return `<div class="plan-compact"><span class="plan-ic sm">${planIcons[p.code] || setIcons.billing}</span><div class="plan-compact-main"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.microcopy)}</small></div><div class="plan-compact-price"><strong>${pr.big}</strong>${pr.unit ? `<small>${escapeHtml(pr.unit)}</small>` : ''}<small class="plan-compact-cap">${escapeHtml(p.capacityLabel)}</small></div>${cta}</div>`;
-      };
-      box.innerHTML = `
-        <div class="plan-breadcrumb"><a href="/app/parametres?section=overview">Paramètres</a><span>›</span><a href="/app/parametres?section=billing" id="crumbBilling">Facturation</a><span>›</span><span>Voir les plans</span></div>
-        <div class="plan-header">
-          <div><h2>Voir les plans</h2><p>Choisissez la formule la plus adaptée à la taille de votre flotte.</p></div>
-          <div class="plan-cycles">${cycleBtn('monthly', 'Mensuel')}${cycleBtn('quarterly', 'Trimestriel')}${cycleBtn('yearly', 'Annuel')}</div>
-        </div>
-        ${trialDismissed ? '' : `<div class="plan-trialbanner"><span class="plan-info-ic">${setIcons.shield}</span><span>L’essai gratuit est uniquement disponible lors de votre première connexion et valable pendant 3 jours.</span><button class="plan-trial-x" id="trialX" aria-label="Fermer">✕</button></div>`}
-        <div class="plan-grid">${mains.map(card).join('')}</div>
-        <div class="plan-others"><h4>Autres formules</h4><div class="plan-compacts">${compacts.map(compactRow).join('')}</div></div>
-        <div class="plan-foot"><span>Tous les plans incluent les fonctionnalités essentielles. Vous pouvez changer de formule à tout moment depuis votre espace.</span></div>
-        <div id="setResult"></div>`;
-
-      box.querySelectorAll('[data-cyc]').forEach((b) => b.addEventListener('click', () => { cycle = b.dataset.cyc; draw(); }));
-      const tx = document.getElementById('trialX');
-      if (tx) tx.addEventListener('click', () => { try { sessionStorage.setItem('traxo.trialBanner', 'off'); } catch { /* ignore */ } box.querySelector('.plan-trialbanner').remove(); });
-      const cb = document.getElementById('crumbBilling');
-      if (cb) cb.addEventListener('click', (e) => { e.preventDefault(); try { history.replaceState(null, '', '/app/parametres?section=billing'); } catch { /* ignore */ } renderBilling(box); });
-      box.querySelectorAll('[data-act="trial"]').forEach((b) => b.addEventListener('click', () => notify('<div class="notice">L’essai gratuit s’active uniquement lors de la première connexion de votre espace.</div>')));
-      box.querySelectorAll('[data-act="contact"]').forEach((b) => b.addEventListener('click', () => {
-        if (context.supportEmail) location.href = `mailto:${context.supportEmail}?subject=${encodeURIComponent('Devis Grande flotte TRAXO')}`;
-        else notify('<div class="notice">Pour un devis Grande flotte, contactez l’équipe TRAXO : elle vous recontactera.</div>');
-      }));
-      box.querySelectorAll('[data-pick]').forEach((b) => b.addEventListener('click', async () => {
-        if (b.disabled) return;
-        b.disabled = true;
-        try {
-          await api('/api/app/billing/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planCode: b.dataset.pick, billingCycle: cycle }) });
-          data.currentPlan = b.dataset.pick; data.billingCycle = cycle;
-          uiToast('Formule enregistrée. Aucun prélèvement tant que le paiement en ligne n’est pas activé.', 'success');
-          draw();
-        } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); b.disabled = false; }
-      }));
-    };
-    draw();
+    async function paint() {
+      const listBox = modal.backdrop.querySelector('#sessList');
+      if (!listBox) return;
+      try {
+        const list = await api('/api/app/account/sessions');
+        const others = list.filter((s) => !s.current).length;
+        modal.backdrop.querySelector('#sessOthers').hidden = others === 0;
+        listBox.innerHTML = list.length ? `<div class="tx-session-list">${list.map((s) => {
+          const d = device(s.userAgent);
+          return `<div class="tx-session">${txIcon(d.icon)}<div><strong>${escapeHtml(d.label)}</strong><p>Ouverte le ${escapeHtml(formatDate(s.createdAt))} · expire le ${escapeHtml(formatDateOnly(s.expiresAt))}</p>${s.current ? '<span class="tx-badge tx-badge-green">Cet appareil</span>' : ''}</div>${s.current ? '' : `<button type="button" class="tx-text-button" data-close-session="${escapeHtml(s.id)}">Fermer</button>`}</div>`;
+        }).join('')}</div>` : '<div class="notice">Aucune session active.</div>';
+        listBox.querySelectorAll('[data-close-session]').forEach((b) => b.addEventListener('click', async () => {
+          b.disabled = true;
+          try { await api('/api/app/account/sessions/revoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.closeSession }) }); uiToast('Session fermée.', 'success'); paint(); } catch (error) { uiToast(error.message, 'error'); b.disabled = false; }
+        }));
+      } catch (error) { listBox.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; }
+    }
+    modal.backdrop.querySelector('#sessOthers').addEventListener('click', async (event) => {
+      if (!(await uiConfirm('Fermer toutes les autres sessions ?', { message: 'Les autres appareils devront se reconnecter, avec un code de vérification.', tone: 'danger', confirmLabel: 'Fermer les autres sessions' }))) return;
+      event.currentTarget.disabled = true;
+      try { const r = await api('/api/app/account/sessions/revoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'others' }) }); uiToast(r.closed ? `${txPlural(r.closed, 'session fermée', 'sessions fermées')}.` : 'Aucune autre session à fermer.', 'success'); } catch (error) { uiToast(error.message, 'error'); }
+      event.currentTarget.disabled = false;
+      paint();
+    });
+    paint();
   }
 
-  await loadSection();
+  await load();
 }
 
 // Illustrations Opérations, en SVG inline : vectoriel, léger, aux couleurs TRAXO.
@@ -4459,7 +4733,7 @@ async function openIncidentDrawer(incidentId, opts = {}) {
           <small>${escapeHtml(orderCode(incident.order_reference, incident.order_id))} · ouvert le ${escapeHtml(formatDate(incident.created_at))}</small></div>
         <div class="crm-drawer-headact">
           <a class="crm-icobtn" href="/app/incidents/${escapeHtml(incident.id)}?print=1" target="_blank" rel="noopener" title="Imprimer / PDF" aria-label="Imprimer ou enregistrer en PDF">${printIc}</a>
-          ${canControl ? `<a class="crm-icobtn" href="/api/app/incidents/${escapeHtml(incident.id)}/export" title="Télécharger les données" aria-label="Télécharger les données">${dlIc}</a>` : ''}
+          ${canControl ? `<a class="crm-icobtn" href="/api/app/incidents/${escapeHtml(incident.id)}/export" title="Télécharger le dossier (PDF)" aria-label="Télécharger le dossier en PDF">${dlIc}</a>` : ''}
           <button class="crm-drawer-close crm-icobtn" type="button" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
       </div>

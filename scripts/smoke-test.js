@@ -558,7 +558,11 @@ async function run() {
     }));
     ensure(repeatedHold.response.ok && repeatedHold.payload.alreadyPlaced, 'Le gel répété devait rester sans doublon.');
 
-    const exported = await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/export`, { headers: { Cookie: cookie } });
+    const exportedPdf = await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/export`, { headers: { Cookie: cookie } });
+    const pdfBytes = Buffer.from(await exportedPdf.arrayBuffer());
+    ensure(exportedPdf.ok && exportedPdf.headers.get('content-type') === 'application/pdf'
+      && pdfBytes.subarray(0, 5).toString() === '%PDF-' && pdfBytes.length > 5000, 'Le dossier PDF de l’incident est invalide.');
+    const exported = await fetch(`${baseUrl}/api/app/incidents/${incident.payload.id}/export?format=json`, { headers: { Cookie: cookie } });
     const exportPayload = await exported.json();
     ensure(exported.ok && exported.headers.get('content-disposition')?.includes('dossier.json')
       && exportPayload.integrity?.manifestSha256 && exportPayload.integrity.incidentEventChainValid === true,

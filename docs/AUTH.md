@@ -11,12 +11,18 @@
    qu'elle n'est pas terminée, le propriétaire y est renvoyé. Les entreprises
    existantes ne sont pas concernées (`onboarding_status = 'done'`).
 4. **Connexion** (`/app/login`) :
-   - appareil déjà vérifié (cookie `traxo_device`, 30 jours) → session directe ;
-   - nouvel appareil → code par e-mail ;
+   - appareil déjà vérifié (cookie `traxo_device`, 30 jours) → session directe.
+     Un appareil n'est mémorisé que si « Rester connecté » était coché ;
+   - nouvel appareil → code : l'utilisateur choisit l'e-mail ou WhatsApp (si son
+     numéro est enregistré avec l'indicatif dans Paramètres › Sécurité et que le
+     canal WhatsApp est relié), sinon e-mail directement ;
    - double authentification active → code de l'application (remplace le code
      e-mail) ;
    - « Rester connecté pendant 30 jours » : session de 30 jours au maximum
      (durée fixe). Sinon : 12 heures.
+   - Chaque nouvelle connexion envoie une alerte par e-mail (désactivable dans
+     Paramètres › Sécurité). Les sessions ouvertes peuvent y être fermées une à une
+     ou toutes à la fois (ce qui oublie aussi les appareils mémorisés).
 
 Sans fournisseur d'e-mail configuré, le code par e-mail est désactivé
 (la session s'ouvre directement).

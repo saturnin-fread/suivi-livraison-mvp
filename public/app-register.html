@@ -8,6 +8,7 @@
     <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="stylesheet" href="/auth.css" />
+    <link rel="stylesheet" href="/loaders.css" />
   </head>
   <body>
     <header class="ax-header">
@@ -30,7 +31,7 @@
           <div class="ax-or">ou</div>
         </div>
 
-        <form id="registerForm" method="post" action="/app/register" data-busy-form novalidate>
+        <form id="registerForm" method="post" action="/app/register" data-busy-form data-loader="speeder" data-loader-message="Création de votre compte…" novalidate>
           <div class="ax-field">
             <label class="ax-label" for="regEmail">Adresse e-mail</label>
             <input class="ax-input" id="regEmail" name="email" type="email" inputmode="email" autocomplete="email" maxlength="200" placeholder="vous@exemple.com" aria-describedby="regEmailHint" required />
@@ -70,8 +71,7 @@
       <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
     </footer>
 
-    <div class="tx-busy" id="txBusy" aria-hidden="true"><div class="tx-busy-inner" role="status"><div class="tx-speeder" aria-hidden="true"><div class="sp-body"><span><span></span><span></span><span></span><span></span></span><div class="sp-base"><span></span><div class="sp-face"></div></div></div><div class="sp-lines"><span></span><span></span><span></span><span></span></div></div><p>Chargement…</p></div></div>
-
+    <script src="/loaders.js"></script>
     <script src="/auth.js"></script>
     <script>
       (function () {

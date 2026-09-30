@@ -45,10 +45,15 @@
   }
   document.querySelectorAll('form[data-busy-form]').forEach(function (form) {
     form.addEventListener('submit', function (event) {
-      if (!form.checkValidity()) return;
+      if (event.defaultPrevented || !form.checkValidity()) return;
       if (form.dataset.sending === '1') { event.preventDefault(); return; }
       form.dataset.sending = '1';
       setBusy(form.querySelector('.ax-submit'), true);
+      // Animation plein écran : camion pour la connexion, livreur pressé pour la création de compte.
+      if (form.dataset.loader && window.TraxoLoader) {
+        event.preventDefault();
+        window.TraxoLoader.submitWith(form, { kind: form.dataset.loader, message: form.dataset.loaderMessage });
+      }
     });
   });
   // Retour arrière (cache du navigateur) : on réactive les boutons.
@@ -61,13 +66,11 @@
     busy(false);
   });
 
-  // Écran de chargement plein écran
-  function busy(on, message) {
-    var el = document.getElementById('txBusy');
-    if (!el) return;
-    if (message) el.querySelector('p').textContent = message;
-    el.classList.toggle('on', Boolean(on));
-    el.setAttribute('aria-hidden', on ? 'false' : 'true');
+  // Écran de chargement plein écran (module partagé loaders.js)
+  function busy(on, message, kind) {
+    if (!window.TraxoLoader) return;
+    if (on) window.TraxoLoader.show({ kind: kind || 'speeder', message: message });
+    else window.TraxoLoader.hide();
   }
 
   // Bouton Google : affiché seulement si le serveur est configuré.

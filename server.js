@@ -495,7 +495,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');

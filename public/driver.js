@@ -234,7 +234,9 @@ async function renderList() {
       return `<li class="run-stop ${isNext ? 'next' : ''}" ${isNext ? 'aria-current="step"' : ''}><a href="/driver/commandes/${escapeHtml(stop.order_id)}"><span class="stop-number">${escapeHtml(stop.sequence)}</span><span class="stop-copy"><strong>${escapeHtml(stop.customer_name || 'Client')}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser')} · ${escapeHtml(stop.requested_time || 'Créneau non précisé')}</small>${isNext ? '<em>Prochain arrêt prévu</em>' : ''}</span>${badge(stop.order_status)}</a></li>`;
     }).join('')}</ol>
   </article>`).join('');
+  if (!history) rememberOrders(orders);
   page.innerHTML = `<div class="driver-title"><h1>${history ? 'Historique' : 'Mes livraisons'}</h1><p class="subtitle">${history ? 'Commandes terminées qui vous étaient affectées.' : 'Vos tournées planifiées, puis les commandes encore hors tournée.'}</p></div>
+    ${history ? '' : '<div id="notifSlot" class="driver-notif-slot"></div>'}
     ${runMarkup ? `<section class="run-manifests" aria-label="Tournées planifiées">${runMarkup}</section>` : ''}
     ${!history && runMarkup ? '<div class="driver-subtitle"><h2>Hors tournée</h2><p class="subtitle">Commandes affectées mais pas encore placées dans une tournée visible.</p></div>' : ''}
     <section class="delivery-list">${unscheduledOrders.length ? unscheduledOrders.map((order) => `<a class="delivery-card" href="/driver/commandes/${escapeHtml(order.id)}">
@@ -243,6 +245,51 @@ async function renderList() {
       <p>${escapeHtml(order.requested_time || 'Créneau non précisé')}${order.expected_amount_minor != null ? ` · À encaisser : ${escapeHtml(formatMoney(order.expected_amount_minor, order.payment_currency))}` : ''}</p>
     </a>`).join('') : `<div class="card empty">${history ? 'Aucune livraison terminée.' : runMarkup ? 'Toutes vos livraisons actives sont classées dans les tournées ci-dessus.' : 'Aucune livraison active ne vous est affectée.'}</div>`}</section>`;
 }
+
+// Nouvelles livraisons : vérification toutes les minutes tant que l'appli est ouverte
+// (même en arrière-plan), avec une notification du téléphone si elles sont autorisées.
+let knownOrderIds = null;
+function rememberOrders(orders) {
+  knownOrderIds = new Set(orders.map((order) => String(order.id)));
+}
+function mountDriverNotifyCard() {
+  const slot = document.getElementById('notifSlot');
+  if (!slot || !window.TraxoUI) return;
+  TraxoUI.mountNotifyCard(slot, {
+    title: 'Soyez prévenu des nouvelles livraisons',
+    text: 'Autorisez les notifications : votre téléphone vous alerte dès qu’une livraison vous est confiée.',
+    onDone: (result) => {
+      if (result === 'granted') TraxoUI.notifications.show('Notifications activées', { body: 'Vous serez prévenu dès qu’une livraison vous est confiée.', tag: 'traxo-test', data: { url: '/driver' } });
+    },
+  });
+}
+async function checkNewOrders() {
+  if (!navigator.onLine || !knownOrderIds) return;
+  let orders;
+  try { orders = await api('/api/driver/orders?scope=active'); } catch (_error) { return; }
+  const fresh = orders.filter((order) => !knownOrderIds.has(String(order.id)));
+  const changed = fresh.length || orders.length !== knownOrderIds.size;
+  rememberOrders(orders);
+  if (fresh.length && window.TraxoUI) {
+    const first = fresh[0];
+    TraxoUI.notifications.show(fresh.length > 1 ? `${fresh.length} nouvelles livraisons` : 'Nouvelle livraison', {
+      body: fresh.length > 1 ? fresh.map((o) => o.customer_name || `Commande n° ${o.id}`).slice(0, 3).join(' · ') : `${first.customer_name || 'Client'} · ${first.neighborhood || first.delivery_address || 'destination à préciser'}`,
+      tag: `driver-order-${first.id}`,
+      data: { url: fresh.length > 1 ? '/driver' : `/driver/commandes/${first.id}` },
+    });
+  }
+  if (changed) listStale = true;
+  refreshListIfStale();
+}
+// Liste ouverte à l'écran : mise à jour sans rechargement, dès que l'appli est visible.
+let listStale = false;
+async function refreshListIfStale() {
+  const onList = location.pathname === '/driver' && new URLSearchParams(location.search).get('scope') !== 'history';
+  if (!listStale || !onList || document.visibilityState !== 'visible') return;
+  listStale = false;
+  try { await renderList(); mountDriverNotifyCard(); } catch (_error) { listStale = true; }
+}
+document.addEventListener('visibilitychange', refreshListIfStale);
 
 async function renderDetail(id) {
   document.querySelector('.driver-nav').hidden = true;
@@ -466,7 +513,11 @@ async function start() {
       event.currentTarget.submit();
     });
     const detail = location.pathname.match(/^\/driver\/commandes\/(\d+)$/);
-    if (detail) await renderDetail(detail[1]); else await renderList();
+    if (detail) await renderDetail(detail[1]); else { await renderList(); mountDriverNotifyCard(); }
+    if (!knownOrderIds) {
+      try { rememberOrders(await api('/api/driver/orders?scope=active')); } catch (_error) { /* nouvel essai à la prochaine vérification */ }
+    }
+    setInterval(checkNewOrders, 60000);
     await renderQueueState();
     if (navigator.onLine) await flushQueuedActions();
   } catch (error) {

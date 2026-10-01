@@ -206,6 +206,9 @@ async function renderDashboard() {
   await window.TraxoDashboard.render(page, { api, setHeader, openModal, uiToast });
 }
 
+const packageTypeOptions = [['colis', 'Colis'], ['documents', 'Documents'], ['repas', 'Repas'], ['fragile', 'Fragile'], ['vetements', 'Vêtements'], ['autre', 'Autre']];
+const packageTypeLabels = Object.fromEntries(packageTypeOptions);
+
 async function renderNewOrder() {
   setHeader('Nouvelle commande', 'Vous connaissez déjà le client');
   page.classList.add('page-no');
@@ -283,9 +286,37 @@ async function renderNewOrder() {
               <div class="no-field"><label for="f-notes">Consigne pour le livreur <em>(facultatif)</em></label><input class="cl-input" id="f-notes" name="notes" maxlength="1000" placeholder="Ex. appeler en arrivant" /></div>
             </div>
           </section>
+          <section class="no-sec" style="--i:2">
+            <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Le colis</h2></div>
+            <p class="no-sec-sub">Ce que le livreur transporte, et d’où il part.</p>
+            <div class="no-field"><span class="no-label" id="pkgTypeLabel">Type <em>(facultatif)</em></span>
+              <div class="no-chips" role="radiogroup" aria-labelledby="pkgTypeLabel">${packageTypeOptions.map(([v, l]) => `<label class="no-chip"><input type="radio" name="packageType" value="${v}"><span>${escapeHtml(l)}</span></label>`).join('')}</div></div>
+            <div class="no-field"><label for="f-pkg">Contenu <em>(facultatif)</em></label><input class="cl-input" id="f-pkg" name="packageDescription" maxlength="240" placeholder="Ex. 2 robes dans un sac, gâteau d’anniversaire" /></div>
+            <div class="no-field"><span class="no-label" id="pickupLabel">Où le livreur récupère-t-il le colis ?</span>
+              <div class="no-seg" role="radiogroup" aria-labelledby="pickupLabel">
+                <label><input type="radio" name="pickupEnabled" value="false" checked><span>Chez nous</span></label>
+                <label><input type="radio" name="pickupEnabled" value="true"><span>Ailleurs</span></label>
+              </div></div>
+            <div class="no-collapse" id="noPickupWrap" aria-hidden="true"><div>
+              <div class="no-pickup">
+                <div class="no-row">
+                  <div class="no-field no-suggest-wrap"><label for="f-pname">Nom du lieu</label><input class="cl-input" id="f-pname" name="pickupName" maxlength="120" autocomplete="off" placeholder="Ex. Boutique Awa, entrepôt du fournisseur" /><ul class="no-suggest" id="pickupSuggest" role="listbox" hidden></ul></div>
+                  <div class="no-field"><label for="f-pphone">Téléphone sur place <em>(facultatif)</em></label><input class="cl-input" id="f-pphone" name="pickupPhone" type="tel" inputmode="tel" maxlength="30" placeholder="Ex. 01 97 12 34 56" /></div>
+                </div>
+                <div class="no-row">
+                  <div class="no-field"><label for="f-paddr">Quartier ou repère *</label><input class="cl-input" id="f-paddr" name="pickupAddress" maxlength="240" placeholder="Ex. Dantokpa, allée des tissus" /></div>
+                  <div class="no-field"><label for="f-pready">Colis prêt à partir de <em>(facultatif)</em></label><input class="cl-input" id="f-pready" name="pickupReady" maxlength="80" placeholder="Ex. 14 h" /></div>
+                </div>
+                <div class="no-field"><span class="no-label">Position exacte <em>(facultatif)</em></span>
+                  <div class="no-pickmap" id="pickupMap" aria-label="Carte : touchez l’endroit de la collecte"></div>
+                  <p class="no-hint" id="pickupMapHint">Touchez la carte pour placer l’épingle. Sinon, TRAXO retiendra l’endroit où le livreur récupère le colis.</p>
+                  <input type="hidden" name="pickupLat" id="f-plat" /><input type="hidden" name="pickupLng" id="f-plng" /></div>
+              </div>
+            </div></div>
+          </section>
           <div class="no-collapse" id="noDriverWrap" aria-hidden="true"><div>
-            <section class="no-sec" style="--i:2">
-              <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Livreur</h2></div>
+            <section class="no-sec" style="--i:3">
+              <div class="no-sec-head"><span class="no-sec-num">04</span><h2 class="no-sec-title">Livreur</h2></div>
               ${sortedDrivers.length ? `<div class="no-drivers" role="radiogroup" aria-label="Livreur">${sortedDrivers.map(driverCard).join('')}</div>` : '<p class="no-empty">Aucun livreur actif. Ajoutez-en un depuis la page Livreurs.</p>'}
             </section>
           </div></div>
@@ -322,6 +353,71 @@ async function renderNewOrder() {
   };
   document.querySelectorAll('input[name="noMode"]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
   setMode('confirm');
+
+  // Collecte : section dépliée seulement si le colis part d'ailleurs.
+  const pickupWrap = document.getElementById('noPickupWrap');
+  const pickupAddr = document.getElementById('f-paddr');
+  let pickupMap = null;
+  let pickupMarker = null;
+  const setPin = (lat, lng, { pan = true } = {}) => {
+    document.getElementById('f-plat').value = lat == null ? '' : lat.toFixed(6);
+    document.getElementById('f-plng').value = lng == null ? '' : lng.toFixed(6);
+    if (!pickupMap) return;
+    if (lat == null) { if (pickupMarker) { pickupMap.removeLayer(pickupMarker); pickupMarker = null; } return; }
+    if (!pickupMarker) {
+      pickupMarker = L.marker([lat, lng], { draggable: true, title: 'Point de collecte' }).addTo(pickupMap);
+      pickupMarker.on('dragend', () => { const p = pickupMarker.getLatLng(); setPin(p.lat, p.lng, { pan: false }); });
+    } else pickupMarker.setLatLng([lat, lng]);
+    if (pan) pickupMap.setView([lat, lng], Math.max(pickupMap.getZoom(), 16));
+    document.getElementById('pickupMapHint').textContent = 'Épingle posée. Vous pouvez la déplacer si besoin.';
+    pickupAddr.required = false;
+  };
+  const ensurePickupMap = () => {
+    if (pickupMap || typeof L === 'undefined') return;
+    pickupMap = L.map('pickupMap', { zoomControl: true, scrollWheelZoom: false }).setView([6.3703, 2.3912], 12);
+    if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.layerSwitcher(pickupMap, config, { position: 'topright' }));
+    pickupMap.on('click', (event) => setPin(event.latlng.lat, event.latlng.lng, { pan: false }));
+  };
+  const setPickup = (on) => {
+    pickupWrap.classList.toggle('open', on);
+    pickupWrap.setAttribute('aria-hidden', String(!on));
+    pickupWrap.querySelectorAll('input').forEach((i) => { i.tabIndex = on ? 0 : -1; });
+    pickupAddr.required = on && !document.getElementById('f-plat').value;
+    if (on) { ensurePickupMap(); setTimeout(() => pickupMap && pickupMap.invalidateSize(), 320); }
+  };
+  document.querySelectorAll('input[name="pickupEnabled"]').forEach((r) => r.addEventListener('change', () => setPickup(r.value === 'true' && r.checked)));
+  setPickup(false);
+
+  // Carnet automatique : les lieux de collecte déjà utilisés par l'équipe.
+  const pickupName = document.getElementById('f-pname');
+  const suggest = document.getElementById('pickupSuggest');
+  let places = [];
+  let suggestTimer = null;
+  const paintSuggest = () => {
+    const q = pickupName.value.trim().toLowerCase();
+    const shown = places.filter((p) => !q || `${p.name || ''} ${p.address || ''}`.toLowerCase().includes(q)).slice(0, 6);
+    suggest.innerHTML = shown.map((p, i) => `<li role="option" tabindex="-1" data-i="${places.indexOf(p)}"><strong>${escapeHtml(p.name || p.address)}</strong>${p.name && p.address ? `<small>${escapeHtml(p.address)}</small>` : ''}${p.lat != null ? '<em>Position connue</em>' : ''}</li>`).join('');
+    suggest.hidden = !shown.length || document.activeElement !== pickupName;
+  };
+  const loadPlaces = async () => {
+    try { places = (await api(`/api/app/pickup-places?q=${encodeURIComponent(pickupName.value.trim())}`)).places || []; } catch { places = []; }
+    paintSuggest();
+  };
+  pickupName.addEventListener('focus', loadPlaces);
+  pickupName.addEventListener('input', () => { clearTimeout(suggestTimer); suggestTimer = setTimeout(loadPlaces, 180); });
+  pickupName.addEventListener('blur', () => setTimeout(() => { suggest.hidden = true; }, 150));
+  suggest.addEventListener('mousedown', (event) => {
+    const li = event.target.closest('li[data-i]');
+    if (!li) return;
+    event.preventDefault();
+    const p = places[Number(li.dataset.i)];
+    pickupName.value = p.name || '';
+    if (p.address) pickupAddr.value = p.address;
+    if (p.phone) document.getElementById('f-pphone').value = p.phone;
+    if (p.lat != null) { ensurePickupMap(); setPin(p.lat, p.lng); }
+    suggest.hidden = true;
+    pickupAddr.required = !document.getElementById('f-plat').value;
+  });
 
   const digitsOf = (phone) => String(phone || '').replace(/\D/g, '');
   const shareScreen = ({ title, lead, url, message, phone, meta, doneCount, steps, next }) => {
@@ -375,6 +471,9 @@ async function renderNewOrder() {
     const missing = C.firstMissing(form);
     if (missing) { say('Merci de remplir les champs obligatoires.'); missing.focus(); return; }
     const data = C.readFields(form);
+    data.pickupEnabled = data.pickupEnabled === 'true';
+    data.pickupPhoneCountry = data.customerPhoneCountry;
+    if (!data.packageType) delete data.packageType;
     const submit = document.getElementById('noSubmit');
     const label = document.getElementById('noSubmitLabel');
     const idle = label.textContent;
@@ -408,7 +507,8 @@ async function renderNewOrder() {
       }
     } catch (error) {
       say(error.message);
-      if (/téléphone/i.test(error.message)) C.markFieldError(form, 'customerPhone', error.message);
+      if (/collecte/i.test(error.message)) document.getElementById('f-paddr')?.focus();
+      else if (/téléphone/i.test(error.message)) C.markFieldError(form, 'customerPhone', error.message);
       submit.disabled = false;
       label.textContent = idle;
     }
@@ -1941,575 +2041,10 @@ function openModal(title, bodyHtml, footHtml = '', { className = '' } = {}) {
   return { backdrop, close };
 }
 
+// Livreurs : rendu dans public/drivers.js (kit « Livreurs Premium »).
 async function renderDrivers() {
-  setHeader('Livreurs', 'Qui est disponible, qui livre, et avec combien de colis');
-  const canManage = ['owner', 'manager'].includes(context.user.role);
-  let drivers = await api('/api/app/drivers');
-  let filter = 'all';
-  let query = '';
-  let openMenu = null;
-  let openPop = null;
-  const selected = new Set();
-  const extraFilter = { compte: 'all', vehicle: 'all' };
-  const COLS_KEY = 'traxo.fleetCols';
-  const allColumns = [
-    { key: 'activite', label: 'Activité' },
-    { key: 'disponibilite', label: 'Disponibilité' },
-    { key: 'charge', label: 'Colis / capacité' },
-    { key: 'position', label: 'Position' },
-    { key: 'compte', label: 'Accès appli' },
-  ];
-  let visibleCols = (() => { try { const a = JSON.parse(localStorage.getItem(COLS_KEY) || 'null'); return Array.isArray(a) && a.length ? new Set(a) : new Set(allColumns.map((c) => c.key)); } catch { return new Set(allColumns.map((c) => c.key)); } })();
-  const colVisible = (key) => visibleCols.has(key);
-  const filterIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>';
-  const columnsIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>';
-  const chevIc = DASH_ICONS.chevron;
-  const warnIc = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>';
-
-  const vehicleOptions = (selected) => driverVehicleOptions.map((option) => `<option value="${option}" ${option === selected ? 'selected' : ''}>${option}</option>`).join('');
-  const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase() || '?';
-  const driverPhotoUrl = (driver) => driver.hasPhoto && driver.id ? `/api/app/drivers/${encodeURIComponent(driver.id)}/photo?v=${driver.photoVersion || 0}` : null;
-  const avatarHtml = (driver, cls = '') => {
-    const url = driverPhotoUrl(driver);
-    return url
-      ? `<span class="avatar ${cls} has-photo"><img src="${url}" alt="" loading="lazy"></span>`
-      : `<span class="avatar ${cls}">${escapeHtml(initials(driver.name))}</span>`;
-  };
-  const driverCode = (driver) => `LIV-${String(driver.id).padStart(3, '0')}`;
-
-  // États dérivés (mêmes règles pour la liste et la fiche).
-  const OFFLINE = ['inactive', 'offline', 'stale', 'unknown', 'off_duty', 'incident'];
-  const activityOf = (d) => {
-    if (!d.active || OFFLINE.includes(d.operationalState)) return { key: 'offline', label: 'Hors ligne', color: '#94a3b8' };
-    if (['busy', 'full'].includes(d.operationalState)) return { key: 'busy', label: 'En livraison', color: '#3b82f6' };
-    if (d.operationalState === 'pause') return { key: 'pause', label: 'En pause', color: '#f59e0b' };
-    return { key: 'online', label: 'Connectée', color: '#10b981' };
-  };
-  const availabilityOf = (d) => {
-    if (!d.active || OFFLINE.includes(d.operationalState)) return { key: 'unavailable', label: 'Indisponible', tone: '' };
-    if (['busy', 'full'].includes(d.operationalState)) return { key: 'busy', label: 'Occupé', tone: 'danger' };
-    if (d.operationalState === 'pause') return { key: 'pause', label: 'En pause', tone: 'warning' };
-    return { key: 'available', label: 'Disponible', tone: 'success' };
-  };
-  const accountOf = (d) => (d.hasAccount
-    ? { label: 'Actif', tone: 'success', configured: true }
-    : { label: 'À configurer', tone: 'warning', configured: false });
-  const availSelect = (driver) => `<select class="availability avail-select av-${escapeHtml(driver.availabilityStatus)}" data-id="${escapeHtml(driver.id)}" ${driver.active ? '' : 'disabled'} aria-label="Disponibilité">
-      <option value="available" ${driver.availabilityStatus === 'available' ? 'selected' : ''}>Disponible</option>
-      <option value="pause" ${driver.availabilityStatus === 'pause' ? 'selected' : ''}>Pause</option>
-      <option value="off_duty" ${driver.availabilityStatus === 'off_duty' ? 'selected' : ''}>Hors service</option>
-      <option value="incident" ${driver.availabilityStatus === 'incident' ? 'selected' : ''}>Incident</option>
-    </select>`;
-  const rowMenu = (driver) => canManage ? `<button class="row-menu-btn" data-menu="${escapeHtml(driver.id)}" aria-label="Actions">${fleetIcons.dots}</button>` : '';
-
-  const tabs = [
-    { key: 'all', label: 'Tous', count: () => drivers.length },
-    { key: 'available', label: 'Disponibles', count: () => drivers.filter((d) => availabilityOf(d).key === 'available').length },
-    { key: 'busy', label: 'En livraison', count: () => drivers.filter((d) => activityOf(d).key === 'busy').length },
-    { key: 'offline', label: 'Hors ligne', count: () => drivers.filter((d) => activityOf(d).key === 'offline').length },
-  ];
-  const tabMatch = (d) => {
-    if (filter === 'available') return availabilityOf(d).key === 'available';
-    if (filter === 'busy') return activityOf(d).key === 'busy';
-    if (filter === 'offline') return activityOf(d).key === 'offline';
-    return true;
-  };
-  const matches = (d) => tabMatch(d)
-    && (extraFilter.compte === 'all' || (extraFilter.compte === 'ok' ? d.hasAccount : !d.hasAccount))
-    && (extraFilter.vehicle === 'all' || d.vehicleType === extraFilter.vehicle)
-    && (!query || `${d.name} ${d.vehicleType} ${d.phone || ''} ${driverCode(d)} ${d.uniqueId}`.toLowerCase().includes(query));
-
-  page.innerHTML = `<div class="page-header fleet-head">
-      <div><h1>Livreurs</h1><p class="subtitle">Qui est disponible, qui livre, et avec combien de colis.</p></div>
-      ${canManage ? `<button class="button accent" id="addDriverBtn">${fleetIcons.plus} Ajouter un livreur</button>` : ''}
-    </div>
-    <div class="fleet-summary"><div id="fleetStats" class="fleet-stats"></div>${canManage ? `<button type="button" class="fleet-toconfig" id="fleetToConfig" hidden></button>` : ''}</div>
-    <div class="fleet-toolbar2">
-      <div class="fleet-search"><span>${fleetIcons.search}</span><input type="search" id="fleetSearch" placeholder="Rechercher un livreur…" autocomplete="off"/></div>
-      <div class="fleet-tabs2" id="fleetTabs"></div>
-      <div class="fleet-tools">
-        <div class="fleet-tool-wrap"><button type="button" class="fleet-toolbtn" id="filtersBtn">${filterIc} Filtres</button><div class="fleet-pop" id="filtersPop" hidden></div></div>
-        <div class="fleet-tool-wrap"><button type="button" class="fleet-toolbtn" id="colsBtn">${columnsIc} Colonnes ${chevIc}</button><div class="fleet-pop" id="colsPop" hidden></div></div>
-      </div>
-    </div>
-    <div id="driverResult"></div>
-    <div class="fleet-bulk" id="fleetBulk" hidden></div>
-    <section class="card fleet-tablecard" id="fleetList"></section>`;
-
-  function renderStats() {
-    const total = drivers.length;
-    const dispo = drivers.filter((d) => availabilityOf(d).key === 'available').length;
-    const enLiv = drivers.filter((d) => activityOf(d).key === 'busy').length;
-    const horsLigne = drivers.filter((d) => activityOf(d).key === 'offline').length;
-    const toConfig = drivers.filter((d) => !d.hasAccount).length;
-    const el = document.getElementById('fleetStats');
-    if (el) el.innerHTML = `<span class="fs-total">${total}</span> livreur${total > 1 ? 's' : ''}
-      <span class="fs-sep">·</span> <strong>${dispo}</strong> disponible${dispo > 1 ? 's' : ''}
-      <span class="fs-sep">·</span> <strong>${enLiv}</strong> en livraison
-      <span class="fs-sep">·</span> <strong>${horsLigne}</strong> hors ligne`;
-    const cfg = document.getElementById('fleetToConfig');
-    if (cfg) {
-      if (toConfig > 0) { cfg.hidden = false; cfg.innerHTML = `${warnIc} <strong>${toConfig}</strong> livreur${toConfig > 1 ? 's' : ''} sans accès à l’appli ${chevIc}`; }
-      else cfg.hidden = true;
-    }
-  }
-
-  function renderTabs() {
-    const el = document.getElementById('fleetTabs');
-    if (el) el.innerHTML = tabs.map((tab) => `<button class="fleet-tab2 ${filter === tab.key ? 'active' : ''}" data-tab="${tab.key}">${tab.label}<span class="count">${tab.count()}</span></button>`).join('');
-  }
-
-  const activityCell = (d) => { const a = activityOf(d); return `<span class="fleet-activity"><span class="fleet-dot" style="background:${a.color}"></span>${a.label}</span>`; };
-  const availabilityCell = (d) => { const a = availabilityOf(d); return `<span class="badge ${a.tone}">${a.label}</span>`; };
-  const accountCell = (d) => (accountOf(d).configured
-    ? '<span class="badge success">Actif</span>'
-    : `<button type="button" class="badge warning fleet-cfgbtn" data-config="${escapeHtml(d.id)}">À configurer</button>`);
-
-  function renderList() {
-    const list = drivers.filter(matches);
-    const container = document.getElementById('fleetList');
-    if (!list.length) {
-      container.innerHTML = `<div class="fleet-empty">${drivers.length ? 'Aucun livreur ne correspond à ce filtre.' : 'Aucun livreur enregistré. Cliquez sur « Ajouter un livreur ».'}</div>`;
-      return;
-    }
-    const allChecked = list.every((d) => selected.has(String(d.id)));
-    const th = (key, label, cls = '') => (colVisible(key) ? `<th class="${cls}">${label}</th>` : '');
-    container.innerHTML = `<div class="table-wrap"><table class="fleet-table">
-      <thead><tr>
-        ${canManage ? `<th class="fleet-check"><input type="checkbox" id="fleetCheckAll" ${allChecked ? 'checked' : ''} aria-label="Tout sélectionner"></th>` : ''}
-        <th>Livreur</th>
-        ${th('activite', 'Activité')}
-        ${th('disponibilite', 'Disponibilité')}
-        ${th('charge', 'Colis / capacité', 'num')}
-        ${th('position', 'Position')}
-        ${th('compte', 'Accès appli')}
-        <th class="fleet-actions-h"></th>
-      </tr></thead>
-      <tbody>${list.map((d) => {
-        const id = String(d.id);
-        return `<tr class="fleet-row ${selected.has(id) ? 'selected' : ''}" data-row="${escapeHtml(d.id)}">
-        ${canManage ? `<td class="fleet-check"><input type="checkbox" class="fleet-rowcheck" data-check="${escapeHtml(d.id)}" ${selected.has(id) ? 'checked' : ''} aria-label="Sélectionner"></td>` : ''}
-        <td><div class="fleet-name">${avatarHtml(d)}<div class="fleet-id"><strong>${escapeHtml(d.name)}</strong><small>${escapeHtml(d.vehicleType)} · ${escapeHtml(driverCode(d))}</small></div></div></td>
-        ${colVisible('activite') ? `<td>${activityCell(d)}</td>` : ''}
-        ${colVisible('disponibilite') ? `<td>${availabilityCell(d)}</td>` : ''}
-        ${colVisible('charge') ? `<td class="num">${escapeHtml(d.activeOrders)} / ${escapeHtml(d.capacity)}</td>` : ''}
-        ${colVisible('position') ? `<td class="fleet-pos ${d.lastUpdate ? '' : 'muted'}">${d.lastUpdate ? escapeHtml(formatAge(d.lastUpdate)) : 'Position inconnue'}</td>` : ''}
-        ${colVisible('compte') ? `<td>${accountCell(d)}</td>` : ''}
-        <td class="fleet-actions">${rowMenu(d)}</td>
-      </tr>`; }).join('')}</tbody></table></div>`;
-  }
-
-  function renderBulk() {
-    const bar = document.getElementById('fleetBulk');
-    if (!bar || !canManage) return;
-    const n = selected.size;
-    if (!n) { bar.hidden = true; bar.innerHTML = ''; return; }
-    bar.hidden = false;
-    bar.innerHTML = `<span class="fleet-bulk-n">${n} sélectionné${n > 1 ? 's' : ''}</span>
-      <div class="fleet-bulk-actions">
-        <button type="button" class="button small secondary" data-bulk="disable">Désactiver</button>
-        <button type="button" class="button small secondary" data-bulk="enable">Réactiver</button>
-        <button type="button" class="fleet-bulk-clear" data-bulk="clear">Effacer</button>
-      </div>`;
-  }
-
-  function refreshView() { renderStats(); renderTabs(); renderList(); renderBulk(); }
-
-  async function reload() {
-    drivers = await api('/api/app/drivers');
-    refreshView();
-  }
-
-  function notify(html) { document.getElementById('driverResult').innerHTML = html; }
-
-  function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
-
-  function openRowMenu(driver, anchor) {
-    closeMenu();
-    const menu = document.createElement('div');
-    menu.className = 'menu-pop';
-    menu.innerHTML = `
-      <button data-act="edit">${fleetIcons.edit} Modifier</button>
-      ${driver.hasAccount ? '' : `<button data-act="access">${fleetIcons.link} ${driver.invitePending ? 'Régénérer l’accès' : 'Créer l’accès livreur'}</button>`}
-      <button data-act="toggle">${fleetIcons.power} ${driver.active ? 'Désactiver' : 'Réactiver'}</button>
-      <hr/>
-      <button data-act="delete" class="danger">${fleetIcons.trash} Supprimer</button>`;
-    anchor.parentElement.appendChild(menu);
-    openMenu = menu;
-    menu.addEventListener('click', async (event) => {
-      const action = event.target.closest('[data-act]')?.dataset.act;
-      if (!action) return;
-      closeMenu();
-      if (action === 'edit') openEditModal(driver);
-      else if (action === 'access') openAccessModal(driver);
-      else if (action === 'toggle') await toggleActive(driver);
-      else if (action === 'delete') openDeleteModal(driver);
-    });
-  }
-
-  async function toggleActive(driver) {
-    try {
-      await api(`/api/app/drivers/${encodeURIComponent(driver.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !driver.active }) });
-      notify(`<div class="notice success">${escapeHtml(driver.name)} ${driver.active ? 'désactivé' : 'réactivé'}.</div>`);
-      await reload();
-    } catch (error) { notify(`<div class="notice error">${escapeHtml(error.message)}</div>`); }
-  }
-
-  function driverFormFields(driver = {}) {
-    return `<div class="form-grid">
-      <div class="field"><label>Nom du livreur</label><input name="name" required maxlength="80" value="${escapeHtml(driver.name || '')}" autocomplete="off"/></div>
-      <div class="field"><label>Téléphone / WhatsApp</label><input name="phone" inputmode="tel" maxlength="40" value="${escapeHtml(driver.phone || '')}" autocomplete="off"/></div>
-      <div class="field"><label>Véhicule</label><select name="vehicleType">${vehicleOptions(driver.vehicleType)}</select></div>
-      <div class="field"><label>Capacité (colis)</label><input name="capacity" type="number" min="1" max="50" value="${escapeHtml(driver.capacity || 3)}"/></div>
-      <div class="field full"><label>Identifiant du traceur GPS ${driver.id ? '' : '(facultatif)'}</label><input name="trackerId" maxlength="64" value="${escapeHtml(driver.uniqueId || '')}" placeholder="Vide = généré automatiquement" autocomplete="off"/></div>
-    </div>`;
-  }
-
-  function openAddModal() {
-    const modal = openModal('Ajouter un livreur',
-      `<p class="subtitle" style="margin-top:0">Ajoutez son e-mail pour lui envoyer tout de suite son accès à l’appli livreur. Il ne verra que ses propres livraisons.</p>
-       <form id="driverForm">${driverFormFields()}<div class="field full"><label>E-mail (accès livreur, optionnel)</label><input name="email" type="email" autocomplete="off"/></div></form>
-       <div id="modalResult"></div>`,
-      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="driverSubmit" type="submit" form="driverForm">Créer le livreur</button>`);
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    modal.backdrop.querySelector('#driverForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(event.currentTarget));
-      const submit = modal.backdrop.querySelector('#driverSubmit');
-      submit.disabled = true;
-      try {
-        const driver = await api('/api/app/drivers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: data.name, phone: data.phone, vehicleType: data.vehicleType, capacity: Number(data.capacity), trackerId: data.trackerId }) });
-        const email = String(data.email || '').trim();
-        if (email) {
-          try {
-            const invite = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, displayName: data.name, role: 'driver', driverId: driver.id }) });
-            showInviteLink(publicLink(invite.path));
-          } catch (inviteError) {
-            notify(`<div class="notice warning">Livreur créé, mais l’accès n’a pas pu être généré : ${escapeHtml(inviteError.message)}.</div>`);
-          }
-        } else {
-          notify(`<div class="notice success">Livreur « ${escapeHtml(driver.name)} » créé.</div>`);
-        }
-        modal.close();
-        await reload();
-      } catch (error) {
-        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-        submit.disabled = false;
-      }
-    });
-  }
-
-  function driverPhotoSection(driver) {
-    const url = driverPhotoUrl(driver);
-    return `<div class="driver-photo-edit">
-      <div class="driver-photo-preview" id="photoPreview">${url ? `<img src="${url}" alt="">` : `<span>${escapeHtml(initials(driver.name))}</span>`}</div>
-      <div class="driver-photo-actions">
-        <div class="driver-photo-title">Photo du livreur</div>
-        <p class="subtitle" style="margin:2px 0 8px">JPEG, PNG ou WebP · 600 Ko max. La photo apparaît dans les listes et fiches.</p>
-        <div class="driver-photo-btns">
-          <button class="button secondary small" type="button" id="photoPick">${url ? 'Remplacer' : 'Importer une photo'}</button>
-          <button class="button subtle small" type="button" id="photoRemove" ${url ? '' : 'hidden'}>Retirer</button>
-        </div>
-        <input type="file" id="photoInput" accept="image/jpeg,image/png,image/webp" hidden>
-        <div id="photoMsg" class="driver-photo-msg"></div>
-      </div>
-    </div>`;
-  }
-
-  async function resizeImageToDataUrl(file, max = 320) {
-    const bitmap = await createImageBitmap(file).catch(() => null);
-    let source = bitmap;
-    if (!source) {
-      source = await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = URL.createObjectURL(file);
-      });
-    }
-    const w = source.width || source.naturalWidth;
-    const h = source.height || source.naturalHeight;
-    const scale = Math.min(1, max / Math.max(w, h));
-    const cw = Math.max(1, Math.round(w * scale));
-    const ch = Math.max(1, Math.round(h * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = cw; canvas.height = ch;
-    const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(source, 0, 0, cw, ch);
-    if (bitmap && bitmap.close) bitmap.close();
-    let quality = 0.86;
-    let dataUrl = canvas.toDataURL('image/jpeg', quality);
-    // La limite globale du body JSON est de 256 Ko : on garde la dataUrl
-    // (base64 + enveloppe JSON) confortablement en dessous.
-    while (dataUrl.length > 230 * 1024 && quality > 0.35) {
-      quality -= 0.12;
-      dataUrl = canvas.toDataURL('image/jpeg', quality);
-    }
-    return dataUrl;
-  }
-
-  function wireDriverPhoto(root, driver) {
-    const input = root.querySelector('#photoInput');
-    const pick = root.querySelector('#photoPick');
-    const remove = root.querySelector('#photoRemove');
-    const preview = root.querySelector('#photoPreview');
-    const msg = root.querySelector('#photoMsg');
-    if (!input || !pick) return;
-    const setBusy = (busy) => { pick.disabled = busy; if (remove) remove.disabled = busy; };
-    pick.addEventListener('click', () => input.click());
-    input.addEventListener('change', async () => {
-      const file = input.files && input.files[0];
-      input.value = '';
-      if (!file) return;
-      if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { msg.innerHTML = '<span class="err">Format non supporté.</span>'; return; }
-      setBusy(true);
-      msg.textContent = 'Traitement…';
-      try {
-        const dataUrl = await resizeImageToDataUrl(file);
-        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/photo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl }) });
-        preview.innerHTML = `<img src="${dataUrl}" alt="">`;
-        pick.textContent = 'Remplacer';
-        if (remove) remove.hidden = false;
-        msg.innerHTML = '<span class="ok">Photo enregistrée.</span>';
-        driver.hasPhoto = true;
-        await reload();
-      } catch (error) {
-        msg.innerHTML = `<span class="err">${escapeHtml(error.message)}</span>`;
-      } finally { setBusy(false); }
-    });
-    if (remove) remove.addEventListener('click', async () => {
-      setBusy(true);
-      msg.textContent = 'Suppression…';
-      try {
-        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/photo`, { method: 'DELETE' });
-        preview.innerHTML = `<span>${escapeHtml(initials(driver.name))}</span>`;
-        pick.textContent = 'Importer une photo';
-        remove.hidden = true;
-        msg.innerHTML = '<span class="ok">Photo retirée.</span>';
-        driver.hasPhoto = false;
-        await reload();
-      } catch (error) {
-        msg.innerHTML = `<span class="err">${escapeHtml(error.message)}</span>`;
-      } finally { setBusy(false); }
-    });
-  }
-
-  function openEditModal(driver) {
-    const modal = openModal('Modifier le livreur',
-      `${driverPhotoSection(driver)}<form id="driverForm">${driverFormFields(driver)}</form><div id="modalResult"></div>`,
-      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="driverSubmit" type="submit" form="driverForm">Enregistrer</button>`);
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    wireDriverPhoto(modal.backdrop, driver);
-    modal.backdrop.querySelector('#driverForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(event.currentTarget));
-      const submit = modal.backdrop.querySelector('#driverSubmit');
-      submit.disabled = true;
-      try {
-        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: data.name, phone: data.phone, vehicleType: data.vehicleType, capacity: Number(data.capacity), trackerId: data.trackerId }) });
-        notify(`<div class="notice success">Livreur mis à jour.</div>`);
-        modal.close();
-        await reload();
-      } catch (error) {
-        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-        submit.disabled = false;
-      }
-    });
-  }
-
-  function openAccessModal(driver) {
-    const modal = openModal('Créer l’accès livreur',
-      `<p class="subtitle" style="margin-top:0">Un lien d’accès (valable 48 h, à usage unique) sera généré pour <strong>${escapeHtml(driver.name)}</strong>. Le livreur choisira son mot de passe et n’aura accès qu’à ses commandes.</p>
-       <form id="accessForm"><div class="field"><label>E-mail du livreur</label><input name="email" type="email" required autocomplete="off"/></div></form>
-       <div id="modalResult"></div>`,
-      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="accessSubmit" type="submit" form="accessForm">Générer le lien</button>`);
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    modal.backdrop.querySelector('#accessForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const email = String(new FormData(event.currentTarget).get('email') || '').trim();
-      const submit = modal.backdrop.querySelector('#accessSubmit');
-      submit.disabled = true;
-      try {
-        const invite = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, displayName: driver.name, role: 'driver', driverId: driver.id }) });
-        modal.close();
-        showInviteLink(publicLink(invite.path));
-        await reload();
-      } catch (error) {
-        modal.backdrop.querySelector('#modalResult').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-        submit.disabled = false;
-      }
-    });
-  }
-
-  function openDeleteModal(driver) {
-    const modal = openModal('Supprimer le livreur',
-      `<p>Voulez-vous supprimer <strong>${escapeHtml(driver.name)}</strong> de la liste ? Son historique de commandes est conservé et l’opération reste réversible (archive).</p>`,
-      `<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button accent" id="confirmDelete" type="button">Supprimer</button>`);
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    modal.backdrop.querySelector('#confirmDelete').addEventListener('click', async (event) => {
-      event.currentTarget.disabled = true;
-      try {
-        await api(`/api/app/drivers/${encodeURIComponent(driver.id)}`, { method: 'DELETE' });
-        notify(`<div class="notice success">${escapeHtml(driver.name)} supprimé de la liste.</div>`);
-        modal.close();
-        await reload();
-      } catch (error) {
-        notify(`<div class="notice error">${escapeHtml(error.message)}</div>`);
-        modal.close();
-      }
-    });
-  }
-
-  function showInviteLink(url) {
-    const modal = openModal('Lien d’accès du livreur',
-      `<p class="subtitle" style="margin-top:0">À envoyer au livreur (par WhatsApp par exemple). Valable 48 h, à usage unique.</p>
-       <input readonly value="${escapeHtml(url)}" id="inviteLinkField" style="text-align:center"/>`,
-      `<button class="button secondary" data-modal-close type="button">Fermer</button><button class="button primary" id="copyInviteBtn" type="button">Copier le lien</button>`);
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    modal.backdrop.querySelector('#copyInviteBtn').addEventListener('click', (event) => {
-      const field = modal.backdrop.querySelector('#inviteLinkField');
-      field.select(); navigator.clipboard?.writeText(field.value); event.currentTarget.textContent = 'Lien copié';
-    });
-  }
-
-  // Interactions globales (délégation).
-  page.addEventListener('change', async (event) => {
-    const select = event.target.closest('.availability');
-    if (!select) return;
-    select.disabled = true;
-    try {
-      await api(`/api/app/drivers/${encodeURIComponent(select.dataset.id)}/availability`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: select.value }) });
-      notify('<div class="notice success">Disponibilité mise à jour.</div>');
-      const driver = drivers.find((item) => String(item.id) === String(select.dataset.id));
-      if (driver) driver.availabilityStatus = select.value;
-      select.className = `availability avail-select av-${select.value}`;
-    } catch (error) {
-      notify(`<div class="notice error">${escapeHtml(error.message)}</div>`);
-    } finally {
-      select.disabled = false;
-    }
-  });
-  function closePop() { if (openPop) { openPop.setAttribute('hidden', ''); openPop = null; } }
-  const toggleSelect = (id, on) => { const k = String(id); if (on) selected.add(k); else selected.delete(k); };
-
-  async function bulkSetActive(active) {
-    const ids = [...selected];
-    if (!ids.length) return;
-    notify(`<div class="notice">Mise à jour de ${ids.length} livreur${ids.length > 1 ? 's' : ''}…</div>`);
-    const results = await Promise.allSettled(ids.map((id) => api(`/api/app/drivers/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) })));
-    const failed = results.filter((r) => r.status === 'rejected').length;
-    selected.clear();
-    await reload();
-    notify(failed ? `<div class="notice warning">${ids.length - failed} mis à jour, ${failed} en échec.</div>` : `<div class="notice success">${ids.length} livreur${ids.length > 1 ? 's' : ''} ${active ? 'réactivé' : 'désactivé'}${ids.length > 1 ? 's' : ''}.</div>`);
-  }
-
-  function renderFiltersPop() {
-    const pop = document.getElementById('filtersPop');
-    if (!pop) return;
-    const vehicles = [...new Set(drivers.map((d) => d.vehicleType).filter(Boolean))];
-    pop.innerHTML = `<div class="fleet-pop-title">Filtres</div>
-      <label class="fleet-pop-field"><span>Compte</span><select id="fltCompte"><option value="all"${extraFilter.compte === 'all' ? ' selected' : ''}>Tous</option><option value="ok"${extraFilter.compte === 'ok' ? ' selected' : ''}>Actif</option><option value="ko"${extraFilter.compte === 'ko' ? ' selected' : ''}>À configurer</option></select></label>
-      <label class="fleet-pop-field"><span>Véhicule</span><select id="fltVehicle"><option value="all"${extraFilter.vehicle === 'all' ? ' selected' : ''}>Tous</option>${vehicles.map((v) => `<option value="${escapeHtml(v)}"${extraFilter.vehicle === v ? ' selected' : ''}>${escapeHtml(v)}</option>`).join('')}</select></label>
-      <div class="fleet-pop-actions"><button type="button" class="fleet-pop-reset" id="fltReset">Réinitialiser</button></div>`;
-    pop.querySelector('#fltCompte').addEventListener('change', (e) => { extraFilter.compte = e.target.value; renderList(); });
-    pop.querySelector('#fltVehicle').addEventListener('change', (e) => { extraFilter.vehicle = e.target.value; renderList(); });
-    pop.querySelector('#fltReset').addEventListener('click', () => { extraFilter.compte = 'all'; extraFilter.vehicle = 'all'; renderFiltersPop(); renderList(); });
-  }
-
-  function renderColsPop() {
-    const pop = document.getElementById('colsPop');
-    if (!pop) return;
-    pop.innerHTML = `<div class="fleet-pop-title">Colonnes affichées</div>${allColumns.map((c) => `<label class="fleet-pop-check"><input type="checkbox" data-col="${c.key}" ${visibleCols.has(c.key) ? 'checked' : ''}>${escapeHtml(c.label)}</label>`).join('')}`;
-    pop.querySelectorAll('[data-col]').forEach((cb) => cb.addEventListener('change', () => {
-      if (cb.checked) visibleCols.add(cb.dataset.col);
-      else if (visibleCols.size > 1) visibleCols.delete(cb.dataset.col);
-      else { cb.checked = true; return; }
-      try { localStorage.setItem(COLS_KEY, JSON.stringify([...visibleCols])); } catch { /* ignore */ }
-      renderList();
-    }));
-  }
-
-  async function openDriverDetail(driver) {
-    const act = activityOf(driver); const avail = availabilityOf(driver); const acc = accountOf(driver);
-    const timeShort = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); };
-    const body = `<div class="dd-sub">${escapeHtml(driver.vehicleType)} · ${escapeHtml(driverCode(driver))}</div>
-      <div class="dd-status"><span class="fleet-activity"><span class="fleet-dot" style="background:${act.color}"></span>${act.label}</span><span class="badge ${avail.tone}">${avail.label}</span></div>
-      <div class="dd-rows">
-        <div class="dd-row"><span>Colis en cours</span><strong>${escapeHtml(loadText(driver.activeOrders, driver.capacity))}</strong></div>
-        <div class="dd-row"><span>Dernière position</span><strong>${driver.lastUpdate ? escapeHtml(formatAge(driver.lastUpdate)) : 'Inconnue'}</strong></div>
-        <div class="dd-row"><span>Compte</span><strong>${acc.configured ? '<span class="badge success">Actif</span>' : '<span class="badge warning">À configurer</span>'}</strong></div>
-      </div>
-      <div id="ddActivity" class="dd-activity">${acc.configured ? '<div class="dd-loading">Chargement…</div>' : `<div class="dd-note">${warnIc}<span>Pas de suivi GPS tant que ce livreur n’a pas d’accès à l’appli. Créez-le pour qu’il puisse se connecter.</span></div>`}</div>`;
-    const foot = acc.configured
-      ? `<button class="button secondary" data-modal-close type="button">Fermer</button><a class="button primary" href="/app/carte">Voir sur la carte</a>`
-      : `<button class="button secondary" data-modal-close type="button">Fermer</button>${canManage ? '<button class="button primary" id="ddConfigure" type="button">Configurer l’accès</button>' : ''}`;
-    const modal = openModal(driver.name, body, foot);
-    modal.backdrop.querySelector('[data-modal-close]')?.addEventListener('click', modal.close);
-    modal.backdrop.querySelector('#ddConfigure')?.addEventListener('click', () => { modal.close(); openAccessModal(driver); });
-    if (acc.configured) {
-      try {
-        const data = await api(`/api/app/drivers/${encodeURIComponent(driver.id)}/activity`);
-        const box = modal.backdrop.querySelector('#ddActivity');
-        if (box) box.innerHTML = (data.updates && data.updates.length)
-          ? `<div class="dd-activity-title">Dernières mises à jour</div>${data.updates.map((u) => `<a class="dd-update" href="/app/commandes/${u.id}"><span class="dd-up-ref">${escapeHtml(u.reference || ('#' + u.id))}</span><span class="dd-up-sep">·</span><span class="dd-up-status">${escapeHtml(u.status)}</span><span class="dd-up-time">${escapeHtml(timeShort(u.at))}</span></a>`).join('')}`
-          : '<div class="dd-note"><span>Aucune commande récente.</span></div>';
-      } catch (error) {
-        const box = modal.backdrop.querySelector('#ddActivity');
-        if (box) box.innerHTML = '<div class="dd-note"><span>Impossible de charger l’activité.</span></div>';
-      }
-    }
-  }
-
-  page.addEventListener('click', (event) => {
-    const menuBtn = event.target.closest('[data-menu]');
-    if (menuBtn) {
-      event.stopPropagation();
-      if (openMenu && openMenu.previousElementSibling === menuBtn) { closeMenu(); return; }
-      const driver = drivers.find((item) => String(item.id) === String(menuBtn.dataset.menu));
-      if (driver) openRowMenu(driver, menuBtn);
-      return;
-    }
-    if (!event.target.closest('.menu-pop')) closeMenu();
-    if (!event.target.closest('.fleet-tool-wrap')) closePop();
-
-    if (event.target.closest('#filtersBtn')) { event.stopPropagation(); const p = document.getElementById('filtersPop'); const opening = p.hasAttribute('hidden'); closePop(); if (opening) { renderFiltersPop(); p.removeAttribute('hidden'); openPop = p; } return; }
-    if (event.target.closest('#colsBtn')) { event.stopPropagation(); const p = document.getElementById('colsPop'); const opening = p.hasAttribute('hidden'); closePop(); if (opening) { renderColsPop(); p.removeAttribute('hidden'); openPop = p; } return; }
-    if (event.target.closest('.fleet-pop')) { event.stopPropagation(); return; }
-
-    const checkAll = event.target.closest('#fleetCheckAll');
-    if (checkAll) { const on = checkAll.checked; drivers.filter(matches).forEach((d) => toggleSelect(d.id, on)); renderList(); renderBulk(); return; }
-    const rowCheck = event.target.closest('.fleet-rowcheck');
-    if (rowCheck) { event.stopPropagation(); toggleSelect(rowCheck.dataset.check, rowCheck.checked); const tr = rowCheck.closest('.fleet-row'); if (tr) tr.classList.toggle('selected', rowCheck.checked); renderBulk(); const all = document.getElementById('fleetCheckAll'); if (all) all.checked = drivers.filter(matches).every((d) => selected.has(String(d.id))); return; }
-
-    const bulk = event.target.closest('[data-bulk]');
-    if (bulk) { const act = bulk.dataset.bulk; if (act === 'clear') { selected.clear(); renderList(); renderBulk(); } else if (act === 'disable') bulkSetActive(false); else if (act === 'enable') bulkSetActive(true); return; }
-
-    const cfgBtn = event.target.closest('[data-config]');
-    if (cfgBtn) { event.stopPropagation(); const driver = drivers.find((item) => String(item.id) === String(cfgBtn.dataset.config)); if (driver) openAccessModal(driver); return; }
-    if (event.target.closest('#fleetToConfig')) { filter = 'all'; extraFilter.compte = 'ko'; renderTabs(); renderList(); return; }
-
-    const tab = event.target.closest('[data-tab]');
-    if (tab) { filter = tab.dataset.tab; renderTabs(); renderList(); return; }
-
-    if (event.target.closest('#addDriverBtn')) { openAddModal(); return; }
-
-    const row = event.target.closest('.fleet-row');
-    if (row && !event.target.closest('input, button, a, select, .menu-pop')) {
-      const driver = drivers.find((item) => String(item.id) === String(row.dataset.row));
-      if (driver) openDriverDetail(driver);
-    }
-  });
-  const search = document.getElementById('fleetSearch');
-  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
-
-  refreshView();
-  const focusDriver = new URLSearchParams(location.search).get('livreur');
-  if (focusDriver) {
-    try { history.replaceState(null, '', '/app/livreurs'); } catch { /* ignore */ }
-    const driver = drivers.find((item) => String(item.id) === String(focusDriver));
-    if (driver) openDriverDetail(driver);
-  }
+  setHeader('Livreurs', 'Une équipe prête à prendre la route');
+  await window.TraxoDrivers.render(page, { api, setHeader, uiToast, uiConfirm, publicLink, context, vehicleTypes: driverVehicleOptions });
 }
 
 async function renderTeam() {
@@ -2554,12 +2089,13 @@ async function renderTeam() {
         <div class="team-invite-row">
           <div class="field"><label>Nom</label><input name="displayName" minlength="2" maxlength="100" placeholder="Nom de la personne" required autocomplete="off"/></div>
           <div class="field"><label>Téléphone ou e-mail</label><input name="email" type="text" placeholder="06 12 34 56 78 ou nom@exemple.com" required autocomplete="off"/></div>
-          <div class="field team-role-field"><label>Rôle</label><select name="role" id="invitationRole"><option value="operator">Opérateur</option>${context.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}<option value="driver">Livreur</option></select></div>
+          <div class="field team-role-field"><label>Rôle</label><select name="role" id="invitationRole"><option value="operator">Opérateur</option>${context.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}</select></div>
           <button class="button accent team-invite-send" id="inviteSend" type="submit">Envoyer l’invitation</button>
         </div>
         <div class="field team-driver-field" id="driverField" hidden><label>Profil livreur associé</label><select name="driverId" id="invitationDriver"><option value="">Sélectionner</option>${availableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join('')}</select></div>
       </form>
       <div class="team-invite-foot"><button type="button" class="team-link" id="shareLinkBtn">Créer un lien à partager</button><span class="team-sepbar">|</span><span class="team-muted">Le lien d’invitation reste valable 48 h.</span></div>
+      <p class="team-muted team-driver-hint">Un livreur à ajouter ? Passez par la page <a href="/app/livreurs?nouveau=1">Livreurs</a> : il rejoint l’équipe en scannant un QR code, sans e-mail ni mot de passe.</p>
       <div id="invitationResult"></div>
     </section>
     <hr class="team-sep"/>
@@ -2964,6 +2500,7 @@ async function renderSettings() {
           <section class="tx-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">Avant le départ</span><h2>Validation des commandes</h2><p>Gardez la main sur les départs en livraison.</p></div></div><div class="tx-panel-body">
             ${toggleRow('driverAssignmentRequired', 'Affecter un livreur pour valider', 'Une demande ne peut être validée qu’en choisissant son livreur : la commande est créée dans la foulée.', rules.driverAssignmentRequired, ro)}
             ${toggleRow('allowEditAfterValidation', 'Laisser le client corriger après validation', 'Tant que la commande n’est pas créée, le client peut encore modifier sa demande depuis son lien.', rules.allowEditAfterValidation, ro)}
+            ${toggleRow('showFullRoute', 'Montrer au client tout le trajet du livreur', 'Le client voit aussi la collecte et les autres arrêts, sans le nom ni l’adresse des autres clients. Désactivé : il voit son livreur seulement quand celui-ci vient chez lui.', rules.showFullRoute, ro)}
           </div></section>
         </div>
         <section class="tx-panel tx-proofs-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">À l’arrivée</span><h2>Preuves de livraison</h2><p>Ce que le livreur doit fournir pour clôturer une livraison dans son application.</p></div></div><div class="tx-panel-body">
@@ -2977,7 +2514,7 @@ async function renderSettings() {
     if (ro) return;
     const form = box.querySelector('#txDeliveriesForm');
     const err = box.querySelector('#txDeliveryError');
-    const keys = ['customerFormEnabled', 'internalEntryEnabled', 'manualValidation', 'driverAssignmentRequired', 'allowEditAfterValidation'];
+    const keys = ['customerFormEnabled', 'internalEntryEnabled', 'manualValidation', 'driverAssignmentRequired', 'allowEditAfterValidation', 'showFullRoute'];
     const current = () => ({
       rules: Object.fromEntries(keys.map((k) => [k, form.elements[k].checked])),
       proofs: { photoMode: form.elements.photoMode.value, signatureMode: form.elements.signatureMode.value },
@@ -3222,7 +2759,7 @@ async function renderSettings() {
     const data = await api('/api/app/billing/plans');
     const byCode = Object.fromEntries(data.plans.map((p) => [p.code, p]));
     const priced = ['flexible', 'equipe', 'croissance', 'business'].map((c) => byCode[c]).filter(Boolean);
-    const state = { drivers: Math.max(1, Number(data.activeDrivers || 0)), period: data.billingCycle || 'monthly' };
+    const state = { drivers: Math.max(1, Number(data.seatsThisMonth || data.activeDrivers || 0)), period: data.billingCycle || 'monthly' };
     const periods = ['monthly', 'quarterly', 'yearly'];
     const monthlyPrice = (p) => Math.round((p.kind === 'per_driver' ? p.monthly * state.drivers : p.monthly) * (1 - (data.discounts[state.period] || 0)));
     const fits = (p) => p.max == null || state.drivers <= p.max;
@@ -3258,7 +2795,7 @@ async function renderSettings() {
         <div class="tx-segmented" role="group" aria-label="Période de facturation">${periods.map((id) => `<button type="button" data-period="${id}" aria-pressed="${state.period === id}">${txCycleLabels[id]}${pct(id) ? `<small>−${pct(id)} %</small>` : ''}</button>`).join('')}</div>
       </div>
       <div id="txOffers">${offersHtml()}</div>
-      ${infoStrip(`Vous avez aujourd’hui ${txPlural(Number(data.activeDrivers || 0), 'livreur actif', 'livreurs actifs')}. L’essai de 3 jours est réservé à la première connexion. Les remises s’appliquent au paiement de la période entière.`)}`;
+      ${infoStrip(`Vous avez aujourd’hui ${txPlural(Number(data.activeDrivers || 0), 'livreur actif', 'livreurs actifs')}${Number(data.seatsThisMonth || 0) > Number(data.activeDrivers || 0) ? `, et ${txPlural(Number(data.seatsThisMonth), 'personne a', 'personnes ont')} livré pour vous ce mois-ci : c’est ce nombre qui compte pour le mois en cours` : ''}. L’essai de 3 jours est réservé à la première connexion. Les remises s’appliquent au paiement de la période entière.`)}`;
     const range = box.querySelector('#txRange');
     const input = box.querySelector('#txDrivers');
     const seg = box.querySelector('.tx-segmented');
@@ -3629,9 +3166,9 @@ function crmChipColor(label) {
   if (/brouillon|archiv|annul|non partag/.test(s)) return 'grey';
   return 'grey';
 }
-const crmOrderSeq = ['En préparation', 'Confirmée', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
+const crmOrderSeq = ['En préparation', 'Confirmée', 'Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
 function crmOrderStatusColor(status) {
-  const map = { 'Livrée': 'green', 'Confirmée': 'amber', 'En préparation': 'amber', 'Récupérée': 'blue', 'En tournée': 'blue', 'En livraison': 'blue', 'Arrivée': 'blue', 'Brouillon': 'grey', 'Échec': 'red', 'Retour': 'amber', 'Retournée': 'grey', 'Annulée': 'grey' };
+  const map = { 'Livrée': 'green', 'Confirmée': 'amber', 'En préparation': 'amber', 'Vers la collecte': 'amber', 'Récupérée': 'blue', 'En tournée': 'blue', 'En livraison': 'blue', 'Arrivée': 'blue', 'Brouillon': 'grey', 'Échec': 'red', 'Retour': 'amber', 'Retournée': 'grey', 'Annulée': 'grey' };
   return map[status] || 'grey';
 }
 function crmOrderProgress(status) {
@@ -3661,6 +3198,47 @@ function crmMiniSteps(done, total, tone) {
 // Tiroir d'une commande : résumé + TOUTES les actions (plus de page séparée).
 // Le contenu défile ; un menu collant permet de sauter à chaque section.
 // opts.onChange : rappelé après une action (rafraîchit la liste).
+// Modifier le colis et la collecte d'une commande (avant la récupération du colis).
+function openPickupEditor(o, onSaved) {
+  const has = Boolean(o.pickup_address || o.pickup_name || o.pickup_lat != null);
+  const modal = openModal('Colis et collecte', `<form id="pkForm" class="pk-form" novalidate>
+      <div class="field"><label>Type de colis</label><select name="packageType"><option value="">Non précisé</option>${packageTypeOptions.map(([v, l]) => `<option value="${v}" ${o.package_type === v ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}</select></div>
+      <div class="field"><label>Contenu</label><input name="packageDescription" maxlength="240" value="${escapeHtml(o.package_description || '')}" placeholder="Ex. 2 robes dans un sac"></div>
+      <label class="pk-check"><input type="checkbox" name="pickupEnabled" ${has ? 'checked' : ''}> Le colis est à récupérer ailleurs</label>
+      <div id="pkFields" ${has ? '' : 'hidden'}>
+        <div class="field"><label>Nom du lieu</label><input name="pickupName" maxlength="120" value="${escapeHtml(o.pickup_name || '')}" placeholder="Ex. Boutique Awa"></div>
+        <div class="field"><label>Quartier ou repère</label><input name="pickupAddress" maxlength="240" value="${escapeHtml(o.pickup_address || '')}" placeholder="Ex. Dantokpa, allée des tissus"></div>
+        <div class="field"><label>Téléphone sur place</label><input name="pickupPhone" type="tel" maxlength="30" value="${escapeHtml(o.pickup_phone || '')}"></div>
+        <div class="field"><label>Colis prêt à partir de</label><input name="pickupReady" maxlength="80" value="${escapeHtml(o.pickup_ready || '')}" placeholder="Ex. 14 h"></div>
+        ${o.pickup_lat != null ? '<p class="muted">La position exacte enregistrée est conservée.</p>' : ''}
+      </div>
+      <div id="pkError" role="alert"></div>
+    </form>`, '<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="pkSave" type="button">Enregistrer</button>');
+  const form = modal.backdrop.querySelector('#pkForm');
+  form.pickupEnabled.addEventListener('change', () => { modal.backdrop.querySelector('#pkFields').hidden = !form.pickupEnabled.checked; });
+  modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+  modal.backdrop.querySelector('#pkSave').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
+    const body = {
+      packageType: data.packageType || undefined, packageDescription: data.packageDescription,
+      pickupEnabled: form.pickupEnabled.checked, pickupName: data.pickupName, pickupAddress: data.pickupAddress,
+      pickupPhone: data.pickupPhone, pickupPhoneCountry: 'BJ', pickupReady: data.pickupReady,
+      pickupLat: o.pickup_lat, pickupLng: o.pickup_lng,
+    };
+    button.disabled = true;
+    try {
+      await api(`/api/app/orders/${encodeURIComponent(o.id)}/pickup`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      modal.close();
+      uiToast('Colis et collecte mis à jour.', 'success');
+      onSaved();
+    } catch (error) {
+      modal.backdrop.querySelector('#pkError').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+}
+
 async function openOrderDrawer(orderId, opts = {}) {
   const existing = document.querySelector('.crm-drawer-wrap');
   if (existing) existing.remove();
@@ -3731,6 +3309,12 @@ async function openOrderDrawer(orderId, opts = {}) {
           <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name, { photoUrl: o.driver_photo, online: o.driver_online }) : '—'}${o.driver_vehicle_type ? ` <span class="crm-muted">· ${escapeHtml(o.driver_vehicle_type)}</span>` : ''}</strong></div>
           <div class="crm-kv"><span>Créneau</span><strong>${escapeHtml(o.requested_time || '—')}</strong></div>
         </section>
+        <section><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.doc}</span>Colis et collecte</h4>${['En préparation', 'Confirmée', 'Vers la collecte'].includes(o.status) ? '<button class="crm-seclink" type="button" id="odEditPickup">Modifier</button>' : ''}</div>
+          <div class="crm-kv"><span>Colis</span><strong>${escapeHtml([packageTypeLabels[o.package_type], o.package_description].filter(Boolean).join(' · ') || '—')}</strong></div>
+          ${o.pickup_address || o.pickup_name || o.pickup_lat != null ? `<div class="crm-kv"><span>Collecte</span><strong>${escapeHtml([o.pickup_name, o.pickup_address].filter(Boolean).join(' · ') || 'Position sur la carte')}${o.pickup_ready ? ` <span class="crm-muted">· prêt à ${escapeHtml(o.pickup_ready)}</span>` : ''}</strong></div>
+          ${o.pickup_phone ? `<div class="crm-kv"><span>Sur place</span><strong><a href="tel:${escapeHtml(String(o.pickup_phone).replace(/[^+\d]/g, ''))}">${escapeHtml(o.pickup_phone)}</a></strong></div>` : ''}`
+          : '<div class="crm-kv"><span>Collecte</span><strong>Le colis part de chez vous</strong></div>'}
+        </section>
         <section><h4><span class="crm-sec-ic">${secIc.track}</span>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
         <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Détails de la commande</h4>
           <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(instructions)}</strong></div>
@@ -3745,6 +3329,7 @@ async function openOrderDrawer(orderId, opts = {}) {
       </div>`;
     drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
     drawer.querySelector('#odBack')?.addEventListener('click', () => { close(); opts.onBack(); });
+    drawer.querySelector('#odEditPickup')?.addEventListener('click', () => openPickupEditor(o, () => paint(drawer.querySelector('.crm-drawer-body')?.scrollTop || 0)));
     const body = drawer.querySelector('.crm-drawer-body');
     await mountOrderActions(drawer.querySelector('#odActions'), o.id, {
       order: o,
@@ -4516,7 +4101,7 @@ async function renderOperationsWorkspace(initialSegment) {
       title: 'Commandes', newLabel: 'Nouvelle commande', newHref: '/app/nouvelle-commande',
       placeholder: 'Rechercher une commande, un client…', countKey: 'orders',
       endpoint: () => '/api/app/orders', drawerFn: (id) => openOrderDrawer(id, { onChange: loadSegment }), href: (r) => `/app/commandes/${r.id}`,
-      statusValues: ['Confirmée', 'En préparation', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
+      statusValues: ['Confirmée', 'En préparation', 'Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? r.status : k === 'zone' ? (r.neighborhood || r.landmark || '—') : (r.driver_name || '—'),
       filterTest: (r, v) => r.status === v,

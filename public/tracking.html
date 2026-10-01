@@ -72,6 +72,10 @@
       .trk-eta-main strong { display: block; font-size: 26px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
       .trk-eta-main span { display: block; margin-top: 2px; color: var(--muted); font-size: 14px; }
       .trk-eta-bar { position: relative; flex: 0 0 110px; height: 6px; border-radius: 99px; background: var(--green-soft); overflow: hidden; }
+      .trk-eta.soft .trk-eta-bar { display: none; }
+      .trk-eta.soft .trk-eta-main strong { font-size: 21px; }
+      .trk-pickup { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: #1f5446; color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+      .trk-pickup svg { width: 16px; height: 16px; }
       .trk-eta-bar i { position: absolute; inset: 0 auto 0 0; width: 40%; border-radius: 99px; background: var(--green); animation: trk-slide 1.8s ease-in-out infinite; }
       .trk-locate { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); animation: trk-in .4s both; }
       .trk-locate p { flex: 1; margin: 0; color: var(--muted); font-size: 14px; }
@@ -168,9 +172,9 @@
         const C = window.TraxoClient;
         const REFRESH_INTERVAL_MS = 10000;
         const STALE_AFTER_MS = 10 * 60 * 1000;
-        const ORDER_FLOW = ['Confirmée', 'En préparation', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
+        const ORDER_FLOW = ['Confirmée', 'En préparation', 'Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
         const STATUS_TEXT = {
-          'Confirmée': 'Commande validée', 'En préparation': 'Commande en préparation', 'Récupérée': 'Colis récupéré',
+          'Confirmée': 'Commande validée', 'En préparation': 'Commande en préparation', 'Vers la collecte': 'Votre livreur récupère votre colis', 'Récupérée': 'Colis récupéré',
           'En tournée': 'Votre livreur est en tournée', 'En livraison': 'En route vers vous', 'Arrivée': 'Votre livreur est arrivé',
           'Livrée': 'Livraison terminée', 'Retournée': 'Livraison retournée', 'Annulée': 'Livraison annulée',
         };
@@ -335,22 +339,53 @@
           else setLive('Suivi en direct', '', true);
         }
 
+        // Heure d'arrivée : précise sur le dernier trajet, sinon une fourchette honnête.
+        const hhmm = (iso) => new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', '\u00a0h\u00a0');
+        const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
         function renderEta(data) {
-          const eta = document.getElementById('eta');
+          const box = document.getElementById('eta');
           const locate = document.getElementById('locate');
-          const route = data.route;
-          const live = data.positionVisible !== false && ['online', 'stale'].includes(data.status);
-          if (live && route && Number.isFinite(Number(route.durationSeconds))) {
-            const minutes = Math.max(1, Math.round(Number(route.durationSeconds) / 60));
-            const arrival = new Date(Date.now() + minutes * 60000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-            const km = Number(route.distanceMeters) / 1000;
-            const dist = Number.isFinite(km) ? (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1).replace('.', ',')} km`) : '';
-            document.getElementById('etaTime').textContent = data.orderStatus === 'Arrivée' ? 'Votre livreur est là' : `Vers ${arrival.replace(':', ' h ')}`;
-            document.getElementById('etaSub').textContent = data.orderStatus === 'Arrivée' ? 'Il vous attend au point de livraison.'
-              : `Environ ${minutes} min${dist ? ` · ${dist}` : ''}${data.routeTarget === 'viewer' ? ' jusqu’à votre position actuelle' : ''}`;
-            eta.hidden = false;
-          } else eta.hidden = true;
-          locate.hidden = !(live && !data.destination && !viewer);
+          const e = data.eta;
+          let main = '';
+          let sub = '';
+          if (e) {
+            const before = e.deliveriesBefore > 0 ? `${plural(e.deliveriesBefore, 'livraison')} avant la vôtre` : '';
+            const km = Number(e.distanceMeters) / 1000;
+            const dist = Number.isFinite(km) && km > 0 ? (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1).replace('.', ',')} km`) : '';
+            if (e.phase === 'arrived') { main = 'Votre livreur est là'; sub = 'Il vous attend au point de livraison.'; }
+            else if (e.precision === 'exact') { main = `Vers ${hhmm(e.latest)}`; sub = [`Environ ${e.minutes} min`, dist].filter(Boolean).join(' · '); }
+            else if (e.precision === 'range') {
+              main = `${hhmm(e.earliest)} – ${hhmm(e.latest)}`;
+              sub = e.phase === 'pickup' ? 'Arrivée estimée · votre livreur récupère d’abord votre colis'
+                : `Arrivée estimée · ${before || (e.phase === 'scheduled' ? 'votre livreur n’est pas encore parti' : [`environ ${e.minutes} min`, dist].filter(Boolean).join(' · '))}`;
+              if (e.phase === 'pickup' && before) sub += `, ${before}`;
+            } else if (e.precision === 'slot') { main = `Prévue ${e.requestedTime}`; sub = 'C’est le créneau demandé. L’heure précise s’affichera dès que votre livreur sera en route.'; }
+            else {
+              main = 'Heure d’arrivée à venir';
+              sub = !data.destination && !viewer ? 'Touchez « Me situer » pour savoir dans combien de temps il arrive.' : 'Elle s’affichera dès que votre livreur prendra la route.';
+            }
+            if (e.stale && e.phase !== 'arrived') sub += ' La position du livreur date de plus de 10 minutes.';
+          }
+          document.getElementById('etaTime').textContent = main;
+          document.getElementById('etaSub').textContent = sub;
+          box.classList.toggle('soft', !e || !['exact', 'range'].includes(e.precision) || e.phase === 'arrived');
+          box.hidden = !main;
+          locate.hidden = !(!data.destination && !viewer && data.status !== 'completed');
+        }
+
+        // Trajet complet (si l'entreprise l'autorise) : point de collecte et arrêts anonymes.
+        let pickupMarker = null;
+        let stopMarkers = [];
+        function renderExtras(data) {
+          if (!map) return;
+          const p = data.pickup && Number.isFinite(Number(data.pickup.latitude)) ? [Number(data.pickup.latitude), Number(data.pickup.longitude)] : null;
+          if (p && ['Confirmée', 'En préparation', 'Vers la collecte'].includes(data.orderStatus)) {
+            const icon = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 15], html: `<div class="trk-pickup">${C.icon('package')}</div>` });
+            if (!pickupMarker) pickupMarker = L.marker(p, { icon, keyboard: false, title: 'Collecte' }).addTo(map).bindTooltip(data.pickup.name ? `Collecte · ${data.pickup.name}` : 'Collecte du colis', { direction: 'top', offset: [0, -14], className: 'trk-label' });
+            else pickupMarker.setLatLng(p);
+          } else if (pickupMarker) { map.removeLayer(pickupMarker); pickupMarker = null; }
+          stopMarkers.forEach((m) => map.removeLayer(m));
+          stopMarkers = (data.detourPoints || []).map((s) => L.circleMarker([s.latitude, s.longitude], { radius: 5, color: '#fff', weight: 2, fillColor: '#8a8a84', fillOpacity: 1, interactive: false }).addTo(map));
         }
 
         function renderViewer() {
@@ -456,7 +491,8 @@
             if (!data.destination) renderViewer();
             renderDriver(data);
             renderRoute(data.route);
-            if (data.positionVisible === false) setLive('Suivi pas encore démarré', 'grey');
+            renderExtras(data);
+            if (data.positionVisible === false) setLive(data.deliveriesBefore > 0 ? 'Livreur en tournée' : data.orderStatus === 'Vers la collecte' ? 'Collecte en cours' : 'Suivi pas encore démarré', 'grey');
             else if (!driverPosition) setLive('Position indisponible', 'grey');
             if (!framed && (driverPosition || destinationPosition)) { frame(false); framed = true; }
             el.recenter.disabled = !(driverPosition || destinationPosition);

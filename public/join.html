@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Rejoindre votre équipe — TRAXO</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.png" sizes="64x64" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <style>
+      @font-face { font-family: TraxoSans; src: url(/fonts/traxosans-400.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+      @font-face { font-family: TraxoSans; src: url(/fonts/traxosans-500.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+      @font-face { font-family: TraxoSans; src: url(/fonts/traxosans-700.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+      :root {
+        color-scheme: light;
+        --ink: #17181c; --ink-2: #3b3f47; --muted: #6b7280; --line: #e4e7ec; --soft: #f5f6f8;
+        --red: #e11d2a; --red-dark: #b3141f; --red-soft: #fdecec; --green: #157347; --green-soft: #e8f5ee;
+        font-family: TraxoSans, "Inter", "Helvetica Neue", Arial, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      html { -webkit-text-size-adjust: 100%; }
+      body { margin: 0; min-width: 300px; min-height: 100vh; background: #fff; color: var(--ink); font-size: 16px; line-height: 1.45; }
+      button, input { font: inherit; color: inherit; }
+      svg.ic { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .jn { width: min(460px, 100%); min-height: 100vh; margin: 0 auto; padding: max(22px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; }
+      .jn-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; }
+      .jn-logo { display: inline-flex; align-items: center; gap: 2px; font-weight: 700; font-size: 19px; letter-spacing: .02em; }
+      .jn-logo i { width: 6px; height: 6px; margin-left: 3px; border-radius: 50%; background: var(--red); }
+      .jn-timer { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: var(--soft); color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+      .jn-timer svg.ic { width: 14px; height: 14px; }
+      .jn-timer.late { background: var(--red-soft); color: var(--red-dark); }
+      .jn-body { flex: 1; display: flex; flex-direction: column; padding-top: 36px; }
+      .jn-in { animation: jn-in .45s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i, 0) * 70ms); }
+      @keyframes jn-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+      .jn-tag { align-self: flex-start; margin-bottom: 14px; padding: 4px 9px; border-radius: 4px; background: var(--green-soft); color: var(--green); font-size: 12.5px; font-weight: 500; }
+      .jn-tag.warn { background: #fff4e0; color: #8a4b00; }
+      h1 { margin: 0; font-size: clamp(30px, 8.5vw, 36px); line-height: 1.08; letter-spacing: -.03em; font-weight: 700; }
+      .jn-lead { margin: 12px 0 0; color: var(--muted); font-size: 16.5px; }
+      .jn-card { display: flex; align-items: center; gap: 14px; margin-top: 26px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+      .jn-mark { flex: 0 0 auto; width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 700; font-size: 18px; }
+      .jn-mark img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+      .jn-card > div strong { display: block; font-size: 17px; }
+      .jn-card > div span { display: block; color: var(--muted); font-size: 14px; }
+      .jn-who { margin: 18px 2px 0; }
+      .jn-who strong { display: block; font-weight: 500; }
+      .jn-who span { color: var(--muted); font-size: 14.5px; }
+      .jn-note { display: flex; gap: 12px; margin-top: 18px; padding: 14px; border-radius: 10px; background: var(--soft); color: var(--ink-2); font-size: 14px; }
+      .jn-note svg.ic { margin-top: 1px; color: var(--muted); }
+      .jn-note p { margin: 0; }
+      .jn-note p + p { margin-top: 6px; }
+      .jn-actions { margin-top: auto; padding-top: 28px; display: grid; gap: 8px; }
+      .jn-btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; padding: 12px 18px; border: 0; border-radius: 10px; background: var(--red); color: #fff; font-size: 16.5px; font-weight: 500; text-decoration: none; cursor: pointer; transition: background .15s, transform .1s; }
+      .jn-btn:hover { background: var(--red-dark); }
+      .jn-btn:active { transform: scale(.99); }
+      .jn-btn:disabled { opacity: .55; cursor: default; }
+      .jn-btn.ghost { background: transparent; color: var(--ink); }
+      .jn-btn.ghost:hover { background: var(--soft); }
+      .jn-btn:focus-visible, .jn-input:focus-visible, .jn-link:focus-visible { outline: 3px solid #e11d2a55; outline-offset: 2px; }
+      .jn-field { margin-top: 26px; }
+      .jn-field label { display: block; margin-bottom: 8px; font-weight: 500; }
+      .jn-input { width: 100%; min-height: 54px; padding: 12px 16px; border: 1px solid #cfd5dd; border-radius: 10px; background: #fff; font-size: 20px; letter-spacing: .08em; text-transform: uppercase; font-variant-numeric: tabular-nums; }
+      .jn-input:focus { outline: none; border-color: var(--ink); }
+      .jn-hint { margin: 8px 2px 0; color: var(--muted); font-size: 14px; }
+      .jn-err { margin: 12px 0 0; padding: 12px 14px; border-radius: 10px; background: var(--red-soft); color: var(--red-dark); font-size: 14.5px; }
+      .jn-otp { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 26px; }
+      .jn-otp input { width: 100%; height: 60px; padding: 0; border: 1px solid #cfd5dd; border-radius: 10px; background: #fff; text-align: center; font-size: 26px; font-variant-numeric: tabular-nums; transition: border-color .15s; }
+      .jn-otp input:focus { outline: none; border-color: var(--ink); }
+      .jn-otp input.filled { border-color: var(--ink); }
+      .jn-otp.err input { border-color: var(--red); animation: jn-shake .35s; }
+      @keyframes jn-shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+      .jn-link { padding: 0; border: 0; background: none; color: var(--ink); font-size: 14.5px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+      .jn-link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+      .jn-ok { width: 64px; height: 64px; display: grid; place-items: center; margin-bottom: 22px; border-radius: 50%; background: var(--green-soft); color: var(--green); }
+      .jn-ok svg.ic { width: 30px; height: 30px; stroke-width: 2.4; }
+      .jn-ok.neutral { background: var(--soft); color: var(--ink-2); }
+      .jn-ok.bad { background: var(--red-soft); color: var(--red-dark); }
+      .jn-ok svg path { stroke-dasharray: 30; stroke-dashoffset: 30; animation: jn-draw .5s .15s ease forwards; }
+      @keyframes jn-draw { to { stroke-dashoffset: 0; } }
+      .jn-tip { margin-top: 18px; color: var(--muted); font-size: 14px; }
+      .jn-skel { height: 18px; margin: 14px 0; border-radius: 6px; background: linear-gradient(90deg, #eef0f3, #f7f8fa, #eef0f3); background-size: 200% 100%; animation: jn-shine 1.2s infinite; }
+      .jn-skel.big { height: 40px; width: 70%; }
+      @keyframes jn-shine { to { background-position: -200% 0; } }
+      .jn-foot { margin-top: 22px; color: var(--muted); font-size: 12.5px; text-align: center; }
+      @media (min-width: 700px) { body { background: var(--soft); } .jn { min-height: auto; margin: 6vh auto; padding: 28px 30px 26px; border: 1px solid var(--line); border-radius: 18px; background: #fff; } .jn-body { min-height: 520px; } }
+      @media (prefers-reduced-motion: reduce) { .jn-in, .jn-otp.err input, .jn-ok svg path { animation: none; stroke-dashoffset: 0; } }
+    </style>
+  </head>
+  <body>
+    <div class="jn">
+      <header class="jn-top">
+        <span class="jn-logo" aria-label="TRAXO">TRAXO<i aria-hidden="true"></i></span>
+        <span class="jn-timer" id="timer" hidden aria-live="off"></span>
+      </header>
+      <main class="jn-body" id="view" aria-live="polite">
+        <div class="jn-skel big"></div><div class="jn-skel"></div><div class="jn-skel"></div>
+      </main>
+      <p class="jn-foot">TRAXO · Vos livraisons, au même endroit.</p>
+    </div>
+    <script>
+      (() => {
+        const ICONS = {
+          check: '<path d="M20 6 9 17l-5-5"/>',
+          lock: '<circle cx="12" cy="16" r="1"/><rect x="3" y="10" width="18" height="12" rx="2"/><path d="M7 10V7a5 5 0 0 1 10 0v3"/>',
+          clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+          phone: '<rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/>',
+          arrow: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+          x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+          hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+          alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+        };
+        const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name] || ''}</svg>`;
+        const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
+        const view = document.getElementById('view');
+        const timerEl = document.getElementById('timer');
+        let ref = decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] || '');
+        let invite = null;
+        let tick = null;
+
+        async function call(path, options) {
+          try {
+            const response = await fetch(`/api/public/driver-invitations/${encodeURIComponent(ref)}${path}`, {
+              cache: 'no-store',
+              credentials: 'same-origin',
+              ...options,
+              headers: options && options.body ? { 'Content-Type': 'application/json' } : undefined,
+            });
+            const data = await response.json().catch(() => ({}));
+            return { ok: response.ok, status: response.status, data };
+          } catch {
+            return { ok: false, status: 0, data: { error: 'Pas de connexion internet pour le moment. Vérifiez votre réseau, puis réessayez.' } };
+          }
+        }
+
+        function stopTimer() { clearInterval(tick); tick = null; timerEl.hidden = true; }
+        function startTimer(expiresAt) {
+          stopTimer();
+          const end = new Date(expiresAt).getTime();
+          if (!Number.isFinite(end)) return;
+          const paint = () => {
+            const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+            if (!left) { stopTimer(); showState('expired', 'Cette invitation vient d’expirer : elle n’est valable que 15 minutes. Demandez un nouveau QR code à votre responsable.'); return; }
+            const m = Math.floor(left / 60);
+            const s = String(left % 60).padStart(2, '0');
+            timerEl.innerHTML = `${icon('clock')}<span>Encore ${m} min ${s} s</span>`;
+            timerEl.classList.toggle('late', left < 120);
+            timerEl.hidden = false;
+          };
+          paint();
+          tick = setInterval(paint, 1000);
+        }
+
+        function render(html) { view.innerHTML = html; window.scrollTo(0, 0); }
+
+        // ---- Pas de lien : saisie du code affiché sous le QR -----------------
+        function renderCodeEntry(message) {
+          stopTimer();
+          render(`<form id="codeForm" novalidate class="jn-in" style="display:flex;flex-direction:column;flex:1">
+            <h1>Rejoindre votre équipe</h1>
+            <p class="jn-lead">Votre responsable vous a montré un QR code ? Scannez-le avec l’appareil photo. Sinon, saisissez le code écrit juste en dessous.</p>
+            <div class="jn-field">
+              <label for="code">Code d’invitation</label>
+              <input class="jn-input" id="code" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="TX-XXXXXXXX" maxlength="11" inputmode="text" />
+              <p class="jn-hint">Il commence par TX- et reste valable 15 minutes.</p>
+              ${message ? `<p class="jn-err" role="alert">${esc(message)}</p>` : ''}
+            </div>
+            <div class="jn-actions"><button class="jn-btn" type="submit">Continuer ${icon('arrow')}</button></div>
+          </form>`);
+          const input = view.querySelector('#code');
+          input.addEventListener('input', () => {
+            let v = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if (v.startsWith('TX')) v = v.slice(2);
+            input.value = v ? `TX-${v.slice(0, 8)}` : '';
+          });
+          input.focus();
+          view.querySelector('#codeForm').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const value = input.value.trim();
+            if (!/^TX-[A-Z0-9]{8}$/.test(value)) { renderCodeEntry('Le code compte 8 caractères après TX-. Vérifiez-le sur l’écran de votre responsable.'); view.querySelector('#code').value = value; return; }
+            ref = value;
+            history.replaceState(null, '', `/rejoindre/${encodeURIComponent(value)}`);
+            load();
+          });
+        }
+
+        // ---- États sans suite possible ----------------------------------------
+        function showState(state, message) {
+          stopTimer();
+          const used = state === 'used';
+          render(`<div class="jn-in" style="display:flex;flex-direction:column;flex:1">
+            <div class="jn-ok ${used ? 'neutral' : 'bad'}">${icon(used ? 'phone' : 'alert')}</div>
+            <h1>${used ? 'Invitation déjà utilisée' : state === 'expired' ? 'Invitation expirée' : state === 'invalid' ? 'Code introuvable' : 'Invitation indisponible'}</h1>
+            <p class="jn-lead">${esc(message)}</p>
+            <div class="jn-actions">
+              ${used ? '<a class="jn-btn" href="/driver">Ouvrir mes livraisons</a>' : ''}
+              ${state === 'invalid' ? '<button class="jn-btn" type="button" data-retry>Saisir un autre code</button>' : ''}
+            </div>
+          </div>`);
+          view.querySelector('[data-retry]')?.addEventListener('click', () => { ref = ''; history.replaceState(null, '', '/rejoindre'); renderCodeEntry(); });
+        }
+
+        // ---- Accueil : vérifier l'entreprise avant de la rejoindre ------------
+        function renderWelcome() {
+          const d = invite.driver || {};
+          const firstName = d.firstName || 'à vous';
+          const company = invite.company || {};
+          const mark = company.logoUrl && /^\/brand\/logo\/\d+(\?v=\d+)?$/.test(company.logoUrl)
+            ? `<img src="${esc(company.logoUrl)}" alt="">` : esc(String(company.name || 'T')[0].toUpperCase());
+          const where = [d.team, d.zone].filter(Boolean).join(' · ');
+          render(`<div style="display:flex;flex-direction:column;flex:1">
+            ${invite.replacement ? '<span class="jn-tag warn jn-in">Nouveau téléphone</span>' : '<span class="jn-tag jn-in">Invitation</span>'}
+            <h1 class="jn-in" style="--i:1">Bonjour ${esc(firstName)}.</h1>
+            <p class="jn-lead jn-in" style="--i:2">Votre équipe vous attend. Vérifiez que c’est bien la vôtre avant de la rejoindre.</p>
+            <div class="jn-card jn-in" style="--i:3"><span class="jn-mark" aria-hidden="true">${mark}</span><div><strong>${esc(company.name || 'Votre entreprise')}</strong><span>vous invite à livrer avec elle sur TRAXO</span></div></div>
+            <div class="jn-who jn-in" style="--i:4"><strong>${esc(d.name || '')}</strong>${where ? `<span>${esc(where)}</span>` : ''}</div>
+            <div class="jn-note jn-in" style="--i:5">${icon('lock')}<div>
+              <p>Vous verrez uniquement les livraisons qui vous sont confiées.</p>
+              <p>${invite.replacement ? 'Ce téléphone remplacera l’ancien : celui-ci sera déconnecté.' : 'Ce téléphone deviendra votre accès. Un seul téléphone peut être connecté à la fois.'}</p>
+            </div></div>
+            <div class="jn-actions jn-in" style="--i:6">
+              <button class="jn-btn" type="button" id="join">Rejoindre cette entreprise</button>
+              <button class="jn-btn ghost" type="button" id="decline">Ce n’est pas mon entreprise</button>
+            </div>
+            <p class="jn-err" id="err" role="alert" hidden></p>
+          </div>`);
+          view.querySelector('#decline').addEventListener('click', renderDecline);
+          view.querySelector('#join').addEventListener('click', async (event) => {
+            const button = event.currentTarget;
+            const err = view.querySelector('#err');
+            button.disabled = true;
+            err.hidden = true;
+            if (invite.verification === 'whatsapp') {
+              button.textContent = 'Envoi du code…';
+              const sent = await call('/send-code', { method: 'POST', body: '{}' });
+              if (sent.ok && sent.data.sent) { renderVerify(sent.data.phoneMasked || invite.phoneMasked); return; }
+              if (sent.ok && sent.data.verification === 'in_person') { invite.verification = 'in_person'; }
+              else if (sent.status === 410) { showState(sent.data.state, sent.data.error); return; }
+              else { button.disabled = false; button.textContent = 'Rejoindre cette entreprise'; err.textContent = sent.data.error || 'Le code n’a pas pu partir. Réessayez.'; err.hidden = false; return; }
+            }
+            button.textContent = 'Association…';
+            accept('', () => { button.disabled = false; button.textContent = 'Rejoindre cette entreprise'; }, (message) => { err.textContent = message; err.hidden = false; });
+          });
+        }
+
+        function renderDecline() {
+          stopTimer();
+          render(`<div class="jn-in" style="display:flex;flex-direction:column;flex:1">
+            <div class="jn-ok neutral">${icon('hand')}</div>
+            <h1>D’accord, rien n’a été associé.</h1>
+            <p class="jn-lead">Ce téléphone n’a rejoint aucune entreprise. Si vous pensez qu’il y a une erreur, montrez cet écran à la personne qui vous a invité.</p>
+            <div class="jn-actions"><button class="jn-btn ghost" type="button" id="back">Revenir à l’invitation</button></div>
+          </div>`);
+          view.querySelector('#back').addEventListener('click', load);
+        }
+
+        // ---- Vérification du numéro (code WhatsApp) ---------------------------
+        function renderVerify(phoneMasked) {
+          render(`<form id="otpForm" novalidate class="jn-in" style="display:flex;flex-direction:column;flex:1">
+            <h1>C’est bien vous ?</h1>
+            <p class="jn-lead">Nous venons d’envoyer un code à 6 chiffres sur WhatsApp${phoneMasked ? ` au <strong style="color:var(--ink);font-weight:500;white-space:nowrap">${esc(phoneMasked)}</strong>` : ''}.</p>
+            <div class="jn-otp" id="otp" role="group" aria-label="Code reçu sur WhatsApp">
+              ${[0, 1, 2, 3, 4, 5].map((i) => `<input inputmode="numeric" maxlength="1" ${i === 0 ? 'autocomplete="one-time-code"' : 'autocomplete="off"'} aria-label="Chiffre ${i + 1}" />`).join('')}
+            </div>
+            <p class="jn-hint" id="otpHint">Le code reste valable 10 minutes.</p>
+            <p class="jn-err" id="err" role="alert" hidden></p>
+            <p class="jn-hint" style="margin-top:18px"><button class="jn-link" type="button" id="resend" disabled>Renvoyer le code</button> <span id="resendIn"></span></p>
+            <div class="jn-actions"><button class="jn-btn" type="submit" id="verify" disabled>Confirmer</button></div>
+          </form>`);
+          const boxes = [...view.querySelectorAll('#otp input')];
+          const value = () => boxes.map((b) => b.value).join('');
+          const button = view.querySelector('#verify');
+          const sync = () => {
+            boxes.forEach((b) => b.classList.toggle('filled', Boolean(b.value)));
+            view.querySelector('#otp').classList.remove('err');
+            button.disabled = value().length !== 6;
+          };
+          const fill = (digits, from) => {
+            digits.split('').slice(0, 6 - from).forEach((d, k) => { boxes[from + k].value = d; });
+            (boxes[Math.min(from + digits.length, 5)] || boxes[5]).focus();
+            sync();
+            if (value().length === 6) view.querySelector('#otpForm').requestSubmit();
+          };
+          boxes.forEach((box, i) => {
+            box.addEventListener('input', () => { const digits = box.value.replace(/\D/g, ''); box.value = ''; fill(digits, i); });
+            box.addEventListener('keydown', (e) => {
+              if (e.key === 'Backspace' && !box.value && i > 0) { boxes[i - 1].value = ''; boxes[i - 1].focus(); sync(); e.preventDefault(); }
+            });
+            box.addEventListener('paste', (e) => {
+              const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+              if (!digits) return;
+              e.preventDefault();
+              boxes.forEach((b) => { b.value = ''; });
+              fill(digits, 0);
+            });
+          });
+          boxes[0].focus();
+          // Renvoi possible après 45 s, comme côté serveur.
+          const resend = view.querySelector('#resend');
+          const resendIn = view.querySelector('#resendIn');
+          let wait = 45;
+          const countdown = setInterval(() => {
+            if (!document.body.contains(resend)) { clearInterval(countdown); return; }
+            wait -= 1;
+            resendIn.textContent = wait > 0 ? `dans ${wait} s` : '';
+            if (wait <= 0) { resend.disabled = false; clearInterval(countdown); }
+          }, 1000);
+          resendIn.textContent = `dans ${wait} s`;
+          resend.addEventListener('click', async () => {
+            resend.disabled = true;
+            const sent = await call('/send-code', { method: 'POST', body: '{}' });
+            if (sent.status === 410) { showState(sent.data.state, sent.data.error); return; }
+            const err = view.querySelector('#err');
+            if (!sent.ok) { err.textContent = sent.data.error || 'Le code n’a pas pu partir. Réessayez.'; err.hidden = false; resend.disabled = false; return; }
+            err.hidden = true;
+            view.querySelector('#otpHint').textContent = 'Nouveau code envoyé. Seul le dernier reçu fonctionne.';
+          });
+          view.querySelector('#otpForm').addEventListener('submit', (event) => {
+            event.preventDefault();
+            if (value().length !== 6) return;
+            button.disabled = true;
+            button.textContent = 'Vérification…';
+            accept(value(), () => { button.textContent = 'Confirmer'; sync(); }, (message, attemptsLeft) => {
+              const err = view.querySelector('#err');
+              err.textContent = attemptsLeft != null ? `${message} Encore ${attemptsLeft} essai${attemptsLeft > 1 ? 's' : ''}.` : message;
+              err.hidden = false;
+              view.querySelector('#otp').classList.add('err');
+              boxes.forEach((b) => { b.value = ''; });
+              boxes[0].focus();
+            });
+          });
+        }
+
+        async function accept(code, reset, fail) {
+          const result = await call('/accept', { method: 'POST', body: JSON.stringify({ code }) });
+          if (result.ok) { renderSuccess(result.data); return; }
+          if (result.status === 410 || result.status === 423) { showState(result.data.state || 'revoked', result.data.error); return; }
+          reset();
+          fail(result.data.error || 'L’association n’a pas abouti. Réessayez.', result.data.attemptsLeft);
+        }
+
+        // ---- C'est fait -------------------------------------------------------
+        function renderSuccess(data) {
+          stopTimer();
+          const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+          render(`<div class="jn-in" style="display:flex;flex-direction:column;flex:1">
+            <div class="jn-ok"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div>
+            <h1>C’est fait${data.firstName ? `, ${esc(data.firstName)}` : ''}.</h1>
+            <p class="jn-lead">Vous faites partie de l’équipe ${esc(data.companyName || '')}. Vos livraisons du jour vous attendent.</p>
+            <p class="jn-tip">Astuce : ${ios ? 'touchez Partager puis « Sur l’écran d’accueil »' : 'ouvrez le menu du navigateur puis « Ajouter à l’écran d’accueil »'} pour retrouver TRAXO en un geste.</p>
+            <div class="jn-actions"><a class="jn-btn" href="${esc(data.redirect || '/driver')}">Ouvrir mes livraisons ${icon('arrow')}</a></div>
+          </div>`);
+        }
+
+        async function load() {
+          if (!ref) { renderCodeEntry(); return; }
+          render('<div class="jn-skel big"></div><div class="jn-skel"></div><div class="jn-skel"></div>');
+          const result = await call('', {});
+          if (!result.ok) {
+            if (result.status === 0) { render(`<div class="jn-in"><h1>Pas de réseau</h1><p class="jn-lead">${esc(result.data.error)}</p><div class="jn-actions"><button class="jn-btn" id="retry" type="button">Réessayer</button></div></div>`); view.querySelector('#retry').addEventListener('click', load); return; }
+            if (result.status === 429) { render(`<div class="jn-in"><h1>Un instant</h1><p class="jn-lead">Trop d’essais depuis ce réseau. Patientez quelques minutes, puis réessayez.</p></div>`); return; }
+            showState(result.data.state || 'invalid', result.data.error || 'Ce lien ou ce code n’existe pas.');
+            return;
+          }
+          invite = result.data;
+          startTimer(invite.expiresAt);
+          renderWelcome();
+        }
+        load();
+      })();
+    </script>
+  </body>
+</html>

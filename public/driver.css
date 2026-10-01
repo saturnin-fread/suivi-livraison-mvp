@@ -68,3 +68,10 @@
 
 .driver-notif-slot { margin: 0 0 16px; }
 .driver-notif-slot:empty { display: none; }
+
+/* Collecte */
+.driver-pickup { margin-bottom: 14px; border-color: #c9ded2; background: #f1f7f3; }
+.driver-pickup .eyebrow { color: #1f5446; }
+.driver-pickup h2 { margin: 3px 0 4px; font-size: 19px; }
+.driver-pickup p { margin: 2px 0; }
+.driver-pickup .driver-actions { margin-top: 10px; }

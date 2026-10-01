@@ -18,9 +18,29 @@ const formatMoney = (value, currency = 'XOF') => value == null ? '—' : new Int
 }).format(Number(value));
 const terminalStatuses = ['Livrée', 'Retournée', 'Annulée'];
 const transitionLabels = {
-  'Récupérée': 'Colis récupéré', 'En tournée': 'Commencer la tournée', 'En livraison': 'Aller vers ce client',
+  'Vers la collecte': 'Je pars chercher le colis', 'Récupérée': 'Colis récupéré', 'En tournée': 'Commencer la tournée', 'En livraison': 'Aller vers ce client',
   'Arrivée': 'Je suis arrivé', 'Échec': 'Signaler un échec', 'Retour': 'Retourner le colis',
 };
+const packageLabels = { colis: 'Colis', documents: 'Documents', repas: 'Repas', fragile: 'Fragile', vetements: 'Vêtements', autre: 'Autre' };
+// Collecte : affichée tant que le colis n'est pas récupéré.
+function pickupCard(order) {
+  const has = order.pickup_address || order.pickup_name || order.pickup_lat != null;
+  if (!has || !['En préparation', 'Confirmée', 'Vers la collecte'].includes(order.status)) return '';
+  const lat = order.pickup_lat;
+  const lng = order.pickup_lng;
+  const nav = lat != null && lng != null ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${lat},${lng}`)}` : null;
+  const phone = String(order.pickup_phone || '').replace(/[^+\d]/g, '');
+  return `<section class="card driver-pickup">
+    <span class="eyebrow">${order.status === 'Vers la collecte' ? 'En route vers la collecte' : 'D’abord, récupérer le colis'}</span>
+    <h2>${escapeHtml(order.pickup_name || 'Point de collecte')}</h2>
+    ${order.pickup_address ? `<p>${escapeHtml(order.pickup_address)}</p>` : ''}
+    ${order.pickup_ready ? `<p class="subtitle">Colis prêt à partir de ${escapeHtml(order.pickup_ready)}</p>` : ''}
+    <div class="driver-actions">
+      ${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler sur place</a>` : ''}
+      ${nav ? `<a class="button secondary" target="_blank" rel="noopener" href="${nav}">Itinéraire vers la collecte</a>` : ''}
+    </div>
+  </section>`;
+}
 const incidentLabels = {
   client_injoignable: 'Client injoignable', adresse: 'Adresse ou accès', colis: 'Problème de colis',
   paiement: 'Paiement', vehicule: 'Véhicule', gps: 'GPS ou connexion', autre: 'Autre',
@@ -314,8 +334,10 @@ async function renderDetail(id) {
   page.innerHTML = `<a class="driver-back" href="/driver">← Mes livraisons</a>
     <div class="page-header"><div><h1>${escapeHtml(order.customer_name || 'Client')}</h1><p class="subtitle">Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
     ${order.run ? `<section class="card run-context ${String(order.run.next_order_id) === String(order.id) ? 'next' : ''}"><span class="eyebrow">${escapeHtml(runStatusLabels[order.run.status] || order.run.status)} · ${escapeHtml(formatDateOnly(order.run.service_date))}</span><h2>${escapeHtml(order.run.name)}</h2><p>Arrêt ${escapeHtml(order.run.sequence)} sur ${escapeHtml(order.run.total_stops)}.${String(order.run.next_order_id) === String(order.id) ? ' C’est le prochain arrêt prévu.' : ' Un arrêt précédent peut encore être en attente.'}</p><p class="subtitle">L’ordre peut être adapté sur le terrain si nécessaire ; chaque commande conserve son propre statut et ses preuves.</p></section>` : ''}
+    ${pickupCard(order)}
     <section class="card driver-detail-grid">
-      <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
+      ${order.package_type || order.package_description ? `<div class="detail"><span>Colis</span><strong>${escapeHtml([packageLabels[order.package_type], order.package_description].filter(Boolean).join(' · '))}</strong></div>` : ''}
+      ${order.canContact === false ? '' : `<div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>`}
       <div class="detail"><span>Destination</span><strong>${escapeHtml(order.delivery_address || order.neighborhood || '—')}</strong></div>
       <div class="detail"><span>Repère</span><strong>${escapeHtml(order.landmark || '—')}</strong></div>
       <div class="detail"><span>Créneau</span><strong>${escapeHtml(order.requested_time || '—')}</strong></div>
@@ -334,13 +356,13 @@ async function renderDetail(id) {
     ${canVerifyOtp ? `<section class="card driver-section"><h2>Confirmer la remise</h2><p>Demandez au client le code à 6 chiffres reçu pour cette commande.</p><p class="subtitle">Le portail livreur n’affiche et ne génère jamais ce code.</p>${hasActiveOtp ? `<div class="notice success">Un code est actif jusqu’au ${escapeHtml(formatDate(order.active_otp_expires_at))}.</div>` : '<div class="notice warning">Aucun code actif. Demandez à l’exploitation d’en générer un pour le client.</div>'}${paymentBlocksDelivery ? '<div class="notice error">La remise est bloquée tant que l’encaissement ou son écart n’est pas finalisé.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<form id="otpForm" class="driver-form"><div class="field"><label>Code donné par le client</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><button class="primary" ${!hasActiveOtp || paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Valider la remise au client</button></form><div id="otpResult"></div></section>` : ''}
     ${order.proof_id ? `<section class="card driver-section"><h2>Remise confirmée</h2><div class="notice success">Le code client a été vérifié le ${escapeHtml(formatDate(order.proof_verified_at))}. Cette livraison est terminée.</div></section>` : ''}
     ${!order.isTerminal ? `<section class="card driver-section"><h2>Mettre à jour l’étape</h2><div class="driver-actions">${order.allowedTransitions.map((status) => `<button class="${['Échec', 'Retour'].includes(status) ? 'danger' : 'primary'} transition" data-status="${escapeHtml(status)}">${escapeHtml(transitionLabels[status] || status)}</button>`).join('')}</div><div id="transitionResult"></div></section>` : ''}
-    <section class="card driver-section"><h2>Signaler un incident</h2>
+    ${order.canReportIncident === false ? '' : `<section class="card driver-section"><h2>Signaler un incident</h2>
       <form id="incidentForm"><div class="field"><label>Type</label><select name="category">${Object.entries(incidentLabels).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></div>
       <div class="field" style="margin-top:12px"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div>
       <div class="field" style="margin-top:12px"><label>Ce qui s’est passé</label><textarea name="description" minlength="5" maxlength="2000" required></textarea></div>
       <button class="danger" style="margin-top:12px">Envoyer l’incident</button></form><div id="incidentResult"></div>
       ${order.incidents.length ? `<div class="incident-list">${order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentLabels[incident.category] || incident.category)}</strong><p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))}</small></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</article>`).join('')}</div>` : ''}
-    </section>`;
+    </section>`}`;
 
   document.querySelectorAll('.transition').forEach((button) => button.addEventListener('click', async () => {
     const toStatus = button.dataset.status;
@@ -466,7 +488,7 @@ async function renderDetail(id) {
     });
   }
 
-  document.getElementById('incidentForm').addEventListener('submit', async (event) => {
+  document.getElementById('incidentForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const button = form.querySelector('button');

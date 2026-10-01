@@ -1680,3 +1680,14 @@ button.danger-solid:hover, .button.danger-solid:hover { background: var(--red-da
 .um .user-pop-item.danger { border: 0; background: transparent; box-shadow: none; }
 .um .user-pop-item.danger:hover { background: #fff0f0; }
 @media (max-width: 620px) { .cp-trigger .cp-trigger-kbd { display: none; } }
+
+/* Fenêtre « Colis et collecte » */
+.pk-form { display: grid; gap: 12px; }
+.pk-form .field label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.pk-form .field input, .pk-form .field select { width: 100%; }
+.pk-form #pkFields { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fafbfc; }
+.pk-form #pkFields[hidden] { display: none; }
+.pk-check { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 14px; cursor: pointer; }
+.pk-check input { width: 18px; height: 18px; accent-color: var(--brand, #e11d2a); }
+.team-driver-hint { margin: 12px 0 0; font-size: 14px; }
+.team-driver-hint a { color: var(--ink); font-weight: 600; }

@@ -337,7 +337,7 @@ async function renderDetail(id) {
     ${pickupCard(order)}
     <section class="card driver-detail-grid">
       ${order.package_type || order.package_description ? `<div class="detail"><span>Colis</span><strong>${escapeHtml([packageLabels[order.package_type], order.package_description].filter(Boolean).join(' · '))}</strong></div>` : ''}
-      <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
+      ${order.canContact === false ? '' : `<div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>`}
       <div class="detail"><span>Destination</span><strong>${escapeHtml(order.delivery_address || order.neighborhood || '—')}</strong></div>
       <div class="detail"><span>Repère</span><strong>${escapeHtml(order.landmark || '—')}</strong></div>
       <div class="detail"><span>Créneau</span><strong>${escapeHtml(order.requested_time || '—')}</strong></div>
@@ -356,13 +356,13 @@ async function renderDetail(id) {
     ${canVerifyOtp ? `<section class="card driver-section"><h2>Confirmer la remise</h2><p>Demandez au client le code à 6 chiffres reçu pour cette commande.</p><p class="subtitle">Le portail livreur n’affiche et ne génère jamais ce code.</p>${hasActiveOtp ? `<div class="notice success">Un code est actif jusqu’au ${escapeHtml(formatDate(order.active_otp_expires_at))}.</div>` : '<div class="notice warning">Aucun code actif. Demandez à l’exploitation d’en générer un pour le client.</div>'}${paymentBlocksDelivery ? '<div class="notice error">La remise est bloquée tant que l’encaissement ou son écart n’est pas finalisé.</div>' : ''}${missingRequiredEvidence.length ? `<div class="notice error">Preuve obligatoire manquante : ${escapeHtml(missingRequiredEvidence.join(' et '))}.</div>` : ''}<form id="otpForm" class="driver-form"><div class="field"><label>Code donné par le client</label><input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000" required /></div><button class="primary" ${!hasActiveOtp || paymentBlocksDelivery || missingRequiredEvidence.length ? 'disabled' : ''}>Valider la remise au client</button></form><div id="otpResult"></div></section>` : ''}
     ${order.proof_id ? `<section class="card driver-section"><h2>Remise confirmée</h2><div class="notice success">Le code client a été vérifié le ${escapeHtml(formatDate(order.proof_verified_at))}. Cette livraison est terminée.</div></section>` : ''}
     ${!order.isTerminal ? `<section class="card driver-section"><h2>Mettre à jour l’étape</h2><div class="driver-actions">${order.allowedTransitions.map((status) => `<button class="${['Échec', 'Retour'].includes(status) ? 'danger' : 'primary'} transition" data-status="${escapeHtml(status)}">${escapeHtml(transitionLabels[status] || status)}</button>`).join('')}</div><div id="transitionResult"></div></section>` : ''}
-    <section class="card driver-section"><h2>Signaler un incident</h2>
+    ${order.canReportIncident === false ? '' : `<section class="card driver-section"><h2>Signaler un incident</h2>
       <form id="incidentForm"><div class="field"><label>Type</label><select name="category">${Object.entries(incidentLabels).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></div>
       <div class="field" style="margin-top:12px"><label>Gravité</label><select name="severity"><option value="low">Faible</option><option value="medium" selected>Moyenne</option><option value="high">Élevée</option></select></div>
       <div class="field" style="margin-top:12px"><label>Ce qui s’est passé</label><textarea name="description" minlength="5" maxlength="2000" required></textarea></div>
       <button class="danger" style="margin-top:12px">Envoyer l’incident</button></form><div id="incidentResult"></div>
       ${order.incidents.length ? `<div class="incident-list">${order.incidents.map((incident) => `<article class="incident"><div><strong>${escapeHtml(incidentLabels[incident.category] || incident.category)}</strong><p>${escapeHtml(incident.description)}</p><small>${escapeHtml(formatDate(incident.created_at))}</small></div>${badge(incident.status === 'resolved' ? 'Résolu' : 'Ouvert')}</article>`).join('')}</div>` : ''}
-    </section>`;
+    </section>`}`;
 
   document.querySelectorAll('.transition').forEach((button) => button.addEventListener('click', async () => {
     const toStatus = button.dataset.status;
@@ -488,7 +488,7 @@ async function renderDetail(id) {
     });
   }
 
-  document.getElementById('incidentForm').addEventListener('submit', async (event) => {
+  document.getElementById('incidentForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const button = form.querySelector('button');

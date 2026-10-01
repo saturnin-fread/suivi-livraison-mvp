@@ -513,7 +513,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -1028,6 +1028,26 @@ async function initDatabase() {
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS photo_data BYTEA;
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS photo_mime TEXT;
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS photo_updated_at TIMESTAMPTZ;
+      -- Profil livreur complet (kit Livreurs) et permissions dans l'appli.
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS email TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS plate TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS zone TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS team TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS note TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS can_contact BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS can_report_incident BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS driver_code TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS phone_digits TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS drivers_company_code_unique ON drivers(company_id, driver_code) WHERE driver_code IS NOT NULL;
+      UPDATE drivers SET phone_digits = NULLIF(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), '') WHERE phone_digits IS NULL AND phone IS NOT NULL;
+      WITH mx AS (
+        SELECT company_id, COALESCE(MAX(NULLIF(regexp_replace(COALESCE(driver_code, ''), '\\D', '', 'g'), '')::int), 0) AS m FROM drivers GROUP BY company_id
+      ), todo AS (
+        SELECT id, company_id, row_number() OVER (PARTITION BY company_id ORDER BY id) AS rn FROM drivers WHERE driver_code IS NULL
+      )
+      UPDATE drivers d SET driver_code = 'LIV-' || lpad((mx.m + todo.rn)::text, 3, '0')
+      FROM todo JOIN mx ON mx.company_id = todo.company_id WHERE d.id = todo.id;
 
       ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS driver_id BIGINT;
       DO $$
@@ -1465,6 +1485,34 @@ async function initDatabase() {
         completed_at TIMESTAMPTZ
       );
       CREATE INDEX IF NOT EXISTS eta_samples_company_idx ON eta_samples(company_id, completed_at DESC);
+      -- Invitation d'un livreur à l'appli : QR + code de secours, 15 min, usage unique.
+      CREATE TABLE IF NOT EXISTS driver_invitations (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        driver_id BIGINT NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        code_hash TEXT NOT NULL UNIQUE,
+        replacement BOOLEAN NOT NULL DEFAULT FALSE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        verify_code_hash TEXT,
+        verify_sent_at TIMESTAMPTZ,
+        verify_attempts INTEGER NOT NULL DEFAULT 0,
+        used_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS driver_invitations_driver_idx ON driver_invitations(driver_id, created_at DESC);
+      -- Places livreurs utilisées dans le mois (anti-partage d'abonnement) : une
+      -- personne compte une fois dans le mois, même si son profil est supprimé puis recréé.
+      CREATE TABLE IF NOT EXISTS driver_seat_usage (
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        month DATE NOT NULL,
+        seat_key TEXT NOT NULL,
+        driver_id BIGINT,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (company_id, month, seat_key)
+      );
       CREATE TABLE IF NOT EXISTS notification_states (
         user_id BIGINT NOT NULL,
         company_id BIGINT NOT NULL,
@@ -1685,10 +1733,10 @@ async function initDatabase() {
   }
 }
 
-async function createSession(req, res, userId, companyId, scope, { remember = false } = {}) {
+async function createSession(req, res, userId, companyId, scope, { remember = false, durationMs: forcedDuration = null } = {}) {
   const token = randomToken();
   const userAgent = String(req.headers['user-agent'] || '').slice(0, 400) || null;
-  const durationMs = remember ? rememberSessionMs : sessionDurationMs;
+  const durationMs = forcedDuration || (remember ? rememberSessionMs : sessionDurationMs);
   await pool.query(
     `INSERT INTO app_sessions (token_hash, user_id, company_id, scope, expires_at, user_agent)
      VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -1705,7 +1753,7 @@ async function readSession(req, scope) {
     `SELECT s.user_id, s.company_id, s.scope, s.expires_at,
             u.email, u.display_name, u.is_platform_admin, u.disabled,
             c.name AS company_name, c.slug AS company_slug, c.activation_status, c.logo_updated_at AS company_logo_at, c.onboarding_status, m.role, m.driver_id,
-            d.active AS driver_active
+            d.active AS driver_active, d.can_contact AS driver_can_contact, d.can_report_incident AS driver_can_report
      FROM app_sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN companies c ON c.id = s.company_id
@@ -3470,6 +3518,7 @@ app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
               r.service_date ASC NULLS LAST, s.sequence ASC NULLS LAST, o.updated_at DESC, o.id DESC LIMIT 100`,
     [req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
   );
+  if (req.auth.driver_can_contact === false) result.rows.forEach((row) => { row.customer_phone = null; });
   return res.json(result.rows);
 }));
 
@@ -3527,8 +3576,12 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
       [order.id, req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
     ),
   ]);
+  // Sans la permission « contacter le destinataire », le numéro du client ne part pas vers l'appli.
+  if (req.auth.driver_can_contact === false) order.customer_phone = null;
   return res.json({
     ...order,
+    canContact: req.auth.driver_can_contact !== false,
+    canReportIncident: req.auth.driver_can_report !== false,
     allowedTransitions: allowedOrderTransitions(order.status, order).filter((status) => driverTransitionTargets.includes(status)),
     isTerminal: terminalOrderStatuses.includes(order.status),
     incidents: incidents.rows,
@@ -3700,6 +3753,7 @@ async function openDeliveryIncident(req, res, driverScoped = false) {
 }
 
 app.post('/api/driver/orders/:id/incidents', requireDriverApi, asyncRoute(async (req, res) => {
+  if (req.auth.driver_can_report === false) return res.status(403).json({ error: 'Votre entreprise gère les incidents depuis le bureau. Appelez votre responsable.' });
   return openDeliveryIncident(req, res, true);
 }));
 
@@ -3821,7 +3875,9 @@ app.get('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'man
     `SELECT c.id, c.name, c.slug, c.admin_email, c.timezone, c.created_at, c.logo_updated_at,
             (SELECT u.display_name FROM company_memberships m JOIN users u ON u.id = m.user_id
              WHERE m.company_id = c.id AND m.role = 'owner' ORDER BY m.id LIMIT 1) AS owner_name,
-            (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers
+            (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers,
+            (SELECT COUNT(*)::int FROM driver_seat_usage u WHERE u.company_id = c.id
+               AND u.month = date_trunc('month', NOW() AT TIME ZONE 'Africa/Porto-Novo')::date) AS seats_month
      FROM companies c WHERE c.id = $1`,
     [req.auth.company_id]
   );
@@ -3939,15 +3995,21 @@ function planCapacity(code) {
 app.get('/api/app/billing/plans', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT plan_code, billing_cycle,
-            (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers
+            (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers,
+            (SELECT COUNT(*)::int FROM driver_seat_usage u WHERE u.company_id = c.id
+               AND u.month = date_trunc('month', NOW() AT TIME ZONE 'Africa/Porto-Novo')::date) AS seats_month
      FROM companies c WHERE c.id = $1`,
     [req.auth.company_id]
   );
   const row = result.rows[0] || {};
   const activeDrivers = Number(row.active_drivers || 0);
-  const recommended = recommendPlanCode(activeDrivers);
+  // Places : personnes différentes ayant travaillé dans le mois (supprimer puis
+  // recréer des profils ne libère pas de place avant le mois suivant).
+  const seatsThisMonth = Math.max(activeDrivers, Number(row.seats_month || 0));
+  const recommended = recommendPlanCode(seatsThisMonth);
   return res.json({
     activeDrivers,
+    seatsThisMonth,
     recommended,
     currentPlan: row.plan_code || recommended,
     billingCycle: row.billing_cycle || 'monthly',
@@ -3988,12 +4050,21 @@ app.post('/api/app/billing/plan', requireCompanyApi, requireCompanyRoles('owner'
     return res.status(400).json({ error: 'Périodicité invalide.' });
   }
   const drivers = await pool.query(
-    'SELECT COUNT(*)::int AS n FROM drivers WHERE company_id = $1 AND active = TRUE AND archived_at IS NULL',
+    `SELECT (SELECT COUNT(*)::int FROM drivers WHERE company_id = $1 AND active = TRUE AND archived_at IS NULL) AS n,
+            (SELECT COUNT(*)::int FROM driver_seat_usage WHERE company_id = $1
+               AND month = date_trunc('month', NOW() AT TIME ZONE 'Africa/Porto-Novo')::date) AS seats`,
     [req.auth.company_id]
   );
   const activeDrivers = drivers.rows[0].n;
-  if (activeDrivers > planCapacity(planCode)) {
-    return res.status(409).json({ error: `Cette formule accepte moins de livreurs que vos ${activeDrivers} livreurs actifs. Archivez des livreurs ou choisissez une formule supérieure.` });
+  // Les places du mois comptent les personnes différentes qui ont livré, même
+  // retirées depuis : retirer des profils ne permet pas de passer sous la limite.
+  const seats = Math.max(activeDrivers, drivers.rows[0].seats);
+  if (seats > planCapacity(planCode)) {
+    return res.status(409).json({
+      error: activeDrivers >= seats
+        ? `Cette formule accepte moins de livreurs que vos ${activeDrivers} livreurs actifs. Retirez des livreurs ou choisissez une formule supérieure.`
+        : `Ce mois-ci, ${seats} personnes différentes ont travaillé pour vous : cette formule n’en couvre pas autant. Vous pourrez la choisir à partir du mois prochain.`,
+    });
   }
   await pool.query('UPDATE companies SET plan_code = $1, billing_cycle = $2, updated_at = NOW() WHERE id = $3', [planCode, billingCycle, req.auth.company_id]);
   await writeAudit(req.auth, 'company', req.auth.company_id, 'plan_changed', { planCode, billingCycle });
@@ -5835,6 +5906,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
     if (existing.rows[0]) {
       const trackingLink = trackingLinkBusinessView(existing.rows[0]);
       await client.query('COMMIT');
+    markDriverSeat(req.auth.company_id, driver.id);
       return res.json({ orderId: existing.rows[0].id, path: trackingLink.path, trackingLink, alreadyConverted: true });
     }
     if (!convertibleRequestStatuses.includes(request.status)) {
@@ -5943,7 +6015,14 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
 app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
   const localDrivers = await pool.query(
     `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
-            d.active, d.traccar_unique_id,
+            d.active, d.traccar_unique_id, d.driver_code, d.email, d.plate, d.zone, d.team, d.note,
+            d.can_contact, d.can_report_incident, d.suspended_at,
+            (SELECT s.user_agent FROM app_sessions s JOIN company_memberships m2 ON m2.user_id = s.user_id AND m2.company_id = d.company_id
+             WHERE m2.driver_id = d.id AND s.scope = 'company' AND s.expires_at > NOW() ORDER BY s.created_at DESC LIMIT 1) AS device_agent,
+            (SELECT MAX(s.created_at) FROM app_sessions s JOIN company_memberships m2 ON m2.user_id = s.user_id AND m2.company_id = d.company_id
+             WHERE m2.driver_id = d.id AND s.scope = 'company' AND s.expires_at > NOW()) AS device_since,
+            (SELECT i.expires_at FROM driver_invitations i WHERE i.driver_id = d.id AND i.company_id = d.company_id
+             AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW() ORDER BY i.created_at DESC LIMIT 1) AS driver_invite_expires,
             (d.photo_updated_at IS NOT NULL) AS has_photo, d.photo_updated_at,
             COUNT(o.id) FILTER (WHERE o.status NOT IN ('Livrée', 'Annulée', 'Retournée'))::int AS active_orders,
             EXISTS (SELECT 1 FROM company_memberships m WHERE m.company_id = d.company_id AND m.driver_id = d.id) AS has_account,
@@ -5971,7 +6050,14 @@ app.get('/api/app/drivers', requireCompanyApi, asyncRoute(async (req, res) => {
       capacity: driver.capacity, availabilityStatus: driver.availability_status, active: driver.active,
       uniqueId: driver.traccar_unique_id, trackerStatus: device?.status || 'unknown', lastUpdate,
       category: device?.category || null, activeOrders: driver.active_orders, operationalState,
-      hasAccount: Boolean(driver.has_account), invitePending: Boolean(driver.invite_pending),
+      hasAccount: Boolean(driver.has_account), invitePending: Boolean(driver.invite_pending || driver.driver_invite_expires),
+      code: driver.driver_code, email: driver.email, plate: driver.plate, zone: driver.zone, team: driver.team, note: driver.note,
+      canContact: driver.can_contact !== false, canReportIncident: driver.can_report_incident !== false,
+      suspended: Boolean(driver.suspended_at),
+      // Accès à l'appli : distinct de la connexion réseau (un accès actif peut être hors ligne).
+      accessState: driver.suspended_at ? 'suspended' : driver.driver_invite_expires ? 'invited' : (driver.has_account || driver.device_agent) ? 'active' : 'none',
+      device: driver.device_agent ? { label: describeDevice(driver.device_agent), since: driver.device_since } : null,
+      inviteExpiresAt: driver.driver_invite_expires || null,
       hasPhoto: Boolean(driver.has_photo),
       photoVersion: driver.photo_updated_at ? new Date(driver.photo_updated_at).getTime() : null,
     };
@@ -6336,63 +6422,398 @@ app.get('/api/app/drivers/:id/activity', requireCompanyApi, asyncRoute(async (re
 // Création d'un livreur depuis le SaaS (owner/manager). Génère un identifiant GPS
 // aléatoire non devinable par défaut ; un identifiant Traccar existant peut être
 // fourni pour relier un appareil déjà enrôlé.
-app.post('/api/app/drivers', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
-  const name = String(req.body.name || '').trim();
-  const phone = String(req.body.phone || '').trim();
-  const vehicleType = String(req.body.vehicleType || 'Moto').trim();
-  const capacity = Number(req.body.capacity);
-  const trackerId = String(req.body.trackerId || '').trim();
-  if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Indiquez le nom du livreur.' });
-  if (phone.length > 40) return res.status(400).json({ error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' });
-  if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Choisissez un type de véhicule dans la liste.' });
-  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'La capacité doit être comprise entre 1 et 50 colis.' });
-  if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'L’identifiant du traceur doit contenir 4 à 64 lettres ou chiffres.' });
-  const uniqueId = trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`;
+// ---- Profils livreurs ------------------------------------------------------
+// Le numéro identifie la personne : unique dans l'entreprise, il sert aussi à
+// vérifier l'identité au moment de rejoindre l'appli.
+function driverProfileFields(body, { partial = false } = {}) {
+  const out = {};
+  const text = (value, max) => { const v = String(value ?? '').trim(); return v ? v.slice(0, max) : null; };
+  if (!partial || body.name !== undefined) {
+    const name = String(body.name || '').trim();
+    if (name.length < 2 || name.length > 80) return { error: 'Indiquez le nom complet du livreur.', field: 'name' };
+    out.name = name;
+  }
+  if (!partial || body.phone !== undefined) {
+    const raw = String(body.phone || '').trim();
+    if (!raw) { if (!partial) return { error: 'Indiquez le téléphone du livreur : il servira à vérifier son identité.', field: 'phone' }; out.phone = null; out.phone_digits = null; }
+    else {
+      const normalized = normalizeCustomerPhone({ customerPhone: raw, customerPhoneCountry: body.phoneCountry || 'BJ' });
+      if (!normalized) return { error: 'Ce numéro semble incorrect. Au Bénin : 10 chiffres commençant par 01.', field: 'phone' };
+      out.phone = normalized;
+      out.phone_digits = normalized.replace(/\D/g, '');
+    }
+  }
+  if (!partial || body.vehicleType !== undefined) {
+    const vehicleType = String(body.vehicleType || 'Moto').trim();
+    if (!driverVehicleTypes.includes(vehicleType)) return { error: 'Choisissez un type de véhicule dans la liste.', field: 'vehicleType' };
+    out.vehicle_type = vehicleType;
+  }
+  if (!partial || body.capacity !== undefined) {
+    const capacity = Number(body.capacity ?? 10);
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 500) return { error: 'La capacité doit être comprise entre 1 et 500 colis.', field: 'capacity' };
+    out.capacity = capacity;
+  }
+  if (body.email !== undefined) {
+    const email = text(body.email, 160);
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Cette adresse e-mail semble incorrecte.', field: 'email' };
+    out.email = email ? email.toLowerCase() : null;
+  }
+  if (body.plate !== undefined) out.plate = text(body.plate, 20);
+  if (body.zone !== undefined) out.zone = text(body.zone, 80);
+  if (body.team !== undefined) out.team = text(body.team, 80);
+  if (body.note !== undefined) out.note = text(body.note, 500);
+  if (body.canContact !== undefined) out.can_contact = body.canContact !== false;
+  if (body.canReportIncident !== undefined) out.can_report_incident = body.canReportIncident !== false;
+  if (body.trackerId !== undefined) {
+    const trackerId = String(body.trackerId || '').trim();
+    if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return { error: 'L’identifiant GPS doit contenir 4 à 64 lettres ou chiffres.', field: 'trackerId' };
+    out.traccar_unique_id = trackerId || null;
+  }
+  return { fields: out };
+}
+async function nextDriverCode(queryable, companyId) {
+  const row = (await queryable.query(
+    `SELECT COALESCE(MAX(NULLIF(regexp_replace(COALESCE(driver_code, ''), '\\D', '', 'g'), '')::int), 0) + 1 AS n FROM drivers WHERE company_id = $1`,
+    [companyId]
+  )).rows[0];
+  return `LIV-${String(row.n).padStart(3, '0')}`;
+}
+async function duplicateDriverPhone(queryable, companyId, digits, exceptId = null) {
+  if (!digits) return null;
+  return (await queryable.query(
+    `SELECT id, name FROM drivers WHERE company_id = $1 AND phone_digits = $2 AND archived_at IS NULL AND ($3::bigint IS NULL OR id <> $3) LIMIT 1`,
+    [companyId, digits, exceptId]
+  )).rows[0] || null;
+}
+// Une place = une personne (numéro) dans le mois, quels que soient les profils créés.
+async function markDriverSeat(companyId, driverId, phoneDigits = undefined, queryable = pool) {
   try {
-    const result = await pool.query(
-      `INSERT INTO drivers (company_id, name, phone, vehicle_type, capacity, traccar_unique_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, name, phone, vehicle_type, capacity, traccar_unique_id, active, availability_status`,
-      [req.auth.company_id, name, phone || null, vehicleType, capacity, uniqueId]
+    let digits = phoneDigits;
+    if (digits === undefined) digits = (await queryable.query('SELECT phone_digits FROM drivers WHERE id = $1 AND company_id = $2', [driverId, companyId])).rows[0]?.phone_digits || null;
+    const seatKey = digits ? `tel:${digest(`seat:${digits}`).slice(0, 32)}` : `profil:${driverId}`;
+    await queryable.query(
+      `INSERT INTO driver_seat_usage (company_id, month, seat_key, driver_id)
+       VALUES ($1, date_trunc('month', NOW() AT TIME ZONE 'Africa/Porto-Novo')::date, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [companyId, seatKey, driverId]
     );
-    await writeAudit(req.auth, 'driver', result.rows[0].id, 'created', { name });
-    return res.status(201).json(result.rows[0]);
   } catch (error) {
-    if (error.code === '23505') return res.status(409).json({ error: 'Cet identifiant GPS est déjà utilisé dans votre entreprise.' });
-    console.error('Driver create error:', error.message);
-    return res.status(500).json({ error: 'Impossible de créer ce livreur.' });
+    console.error('Seat usage failed:', error.message);
+  }
+}
+async function revokeDriverAccess(queryable, companyId, driverId, { sessions = true, invitations = true, exceptSessionHash = null } = {}) {
+  if (sessions) {
+    await queryable.query(
+      `DELETE FROM app_sessions s USING company_memberships m
+       WHERE m.user_id = s.user_id AND m.company_id = $1 AND m.driver_id = $2 AND s.company_id = $1
+         AND ($3::text IS NULL OR s.token_hash <> $3)`,
+      [companyId, driverId, exceptSessionHash]
+    );
+  }
+  if (invitations) {
+    await queryable.query(
+      'UPDATE driver_invitations SET revoked_at = NOW() WHERE company_id = $1 AND driver_id = $2 AND used_at IS NULL AND revoked_at IS NULL',
+      [companyId, driverId]
+    );
+  }
+}
+
+app.post('/api/app/drivers', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const parsed = driverProfileFields(req.body || {});
+  if (parsed.error) return res.status(400).json({ error: parsed.error, field: parsed.field });
+  const f = parsed.fields;
+  const duplicate = await duplicateDriverPhone(pool, req.auth.company_id, f.phone_digits);
+  if (duplicate) return res.status(409).json({ error: `Ce numéro appartient déjà au profil de ${duplicate.name}. Ouvrez ce profil plutôt que d’en créer un second.`, field: 'phone', driverId: duplicate.id });
+  const uniqueId = f.traccar_unique_id || `trx-${crypto.randomBytes(6).toString('hex')}`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const code = await nextDriverCode(pool, req.auth.company_id);
+      const result = await pool.query(
+        `INSERT INTO drivers (company_id, name, phone, phone_digits, vehicle_type, capacity, traccar_unique_id, driver_code,
+           email, plate, zone, team, note, can_contact, can_report_incident)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, TRUE), COALESCE($15, TRUE))
+         RETURNING id, name, phone, vehicle_type, capacity, traccar_unique_id, active, availability_status, driver_code`,
+        [req.auth.company_id, f.name, f.phone, f.phone_digits, f.vehicle_type, f.capacity, uniqueId, code,
+          f.email ?? null, f.plate ?? null, f.zone ?? null, f.team ?? null, f.note ?? null, f.can_contact ?? null, f.can_report_incident ?? null]
+      );
+      await writeAudit(req.auth, 'driver', result.rows[0].id, 'created', { name: f.name });
+      await markDriverSeat(req.auth.company_id, result.rows[0].id, f.phone_digits);
+      return res.status(201).json({ ...result.rows[0], code: result.rows[0].driver_code });
+    } catch (error) {
+      if (error.code === '23505' && /driver_code/.test(error.constraint || '')) continue;
+      if (error.code === '23505') return res.status(409).json({ error: 'Cet identifiant GPS est déjà utilisé dans votre entreprise.', field: 'trackerId' });
+      console.error('Driver create error:', error.message);
+      return res.status(500).json({ error: 'Impossible de créer ce livreur.' });
+    }
+  }
+  return res.status(500).json({ error: 'Impossible de créer ce livreur. Réessayez.' });
+}));
+
+// Modification d'un livreur : profil, organisation, permissions. Un numéro
+// modifié coupe l'accès à l'appli : la personne devra se reconnecter.
+app.patch('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const parsed = driverProfileFields(req.body || {}, { partial: true });
+  if (parsed.error) return res.status(400).json({ error: parsed.error, field: parsed.field });
+  const f = parsed.fields;
+  if (req.body.active !== undefined) f.active = Boolean(req.body.active);
+  if (f.traccar_unique_id === null) f.traccar_unique_id = `trx-${crypto.randomBytes(6).toString('hex')}`;
+  if (!Object.keys(f).length) return res.status(400).json({ error: 'Aucune modification fournie.' });
+  const current = (await pool.query('SELECT id, phone_digits FROM drivers WHERE id = $1 AND company_id = $2 AND archived_at IS NULL', [req.params.id, req.auth.company_id])).rows[0];
+  if (!current) return res.status(404).json({ error: 'Livreur introuvable.' });
+  if ('phone_digits' in f) {
+    const duplicate = await duplicateDriverPhone(pool, req.auth.company_id, f.phone_digits, current.id);
+    if (duplicate) return res.status(409).json({ error: `Ce numéro appartient déjà au profil de ${duplicate.name}.`, field: 'phone' });
+  }
+  const phoneChanged = 'phone_digits' in f && (f.phone_digits || null) !== (current.phone_digits || null);
+  const columns = Object.keys(f);
+  const values = columns.map((c) => f[c]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE drivers SET ${columns.map((c, i) => `${c} = $${i + 3}`).join(', ')}, updated_at = NOW()
+       WHERE id = $1 AND company_id = $2
+       RETURNING id, name, phone, vehicle_type, capacity, traccar_unique_id, active, availability_status, driver_code`,
+      [current.id, req.auth.company_id, ...values]
+    );
+    if (phoneChanged) await revokeDriverAccess(client, req.auth.company_id, current.id);
+    await client.query('COMMIT');
+    await writeAudit(req.auth, 'driver', current.id, 'updated', { phoneChanged });
+    if (phoneChanged && f.phone_digits) await markDriverSeat(req.auth.company_id, current.id, f.phone_digits);
+    return res.json({ ...result.rows[0], code: result.rows[0].driver_code, accessReset: phoneChanged });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.code === '23505') return res.status(409).json({ error: 'Cet identifiant GPS est déjà utilisé.', field: 'trackerId' });
+    console.error('Driver update error:', error.message);
+    return res.status(500).json({ error: 'Impossible de mettre à jour ce livreur.' });
+  } finally {
+    client.release();
   }
 }));
 
-// Modification d'un livreur (owner/manager) : coordonnées, capacité, identifiant
-// GPS, activation.
-app.patch('/api/app/drivers/:id', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
-  const fields = [];
-  const values = [];
-  let index = 1;
-  if (req.body.name !== undefined) { const name = String(req.body.name).trim(); if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Indiquez un nom.' }); fields.push(`name = $${index++}`); values.push(name); }
-  if (req.body.phone !== undefined) { const phone = String(req.body.phone).trim(); if (phone.length > 40) return res.status(400).json({ error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' }); fields.push(`phone = $${index++}`); values.push(phone || null); }
-  if (req.body.vehicleType !== undefined) { const vehicleType = String(req.body.vehicleType).trim(); if (!driverVehicleTypes.includes(vehicleType)) return res.status(400).json({ error: 'Choisissez un type de véhicule dans la liste.' }); fields.push(`vehicle_type = $${index++}`); values.push(vehicleType); }
-  if (req.body.capacity !== undefined) { const capacity = Number(req.body.capacity); if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) return res.status(400).json({ error: 'La capacité doit être comprise entre 1 et 50 colis.' }); fields.push(`capacity = $${index++}`); values.push(capacity); }
-  if (req.body.trackerId !== undefined) { const trackerId = String(req.body.trackerId).trim(); if (trackerId && !/^[A-Za-z0-9_-]{4,64}$/.test(trackerId)) return res.status(400).json({ error: 'L’identifiant du traceur doit contenir 4 à 64 lettres ou chiffres.' }); fields.push(`traccar_unique_id = $${index++}`); values.push(trackerId || `trx-${crypto.randomBytes(6).toString('hex')}`); }
-  if (req.body.active !== undefined) { fields.push(`active = $${index++}`); values.push(Boolean(req.body.active)); }
-  if (!fields.length) return res.status(400).json({ error: 'Aucune modification fournie.' });
-  values.push(req.params.id, req.auth.company_id);
-  try {
-    const result = await pool.query(
-      `UPDATE drivers SET ${fields.join(', ')}, updated_at = NOW()
-       WHERE id = $${index++} AND company_id = $${index}
-       RETURNING id, name, phone, vehicle_type, capacity, traccar_unique_id, active, availability_status`,
-      values
-    );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
-    await writeAudit(req.auth, 'driver', result.rows[0].id, 'updated', {});
-    return res.json(result.rows[0]);
-  } catch (error) {
-    if (error.code === '23505') return res.status(409).json({ error: 'Cet identifiant GPS est déjà utilisé.' });
-    console.error('Driver update error:', error.message);
-    return res.status(500).json({ error: 'Impossible de mettre à jour ce livreur.' });
+// Suspendre : plus de missions ni d'accès à l'appli ; le profil et l'historique restent.
+app.post('/api/app/drivers/:id/suspend', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const driver = (await pool.query(
+    `SELECT d.id, d.name, (SELECT COUNT(*)::int FROM orders o WHERE o.driver_id = d.id AND o.company_id = d.company_id AND NOT (o.status = ANY($3::text[]))) AS open_orders
+     FROM drivers d WHERE d.id = $1 AND d.company_id = $2 AND d.archived_at IS NULL`,
+    [req.params.id, req.auth.company_id, terminalOrderStatuses]
+  )).rows[0];
+  if (!driver) return res.status(404).json({ error: 'Livreur introuvable.' });
+  if (driver.open_orders > 0) {
+    return res.status(409).json({ error: `${driver.name.split(/\s+/)[0]} a encore ${driver.open_orders} colis. Confiez-les à un autre livreur avant de suspendre son accès.`, openOrders: driver.open_orders });
   }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE drivers SET active = FALSE, suspended_at = NOW(), availability_status = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2', [driver.id, req.auth.company_id, 'off_duty']);
+    await revokeDriverAccess(client, req.auth.company_id, driver.id);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  await writeAudit(req.auth, 'driver', driver.id, 'suspended', {});
+  return res.json({ id: driver.id, suspended: true });
+}));
+
+app.post('/api/app/drivers/:id/reactivate', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE drivers SET active = TRUE, suspended_at = NULL, availability_status = 'available', updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND archived_at IS NULL RETURNING id, phone_digits`,
+    [req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Livreur introuvable.' });
+  await writeAudit(req.auth, 'driver', result.rows[0].id, 'reactivated', {});
+  await markDriverSeat(req.auth.company_id, result.rows[0].id, result.rows[0].phone_digits);
+  return res.json({ id: result.rows[0].id, suspended: false });
+}));
+
+// ---- Invitation à l'appli (QR) -------------------------------------------------
+const DRIVER_INVITE_MS = 15 * 60 * 1000;
+const DRIVER_SESSION_MS = 90 * 24 * 60 * 60 * 1000;
+const inviteCodeAlphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function newInviteCode() {
+  const bytes = crypto.randomBytes(8);
+  return `TX-${Array.from(bytes).map((b) => inviteCodeAlphabet[b % inviteCodeAlphabet.length]).join('')}`;
+}
+app.post('/api/app/drivers/:id/invitation', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const driver = (await pool.query('SELECT id, name, phone, suspended_at FROM drivers WHERE id = $1 AND company_id = $2 AND archived_at IS NULL', [req.params.id, req.auth.company_id])).rows[0];
+  if (!driver) return res.status(404).json({ error: 'Livreur introuvable.' });
+  if (driver.suspended_at) return res.status(409).json({ error: 'Réactivez d’abord ce profil pour l’inviter.' });
+  if (!driver.phone) return res.status(400).json({ error: 'Ajoutez d’abord le téléphone du livreur : il sert à vérifier son identité.', field: 'phone' });
+  const token = randomToken(24);
+  const code = newInviteCode();
+  const expiresAt = new Date(Date.now() + DRIVER_INVITE_MS);
+  const replacement = req.body?.replacement === true;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Une seule invitation valable à la fois : la nouvelle remplace QR, code et lien précédents.
+    await revokeDriverAccess(client, req.auth.company_id, driver.id, { sessions: false, invitations: true });
+    await client.query(
+      `INSERT INTO driver_invitations (company_id, driver_id, token_hash, code_hash, replacement, expires_at, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [req.auth.company_id, driver.id, digest(token), digest(code), replacement, expiresAt, req.auth.user_id]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  await writeAudit(req.auth, 'driver', driver.id, 'invitation_created', { replacement });
+  return res.status(201).json({
+    url: `${publicBaseUrl(req)}/rejoindre/${token}`,
+    path: `/rejoindre/${token}`,
+    code,
+    expiresAt,
+    replacement,
+    verification: whatsappAvailableFor(driver.phone) ? 'whatsapp' : 'in_person',
+  });
+}));
+app.delete('/api/app/drivers/:id/invitation', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  await revokeDriverAccess(pool, req.auth.company_id, req.params.id, { sessions: false, invitations: true });
+  await writeAudit(req.auth, 'driver', req.params.id, 'invitation_revoked', {});
+  return res.json({ revoked: true });
+}));
+
+// ---- Rejoindre l'appli livreur (page ouverte depuis le QR) --------------------
+const driverJoinRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({ limiter: trackingLimiter('driver_join_ip', { capacity: 40, refillTokens: 40, refillIntervalMs: 600_000, maxEntries: 10_000 }) }),
+  ],
+});
+async function findDriverInvitation(ref, queryable = pool, { lock = false } = {}) {
+  const value = String(ref || '').trim();
+  if (!value || value.length > 128) return null;
+  const isCode = /^TX-[A-Z0-9]{8}$/i.test(value);
+  if (!isCode && !/^[A-Za-z0-9_-]{24,128}$/.test(value)) return null;
+  const result = await queryable.query(
+    `SELECT i.*, d.name AS driver_name, d.phone AS driver_phone, d.zone, d.team, d.suspended_at, d.archived_at,
+            c.name AS company_name, c.logo_updated_at AS company_logo_at
+     FROM driver_invitations i
+     JOIN drivers d ON d.id = i.driver_id AND d.company_id = i.company_id
+     JOIN companies c ON c.id = i.company_id
+     WHERE ${isCode ? 'i.code_hash' : 'i.token_hash'} = $1 ${lock ? 'FOR UPDATE OF i' : ''}`,
+    [digest(isCode ? value.toUpperCase() : value)]
+  );
+  return result.rows[0] || null;
+}
+function driverInvitationState(inv) {
+  if (!inv) return 'invalid';
+  if (inv.used_at) return 'used';
+  if (inv.revoked_at) return 'revoked';
+  if (new Date(inv.expires_at) <= new Date()) return 'expired';
+  if (inv.suspended_at || inv.archived_at) return 'unavailable';
+  return 'ready';
+}
+const joinMessages = {
+  invalid: 'Ce lien ou ce code n’existe pas. Vérifiez-le, ou demandez un nouveau QR code à votre responsable.',
+  used: 'Cette invitation a déjà été utilisée. Si c’est votre téléphone, ouvrez directement vos livraisons. Sinon, demandez un nouveau QR code.',
+  revoked: 'Cette invitation a été remplacée ou annulée. Demandez le nouveau QR code à votre responsable.',
+  expired: 'Cette invitation a expiré : elle n’est valable que 15 minutes. Demandez un nouveau QR code à votre responsable.',
+  unavailable: 'Ce profil n’est plus actif dans l’entreprise. Rapprochez-vous de votre responsable.',
+};
+
+app.get(['/rejoindre', '/rejoindre/:ref'], (req, res) => sendShell(res, 'join.html'));
+
+app.get('/api/public/driver-invitations/:ref', driverJoinRateLimit, asyncRoute(async (req, res) => {
+  const inv = await findDriverInvitation(req.params.ref);
+  const state = driverInvitationState(inv);
+  if (state !== 'ready') return res.status(state === 'invalid' ? 404 : 410).json({ state, error: joinMessages[state] });
+  return res.json({
+    state,
+    company: { name: inv.company_name, logoUrl: companyLogoUrl(inv.company_id, inv.company_logo_at) },
+    driver: { firstName: String(inv.driver_name || '').split(/\s+/)[0], name: inv.driver_name, team: inv.team, zone: inv.zone },
+    replacement: inv.replacement,
+    phoneMasked: maskPhone(inv.driver_phone),
+    verification: whatsappAvailableFor(inv.driver_phone) ? 'whatsapp' : 'in_person',
+    expiresAt: inv.expires_at,
+  });
+}));
+
+app.post('/api/public/driver-invitations/:ref/send-code', driverJoinRateLimit, asyncRoute(async (req, res) => {
+  const inv = await findDriverInvitation(req.params.ref);
+  const state = driverInvitationState(inv);
+  if (state !== 'ready') return res.status(410).json({ state, error: joinMessages[state] });
+  if (!whatsappAvailableFor(inv.driver_phone)) return res.json({ sent: false, verification: 'in_person' });
+  if (inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < 45_000) {
+    return res.status(429).json({ error: 'Un code vient de partir. Patientez quelques secondes avant d’en demander un autre.' });
+  }
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  await pool.query('UPDATE driver_invitations SET verify_code_hash = $2, verify_sent_at = NOW() WHERE id = $1', [inv.id, digest(`join:${inv.id}:${code}`)]);
+  try {
+    await whatsapp.sendText(inv.driver_phone, `*${code}* est votre code pour rejoindre ${inv.company_name} sur TRAXO.\n\nIl expire dans 10 minutes. Ne le communiquez à personne.`);
+  } catch (error) {
+    console.error('Driver join code failed:', error.code || error.message);
+    return res.status(502).json({ error: 'Le code n’a pas pu partir sur WhatsApp. Réessayez dans un instant ou demandez de l’aide à votre responsable.' });
+  }
+  return res.json({ sent: true, phoneMasked: maskPhone(inv.driver_phone) });
+}));
+
+app.post('/api/public/driver-invitations/:ref/accept', driverJoinRateLimit, asyncRoute(async (req, res) => {
+  const client = await pool.connect();
+  let result;
+  try {
+    await client.query('BEGIN');
+    const inv = await findDriverInvitation(req.params.ref, client, { lock: true });
+    const state = driverInvitationState(inv);
+    if (state !== 'ready') { await client.query('ROLLBACK'); return res.status(410).json({ state, error: joinMessages[state] }); }
+    // Vérification du numéro quand le canal WhatsApp est relié ; sinon, le QR
+    // montré en personne par le responsable fait foi (usage unique, 15 min).
+    if (whatsappAvailableFor(inv.driver_phone)) {
+      const code = String(req.body?.code || '').replace(/\D/g, '');
+      const fresh = inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < 10 * 60 * 1000;
+      const ok = fresh && inv.verify_code_hash && code.length === 6 && crypto.timingSafeEqual(Buffer.from(digest(`join:${inv.id}:${code}`)), Buffer.from(inv.verify_code_hash));
+      if (!ok) {
+        const attempts = inv.verify_attempts + 1;
+        await client.query(`UPDATE driver_invitations SET verify_attempts = $2${attempts >= 5 ? ', revoked_at = NOW()' : ''} WHERE id = $1`, [inv.id, attempts]);
+        await client.query('COMMIT');
+        if (attempts >= 5) return res.status(423).json({ state: 'revoked', error: 'Trop d’essais : cette invitation est annulée. Demandez un nouveau QR code à votre responsable.' });
+        return res.status(400).json({ error: !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : 'Ce code ne correspond pas. Vérifiez le message reçu sur WhatsApp.', attemptsLeft: 5 - attempts });
+      }
+    }
+    let userId = (await client.query(
+      `SELECT user_id FROM company_memberships WHERE company_id = $1 AND driver_id = $2 AND role = 'driver' ORDER BY id LIMIT 1`,
+      [inv.company_id, inv.driver_id]
+    )).rows[0]?.user_id;
+    if (!userId) {
+      // Compte sans e-mail réel : le livreur se connecte avec son téléphone associé, pas par mot de passe.
+      const salt = crypto.randomBytes(16).toString('hex');
+      const email = `livreur-${inv.company_id}-${inv.driver_id}-${crypto.randomBytes(4).toString('hex')}@livreurs.traxo.invalid`;
+      userId = (await client.query(
+        `INSERT INTO users (email, display_name, password_salt, password_hash) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [email, inv.driver_name, salt, hashPassword(crypto.randomBytes(32).toString('hex'), salt)]
+      )).rows[0].id;
+      await client.query(
+        `INSERT INTO company_memberships (company_id, user_id, role, driver_id) VALUES ($1, $2, 'driver', $3)`,
+        [inv.company_id, userId, inv.driver_id]
+      );
+    }
+    // Un seul téléphone actif par livreur : l'ancien est déconnecté maintenant.
+    await revokeDriverAccess(client, inv.company_id, inv.driver_id, { sessions: true, invitations: false });
+    await client.query('UPDATE driver_invitations SET used_at = NOW() WHERE id = $1', [inv.id]);
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'driver', $3, 'app_joined', jsonb_build_object('replacement', $4::boolean))`,
+      [inv.company_id, userId, inv.driver_id, inv.replacement]
+    );
+    await client.query('COMMIT');
+    result = { userId, companyId: inv.company_id, driverId: inv.driver_id, companyName: inv.company_name, firstName: String(inv.driver_name || '').split(/\s+/)[0] };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Driver join error:', error.message);
+    return res.status(500).json({ error: 'Impossible de terminer l’association. Réessayez.' });
+  } finally {
+    client.release();
+  }
+  await createSession(req, res, result.userId, result.companyId, 'company', { durationMs: DRIVER_SESSION_MS });
+  await markDriverSeat(result.companyId, result.driverId);
+  return res.status(201).json({ joined: true, redirect: '/driver', companyName: result.companyName, firstName: result.firstName });
 }));
 
 // Suppression d'un livreur (owner/manager) : archive douce pour préserver
@@ -8814,6 +9235,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
       [req.auth.company_id, req.auth.user_id, order.rows[0].id]
     );
     await client.query('COMMIT');
+    markDriverSeat(req.auth.company_id, driver.rows[0].id);
     committed = true;
     return res.status(201).json({
       orderId: order.rows[0].id,

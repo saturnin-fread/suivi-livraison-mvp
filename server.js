@@ -5906,7 +5906,6 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
     if (existing.rows[0]) {
       const trackingLink = trackingLinkBusinessView(existing.rows[0]);
       await client.query('COMMIT');
-    markDriverSeat(req.auth.company_id, driver.id);
       return res.json({ orderId: existing.rows[0].id, path: trackingLink.path, trackingLink, alreadyConverted: true });
     }
     if (!convertibleRequestStatuses.includes(request.status)) {
@@ -5996,6 +5995,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       [req.auth.company_id, req.auth.user_id, request.id, order.rows[0].id, driver.id]
     );
     await client.query('COMMIT');
+    markDriverSeat(req.auth.company_id, driver.id);
     return res.status(201).json({
       orderId: order.rows[0].id,
       path: `/suivi/${trackingToken}`,

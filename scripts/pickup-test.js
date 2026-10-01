@@ -81,7 +81,31 @@ async function call(method, url, { cookie, body } = {}) {
     o = (await call('GET', `/api/app/orders/${r.data.orderId}`, { cookie: staff })).data;
     assert.deepStrictEqual([o.package_type, o.pickup_name, o.pickup_address], ['repas', 'Restaurant du coin', 'Haie Vive']);
 
-    console.log('Collecte : validation, statut, modification, carnet de lieux, recopie depuis une demande OK');
+    // Formulaire rempli par le client lui-même : colis et collecte
+    const link = await call('POST', '/api/app/request-links', { cookie: staff });
+    assert.strictEqual(link.status, 201, JSON.stringify(link.data));
+    const tok = link.data.token;
+    const clientForm = { customerName: `Rissi ${marker}`, customerPhone: '01 97 22 33 44', customerPhoneCountry: 'BJ', neighborhood: 'Akpakpa', locationLat: 6.37, locationLng: 2.45, locationAccuracy: 10 };
+    r = await call('POST', `/api/public/requests/${tok}`, { body: { ...clientForm, packageType: 'vetements', pickupEnabled: 'true' } });
+    assert.strictEqual(r.status, 400, 'collecte sans lieu refusée');
+    assert.strictEqual(r.data.field, 'pickupAddress');
+    const sent = await fetch(`${process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000'}/api/public/requests/${tok}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...clientForm, packageType: 'vetements', packageDescription: '3 pagnes', pickupEnabled: 'true', pickupName: 'Tante Rose', pickupAddress: 'Dantokpa, porte 3', pickupPhone: '01 61 22 33 44', pickupReady: 'dès 10 h' }) });
+    assert.strictEqual(sent.status, 200, await sent.text());
+    const device = (sent.headers.get('set-cookie') || '').split(';')[0];
+    let mine = await call('GET', `/api/public/requests/${tok}`, { cookie: device });
+    assert.deepStrictEqual([mine.data.package_type, mine.data.package_description, mine.data.pickup_enabled, mine.data.pickup_name, mine.data.pickup_address], ['vetements', '3 pagnes', true, 'Tante Rose', 'Dantokpa, porte 3']);
+    r = await call('PUT', `/api/public/requests/${tok}`, { cookie: device, body: { ...clientForm, version: mine.data.version, packageType: 'fragile', packageDescription: 'Un miroir', pickupEnabled: 'true', pickupAddress: 'Dantokpa, porte 4' } });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+    mine = await call('GET', `/api/public/requests/${tok}`, { cookie: device });
+    assert.deepStrictEqual([mine.data.package_type, mine.data.pickup_address, mine.data.pickup_name], ['fragile', 'Dantokpa, porte 4', ''], 'modification par le client enregistrée');
+    await pool.query(`UPDATE customer_requests SET status = 'Validée', validated_at = NOW() WHERE id = $1`, [mine.data.id]);
+    r = await call('POST', `/api/app/requests/${mine.data.id}/convert`, { cookie: staff, body: { driverId: drv } });
+    assert.ok([200, 201].includes(r.status) && r.data.orderId, JSON.stringify(r.data));
+    o = (await call('GET', `/api/app/orders/${r.data.orderId}`, { cookie: staff })).data;
+    assert.deepStrictEqual([o.package_type, o.package_description, o.pickup_address], ['fragile', 'Un miroir', 'Dantokpa, porte 4'], 'colis du client recopié sur la commande');
+    assert.ok(o.allowedTransitions.includes('Vers la collecte'), 'étape de collecte proposée');
+
+    console.log('Collecte : validation, statut, modification, carnet de lieux, recopie depuis une demande préremplie et depuis le formulaire client OK');
   } finally {
     await pool.end();
   }

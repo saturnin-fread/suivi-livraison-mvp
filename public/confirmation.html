@@ -50,6 +50,12 @@
         const flashHtml = () => (flash ? `<p class="cl-notice${flash.kind ? ` ${flash.kind}` : ''}" role="status">${esc(flash.text)}</p>` : '');
         const gpsLabel = () => (data.location_lat != null ? 'Partagée' : 'Non partagée');
         const row = (label, value) => `<div class="cl-info-row"><dt>${esc(label)}</dt><dd>${value}</dd></div>`;
+        const PKG = { colis: 'Un colis', documents: 'Des documents', repas: 'Un repas', fragile: 'Un objet fragile', vetements: 'Des vêtements', autre: 'Autre chose' };
+        const packageRows = () => {
+          const what = [PKG[data.package_type], data.package_description].filter(Boolean).join(' · ');
+          const where = data.pickup_enabled ? [data.pickup_name, data.pickup_address, data.pickup_ready].filter(Boolean).join(' · ') : '';
+          return `${what ? row('Colis', esc(what)) : ''}${where ? row('À récupérer chez', esc(where)) : ''}`;
+        };
         const photosCell = () => (data.photoIds.length
           ? `<div class="cl-info-thumbs">${data.photoIds.map((id, i) => `<a href="${photoUrl(id)}" target="_blank" rel="noopener"><img src="${photoUrl(id)}" alt="Photo du lieu ${i + 1}" loading="lazy" /></a>`).join('')}</div>`
           : 'Aucune photo');
@@ -91,6 +97,7 @@
                 ${row('Repère', esc(data.landmark || '—'))}
                 ${row('Créneau souhaité', esc(data.requested_time || '—'))}
                 ${row('Consigne', esc(data.notes || '—'))}
+                ${packageRows()}
                 ${row('Position GPS', gpsLabel())}
                 ${row('Photos', photosCell())}
               </dl>
@@ -144,6 +151,7 @@
                   ${row('Repère', esc(data.landmark || '—'))}
                   ${row('Créneau souhaité', esc(data.requested_time || '—'))}
                   ${data.notes ? row('Consigne', esc(data.notes)) : ''}
+                  ${packageRows()}
                   ${row('Position GPS', gpsLabel())}
                   ${data.photoIds.length ? row('Photos', photosCell()) : ''}
                 </dl>
@@ -180,6 +188,7 @@
           const form = document.getElementById('editForm');
           if (!form) return;
           C.wirePhoneField(form);
+          C.wirePackageFields(form);
           const gps = C.createGpsField(document.getElementById('gpsField'), {
             initial: data.location_lat != null ? { latitude: data.location_lat, longitude: data.location_lng, accuracy: data.location_accuracy } : null,
           });

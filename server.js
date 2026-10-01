@@ -13,6 +13,7 @@ const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
 const { computeInsights } = require('./lib/dashboard-insights');
 const { computeEta, learnedParameters } = require('./lib/eta');
+const vigilance = require('./lib/vigilance');
 const totpLib = require('./lib/totp');
 const { WhatsAppChannel, internationalDigits, maskPhone } = require('./lib/whatsapp');
 const { buildIncidentPdf } = require('./lib/incident-pdf');
@@ -891,6 +892,8 @@ async function initDatabase() {
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Africa/Porto-Novo';
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS delivery_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_code TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS trial_status TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'monthly';
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_data BYTEA;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_mime TEXT;
@@ -925,6 +928,8 @@ async function initDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+      -- Canal préféré pour les codes de connexion : 'email', 'whatsapp' ou NULL (choix à chaque fois).
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS code_channel TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS login_alerts BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
@@ -968,6 +973,7 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE login_codes ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email';
+      ALTER TABLE login_codes ADD COLUMN IF NOT EXISTS delivery_failed BOOLEAN NOT NULL DEFAULT FALSE;
       -- Appareils reconnus après un code valide : pas de nouveau code pendant 30 jours.
       CREATE TABLE IF NOT EXISTS trusted_devices (
         token_hash TEXT NOT NULL,
@@ -1502,6 +1508,7 @@ async function initDatabase() {
         created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE driver_invitations ADD COLUMN IF NOT EXISTS verify_sends INTEGER NOT NULL DEFAULT 0;
       CREATE INDEX IF NOT EXISTS driver_invitations_driver_idx ON driver_invitations(driver_id, created_at DESC);
       -- Places livreurs utilisées dans le mois (anti-partage d'abonnement) : une
       -- personne compte une fois dans le mois, même si son profil est supprimé puis recréé.
@@ -1512,6 +1519,41 @@ async function initDatabase() {
         driver_id BIGINT,
         first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (company_id, month, seat_key)
+      );
+      -- Vigilance : signaux à vérifier par le responsable (ou par TRAXO quand
+      -- company_id est vide : cas qui concernent plusieurs entreprises).
+      CREATE TABLE IF NOT EXISTS fraud_signals (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        driver_id BIGINT,
+        order_id BIGINT,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        reviewed_at TIMESTAMPTZ,
+        reviewed_by_user_id BIGINT
+      );
+      CREATE INDEX IF NOT EXISTS fraud_signals_company_idx ON fraud_signals(company_id, created_at DESC);
+      -- Relevés de position des livreurs aux moments clés (arrivée, remise).
+      CREATE TABLE IF NOT EXISTS driver_fixes (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        driver_id BIGINT NOT NULL,
+        order_id BIGINT,
+        lat DOUBLE PRECISION NOT NULL,
+        lng DOUBLE PRECISION NOT NULL,
+        accuracy DOUBLE PRECISION,
+        source TEXT NOT NULL,
+        fixed_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS driver_fixes_driver_idx ON driver_fixes(driver_id, fixed_at DESC);
+      -- Essai gratuit : une seule fois par personne (adresse, numéro, appareil).
+      CREATE TABLE IF NOT EXISTS trial_identities (
+        key_hash TEXT PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS notification_states (
         user_id BIGINT NOT NULL,
@@ -2145,7 +2187,17 @@ app.get('/health', asyncRoute(async (_req, res) => {
 app.get('/', (_req, res) => res.redirect('/app'));
 app.get('/favicon.ico', (_req, res) => res.type('png').set('Cache-Control', 'public, max-age=604800').sendFile(path.join(__dirname, 'public', 'favicon.png')));
 
-app.get('/app/login', (_req, res) => sendShell(res, 'app-login.html'));
+// Identifiant anonyme d'appareil (2 ans) : sert uniquement à n'offrir
+// l'essai gratuit qu'une fois par appareil.
+function ensureDeviceId(req, res) {
+  let id = String(parseCookies(req).traxo_did || '');
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(id)) {
+    id = randomToken(18);
+    res.append('Set-Cookie', `traxo_did=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${2 * 365 * 24 * 3600}${cookieFlags(req)}`);
+  }
+  return id;
+}
+app.get('/app/login', (req, res) => { ensureDeviceId(req, res); sendShell(res, 'app-login.html'); });
 // Brute-force protection on sign-in: a per-IP quota plus a per-email quota so a
 // single targeted account cannot be hammered even from many IPs.
 const loginRateLimit = createRateLimitMiddleware({
@@ -2189,7 +2241,12 @@ async function startTotpChallenge(req, res, { userId, companyId, role, remember 
 // Actif dès qu'un fournisseur d'e-mail est configuré (LOGIN_EMAIL_CODE=off pour
 // le couper, =on pour le forcer en test avec EMAIL_OUTBOX_DIR).
 const LOGIN_CODE_TTL_MS = 10 * 60 * 1000;
-const LOGIN_CODE_RESEND_S = 30;
+// Renvoi d'un code : 1 min après le premier envoi, puis 2 min, puis 3 min.
+function loginCodeResendDelayS(sends) {
+  if (sends <= 1) return 60;
+  if (sends === 2) return 120;
+  return 180;
+}
 const LOGIN_CODE_MAX_SENDS = 5;
 const LOGIN_CODE_MAX_ATTEMPTS = 5;
 const TRUSTED_DEVICE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -2298,27 +2355,42 @@ const whatsapp = new WhatsAppChannel({
 // EMAIL_OUTBOX_DIR (jamais en production).
 if (process.env.WHATSAPP_FAKE === 'outbox' && process.env.EMAIL_OUTBOX_DIR
   && process.env.NODE_ENV !== 'production' && process.env.RAILWAY_ENVIRONMENT_NAME !== 'production') {
+  // Même file d'envoi (délais compris) que le vrai canal ; seule la remise change.
   whatsapp.isReady = () => true;
-  whatsapp.sendText = async (phone, text) => {
-    if (!internationalDigits(phone)) throw Object.assign(new Error('bad_number'), { code: 'bad_number' });
+  whatsapp.lookupJid = async (digits) => `${digits}@s.whatsapp.net`;
+  whatsapp.deliver = async (jid, text, waitMs) => {
+    await new Promise((resolve) => { setTimeout(resolve, waitMs); });
     fs.mkdirSync(process.env.EMAIL_OUTBOX_DIR, { recursive: true });
-    fs.writeFileSync(path.join(process.env.EMAIL_OUTBOX_DIR, `${Date.now()}-wa.json`), JSON.stringify({ whatsapp: internationalDigits(phone), text }));
-    return { jid: `${internationalDigits(phone)}@s.whatsapp.net` };
+    fs.writeFileSync(path.join(process.env.EMAIL_OUTBOX_DIR, `${Date.now()}-${crypto.randomBytes(2).toString('hex')}-wa.json`), JSON.stringify({ whatsapp: jid.split('@')[0], text, at: Date.now() }));
   };
 }
 function whatsappAvailableFor(phone) {
   return whatsapp.isReady() && Boolean(internationalDigits(phone));
 }
-async function sendLoginCodeWhatsApp(phone, code, purpose) {
+// Le message part en arrière-plan (file d'envoi espacée) : la page répond
+// tout de suite ; un échec de remise est noté pour proposer l'e-mail.
+async function sendLoginCodeWhatsApp(phone, code, purpose, challenge = null) {
   const intro = purpose === 'signup' ? 'pour confirmer votre compte TRAXO' : 'pour vous connecter à TRAXO';
-  return whatsapp.sendText(phone, `*${code}* est votre code ${intro}.\n\nIl expire dans 10 minutes. Ne le communiquez à personne : l’équipe TRAXO ne vous le demandera jamais.`);
+  return whatsapp.sendText(phone, `*${code}* est votre code ${intro}.\n\nIl expire dans 10 minutes. Ne le communiquez à personne : l’équipe TRAXO ne vous le demandera jamais.`, {
+    background: true,
+    onError: () => {
+      if (challenge && pool) pool.query('UPDATE login_codes SET delivery_failed = TRUE WHERE token_hash = $1', [digest(challenge)]).catch(() => {});
+    },
+  });
+}
+// Canal de départ selon la préférence de l'utilisateur.
+function initialCodeChannel(user) {
+  const wa = whatsappAvailableFor(user.phone);
+  if (user.code_channel === 'whatsapp' && wa) return 'whatsapp';
+  if (user.code_channel === 'email' || !wa) return 'email';
+  return 'pending';
 }
 
 // Crée le défi, envoie le code et pose le cookie ; renvoie false si l'e-mail
 // n'a pas pu partir (l'appelant affiche alors une erreur).
 // channel 'pending' : aucun code envoyé, l'utilisateur choisit d'abord
 // e-mail ou WhatsApp sur la page du code.
-async function startLoginCode(req, res, { userId, email, companyId, role, purpose, remember, channel = 'email' }) {
+async function startLoginCode(req, res, { userId, email, phone = null, companyId, role, purpose, remember, channel = 'email' }) {
   const challenge = randomToken();
   const code = newLoginCode();
   await pool.query('DELETE FROM login_codes WHERE user_id = $1 OR expires_at < NOW()', [userId]);
@@ -2332,6 +2404,17 @@ async function startLoginCode(req, res, { userId, email, companyId, role, purpos
   if (channel === 'pending') {
     setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
     return true;
+  }
+  if (channel === 'whatsapp') {
+    try {
+      await sendLoginCodeWhatsApp(phone, code, purpose, challenge);
+      setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
+      return true;
+    } catch (error) {
+      // WhatsApp indisponible pour ce numéro : on bascule sur l'e-mail sans bloquer.
+      console.error('Login code WhatsApp failed, e-mail fallback:', error.code || error.message);
+      await pool.query(`UPDATE login_codes SET channel = 'email' WHERE token_hash = $1`, [digest(challenge)]);
+    }
   }
   const sent = await sendLoginCodeEmail(req, email, code, purpose);
   if (!sent.sent) {
@@ -2348,7 +2431,7 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   const email = normalizeEmail(req.body.user);
   const remember = wantsRemember(req.body.remember);
   const result = await pool.query(
-    `SELECT u.id, u.email, u.phone, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
+    `SELECT u.id, u.email, u.phone, u.code_channel, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
      FROM users u JOIN company_memberships m ON m.user_id = u.id
      JOIN companies c ON c.id = m.company_id
      WHERE u.email = $1 ORDER BY m.id LIMIT 1`,
@@ -2366,8 +2449,8 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
   // possible, l'utilisateur choisit d'abord où le recevoir.
   if (loginCodesEnabled() && !(await isTrustedDevice(req, user.id))) {
     const started = await startLoginCode(req, res, {
-      userId: user.id, email: user.email, companyId: user.company_id, role: user.role, purpose: 'login', remember,
-      channel: whatsappAvailableFor(user.phone) ? 'pending' : 'email',
+      userId: user.id, email: user.email, phone: user.phone, companyId: user.company_id, role: user.role, purpose: 'login', remember,
+      channel: initialCodeChannel(user),
     });
     if (!started) return res.redirect('/app/login?error=code_send');
     return res.redirect('/app/login/code');
@@ -2401,13 +2484,14 @@ app.get('/app/login/code/state', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Base métier non configurée.' });
   const { row } = await findLoginCode(pool, req);
   if (!row) return res.status(410).json({ error: 'expired' });
-  const wait = Math.max(0, LOGIN_CODE_RESEND_S - Math.floor((Date.now() - new Date(row.last_sent_at).getTime()) / 1000));
+  const wait = row.delivery_failed ? 0 : Math.max(0, loginCodeResendDelayS(row.sends) - Math.floor((Date.now() - new Date(row.last_sent_at).getTime()) / 1000));
   return res.json({
     email: maskEmail(row.email),
     purpose: row.purpose,
     channel: row.channel,
     whatsapp: whatsappAvailableFor(row.phone) ? maskPhone(row.phone) : null,
     resendIn: row.sends >= LOGIN_CODE_MAX_SENDS ? null : wait,
+    deliveryFailed: Boolean(row.delivery_failed),
     attemptsLeft: Math.max(0, LOGIN_CODE_MAX_ATTEMPTS - row.attempts),
   });
 }));
@@ -2421,19 +2505,26 @@ app.post('/app/login/code/resend', loginRateLimit, asyncRoute(async (req, res) =
   if (channel === 'whatsapp' && !whatsappAvailableFor(row.phone)) {
     return res.status(409).json({ error: 'L’envoi par WhatsApp n’est pas disponible pour ce compte. Utilisez l’e-mail.' });
   }
-  // Changer de canal est permis tout de suite ; renvoyer sur le même canal, toutes les 30 s.
+  // Premier envoi (choix du canal) : immédiat. Ensuite, nouveau code ou autre
+  // canal après 1 min, puis 2 et 3 min ; tout de suite si WhatsApp a échoué.
   const elapsed = (Date.now() - new Date(row.last_sent_at).getTime()) / 1000;
-  if (channel === row.channel && elapsed < LOGIN_CODE_RESEND_S) return res.status(429).json({ error: 'Patientez quelques secondes avant de demander un nouveau code.', resendIn: Math.ceil(LOGIN_CODE_RESEND_S - elapsed) });
+  const delay = loginCodeResendDelayS(row.sends);
+  if (row.channel !== 'pending' && !row.delivery_failed && elapsed < delay) {
+    return res.status(429).json({ error: 'Le code peut mettre un peu de temps à arriver. Vous pourrez en demander un nouveau dans quelques instants.', resendIn: Math.ceil(delay - elapsed) });
+  }
+  const firstSend = row.channel === 'pending';
   const code = newLoginCode();
   const updated = await pool.query(
-    `UPDATE login_codes SET code_hash = $1, sends = sends + 1, attempts = 0, last_sent_at = NOW(), expires_at = $2, channel = $5
+    `UPDATE login_codes SET code_hash = $1, sends = sends + 1, attempts = 0, last_sent_at = NOW(), expires_at = $2, channel = $5, delivery_failed = FALSE
      WHERE token_hash = $3 AND sends = $4 RETURNING sends`,
     [loginCodeHash(challenge, code), new Date(Date.now() + LOGIN_CODE_TTL_MS), digest(challenge), row.sends, channel]
   );
-  if (!updated.rowCount) return res.status(429).json({ error: 'Un code vient déjà d’être envoyé.', resendIn: LOGIN_CODE_RESEND_S });
+  if (!updated.rowCount) return res.status(429).json({ error: 'Un code vient déjà d’être envoyé.', resendIn: 60 });
+  // Le premier choix devient la préférence : la prochaine fois, le code part directement.
+  if (firstSend) await pool.query('UPDATE users SET code_channel = $1 WHERE id = $2 AND code_channel IS NULL', [channel, row.user_id]);
   if (channel === 'whatsapp') {
     try {
-      await sendLoginCodeWhatsApp(row.phone, code, row.purpose);
+      await sendLoginCodeWhatsApp(row.phone, code, row.purpose, challenge);
     } catch (error) {
       console.error('Login code WhatsApp failed:', error.code || error.message);
       const message = error.code === 'not_on_whatsapp'
@@ -2446,7 +2537,8 @@ app.post('/app/login/code/resend', loginRateLimit, asyncRoute(async (req, res) =
     if (!sent.sent) return res.status(502).json({ error: 'L’e-mail n’a pas pu être envoyé. Réessayez dans un instant.' });
   }
   setVerifyCookie(req, res, challenge, Math.floor(LOGIN_CODE_TTL_MS / 1000));
-  return res.json({ ok: true, channel, resendIn: updated.rows[0].sends >= LOGIN_CODE_MAX_SENDS ? null : LOGIN_CODE_RESEND_S });
+  const sends = updated.rows[0].sends;
+  return res.json({ ok: true, channel, resendIn: sends >= LOGIN_CODE_MAX_SENDS ? null : loginCodeResendDelayS(sends) });
 }));
 
 app.post('/app/login/code', loginRateLimit, asyncRoute(async (req, res) => {
@@ -2627,7 +2719,7 @@ const registerRateLimit = createRateLimitMiddleware({
 
 // Crée l'entreprise (en aperçu, configuration guidée à faire) et son
 // propriétaire. Utilisé par l'inscription e-mail et par Google.
-async function createOwnerAccount(client, { email, displayName, phone = null, companyName = null, password = null, googleSub = null, emailVerified = false }) {
+async function createOwnerAccount(client, { email, displayName, phone = null, companyName = null, password = null, googleSub = null, emailVerified = false, deviceId = null }) {
   const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
   if (existing.rows[0]) throw Object.assign(new Error('email_taken'), { code: 'email_taken' });
   const name = companyName || 'Mon entreprise';
@@ -2656,7 +2748,12 @@ async function createOwnerAccount(client, { email, displayName, phone = null, co
      VALUES ($1, $2, 'company', $3, 'company_registered', jsonb_build_object('activation_status', 'preview', 'method', $4::text))`,
     [companyId, userId, companyId, googleSub ? 'google' : 'email']
   );
-  return { userId, companyId };
+  const trial = await claimTrial(client, companyId, [
+    `mail:${vigilance.canonicalEmail(email)}`,
+    deviceId ? `device:${deviceId}` : null,
+    internationalDigits(phone) ? `tel:${internationalDigits(phone)}` : null,
+  ]);
+  return { userId, companyId, trial };
 }
 
 // Inscription courte (e-mail + mot de passe) : le nom de l'activité, la ville
@@ -2688,8 +2785,12 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
       phone,
       companyName,
       password,
+      deviceId: ensureDeviceId(req, res),
     });
     await client.query('COMMIT');
+    if (account.trial && account.trial.reused) {
+      raiseSignal({ kind: 'trial_reused', details: { companyId: account.companyId, priorCompanyId: account.trial.priorCompanyId, method: 'email' }, dedupeKey: `trial:${account.companyId}` });
+    }
   } catch (error) {
     await client.query('ROLLBACK');
     if (error.code === 'email_taken') return res.redirect('/app/register?error=email_taken');
@@ -2712,7 +2813,7 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
   return res.redirect('/app/bienvenue');
 }));
 
-app.get('/app/register', (_req, res) => sendShell(res, 'app-register.html'));
+app.get('/app/register', (req, res) => { ensureDeviceId(req, res); sendShell(res, 'app-register.html'); });
 app.get('/app/auth/config', (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ google: googleAuthConfigured(), supportEmail: process.env.SUPPORT_EMAIL || 'support@gettraxo.app' });
@@ -2839,8 +2940,11 @@ app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res)
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const account = await createOwnerAccount(client, { email, displayName, googleSub: sub, emailVerified: true });
+      const account = await createOwnerAccount(client, { email, displayName, googleSub: sub, emailVerified: true, deviceId: ensureDeviceId(req, res) });
       await client.query('COMMIT');
+      if (account.trial && account.trial.reused) {
+        raiseSignal({ kind: 'trial_reused', details: { companyId: account.companyId, priorCompanyId: account.trial.priorCompanyId, method: 'google' }, dedupeKey: `trial:${account.companyId}` });
+      }
       user = { id: account.userId, company_id: account.companyId, role: 'owner', onboarding_status: 'pending' };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -3007,9 +3111,16 @@ app.post('/api/onboarding', asyncRoute(async (req, res) => {
         [logo.buffer, logo.mime, session.company_id]
       );
     }
+    const codeChannel = phone && ['whatsapp', 'email'].includes(body.codeChannel) ? body.codeChannel : null;
+    if (internationalDigits(phone)) {
+      const trial = await claimTrial(client, session.company_id, [`tel:${internationalDigits(phone)}`]);
+      if (trial && trial.reused) {
+        raiseSignal({ kind: 'trial_reused', details: { companyId: session.company_id, priorCompanyId: trial.priorCompanyId, method: 'phone' }, dedupeKey: `trial:${session.company_id}` });
+      }
+    }
     await client.query(
-      'UPDATE users SET display_name = $1, phone = COALESCE($2, phone), updated_at = NOW() WHERE id = $3',
-      [name, phone, session.user_id]
+      'UPDATE users SET display_name = $1, phone = COALESCE($2, phone), code_channel = COALESCE($4, code_channel), updated_at = NOW() WHERE id = $3',
+      [name, phone, session.user_id, codeChannel]
     );
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
@@ -3676,6 +3787,7 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
       rememberPickupPosition(order.id, req.auth).catch(() => {});
     }
     if (['En livraison', 'Arrivée'].includes(toStatus)) recordEtaSample(order.id, req.auth.company_id, toStatus, req.auth.driver_id);
+    if (toStatus === 'Arrivée') checkDriverPlace({ companyId: req.auth.company_id, driverId: req.auth.driver_id, orderId: order.id, toStatus, clientFix: clientFixFrom(req.body) });
     return res.json({ orderId: order.id, status: toStatus, version: Number(order.version) + 1 });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -3806,6 +3918,19 @@ async function saveOrderEvidence(req, res, driverScoped = false) {
     }
     const configuredMode = evidenceType === 'photo' ? order.photo_proof_mode : order.signature_proof_mode;
     if (configuredMode === 'off') throw Object.assign(new Error('Cette preuve n’est pas activée par l’entreprise.'), { statusCode: 403 });
+    // Une photo identique a déjà servi pour une autre livraison : refusée.
+    if (evidenceType === 'photo') {
+      const reused = (await client.query(
+        `SELECT order_id FROM delivery_evidence_files
+         WHERE company_id = $1 AND content_sha256 = $2 AND evidence_type = 'photo' AND order_id <> $3 LIMIT 1`,
+        [req.auth.company_id, contentSha256, order.id]
+      )).rows[0];
+      if (reused) {
+        throw Object.assign(new Error('Cette photo a déjà servi pour une autre livraison. Prenez une nouvelle photo du colis remis.'), {
+          statusCode: 409, signal: { kind: 'photo_reused', previousOrderId: reused.order_id },
+        });
+      }
+    }
     await client.query(
       `UPDATE delivery_evidence_files SET superseded_at = NOW(), content = NULL
        WHERE order_id = $1 AND evidence_type = $2 AND superseded_at IS NULL AND deleted_at IS NULL`,
@@ -3830,6 +3955,12 @@ async function saveOrderEvidence(req, res, driverScoped = false) {
     return res.status(201).json({ id: inserted.rows[0].id, type: evidenceType, createdAt: inserted.rows[0].created_at });
   } catch (error) {
     await client.query('ROLLBACK');
+    if (error.signal) {
+      raiseSignal({
+        companyId: req.auth.company_id, kind: error.signal.kind, driverId: driverScoped ? req.auth.driver_id : null, orderId: Number(req.params.id) || null,
+        details: { previousOrderId: error.signal.previousOrderId }, dedupeKey: `photo:${contentSha256.slice(0, 24)}:${req.params.id}`,
+      });
+    }
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
     console.error('Delivery evidence upload error:', error.message);
     return res.status(500).json({ error: 'Impossible d’enregistrer cette preuve.' });
@@ -3994,7 +4125,7 @@ function planCapacity(code) {
 
 app.get('/api/app/billing/plans', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT plan_code, billing_cycle,
+    `SELECT plan_code, billing_cycle, trial_status, trial_ends_at,
             (SELECT COUNT(*)::int FROM drivers d WHERE d.company_id = c.id AND d.active = TRUE AND d.archived_at IS NULL) AS active_drivers,
             (SELECT COUNT(*)::int FROM driver_seat_usage u WHERE u.company_id = c.id
                AND u.month = date_trunc('month', NOW() AT TIME ZONE 'Africa/Porto-Novo')::date) AS seats_month
@@ -4010,6 +4141,7 @@ app.get('/api/app/billing/plans', requireCompanyApi, asyncRoute(async (req, res)
   return res.json({
     activeDrivers,
     seatsThisMonth,
+    trial: { status: row.trial_status || null, endsAt: row.trial_ends_at || null },
     recommended,
     currentPlan: row.plan_code || recommended,
     billingCycle: row.billing_cycle || 'monthly',
@@ -4118,7 +4250,7 @@ app.post('/api/app/billing/quote-request', requireCompanyApi, requireCompanyRole
 // --- Paramètres > Sécurité : compte utilisateur ---
 app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, res) => {
   const [user, sessions] = await Promise.all([
-    pool.query('SELECT password_changed_at, login_alerts, totp_enabled_at, totp_recovery_hashes, phone, google_sub FROM users WHERE id = $1', [req.auth.user_id]),
+    pool.query('SELECT password_changed_at, login_alerts, totp_enabled_at, totp_recovery_hashes, phone, code_channel, google_sub FROM users WHERE id = $1', [req.auth.user_id]),
     pool.query('SELECT COUNT(*)::int AS n FROM app_sessions WHERE user_id = $1 AND expires_at > NOW()', [req.auth.user_id]),
   ]);
   const row = user.rows[0] || {};
@@ -4131,6 +4263,7 @@ app.get('/api/app/account/security', requireCompanyApi, asyncRoute(async (req, r
     recoveryCodesLeft: Array.isArray(row.totp_recovery_hashes) ? row.totp_recovery_hashes.length : 0,
     phone: row.phone || '',
     phoneInternational: Boolean(internationalDigits(row.phone)),
+    codeChannel: row.code_channel || null,
     googleLinked: Boolean(row.google_sub),
     whatsappChannel: whatsapp.isReady(),
     loginCodes: loginCodesEnabled(),
@@ -4262,14 +4395,32 @@ app.post('/api/app/account/password', requireCompanyApi, asyncRoute(async (req, 
 
 // Numéro de l'utilisateur (codes de connexion par WhatsApp) : format international obligatoire.
 app.patch('/api/app/account/phone', requireCompanyApi, asyncRoute(async (req, res) => {
-  const raw = String(req.body.phone || '').trim();
-  if (raw && !internationalDigits(raw)) {
-    return res.status(400).json({ error: 'Indiquez le numéro avec son indicatif, par exemple +229 01 97 12 34 56.' });
+  const raw = String(req.body.phone ?? '').trim();
+  // Sans indicatif, on suppose un numéro béninois (01 97 12 34 56).
+  let phone = null;
+  if (raw) {
+    const normalized = raw.startsWith('+') ? (internationalDigits(raw) ? `+${internationalDigits(raw)}` : null)
+      : normalizeCustomerPhone({ customerPhone: raw, customerPhoneCountry: 'BJ' });
+    if (!normalized || !internationalDigits(normalized)) {
+      return res.status(400).json({ error: 'Ce numéro semble incorrect. Exemple : 01 97 12 34 56, ou +33 6 12 34 56 78 hors du Bénin.' });
+    }
+    phone = `+${internationalDigits(normalized)}`;
   }
-  const phone = raw ? `+${internationalDigits(raw)}` : null;
-  await pool.query('UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2', [phone, req.auth.user_id]);
+  const codeChannel = ['whatsapp', 'email'].includes(req.body.codeChannel) ? req.body.codeChannel : undefined;
+  const channel = !phone ? 'email' : codeChannel;
+  if (req.body.phone === undefined) {
+    if (!codeChannel) return res.status(400).json({ error: 'Aucune modification fournie.' });
+    const current = (await pool.query('SELECT phone FROM users WHERE id = $1', [req.auth.user_id])).rows[0];
+    if (codeChannel === 'whatsapp' && !internationalDigits(current?.phone)) return res.status(400).json({ error: 'Ajoutez d’abord votre numéro WhatsApp.' });
+    await pool.query('UPDATE users SET code_channel = $1, updated_at = NOW() WHERE id = $2', [codeChannel, req.auth.user_id]);
+    return res.json({ phone: current?.phone || '', phoneInternational: Boolean(internationalDigits(current?.phone)), codeChannel });
+  }
+  const row = (await pool.query(
+    'UPDATE users SET phone = $1, code_channel = COALESCE($3, code_channel), updated_at = NOW() WHERE id = $2 RETURNING code_channel',
+    [phone, req.auth.user_id, channel || null]
+  )).rows[0];
   await writeAudit(req.auth, 'user', req.auth.user_id, 'phone_changed', {});
-  return res.json({ phone: phone || '', phoneInternational: Boolean(phone) });
+  return res.json({ phone: phone || '', phoneInternational: Boolean(phone), codeChannel: row?.code_channel || null });
 }));
 
 // Ferme une session (autre appareil) ou toutes les autres sessions.
@@ -4501,7 +4652,7 @@ function frDateShort(value, timeZone = DASHBOARD_TZ) {
   return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', timeZone }).format(new Date(value));
 }
 
-async function buildNotificationItems(cid, { currentSessionHash = null, userId = null } = {}) {
+async function buildNotificationItems(cid, { currentSessionHash = null, userId = null, role = null } = {}) {
   const [reqs, toAssign, unassigned, incidents, runs, relaunch, delivered, logins] = await Promise.all([
     pool.query(
       `SELECT id, customer_name, created_at, submitted_at FROM customer_requests
@@ -4670,6 +4821,16 @@ async function buildNotificationItems(cid, { currentSessionHash = null, userId =
       ref: describeDevice(s.user_agent), at: s.created_at, href: '/app/parametres?section=security', cta: 'Voir mes sessions',
     });
   }
+  // Vigilance : seulement pour ceux qui gèrent les livreurs.
+  if (['owner', 'manager'].includes(role)) {
+    for (const sig of await companySignals(cid, { days: 30, limit: 20 })) {
+      items.push({
+        id: `vigil-${sig.id}`, category: 'security', type: 'vigilance', priority: 'security',
+        title: sig.title, summary: sig.summary, meta: 'Vigilance', detail: sig.detail,
+        ref: sig.summary, at: sig.at, href: sig.href || '/app/livreurs', cta: sig.cta || 'Voir',
+      });
+    }
+  }
   items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   return items;
 }
@@ -4691,7 +4852,7 @@ async function notificationPrefs(userId, cid) {
 // (la sécurité reste toujours visible).
 async function userNotifications(auth, currentSessionHash) {
   const [items, prefs, states] = await Promise.all([
-    buildNotificationItems(auth.company_id, { currentSessionHash, userId: auth.user_id }),
+    buildNotificationItems(auth.company_id, { currentSessionHash, userId: auth.user_id, role: auth.role }),
     notificationPrefs(auth.user_id, auth.company_id),
     pool.query('SELECT notif_key, read_at, archived_at, later_at FROM notification_states WHERE user_id = $1 AND company_id = $2', [auth.user_id, auth.company_id]),
   ]);
@@ -4710,6 +4871,89 @@ async function userNotifications(auth, currentSessionHash) {
   };
   return { items: visible, counts, prefs };
 }
+
+// ---- Vigilance : consultation et suivi ----------------------------------------
+function moneyText(minor, currency) {
+  try { return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: currency || 'XOF', maximumFractionDigits: 0 }).format(Number(minor) || 0); } catch { return `${minor} ${currency || ''}`; }
+}
+// Textes rédigés pour le responsable : ce qui s'est passé, ce que ça peut vouloir dire.
+function describeSignal(row) {
+  const d = row.details || {};
+  const who = row.driver_name || 'Un livreur';
+  const ref = row.order_reference || (row.order_id ? `Commande n° ${row.order_id}` : '');
+  switch (row.kind) {
+    case 'far_delivery': return {
+      title: 'Remise déclarée loin du client', summary: [who, ref].filter(Boolean).join(' · '),
+      detail: `${d.status === 'Livrée' ? 'La remise' : 'L’arrivée'} a été déclarée à ${d.distance >= 1000 ? `${(d.distance / 1000).toFixed(1).replace('.', ',')} km` : `${d.distance} m`} de l’adresse du client. Le client est peut-être venu à sa rencontre : vérifiez avec lui en cas de doute.`,
+      href: row.order_id ? `/app/operations?vue=commandes&commande=${row.order_id}` : '/app/livreurs', cta: 'Voir la commande',
+    };
+    case 'impossible_speed': return {
+      title: 'Position du livreur incohérente', summary: [who, ref].filter(Boolean).join(' · '),
+      detail: `${(d.distance / 1000).toFixed(1).replace('.', ',')} km parcourus en ${Math.max(1, Math.round(d.seconds / 60))} min entre deux étapes, soit ${d.kmh} km/h : impossible en ville. Sa position est peut-être truquée, ou son accès est utilisé par quelqu’un d’autre.`,
+      href: row.driver_id ? `/app/livreurs?livreur=${row.driver_id}` : '/app/livreurs', cta: 'Voir le livreur',
+    };
+    case 'cash_gap': return {
+      title: 'Écarts d’encaissement répétés', summary: who,
+      detail: `${d.count} encaissements inférieurs au montant attendu en 30 jours, ${moneyText(d.totalMinor, d.currency)} au total. Le motif donné pour chaque écart figure dans la commande.`,
+      href: row.driver_id ? `/app/livreurs?livreur=${row.driver_id}` : '/app/livreurs', cta: 'Voir le livreur',
+    };
+    case 'photo_reused': return {
+      title: 'Photo de remise déjà utilisée', summary: [who, ref].filter(Boolean).join(' · '),
+      detail: `Une photo déjà envoyée pour une autre livraison${d.previousOrderId ? ` (n° ${d.previousOrderId})` : ''} a été proposée comme preuve. Elle a été refusée et une nouvelle photo a été demandée.`,
+      href: row.order_id ? `/app/operations?vue=commandes&commande=${row.order_id}` : '/app/livreurs', cta: 'Voir la commande',
+    };
+    case 'shared_phone': return {
+      title: 'Numéro de livreur présent dans plusieurs entreprises', summary: `Espace n° ${d.companyId}`,
+      detail: `Le même numéro est enregistré comme livreur dans ${d.companies} entreprises. Cela peut être normal (livreur indépendant) ou un partage d’accès.`, href: '', cta: '',
+    };
+    case 'trial_reused': return {
+      title: 'Essai gratuit déjà utilisé', summary: `Espace n° ${d.companyId}`,
+      detail: `Cette inscription reprend ${d.method === 'phone' ? 'un numéro' : d.method === 'google' ? 'un compte Google ou un appareil' : 'une adresse ou un appareil'} déjà utilisé pour l’essai de l’espace n° ${d.priorCompanyId}. L’essai gratuit n’a pas été accordé.`, href: '', cta: '',
+    };
+    default: return { title: 'Point à vérifier', summary: who, detail: '', href: '/app/livreurs', cta: 'Voir' };
+  }
+}
+async function companySignals(companyId, { driverId = null, includeReviewed = false, days = 30, limit = 50 } = {}) {
+  const rows = (await pool.query(
+    `SELECT s.*, d.name AS driver_name, o.reference AS order_reference
+     FROM fraud_signals s
+     LEFT JOIN drivers d ON d.id = s.driver_id AND d.company_id = s.company_id
+     LEFT JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
+     WHERE s.company_id = $1 AND s.created_at > NOW() - make_interval(days => $2)
+       AND ($3::bigint IS NULL OR s.driver_id = $3) AND ($4 OR s.reviewed_at IS NULL)
+     ORDER BY s.created_at DESC LIMIT $5`,
+    [companyId, days, driverId, includeReviewed, limit]
+  )).rows;
+  return rows.map((r) => ({ id: r.id, kind: r.kind, driverId: r.driver_id, orderId: r.order_id, at: r.created_at, reviewedAt: r.reviewed_at, ...describeSignal(r) }));
+}
+app.get('/api/app/drivers/:id/signals', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  return res.json({ signals: await companySignals(req.auth.company_id, { driverId: req.params.id, includeReviewed: true, days: 90, limit: 20 }) });
+}));
+app.post('/api/app/signals/:id/review', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    'UPDATE fraud_signals SET reviewed_at = COALESCE(reviewed_at, NOW()), reviewed_by_user_id = COALESCE(reviewed_by_user_id, $3) WHERE id = $1 AND company_id = $2 RETURNING id, reviewed_at',
+    [req.params.id, req.auth.company_id, req.auth.user_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Signal introuvable.' });
+  await writeAudit(req.auth, 'fraud_signal', result.rows[0].id, 'reviewed', {});
+  return res.json({ id: result.rows[0].id, reviewedAt: result.rows[0].reviewed_at });
+}));
+// Signaux entre entreprises : réservés à l'équipe TRAXO.
+app.get('/api/app/platform/signals', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!req.auth.is_platform_admin) return res.status(403).json({ error: 'Réservé à l’équipe TRAXO.' });
+  const rows = (await pool.query(
+    `SELECT s.*, c.name AS company_name FROM fraud_signals s
+     LEFT JOIN companies c ON c.id = (s.details->>'companyId')::bigint
+     WHERE s.company_id IS NULL ORDER BY s.created_at DESC LIMIT 100`
+  )).rows;
+  return res.json({ signals: rows.map((r) => ({ id: r.id, kind: r.kind, at: r.created_at, reviewedAt: r.reviewed_at, companyName: r.company_name, ...describeSignal(r) })) });
+}));
+app.post('/api/app/platform/signals/:id/review', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!req.auth.is_platform_admin) return res.status(403).json({ error: 'Réservé à l’équipe TRAXO.' });
+  const result = await pool.query('UPDATE fraud_signals SET reviewed_at = COALESCE(reviewed_at, NOW()), reviewed_by_user_id = $2 WHERE id = $1 AND company_id IS NULL RETURNING id', [req.params.id, req.auth.user_id]);
+  if (!result.rows[0]) return res.status(404).json({ error: 'Signal introuvable.' });
+  return res.json({ id: result.rows[0].id, reviewed: true });
+}));
 
 app.get('/api/app/notifications', requireCompanyApi, asyncRoute(async (req, res) => {
   const currentHash = digest(String(parseCookies(req).delivery_session || ''));
@@ -6485,6 +6729,122 @@ async function duplicateDriverPhone(queryable, companyId, digits, exceptId = nul
     [companyId, digits, exceptId]
   )).rows[0] || null;
 }
+// ---- Vigilance : signaux à vérifier -----------------------------------------
+// Rien n'est bloqué sur un simple soupçon (un client peut venir à la rencontre
+// du livreur) : on prévient le responsable, qui juge. Seule une photo déjà
+// utilisée est refusée, car une nouvelle remise appelle une nouvelle photo.
+async function raiseSignal({ companyId = null, kind, driverId = null, orderId = null, details = {}, dedupeKey }) {
+  try {
+    await pool.query(
+      `INSERT INTO fraud_signals (company_id, kind, driver_id, order_id, details, dedupe_key)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT (dedupe_key) DO NOTHING`,
+      [companyId, kind, driverId, orderId, JSON.stringify(details), dedupeKey]
+    );
+  } catch (error) {
+    console.error('Vigilance signal failed:', error.message);
+  }
+}
+// Position envoyée par le téléphone du livreur avec son action (facultative).
+function clientFixFrom(body) {
+  const p = body && body.position;
+  if (!p || typeof p !== 'object') return null;
+  const fix = { lat: Number(p.lat), lng: Number(p.lng), accuracy: Number(p.accuracy), at: new Date(), source: 'phone' };
+  if (!vigilance.validFix(fix) || !Number.isFinite(fix.accuracy) || fix.accuracy < 0 || fix.accuracy > 5000) return null;
+  return fix;
+}
+async function checkDriverPlace({ companyId, driverId, orderId, toStatus, clientFix }) {
+  try {
+    let fix = clientFix && clientFix.accuracy <= 200 ? clientFix : null;
+    if (!fix) {
+      const tracked = await driverCurrentPosition(driverId, companyId, 5 * 60 * 1000);
+      if (tracked) fix = { lat: tracked.lat, lng: tracked.lng, accuracy: null, at: new Date(tracked.at), source: 'traccar' };
+    }
+    if (!fix) return;
+    const prev = (await pool.query(
+      `SELECT lat, lng, fixed_at AS at FROM driver_fixes
+       WHERE driver_id = $1 AND company_id = $2 AND fixed_at > NOW() - INTERVAL '3 hours' AND fixed_at < $3
+       ORDER BY fixed_at DESC LIMIT 1`,
+      [driverId, companyId, fix.at]
+    )).rows[0];
+    await pool.query(
+      `INSERT INTO driver_fixes (company_id, driver_id, order_id, lat, lng, accuracy, source, fixed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [companyId, driverId, orderId, fix.lat, fix.lng, Number.isFinite(fix.accuracy) ? fix.accuracy : null, fix.source, fix.at]
+    );
+    if (prev) {
+      const jump = vigilance.impossibleJump(prev, fix);
+      if (jump && jump.impossible) {
+        await raiseSignal({ companyId, kind: 'impossible_speed', driverId, orderId, details: { ...jump, status: toStatus }, dedupeKey: `speed:${driverId}:${orderId}:${toStatus}` });
+      }
+    }
+    const order = (await pool.query('SELECT destination_lat, destination_lng FROM orders WHERE id = $1 AND company_id = $2', [orderId, companyId])).rows[0];
+    if (order && order.destination_lat != null && order.destination_lng != null) {
+      const far = vigilance.farFromDestination(fix, { lat: order.destination_lat, lng: order.destination_lng });
+      if (far && far.far) {
+        await raiseSignal({ companyId, kind: 'far_delivery', driverId, orderId, details: { distance: far.distance, status: toStatus, source: fix.source }, dedupeKey: `far:${orderId}` });
+      }
+    }
+  } catch (error) {
+    console.error('Vigilance place check failed:', error.message);
+  }
+}
+async function checkCashPattern(companyId, driverId) {
+  try {
+    const rows = (await pool.query(
+      `SELECT pa.expected_amount_minor AS expected, pa.collected_amount_minor AS collected, pa.currency
+       FROM order_payment_accounts pa JOIN orders o ON o.id = pa.order_id
+       WHERE o.company_id = $1 AND o.driver_id = $2 AND pa.status = 'discrepancy' AND pa.collected_at > NOW() - INTERVAL '30 days'`,
+      [companyId, driverId]
+    )).rows;
+    const pattern = vigilance.cashGapPattern(rows);
+    if (!pattern.repeated) return;
+    const week = Math.floor(Date.now() / (7 * 86400000));
+    await raiseSignal({ companyId, kind: 'cash_gap', driverId, details: { count: pattern.count, totalMinor: pattern.totalMinor, currency: rows[0]?.currency || 'XOF' }, dedupeKey: `cash:${driverId}:${week}` });
+  } catch (error) {
+    console.error('Vigilance cash check failed:', error.message);
+  }
+}
+// Même numéro de livreur dans plusieurs entreprises : visible par TRAXO seulement
+// (chaque entreprise ne voit jamais les données d'une autre).
+async function checkSharedPhone(companyId, driverId, digits) {
+  try {
+    if (!digits) return;
+    const others = (await pool.query(
+      `SELECT COUNT(DISTINCT company_id)::int AS n FROM drivers
+       WHERE phone_digits = $1 AND company_id <> $2 AND archived_at IS NULL`,
+      [digits, companyId]
+    )).rows[0].n;
+    if (!others) return;
+    const month = new Date().toISOString().slice(0, 7);
+    await raiseSignal({ kind: 'shared_phone', details: { companies: others + 1, companyId, driverId }, dedupeKey: `phone:${digest(`seat:${digits}`).slice(0, 24)}:${companyId}:${month}` });
+  } catch (error) {
+    console.error('Vigilance phone check failed:', error.message);
+  }
+}
+// Essai gratuit : une fois par personne. Clés : adresse (alias Gmail compris),
+// numéro de téléphone, appareil. Une clé déjà vue ailleurs suffit.
+async function claimTrial(queryable, companyId, keys) {
+  const hashes = [...new Set(keys.filter(Boolean).map((k) => digest(`trial:${k}`)))];
+  if (!hashes.length) return null;
+  const prior = (await queryable.query(
+    'SELECT company_id FROM trial_identities WHERE key_hash = ANY($1::text[]) AND company_id <> $2 LIMIT 1',
+    [hashes, companyId]
+  )).rows[0];
+  await queryable.query(
+    `INSERT INTO trial_identities (key_hash, company_id) SELECT k, $2 FROM unnest($1::text[]) AS k ON CONFLICT (key_hash) DO NOTHING`,
+    [hashes, companyId]
+  );
+  if (prior) {
+    await queryable.query(`UPDATE companies SET trial_status = 'used_elsewhere', trial_ends_at = NULL WHERE id = $1`, [companyId]);
+    return { reused: true, priorCompanyId: prior.company_id };
+  }
+  await queryable.query(
+    `UPDATE companies SET trial_status = 'active', trial_ends_at = NOW() + INTERVAL '3 days' WHERE id = $1 AND trial_status IS NULL`,
+    [companyId]
+  );
+  return { reused: false };
+}
+
 // Une place = une personne (numéro) dans le mois, quels que soient les profils créés.
 async function markDriverSeat(companyId, driverId, phoneDigits = undefined, queryable = pool) {
   try {
@@ -6497,6 +6857,7 @@ async function markDriverSeat(companyId, driverId, phoneDigits = undefined, quer
        ON CONFLICT DO NOTHING`,
       [companyId, seatKey, driverId]
     );
+    if (digits) await checkSharedPhone(companyId, driverId, digits);
   } catch (error) {
     console.error('Seat usage failed:', error.message);
   }
@@ -6741,18 +7102,22 @@ app.post('/api/public/driver-invitations/:ref/send-code', driverJoinRateLimit, a
   const state = driverInvitationState(inv);
   if (state !== 'ready') return res.status(410).json({ state, error: joinMessages[state] });
   if (!whatsappAvailableFor(inv.driver_phone)) return res.json({ sent: false, verification: 'in_person' });
-  if (inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < 45_000) {
-    return res.status(429).json({ error: 'Un code vient de partir. Patientez quelques secondes avant d’en demander un autre.' });
+  // Renvoi : 1 min après le premier code, puis 2 min (même règle que la connexion).
+  const delay = loginCodeResendDelayS(inv.verify_sends || 0);
+  if (inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < delay * 1000) {
+    const resendIn = Math.ceil(delay - (Date.now() - new Date(inv.verify_sent_at).getTime()) / 1000);
+    return res.status(429).json({ error: 'Le code peut mettre un peu de temps à arriver. Vous pourrez en demander un nouveau dans quelques instants.', resendIn });
   }
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  await pool.query('UPDATE driver_invitations SET verify_code_hash = $2, verify_sent_at = NOW() WHERE id = $1', [inv.id, digest(`join:${inv.id}:${code}`)]);
   try {
-    await whatsapp.sendText(inv.driver_phone, `*${code}* est votre code pour rejoindre ${inv.company_name} sur TRAXO.\n\nIl expire dans 10 minutes. Ne le communiquez à personne.`);
+    await whatsapp.sendText(inv.driver_phone, `*${code}* est votre code pour rejoindre ${inv.company_name} sur TRAXO.\n\nIl expire dans 10 minutes. Ne le communiquez à personne.`, { background: true });
   } catch (error) {
     console.error('Driver join code failed:', error.code || error.message);
     return res.status(502).json({ error: 'Le code n’a pas pu partir sur WhatsApp. Réessayez dans un instant ou demandez de l’aide à votre responsable.' });
   }
-  return res.json({ sent: true, phoneMasked: maskPhone(inv.driver_phone) });
+  const sends = (inv.verify_sends || 0) + 1;
+  await pool.query('UPDATE driver_invitations SET verify_code_hash = $2, verify_sent_at = NOW(), verify_sends = $3 WHERE id = $1', [inv.id, digest(`join:${inv.id}:${code}`), sends]);
+  return res.json({ sent: true, phoneMasked: maskPhone(inv.driver_phone), resendIn: loginCodeResendDelayS(sends) });
 }));
 
 app.post('/api/public/driver-invitations/:ref/accept', driverJoinRateLimit, asyncRoute(async (req, res) => {
@@ -8216,6 +8581,7 @@ async function verifyOrderOtp(req, res, driverScoped = false) {
       [req.auth.company_id, req.auth.user_id, order.id, proof.rows[0].id, event.rows[0].id]
     );
     await client.query('COMMIT');
+    if (driverScoped) checkDriverPlace({ companyId: req.auth.company_id, driverId: req.auth.driver_id, orderId: order.id, toStatus: 'Livrée', clientFix: clientFixFrom(req.body) });
     return res.json({ orderId: order.id, status: 'Livrée', proofId: proof.rows[0].id, verifiedAt: proof.rows[0].verified_at });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -8854,6 +9220,7 @@ async function collectOrderPayment(req, res, driverScoped = false) {
       [req.auth.company_id, req.auth.user_id, order.id, event.rows[0].id, paymentStatus]
     );
     await client.query('COMMIT');
+    if (driverScoped && hasDiscrepancy && amount < Number(account.expected_amount_minor)) checkCashPattern(req.auth.company_id, req.auth.driver_id);
     return res.status(201).json({ orderId: order.id, status: paymentStatus, amountMinor: amount, currency: account.currency, collectedAt: updated.rows[0].collected_at });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -9365,6 +9732,8 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
   if (!phone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
   const gps = requestGpsFromBody(req.body);
   if (!gps) return res.status(400).json({ error: 'Partagez votre position GPS pour envoyer votre demande.' });
+  const pickup = pickupFieldsFromBody(req.body || {});
+  if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
   const owning = await pool.query('SELECT company_id FROM customer_requests WHERE token = $1', [req.params.token]);
   if (owning.rows[0] && !(await companyDeliverySetting(owning.rows[0].company_id, 'customerFormEnabled'))) {
     return res.status(403).json({ error: 'Ce formulaire n’est plus actif.' });
@@ -9390,6 +9759,7 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
     ]
   );
   if (!result.rows[0]) return res.status(409).json({ error: 'Ce formulaire a déjà été envoyé ou a expiré.' });
+  await savePickupFields(pool, 'customer_requests', result.rows[0].id, result.rows[0].company_id, pickup.fields);
   await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, verifyFirst ? 'submitted' : 'submitted_auto_validated');
   // Le secret reste dans ce navigateur (cookie HttpOnly), jamais dans l'URL.
   setRequestDeviceCookie(req, res, req.params.token, editToken);
@@ -9403,6 +9773,7 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     `SELECT r.id, r.status, r.customer_name, r.customer_phone, r.requested_time, r.location_lat, r.location_lng,
             r.location_accuracy, r.neighborhood, r.landmark, r.notes, r.submitted_at, r.updated_at,
             r.validated_at, r.archived_at, r.edit_token_hash, r.version, r.expires_at, r.confirm_attempts, r.confirm_locked_at,
+            r.package_type, r.package_description, r.pickup_name, r.pickup_phone, r.pickup_address, r.pickup_ready, r.pickup_lat, r.pickup_lng,
             c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at,
             o.id AS order_id, o.status AS order_status, o.status_changed_at AS order_status_changed_at,
             d.name AS driver_name, d.vehicle_type AS driver_vehicle_type,
@@ -9495,6 +9866,15 @@ app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     neighborhood: row.neighborhood,
     landmark: row.landmark,
     notes: row.notes,
+    package_type: row.package_type || '',
+    package_description: row.package_description || '',
+    pickup_enabled: Boolean(row.pickup_address || row.pickup_name || row.pickup_lat != null),
+    pickup_name: row.pickup_name || '',
+    pickup_address: row.pickup_address || '',
+    pickup_phone: row.pickup_phone || '',
+    pickup_ready: row.pickup_ready || '',
+    pickup_lat: row.pickup_lat ?? null,
+    pickup_lng: row.pickup_lng ?? null,
     submitted_at: row.submitted_at,
     updated_at: row.updated_at,
     validated_at: row.validated_at,
@@ -9611,6 +9991,8 @@ app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
   if (!phone) return res.status(400).json({ error: INVALID_PHONE_MESSAGE, field: 'customerPhone' });
   const gps = requestGpsFromBody(req.body);
   if (!gps) return res.status(400).json({ error: 'Votre position GPS est requise.' });
+  const pickup = pickupFieldsFromBody(req.body || {});
+  if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
   const result = await pool.query(
     `UPDATE customer_requests
      SET customer_name = $1, customer_phone = $2, requested_time = $3,
@@ -9628,6 +10010,7 @@ app.put('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async 
     ]
   );
   if (!result.rows[0]) return res.status(409).json({ error: 'La demande a été validée ou modifiée ailleurs. Rechargez la page.' });
+  await savePickupFields(pool, 'customer_requests', result.rows[0].id, result.rows[0].company_id, pickup.fields);
   await writeAudit({ company_id: result.rows[0].company_id, user_id: null }, 'customer_request', result.rows[0].id, 'customer_updated');
   return res.json({ message: 'Vos informations ont été mises à jour.', version: result.rows[0].version });
 }));

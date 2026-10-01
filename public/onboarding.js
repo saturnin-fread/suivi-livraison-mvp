@@ -21,7 +21,7 @@
   var countries = [['Bénin', '+229'], ['Côte d’Ivoire', '+225'], ['Togo', '+228'], ['Sénégal', '+221'], ['Burkina Faso', '+226'], ['Cameroun', '+237'], ['Gabon', '+241'], ['Guinée', '+224'], ['Mali', '+223'], ['Niger', '+227'], ['Congo', '+242'], ['République démocratique du Congo', '+243'], ['Ghana', '+233'], ['Nigeria', '+234'], ['France', '+33'], ['Canada', '+1'], ['Autre pays', '']];
   var categories = [['restaurant', 'Restaurant'], ['commerce', 'Commerce'], ['vente-en-ligne', 'Vente en ligne'], ['livraison', 'Service de livraison'], ['autre', 'Autre activité']];
   var fleets = ['Pas encore', '1', '2–5', '6–12', '13 et plus'];
-  var state = { step: -1, visited: 0, business: '', category: '', country: '', otherCountry: '', city: '', name: '', phone: '', prefix: '+229', fleet: '', logo: '', saving: false, saveError: '' };
+  var state = { step: -1, visited: 0, business: '', category: '', country: '', otherCountry: '', city: '', name: '', phone: '', prefix: '+229', waCodes: true, fleet: '', logo: '', saving: false, saveError: '' };
   try { var old = JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null'); if (old) Object.assign(state, old, { saving: false, saveError: '' }); } catch (e) { /* stockage bloqué */ }
   function save() { try { var copy = Object.assign({}, state); delete copy.saving; delete copy.saveError; sessionStorage.setItem(STORE_KEY, JSON.stringify(copy)); } catch (e) { /* ignoré */ } }
 
@@ -70,10 +70,13 @@
     } else if (state.step === 2) {
       content.innerHTML = '<form novalidate><p class="tx-kicker">Étape 3 sur 3</p><h1 class="tx-form-title">Qui organise les livraisons ?</h1><p class="tx-form-desc">Ajoutons votre profil et quelques repères sur votre équipe.</p>'
         + field('Votre prénom et votre nom', 'name', 'Prénom et nom', 'autocomplete="name" maxlength="80"')
-        + '<div class="tx-field"><label class="tx-label" for="tx-phone">Téléphone <span class="tx-label-note">Facultatif</span></label><div class="tx-phone"><input class="tx-input tx-prefix" aria-label="Indicatif international" name="prefix" value="' + esc(state.prefix) + '" inputmode="tel" maxlength="5"><input class="tx-input" id="tx-phone" name="phone" type="tel" autocomplete="tel-national" placeholder="Votre numéro" value="' + esc(state.phone) + '" maxlength="20"></div><p class="tx-hint">Pour vous joindre au sujet de votre compte, si nécessaire.</p></div>'
+        + '<div class="tx-field"><label class="tx-label" for="tx-phone">Votre numéro WhatsApp <span class="tx-label-note">Recommandé</span></label><div class="tx-phone"><input class="tx-input tx-prefix" aria-label="Indicatif international" name="prefix" value="' + esc(state.prefix) + '" inputmode="tel" maxlength="5"><input class="tx-input" id="tx-phone" name="phone" type="tel" autocomplete="tel-national" placeholder="01 97 12 34 56" value="' + esc(state.phone) + '" maxlength="20"></div>'
+        + '<label class="tx-check"><input type="checkbox" id="tx-wa-codes" ' + (state.waCodes ? 'checked' : '') + '><span><strong>Recevoir mes codes de connexion sur WhatsApp</strong><small>Plus rapide que l’e‑mail. L’e‑mail reste disponible en secours.</small></span></label></div>'
         + '<div class="tx-field"><span class="tx-label" id="tx-fleet-label">Combien de livreurs travaillent avec vous ?</span><div class="tx-fleet" role="group" aria-labelledby="tx-fleet-label">'
         + fleets.map(function (x) { return '<button type="button" data-fleet="' + x + '" aria-pressed="' + (state.fleet === x) + '">' + x + '</button>'; }).join('')
         + '</div><p class="tx-hint">Une estimation suffit. Vous inviterez vos livreurs une fois dans votre espace.</p></div>' + actions('Vérifier mes informations') + '</form>';
+      var wa = root.querySelector('#tx-wa-codes');
+      if (wa) wa.onchange = function () { state.waCodes = wa.checked; save(); };
       root.querySelectorAll('[data-fleet]').forEach(function (b) { b.onclick = function () { syncInputs(); state.fleet = b.dataset.fleet; save(); render(); root.querySelector('[data-fleet="' + state.fleet + '"]').focus({ preventScroll: true }); }; });
     } else {
       var country = state.country === 'Autre pays' ? state.otherCountry : state.country;
@@ -81,7 +84,7 @@
       content.innerHTML = '<div class="tx-ready"><h1 class="tx-form-title">Votre configuration est prête.</h1><p class="tx-form-desc">Vérifiez ces informations avant de découvrir votre espace.</p>'
         + '<div class="tx-ready-company"><div class="tx-monogram">' + (state.logo ? '<img src="' + esc(state.logo) + '" alt="Logo de votre activité">' : esc(state.business.trim().slice(0, 1).toUpperCase())) + '</div><div><p class="tx-company-name">' + esc(state.business) + '</p><p class="tx-company-type">' + esc(cat) + '</p></div><button type="button" class="tx-text-button" data-edit="0" style="margin-left:auto">Modifier</button></div>'
         + '<dl class="tx-summary"><div class="tx-summary-row"><dt>Votre ville</dt><dd>' + esc(state.city) + ', ' + esc(country) + '</dd><button type="button" class="tx-text-button" data-edit="1">Modifier</button></div>'
-        + '<div class="tx-summary-row"><dt>Responsable</dt><dd>' + esc(state.name) + '<br><span style="color:#777">' + (state.phone ? esc(state.prefix) + ' ' + esc(state.phone) : 'Téléphone non renseigné') + '</span></dd><button type="button" class="tx-text-button" data-edit="2">Modifier</button></div>'
+        + '<div class="tx-summary-row"><dt>Responsable</dt><dd>' + esc(state.name) + '<br><span style="color:#777">' + (state.phone ? esc(state.prefix) + ' ' + esc(state.phone) + ' · codes ' + (state.waCodes ? 'sur WhatsApp' : 'par e‑mail') : 'Pas de numéro WhatsApp · codes par e‑mail') + '</span></dd><button type="button" class="tx-text-button" data-edit="2">Modifier</button></div>'
         + '<div class="tx-summary-row"><dt>Livreurs</dt><dd>' + (state.fleet === 'Pas encore' ? 'À ajouter plus tard' : esc(state.fleet) + (state.fleet === '1' ? ' livreur' : ' livreurs')) + '</dd><button type="button" class="tx-text-button" data-edit="2">Modifier</button></div></dl>'
         + '<button type="button" class="tx-primary tx-ready-cta" id="tx-launch" ' + (state.saving ? 'disabled' : '') + '>' + (state.saving ? 'Enregistrement…' : 'Découvrir TRAXO') + ic('fleche-droite') + '</button>'
         + (state.saveError ? '<p class="tx-save-error" role="alert">' + esc(state.saveError) + '</p>' : '')
@@ -215,6 +218,7 @@
         name: state.name.trim(),
         prefix: state.prefix.trim(),
         phone: state.phone.trim(),
+        codeChannel: state.phone.trim() ? (state.waCodes ? 'whatsapp' : 'email') : undefined,
         fleet: state.fleet,
         logo: state.logo || undefined,
       }),

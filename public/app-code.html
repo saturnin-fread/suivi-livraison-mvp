@@ -58,7 +58,7 @@
         </form>
 
         <div class="ax-resend" id="resendBlock" hidden>
-          <div id="resendWait">Vous pourrez demander un nouveau code dans <span class="ax-timer" id="timer">0:30</span></div>
+          <div id="resendWait">Pas encore reçu ? Patientez un peu : nouveau code possible dans <span class="ax-timer" id="timer">1:00</span></div>
           <button type="button" class="ax-link-btn" id="resendBtn" disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5"/></svg>
             Renvoyer le code
@@ -155,6 +155,7 @@
             timerEl.textContent = Math.floor(remaining / 60) + ':' + String(remaining % 60).padStart(2, '0');
             resendWait.hidden = remaining <= 0;
             resendBtn.disabled = remaining > 0;
+            switchBtn.disabled = remaining > 0;
           }
           paint();
           tick = setInterval(function () { remaining -= 1; paint(); if (remaining <= 0) clearInterval(tick); }, 1000);
@@ -184,7 +185,7 @@
           document.title = (signup ? 'Confirmez votre adresse' : 'Code de connexion') + ' — TRAXO';
           document.getElementById('title').textContent = signup ? 'Confirmez votre adresse e‑mail' : 'Confirmez qu’il s’agit bien de vous';
           document.getElementById('subtitle').textContent = onWhatsApp
-            ? 'Nous avons envoyé un code à 6 chiffres sur WhatsApp au'
+            ? 'Votre code à 6 chiffres arrive sur WhatsApp dans quelques secondes, au'
             : (signup ? 'Nous venons d’envoyer un code à 6 chiffres à' : 'Pour sécuriser votre connexion, nous avons envoyé un code à 6 chiffres à');
           document.getElementById('target').textContent = onWhatsApp ? info.whatsapp : info.email;
           document.getElementById('help').textContent = onWhatsApp
@@ -202,8 +203,26 @@
           describe();
           if (state.channel !== 'pending') countdown(state.resendIn);
           else chooser.querySelector('.ax-choice').focus();
+          if (state.channel === 'whatsapp') watchDelivery();
         }).catch(function () {});
 
+        // WhatsApp part en différé : si la remise échoue, on propose l'e-mail tout de suite.
+        var watch = null;
+        function watchDelivery() {
+          clearInterval(watch);
+          var tries = 0;
+          watch = setInterval(function () {
+            tries += 1;
+            if (tries > 10 || !info || info.channel !== 'whatsapp') { clearInterval(watch); return; }
+            fetch('/app/login/code/state', { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (st) {
+              if (!st || !st.deliveryFailed) return;
+              clearInterval(watch);
+              TraxoAuth.showBanner('Le message WhatsApp n’a pas pu partir. Recevez plutôt le code par e‑mail.', 'error');
+              countdown(0);
+              switchBlock.hidden = false;
+            }).catch(function () {});
+          }, 4000);
+        }
         function send(channel, button) {
           button.disabled = true;
           fetch('/app/login/code/resend', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channel: channel }) }).then(function (r) {
@@ -214,7 +233,8 @@
             if (!res.ok) { TraxoAuth.showBanner(res.data.error || 'Le code n’a pas pu être renvoyé.', 'error'); if (res.data.resendIn !== undefined) countdown(res.data.resendIn); return; }
             info.channel = res.data.channel || channel;
             describe();
-            TraxoAuth.showBanner(info.channel === 'whatsapp' ? 'Code envoyé sur WhatsApp. L’ancien ne fonctionne plus.' : 'Nouveau code envoyé par e‑mail. L’ancien ne fonctionne plus.', 'success');
+            TraxoAuth.showBanner(info.channel === 'whatsapp' ? 'Votre code arrive sur WhatsApp dans quelques secondes. L’ancien ne fonctionne plus.' : 'Code envoyé par e‑mail. L’ancien ne fonctionne plus.', 'success');
+            if (info.channel === 'whatsapp') watchDelivery();
             otpRoot.classList.remove('has-error');
             countdown(res.data.resendIn);
             otp.focus();

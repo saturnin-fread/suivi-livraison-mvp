@@ -414,6 +414,7 @@
         </form>
         <aside class="dr-side">
           ${accessCard(d)}
+          ${S.canManage ? '<section class="dr-card dr-signals" id="drSignals" hidden></section>' : ''}
           <section class="dr-card dr-recent"><h2>Ses dernières livraisons</h2><div id="drRecent"><div class="dr-skel"></div><div class="dr-skel"></div></div></section>
           ${S.canManage ? manageCard(d) : ''}
         </aside>
@@ -422,6 +423,28 @@
     bindCommon();
     bindProfile(d);
     loadRecent(d);
+    if (S.canManage) loadSignals(d);
+  }
+
+  // Points d'attention (vigilance) : affichés seulement s'il y en a.
+  async function loadSignals(d) {
+    const box = S.page.querySelector('#drSignals');
+    if (!box) return;
+    let list = [];
+    try { list = (await D.api(`/api/app/drivers/${encodeURIComponent(d.id)}/signals`)).signals || []; } catch { return; }
+    if (!box.isConnected || !list.length) return;
+    const open = list.filter((x) => !x.reviewedAt).length;
+    box.hidden = false;
+    box.innerHTML = `<div class="dr-card-head"><div><h2>Points d’attention</h2><p>${open ? `${open} à vérifier` : 'Tout a été vérifié'} · 90 derniers jours</p></div>${ic('alert')}</div>
+      <ul class="dr-sig">${list.map((x) => `<li class="${x.reviewedAt ? 'done' : ''}">
+        <strong>${esc(x.title)}</strong><p>${esc(x.detail)}</p>
+        <div class="dr-sig-foot"><time>${esc(dayLabel(x.at))}</time>${x.reviewedAt ? `<span>${ic('check')} Vérifié</span>` : `<button class="dr-link" type="button" data-review="${esc(x.id)}">C’est vérifié</button>`}${x.orderId ? `<a class="dr-link" href="/app/operations?vue=commandes&commande=${encodeURIComponent(x.orderId)}">Voir la commande</a>` : ''}</div>
+      </li>`).join('')}</ul>`;
+    box.querySelectorAll('[data-review]').forEach((btn) => btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      btn.disabled = true;
+      try { await D.api(`/api/app/signals/${encodeURIComponent(btn.dataset.review)}/review`, { method: 'POST' }); loadSignals(d); } catch (error) { btn.disabled = false; D.uiToast(error.message, 'error'); }
+    }));
   }
 
   function accessCard(d) {

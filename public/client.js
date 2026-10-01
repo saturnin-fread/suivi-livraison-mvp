@@ -471,16 +471,19 @@
 
   // Erreur renvoyée par le serveur sur un champ précis.
   function markFieldError(form, field, message) {
-    const input = field === 'customerPhone' ? form.querySelector('#f-phone') : null;
+    const ids = { customerPhone: ['#f-phone', '#phoneHint'], pickupAddress: ['#f-pk-address', '#pkAddressHint'], pickupPhone: ['#f-pk-phone', '#pkPhoneHint'] };
+    const [inputSel, hintSel] = ids[field] || [];
+    const input = inputSel ? form.querySelector(inputSel) : null;
     if (!input) return;
     input.setAttribute('aria-invalid', 'true');
-    const hint = form.querySelector('#phoneHint');
+    const hint = form.querySelector(hintSel);
     if (hint) { hint.textContent = message; hint.classList.add('err'); }
     input.focus();
     input.addEventListener('input', () => { input.setAttribute('aria-invalid', 'false'); if (hint) hint.classList.remove('err'); }, { once: true });
   }
 
   // ---- Champs du formulaire (création et modification) -----------------
+  const PACKAGE_TYPES = [['colis', 'Un colis'], ['documents', 'Des documents'], ['repas', 'Un repas'], ['fragile', 'Un objet fragile'], ['vetements', 'Des vêtements'], ['autre', 'Autre chose']];
   function requestFieldsHtml(d = {}) {
     const v = (key) => esc(d[key] || '');
     return `
@@ -499,7 +502,45 @@
         <div class="cl-field"><label for="f-time">Créneau souhaité <em>(facultatif)</em></label><input class="cl-input" id="f-time" name="requestedTime" placeholder="Ex. 15 h – 17 h" value="${v('requested_time')}" /></div>
         <div class="cl-field"><label for="f-notes">Consigne pour le livreur <em>(facultatif)</em></label><textarea class="cl-input" id="f-notes" name="notes" placeholder="Ex. appelez à votre arrivée">${v('notes')}</textarea></div>
         <div class="cl-field"><span class="cl-label">Ajouter des photos du lieu <em>(facultatif · 3 maximum)</em></span><div id="photoField"></div></div>
+      </section>
+      <section class="cl-sec">
+        <div class="cl-sec-head"><span class="cl-sec-num">03</span><h2 class="cl-sec-title">Votre colis</h2></div>
+        <p class="cl-sec-sub">Facultatif, mais utile au livreur pour prévoir la place et le soin.</p>
+        <div class="cl-field"><span class="cl-label" id="pkgTypeLabel">Ce que vous attendez</span>
+          <div class="cl-chips" role="radiogroup" aria-labelledby="pkgTypeLabel">${PACKAGE_TYPES.map(([value, label]) => `<label class="cl-chip"><input type="radio" name="packageType" value="${value}" ${d.package_type === value ? 'checked' : ''}><span>${esc(label)}</span></label>`).join('')}</div>
+        </div>
+        <div class="cl-field"><label for="f-pkg">Contenu <em>(facultatif)</em></label><input class="cl-input" id="f-pkg" name="packageDescription" maxlength="240" placeholder="Ex. 2 robes, un carton d’environ 5 kg" value="${v('package_description')}" /></div>
+        <label class="cl-check" for="f-pickup"><input type="checkbox" id="f-pickup" name="pickupEnabled" value="true" ${d.pickup_enabled ? 'checked' : ''}><span><strong>Le colis est à récupérer ailleurs</strong><small>Le livreur passera d’abord le chercher, puis viendra chez vous.</small></span></label>
+        <div class="cl-pickup" id="pickupBox" ${d.pickup_enabled ? '' : 'hidden'}>
+          <div class="cl-row">
+            <div class="cl-field"><label for="f-pk-name">Chez qui ? <em>(facultatif)</em></label><input class="cl-input" id="f-pk-name" name="pickupName" maxlength="120" placeholder="Ex. Boutique Mado, Tante Rose" value="${v('pickup_name')}" /></div>
+            <div class="cl-field"><label for="f-pk-phone">Son téléphone <em>(facultatif)</em></label><input class="cl-input" id="f-pk-phone" name="pickupPhone" type="tel" inputmode="tel" maxlength="24" placeholder="01 97 12 34 56" value="${v('pickup_phone')}" /><p class="cl-hint" id="pkPhoneHint">Pour que le livreur la prévienne.</p></div>
+          </div>
+          <div class="cl-field"><label for="f-pk-address">Où le récupérer ? *</label><input class="cl-input" id="f-pk-address" name="pickupAddress" maxlength="240" placeholder="Ex. Dantokpa, allée des tissus, porte 3" value="${v('pickup_address')}" /><p class="cl-hint" id="pkAddressHint">Un quartier et un repère suffisent.</p></div>
+          <div class="cl-field"><label for="f-pk-ready">Prêt à partir à <em>(facultatif)</em></label><input class="cl-input" id="f-pk-ready" name="pickupReady" maxlength="80" placeholder="Ex. à partir de 14 h" value="${v('pickup_ready')}" /></div>
+          ${d.pickup_lat != null && d.pickup_lng != null ? `<input type="hidden" name="pickupLat" value="${esc(d.pickup_lat)}"><input type="hidden" name="pickupLng" value="${esc(d.pickup_lng)}">` : ''}
+        </div>
       </section>`;
+  }
+
+  // Colis : la case « à récupérer ailleurs » ouvre les champs de collecte.
+  function wirePackageFields(root) {
+    const toggle = root.querySelector('#f-pickup');
+    const box = root.querySelector('#pickupBox');
+    if (!toggle || !box) return;
+    const sync = () => {
+      box.hidden = !toggle.checked;
+      const address = box.querySelector('#f-pk-address');
+      address.required = toggle.checked;
+      if (toggle.checked && !address.value) address.focus();
+    };
+    toggle.addEventListener('change', sync);
+    box.querySelector('#f-pk-address').required = toggle.checked;
+    // Un second clic sur le type déjà choisi le retire (ce n'est pas obligatoire).
+    root.querySelectorAll('.cl-chip input').forEach((radio) => {
+      radio.addEventListener('mousedown', () => { radio.dataset.was = radio.checked ? '1' : ''; });
+      radio.addEventListener('click', () => { if (radio.dataset.was === '1') { radio.checked = false; radio.dataset.was = ''; } });
+    });
   }
 
   function readFields(form) {
@@ -522,6 +563,6 @@
   window.TraxoClient = {
     icon, esc, initials, isCar, formatTime, renderHeader, brandMark, fetchJson, requestTokenFromPath,
     createGpsField, createPhotoPicker, compressImage, uploadPhoto, deletePhoto,
-    requestFieldsHtml, readFields, firstMissing, wirePhoneField, markFieldError, phoneFieldHtml,
+    requestFieldsHtml, readFields, firstMissing, wirePhoneField, markFieldError, phoneFieldHtml, wirePackageFields,
   };
 })();

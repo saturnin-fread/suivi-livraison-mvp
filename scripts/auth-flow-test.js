@@ -36,11 +36,16 @@ function lastCode(to) {
   }
   throw new Error('Aucun e-mail reçu pour ' + to);
 }
-function lastWhatsAppCode(digits) {
-  const files = fs.readdirSync(outbox).filter((f) => f.endsWith('-wa.json')).sort();
-  for (let i = files.length - 1; i >= 0; i -= 1) {
-    const msg = JSON.parse(fs.readFileSync(path.join(outbox, files[i]), 'utf8'));
-    if (msg.whatsapp === digits) return /\*(\d{6})\*/.exec(msg.text)[1];
+// Le message WhatsApp part en différé (file d'envoi) : on attend son arrivée.
+async function whatsAppCodeAfter(digits, since, timeoutMs = 20000) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const files = fs.readdirSync(outbox).filter((f) => f.endsWith('-wa.json')).sort();
+    for (let i = files.length - 1; i >= 0; i -= 1) {
+      const msg = JSON.parse(fs.readFileSync(path.join(outbox, files[i]), 'utf8'));
+      if (msg.whatsapp === digits && (msg.at || 0) >= since) return { code: /\*(\d{6})\*/.exec(msg.text)[1], at: msg.at };
+    }
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
   }
   throw new Error('Aucun message WhatsApp pour ' + digits);
 }
@@ -70,7 +75,7 @@ function lastWhatsAppCode(digits) {
     // 2. Code faux puis renvoi trop tôt
     const bad = await post('/app/login/code', { code: '000000' === lastCode(email) ? '111111' : '000000' }, verify);
     assert.ok(/error=code&left=4/.test(bad.headers.get('location')), 'code faux compté');
-    assert.strictEqual((await post('/app/login/code/resend', {}, verify)).status, 429, 'renvoi limité à 30 s');
+    assert.strictEqual((await post('/app/login/code/resend', {}, verify)).status, 429, 'renvoi limité (1 min après le premier code)');
 
     // 3. Bon code : session 12 h, configuration guidée ; appareil non mémorisé (« rester connecté » non coché)
     const ok = await post('/app/login/code', { code: lastCode(email) }, verify);
@@ -129,20 +134,40 @@ function lastWhatsAppCode(digits) {
     const again = await post('/app/login', { user: email, password }, device);
     assert.strictEqual(again.headers.get('location'), '/app', 'appareil reconnu : pas de code');
 
-    // 6 bis. Choix WhatsApp (canal simulé en test : WHATSAPP_FAKE=outbox)
+    // 6 bis. Le canal choisi devient la préférence ; choix WhatsApp (canal simulé : WHATSAPP_FAKE=outbox)
     if (process.env.WHATSAPP_FAKE === 'outbox') {
       ip = '10.9.0.6';
+      const remembered = await post('/app/login', { user: email, password });
+      const remState = await (await get('/app/login/code/state', cookieOf(remembered, 'traxo_verify'))).json();
+      assert.strictEqual(remState.channel, 'email', 'premier choix (e-mail) mémorisé : le code part directement');
+      await pool.query('UPDATE users SET code_channel = NULL WHERE email = $1', [email]);
       const viaWa = await post('/app/login', { user: email, password });
       const verifyWa = cookieOf(viaWa, 'traxo_verify');
       const waState = await (await get('/app/login/code/state', verifyWa)).json();
-      assert.strictEqual(waState.channel, 'pending', 'choix du canal proposé');
+      assert.strictEqual(waState.channel, 'pending', 'sans préférence : choix du canal proposé');
       assert.ok(waState.whatsapp && waState.whatsapp.endsWith('07'), 'WhatsApp proposé (numéro masqué)');
+      const askedAt = Date.now();
       const switched = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
-      assert.strictEqual(switched.status, 200, 'bascule vers WhatsApp immédiate');
-      const again30 = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, Cookie: verifyWa }, body: JSON.stringify({ channel: 'whatsapp' }) });
-      assert.strictEqual(again30.status, 429, 'renvoi WhatsApp limité à 30 s');
-      const waOk = await post('/app/login/code', { code: lastWhatsAppCode('2250707070707') }, verifyWa);
+      assert.strictEqual(switched.status, 200, 'premier envoi WhatsApp immédiat');
+      assert.strictEqual((await switched.json()).resendIn, 60, 'renvoi possible après 1 min');
+      const again = await fetch(`${base}/app/login/code/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, Cookie: verifyWa }, body: JSON.stringify({ channel: 'email' }) });
+      assert.strictEqual(again.status, 429, 'autre canal aussi limité pendant 1 min');
+      const wa = await whatsAppCodeAfter('2250707070707', askedAt);
+      const minDelay = Number(process.env.WHATSAPP_DELAY_MIN_MS ?? 5000);
+      assert.ok(wa.at - askedAt >= minDelay - 50, `message WhatsApp différé (${wa.at - askedAt} ms)`);
+      const waOk = await post('/app/login/code', { code: wa.code }, verifyWa);
       assert.strictEqual(waOk.headers.get('location'), '/app', 'code WhatsApp accepté');
+      const waSession = cookieOf(waOk, 'delivery_session');
+      assert.strictEqual((await pool.query('SELECT code_channel FROM users WHERE email = $1', [email])).rows[0].code_channel, 'whatsapp', 'WhatsApp mémorisé');
+      ip = '10.9.0.8';
+      const direct = await post('/app/login', { user: email, password });
+      const directState = await (await get('/app/login/code/state', cookieOf(direct, 'traxo_verify'))).json();
+      assert.strictEqual(directState.channel, 'whatsapp', 'connexion suivante : code directement sur WhatsApp');
+      // Paramètres : revenir à l'e-mail
+      const back = await fetch(`${base}/api/app/account/phone`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: waSession }, body: JSON.stringify({ codeChannel: 'email' }) });
+      assert.strictEqual((await back.json()).codeChannel, 'email', 'préférence modifiable dans les paramètres');
+      const local = await fetch(`${base}/api/app/account/phone`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: waSession }, body: JSON.stringify({ phone: '01 97 12 34 56', codeChannel: 'email' }) });
+      assert.strictEqual((await local.json()).phone, '+2290197123456', 'numéro béninois sans indicatif accepté');
     }
 
     ip = '10.9.0.7';

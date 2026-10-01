@@ -2247,7 +2247,7 @@ async function renderSettings() {
   const isOwner = context.user.role === 'owner';
   const tabs = [
     ...settingsTabs.filter((t) => canEdit || !t.editors),
-    ...(context.user.isPlatformAdmin ? [{ key: 'whatsapp', label: 'WhatsApp TRAXO' }] : []),
+    ...(context.user.isPlatformAdmin ? [{ key: 'whatsapp', label: 'WhatsApp TRAXO' }, { key: 'vigilance', label: 'Vigilance TRAXO' }] : []),
   ];
   const params = new URLSearchParams(location.search);
   let section = (params.get('section') || 'overview').toLowerCase();
@@ -2292,7 +2292,7 @@ async function renderSettings() {
       if (yes) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
     content.innerHTML = '<div class="loading-state" style="padding:40px">Chargement…</div>';
-    const views = { overview, general, deliveries, team, security, billing, plans: plansView, whatsapp: renderWhatsApp };
+    const views = { overview, general, deliveries, team, security, billing, plans: plansView, whatsapp: renderWhatsApp, vigilance: renderVigilance };
     try {
       await views[section](content);
       if (context.company.activationStatus === 'preview' && ['general', 'deliveries', 'team', 'billing', 'plans'].includes(section)) {
@@ -2369,6 +2369,9 @@ async function renderSettings() {
     const priceHtml = quote
       ? `<div class="tx-subscription-price"><strong>${txMoney(quote.monthlyEquivalent)}</strong><span>FCFA / mois${cycle !== 'monthly' ? ` · ${txCycleLabels[cycle].toLowerCase()}` : ''}</span></div>`
       : '<div class="tx-subscription-price"><strong>Sur devis</strong></div>';
+    const waCallout = sec && sec.loginCodes && sec.whatsappChannel && !sec.twoFactorEnabled && !sec.phoneInternational && sec.codeChannel !== 'email'
+      ? `<div class="tx-security-callout tx-callout-wa">${txIcon('smartphone')}<div><h3>Vos codes sur WhatsApp</h3><p>Ajoutez votre numéro : vos codes de connexion arrivent plus vite que par e-mail.</p><button type="button" class="tx-text-button" data-route="security">Ajouter mon numéro WhatsApp</button></div></div>`
+      : '';
     const callout = sec && !sec.twoFactorEnabled
       ? `<div class="tx-security-callout">${txIcon('shield-check')}<div><h3>Un compte mieux protégé</h3><p>Ajoutez une seconde vérification à la connexion.</p><button type="button" class="tx-text-button" data-route="security">Configurer la double authentification</button></div></div>`
       : sec ? `<div class="tx-security-callout tx-callout-ok">${txIcon('shield-check')}<div><h3>Double authentification activée</h3><p>Un code de votre application est demandé à chaque connexion.</p><button type="button" class="tx-text-button" data-route="security">Voir la sécurité du compte</button></div></div>` : '';
@@ -2387,7 +2390,7 @@ async function renderSettings() {
         </section>
         <aside class="tx-overview-aside"><div class="tx-section-label"><h2>Votre abonnement</h2></div>
           <div class="tx-subscription"><span class="tx-eyebrow">Une formule qui vous suit</span><h2>${escapeHtml(plan.name)}</h2><p>${drivers ? `Pour vos ${txPlural(drivers, 'livreur actif', 'livreurs actifs')}.` : 'Aucun livreur actif pour le moment.'}</p>${priceHtml}<p>${escapeHtml(unit)}</p>${txButton(`Gérer mon abonnement ${txIcon('arrow-right')}`, 'data-route="billing"')}</div>
-          ${callout}
+          ${waCallout}${callout}
         </aside>
       </div>`;
   }
@@ -2642,23 +2645,28 @@ async function renderSettings() {
     const channelNote = !s.loginCodes ? 'La vérification par code n’est pas active sur ce serveur : la connexion se fait avec le mot de passe (et la double authentification si elle est activée).'
       : s.twoFactorEnabled
       ? 'Votre double authentification est active : c’est le code de votre application qui est demandé, pas un code par e-mail ou WhatsApp.'
-      : s.whatsappChannel ? 'À la connexion depuis un nouvel appareil, vous choisirez de recevoir le code par e-mail ou sur WhatsApp.' : 'À la connexion depuis un nouvel appareil, le code est envoyé par e-mail. WhatsApp est momentanément indisponible.';
+      : s.whatsappChannel ? 'Demandés à la connexion depuis un nouvel appareil.' : 'Demandés à la connexion depuis un nouvel appareil. WhatsApp est momentanément indisponible : les codes partent par e-mail.';
+    const currentChannel = s.codeChannel || (s.phoneInternational ? 'whatsapp' : 'email');
     box.innerHTML = `${heading('Sécurité du compte', 'Choisissez comment vous connecter et gardez un œil sur vos accès.')}
       <div class="tx-form-layout">
         <div class="tx-stack">
+          <section class="tx-panel tx-codes-panel" id="txCodes"><div class="tx-panel-head"><div><h2>Codes de connexion</h2><p>${escapeHtml(channelNote)}</p></div></div><div class="tx-panel-body">
+            <form id="txPhoneForm" class="tx-codes-form" novalidate>
+              <fieldset class="tx-codes-choice"><legend>Où recevoir vos codes ?</legend>
+                <label class="tx-code-opt"><input type="radio" name="codeChannel" value="whatsapp" ${currentChannel === 'whatsapp' ? 'checked' : ''}><span>${txIcon('smartphone')}<strong>Sur WhatsApp</strong><small>Le plus rapide. L’e-mail reste en secours.</small></span></label>
+                <label class="tx-code-opt"><input type="radio" name="codeChannel" value="email" ${currentChannel === 'email' ? 'checked' : ''}><span>${txIcon('mail')}<strong>Par e-mail</strong><small>${escapeHtml(context.user.email)}</small></span></label>
+              </fieldset>
+              <label class="tx-field" for="txPhone" id="txPhoneField" ${currentChannel === 'whatsapp' ? '' : 'hidden'}>Votre numéro WhatsApp<input id="txPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="01 97 12 34 56" value="${escapeHtml(s.phone || '')}"><small>Au Bénin, saisissez simplement vos 10 chiffres. Ailleurs, ajoutez l’indicatif (+33…).</small></label>
+              ${s.phone && !s.phoneInternational ? '<p class="tx-error">Ce numéro n’a pas d’indicatif : enregistrez-le de nouveau pour recevoir vos codes sur WhatsApp.</p>' : ''}
+              <button type="submit" class="tx-button tx-button-primary" id="txPhoneSave" disabled>Enregistrer</button>
+            </form>
+          </div></section>
           <section class="tx-panel"><div class="tx-panel-head"><div><h2>Connexion et protection</h2><p>${escapeHtml(context.user.email)}${s.googleLinked ? ' · compte Google relié' : ''}</p></div></div><div class="tx-panel-body">
             <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('lock-keyhole')}<div><h3>Mot de passe</h3><p>${escapeHtml(pwdSub)}</p></div></div>${txButton('Modifier', 'id="txPwd"')}</div>
             <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('shield-check')}<div><h3>Double authentification</h3><p>${s.twoFactorEnabled ? `Un code de votre application à chaque connexion · ${txPlural(s.recoveryCodesLeft, 'code de secours restant', 'codes de secours restants')}.` : 'Un code de votre application en plus de votre mot de passe.'}</p><span class="tx-badge ${s.twoFactorEnabled ? 'tx-badge-green' : 'tx-badge-red'}">${s.twoFactorEnabled ? 'Activée' : 'À activer'}</span></div></div>${s.twoFactorEnabled ? `<div class="tx-inline-actions">${txButton('Nouveaux codes', 'id="txMfaCodes"')}${txButton('Désactiver', 'id="txMfaOff"', 'tx-button-quiet')}</div>` : txButton('Configurer', 'id="txMfaOn"', 'tx-button-primary')}</div>
             <div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('monitor')}<div><h3>Sessions actives</h3><p>${txPlural(s.activeSessions, 'appareil connecté', 'appareils connectés')} à votre compte.</p></div></div>${txButton('Voir', 'id="txSessions"')}</div>
             ${toggleRow('loginAlerts', 'M’avertir des nouvelles connexions', 'Recevez un e-mail lorsqu’un appareil se connecte à votre compte.', s.loginAlerts)}
             ${deviceNotifRow()}
-          </div></section>
-          <section class="tx-panel"><div class="tx-panel-head"><div><h2>Codes de connexion</h2><p>${escapeHtml(channelNote)}</p></div></div><div class="tx-panel-body">
-            <form id="txPhoneForm" class="tx-phone-form" novalidate>
-              <label class="tx-field" for="txPhone">Votre numéro WhatsApp<input id="txPhone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+229 01 97 12 34 56" value="${escapeHtml(s.phone || '')}"><small>Avec l’indicatif du pays. Laissez vide pour recevoir vos codes uniquement par e-mail.</small></label>
-              <button type="submit" class="tx-button" id="txPhoneSave" disabled>Enregistrer</button>
-            </form>
-            ${s.phone && !s.phoneInternational ? '<p class="tx-error">Ce numéro n’a pas d’indicatif : ajoutez-le (+229…) pour recevoir vos codes sur WhatsApp.</p>' : ''}
           </div></section>
         </div>
         <aside class="tx-form-aside"><section class="tx-panel tx-panel-body tx-security-aside"><div class="tx-security-title">${txIcon('shield-check')}<h2>Une étape de plus.<br>Une protection en plus.</h2></div><p class="tx-muted tx-aside-text">Même si quelqu’un connaît votre mot de passe, il lui faudra aussi le code de votre application d’authentification.</p><div class="tx-session">${txIcon('smartphone')}<div><strong>Votre application habituelle</strong><p>Google Authenticator, Microsoft Authenticator, Authy ou 1Password.</p></div></div></section></aside>
@@ -2689,18 +2697,32 @@ async function renderSettings() {
     });
     const phoneForm = box.querySelector('#txPhoneForm');
     const phoneSave = box.querySelector('#txPhoneSave');
-    let savedPhone = s.phone || '';
-    phoneForm.addEventListener('input', () => { phoneSave.disabled = phoneForm.elements.phone.value.trim() === savedPhone; });
+    const phoneField = box.querySelector('#txPhoneField');
+    let saved = { phone: s.phone || '', channel: currentChannel };
+    const draft = () => ({ phone: phoneForm.elements.phone.value.trim(), channel: phoneForm.elements.codeChannel.value });
+    const changed = () => { const d = draft(); return d.channel !== saved.channel || (d.channel === 'whatsapp' && d.phone !== saved.phone); };
+    phoneForm.addEventListener('input', () => { phoneSave.disabled = !changed(); });
+    phoneForm.addEventListener('change', () => {
+      const wa = phoneForm.elements.codeChannel.value === 'whatsapp';
+      phoneField.hidden = !wa;
+      if (wa && !phoneForm.elements.phone.value.trim()) phoneForm.elements.phone.focus();
+      phoneSave.disabled = !changed();
+    });
     phoneForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      const d = draft();
+      if (d.channel === 'whatsapp' && !d.phone) { uiToast('Indiquez votre numéro WhatsApp.', 'error'); phoneForm.elements.phone.focus(); return; }
       phoneSave.disabled = true;
       try {
-        const result = await api('/api/app/account/phone', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phoneForm.elements.phone.value }) });
-        savedPhone = result.phone; phoneForm.elements.phone.value = result.phone;
-        uiToast(result.phone ? 'Numéro enregistré.' : 'Numéro retiré : vos codes arriveront par e-mail.', 'success');
+        const body = d.channel === 'whatsapp' ? { phone: d.phone, codeChannel: 'whatsapp' } : { codeChannel: 'email' };
+        const result = await api('/api/app/account/phone', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        saved = { phone: result.phone || '', channel: result.codeChannel || d.channel };
+        phoneForm.elements.phone.value = result.phone || '';
+        uiToast(saved.channel === 'whatsapp' ? 'C’est noté : vos prochains codes arriveront sur WhatsApp.' : 'C’est noté : vos prochains codes arriveront par e-mail.', 'success');
       } catch (error) { uiToast(error.message, 'error'); phoneSave.disabled = false; }
     });
-    isDirty = () => document.body.contains(phoneForm) && phoneForm.elements.phone.value.trim() !== savedPhone;
+    if (new URLSearchParams(location.search).get('focus') === 'codes') box.querySelector('#txCodes')?.scrollIntoView({ block: 'start' });
+    isDirty = () => document.body.contains(phoneForm) && changed();
   }
 
   // ---- Facturation --------------------------------------------------------
@@ -2717,7 +2739,15 @@ async function renderSettings() {
       : `<div class="tx-capacity-meter" role="img" aria-label="${drivers} places utilisées${cap ? ` sur ${cap}` : ''}"><span style="width:${cap ? Math.min(100, Math.round((drivers / cap) * 100)) : 100}%"></span></div>`;
     const detail = plan.kind === 'per_driver' ? `${txPlural(Math.max(1, drivers), 'livreur', 'livreurs')} × ${txMoney(plan.monthly)} FCFA` : plan.kind === 'custom' ? 'Offre sur mesure' : `Forfait ${plan.capacityLabel.toLowerCase()}`;
     const periodNote = quote && cycle !== 'monthly' ? `<p class="tx-membership-period">Soit ${txMoney(quote.periodTotal)} FCFA par ${txCyclePeriod[cycle]} · remise de ${Math.round(quote.discount * 100)} %</p>` : '';
+    const trial = data.trial || {};
+    const trialEnds = trial.endsAt ? new Date(trial.endsAt) : null;
+    const trialHtml = trial.status === 'active' && trialEnds && trialEnds > new Date()
+      ? `<p class="tx-trial-note ok">${txIcon('shield-check')}<span>Essai gratuit en cours, jusqu’au ${escapeHtml(trialEnds.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }))} à ${escapeHtml(trialEnds.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))}.</span></p>`
+      : trial.status === 'used_elsewhere'
+        ? `<p class="tx-trial-note">${txIcon('shield-check')}<span>L’essai gratuit a déjà été utilisé avec cette adresse, ce numéro ou cet appareil. Il n’est offert qu’une fois : choisissez la formule qui vous convient.</span></p>`
+        : '';
     box.innerHTML = `${heading('Abonnement et facturation', 'Une vue claire sur votre formule et ce qu’elle vous coûte.')}
+      ${trialHtml}
       <section class="tx-membership">
         <div class="tx-membership-main">
           <div class="tx-membership-top"><span class="tx-pass-label"><span></span> VOTRE FORMULE ACTUELLE</span><span class="tx-dark-badge">${escapeHtml(txCycleLabels[cycle] || 'Mensuel')}</span></div>
@@ -2888,6 +2918,22 @@ async function renderSettings() {
   }
 
   // ---- WhatsApp TRAXO (administrateur plateforme) ------------------------
+  // ---- Vigilance TRAXO (administrateur plateforme) ------------------------
+  // Cas qui concernent plusieurs entreprises : essais gratuits réutilisés,
+  // numéros de livreur présents dans plusieurs espaces.
+  async function renderVigilance(box) {
+    const data = await api('/api/app/platform/signals');
+    const list = data.signals || [];
+    const open = list.filter((x) => !x.reviewedAt);
+    box.innerHTML = `${heading('Vigilance TRAXO', 'Ce qui mérite un regard, d’une entreprise à l’autre. Chaque entreprise ne voit jamais les données des autres.')}
+      <section class="tx-panel"><div class="tx-panel-head"><div><h2>${open.length ? txPlural(open.length, 'point à vérifier', 'points à vérifier') : 'Rien à vérifier pour le moment'}</h2><p>Essais gratuits réutilisés et numéros de livreur partagés entre plusieurs espaces.</p></div></div>
+      <div class="tx-panel-body">${list.length ? list.map((x) => `<div class="tx-setting-row"><div class="tx-row-with-icon">${txIcon('shield-check')}<div><h3>${escapeHtml(x.title)}${x.companyName ? ` · ${escapeHtml(x.companyName)}` : ''}</h3><p>${escapeHtml(x.detail)}</p><p class="tx-muted"><small>${escapeHtml(formatDate(x.at))}</small></p></div></div>${x.reviewedAt ? '<span class="tx-badge tx-badge-green">Vérifié</span>' : txButton('C’est vérifié', `data-review="${escapeHtml(x.id)}"`)}</div>`).join('') : '<p class="tx-muted">Aucun signal pour l’instant.</p>'}</div></section>`;
+    box.querySelectorAll('[data-review]').forEach((b) => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await api(`/api/app/platform/signals/${encodeURIComponent(b.dataset.review)}/review`, { method: 'POST' }); renderVigilance(box); } catch (error) { b.disabled = false; uiToast(error.message, 'error'); }
+    }));
+  }
+
   async function renderWhatsApp(box) {
     let timer = null;
     const stillHere = () => document.body.contains(box) && section === 'whatsapp';
@@ -5706,6 +5752,7 @@ const tnIcons = {
   delivered: '<path d="M20 6 9 17l-5-5"/>',
   client: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/>',
   security: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  vigilance: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
   sliders: '<path d="M21 5H3"/><path d="M15 12H3"/><path d="M17 19H3"/><circle cx="19" cy="12" r="2"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
@@ -5719,7 +5766,7 @@ const tnIcons = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
 };
 const tnIcon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tnIcons[name] || ''}</svg>`;
-const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red' };
+const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red', vigilance: 'tn-sand' };
 const tnCategoryLabels = { incidents: 'Incident de livraison', requests: 'Demandes clients', deliveries: 'Livraisons', runs: 'Tournées', clients: 'Clients', security: 'Sécurité' };
 const tnTime = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''; };
 function tnDayGroup(iso) {

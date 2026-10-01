@@ -253,3 +253,19 @@ textarea.cl-input { min-height: 74px; resize: vertical; line-height: 1.45; }
 .cl-step.done .cl-step-ic, .cl-hstep.done .cl-hstep-ic { animation: cl-pop .5s cubic-bezier(.2, .8, .3, 1.4) .3s both; }
 .cl-brand-mark.has-logo { background: #fff; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08); }
 .cl-brand-mark.has-logo img { width: 100%; height: 100%; object-fit: contain; }
+
+/* Votre colis : type, contenu, collecte ailleurs */
+.cl-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.cl-chip { position: relative; display: inline-flex; margin: 0 !important; cursor: pointer; }
+.cl-field .cl-chip { margin: 0; }
+.cl-chip input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.cl-chip span { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 15px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: 15px; font-weight: 400; transition: border-color .15s, background .15s, color .15s; }
+.cl-chip:hover span { border-color: #b9b9b1; }
+.cl-chip input:checked + span { border-color: var(--green); background: var(--green-soft); color: var(--green); font-weight: 500; }
+.cl-chip input:focus-visible + span { outline: 3px solid rgba(31, 84, 70, .35); outline-offset: 2px; }
+.cl-check { display: flex; gap: 12px; align-items: flex-start; margin: 4px 0 0; padding: 15px 16px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+.cl-check input { flex: 0 0 auto; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--green); cursor: pointer; }
+.cl-check strong { display: block; font-size: 16px; font-weight: 500; color: var(--ink); }
+.cl-check small { display: block; margin-top: 3px; color: var(--muted); font-size: 14px; }
+.cl-pickup { margin-top: 14px; padding: 18px 18px 2px; border-left: 2px solid var(--green-line); background: #fafaf7; animation: cl-rise .35s cubic-bezier(.2, .7, .2, 1) both; }
+@media (max-width: 720px) { .cl-pickup { padding: 14px 12px 2px; } .cl-chip span { font-size: 14.5px; } }

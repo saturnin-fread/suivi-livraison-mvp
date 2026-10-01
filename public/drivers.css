@@ -337,3 +337,17 @@ textarea.dr-input { min-height: 88px; resize: vertical; line-height: 1.45; }
 .dr .dr-select { display: inline-flex; }
 .dr .dr-select.wide { display: flex; }
 .dr .dr-perm { display: flex; }
+
+/* Points d'attention */
+.dr-signals { border-color: #f1dcc3; background: #fffaf3; }
+.dr-signals .dr-card-head > svg { color: #b4691b; }
+.dr-sig { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.dr-sig li { padding: 12px 14px; border: 1px solid #f1e3d1; border-radius: 12px; background: #fff; }
+.dr-sig li.done { opacity: .7; }
+.dr-sig strong { display: block; font-weight: 600; }
+.dr-sig p { margin-top: 4px !important; color: var(--dr-text); font-size: 13.5px; }
+.dr-sig-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 10px; font-size: 13px; }
+.dr-sig-foot time { color: var(--dr-soft); }
+.dr-sig-foot span { display: inline-flex; align-items: center; gap: 5px; color: var(--dr-green); }
+.dr-sig-foot span svg { width: 14px; height: 14px; }
+.dr-sig-foot .dr-link { font-size: 13px; }

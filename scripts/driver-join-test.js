@@ -14,14 +14,17 @@ async function call(method, url, { cookie, body } = {}) {
   const res = await fetch(`${base}${url}`, { method, redirect: 'manual', headers: { ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
   return { res, status: res.status, data: await res.json().catch(() => ({})) };
 }
-function lastWhatsappCode(digits, since) {
-  if (!outbox || !fs.existsSync(outbox)) return null;
-  const files = fs.readdirSync(outbox).filter((f) => f.endsWith('-wa.json')).sort();
-  for (let i = files.length - 1; i >= 0; i -= 1) {
-    const full = path.join(outbox, files[i]);
-    if (fs.statSync(full).mtimeMs < since) continue;
-    const msg = JSON.parse(fs.readFileSync(full, 'utf8'));
-    if (String(msg.whatsapp).endsWith(digits.slice(-8))) return (/\*(\d{6})\*/.exec(msg.text) || [])[1] || null;
+// Le message part en différé (file d'envoi WhatsApp) : on attend son arrivée.
+async function lastWhatsappCode(digits, since, timeoutMs = 20000) {
+  if (!outbox) return null;
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const files = fs.existsSync(outbox) ? fs.readdirSync(outbox).filter((f) => f.endsWith('-wa.json')).sort() : [];
+    for (let i = files.length - 1; i >= 0; i -= 1) {
+      const msg = JSON.parse(fs.readFileSync(path.join(outbox, files[i]), 'utf8'));
+      if ((msg.at || 0) >= since && String(msg.whatsapp).endsWith(digits.slice(-8))) return (/\*(\d{6})\*/.exec(msg.text) || [])[1] || null;
+    }
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
   }
   return null;
 }
@@ -97,13 +100,14 @@ function lastWhatsappCode(digits, since) {
     // --- Rejoindre ------------------------------------------------------------
     async function join(token, digits) {
       if (verification === 'whatsapp') {
-        const since = Date.now() - 1000;
+        const since = Date.now();
         let s = await call('POST', `/api/public/driver-invitations/${token}/send-code`, { body: {} });
         assert.strictEqual(s.status, 200, JSON.stringify(s.data));
         assert.strictEqual(s.data.sent, true);
         s = await call('POST', `/api/public/driver-invitations/${token}/send-code`, { body: {} });
-        assert.strictEqual(s.status, 429, 'renvoi limité à un code toutes les 45 s');
-        const code = lastWhatsappCode(digits, since);
+        assert.strictEqual(s.status, 429, 'renvoi limité (1 min après le premier code)');
+        assert.ok(s.data.resendIn > 50 && s.data.resendIn <= 60, 'délai de renvoi indiqué');
+        const code = await lastWhatsappCode(digits, since);
         assert.ok(code, 'code WhatsApp reçu');
         const bad = code === '000000' ? '111111' : '000000';
         s = await call('POST', `/api/public/driver-invitations/${token}/accept`, { body: { code: bad } });

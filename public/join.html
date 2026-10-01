@@ -235,9 +235,10 @@
             if (invite.verification === 'whatsapp') {
               button.textContent = 'Envoi du code…';
               const sent = await call('/send-code', { method: 'POST', body: '{}' });
-              if (sent.ok && sent.data.sent) { renderVerify(sent.data.phoneMasked || invite.phoneMasked); return; }
+              if (sent.ok && sent.data.sent) { renderVerify(sent.data.phoneMasked || invite.phoneMasked, sent.data.resendIn); return; }
               if (sent.ok && sent.data.verification === 'in_person') { invite.verification = 'in_person'; }
               else if (sent.status === 410) { showState(sent.data.state, sent.data.error); return; }
+              else if (sent.status === 429) { renderVerify(invite.phoneMasked, sent.data.resendIn); return; }
               else { button.disabled = false; button.textContent = 'Rejoindre cette entreprise'; err.textContent = sent.data.error || 'Le code n’a pas pu partir. Réessayez.'; err.hidden = false; return; }
             }
             button.textContent = 'Association…';
@@ -257,10 +258,10 @@
         }
 
         // ---- Vérification du numéro (code WhatsApp) ---------------------------
-        function renderVerify(phoneMasked) {
+        function renderVerify(phoneMasked, resendAfter) {
           render(`<form id="otpForm" novalidate class="jn-in" style="display:flex;flex-direction:column;flex:1">
             <h1>C’est bien vous ?</h1>
-            <p class="jn-lead">Nous venons d’envoyer un code à 6 chiffres sur WhatsApp${phoneMasked ? ` au <strong style="color:var(--ink);font-weight:500;white-space:nowrap">${esc(phoneMasked)}</strong>` : ''}.</p>
+            <p class="jn-lead">Un code à 6 chiffres arrive sur WhatsApp dans quelques secondes${phoneMasked ? ` au <strong style="color:var(--ink);font-weight:500;white-space:nowrap">${esc(phoneMasked)}</strong>` : ''}.</p>
             <div class="jn-otp" id="otp" role="group" aria-label="Code reçu sur WhatsApp">
               ${[0, 1, 2, 3, 4, 5].map((i) => `<input inputmode="numeric" maxlength="1" ${i === 0 ? 'autocomplete="one-time-code"' : 'autocomplete="off"'} aria-label="Chiffre ${i + 1}" />`).join('')}
             </div>
@@ -297,25 +298,34 @@
             });
           });
           boxes[0].focus();
-          // Renvoi possible après 45 s, comme côté serveur.
+          // Renvoi possible après le délai donné par le serveur (1 min, puis 2).
           const resend = view.querySelector('#resend');
           const resendIn = view.querySelector('#resendIn');
-          let wait = 45;
-          const countdown = setInterval(() => {
-            if (!document.body.contains(resend)) { clearInterval(countdown); return; }
-            wait -= 1;
-            resendIn.textContent = wait > 0 ? `dans ${wait} s` : '';
-            if (wait <= 0) { resend.disabled = false; clearInterval(countdown); }
-          }, 1000);
-          resendIn.textContent = `dans ${wait} s`;
+          let countdown = null;
+          const fmt = (n) => (n >= 60 ? `${Math.floor(n / 60)} min ${String(n % 60).padStart(2, '0')} s` : `${n} s`);
+          const startWait = (seconds) => {
+            clearInterval(countdown);
+            let wait = Math.max(0, Number(seconds) || 60);
+            resend.disabled = wait > 0;
+            resendIn.textContent = wait > 0 ? `dans ${fmt(wait)}` : '';
+            countdown = setInterval(() => {
+              if (!document.body.contains(resend)) { clearInterval(countdown); return; }
+              wait -= 1;
+              resendIn.textContent = wait > 0 ? `dans ${fmt(wait)}` : '';
+              if (wait <= 0) { resend.disabled = false; clearInterval(countdown); }
+            }, 1000);
+          };
+          startWait(resendAfter);
           resend.addEventListener('click', async () => {
             resend.disabled = true;
             const sent = await call('/send-code', { method: 'POST', body: '{}' });
             if (sent.status === 410) { showState(sent.data.state, sent.data.error); return; }
             const err = view.querySelector('#err');
+            if (sent.status === 429) { startWait(sent.data.resendIn); return; }
             if (!sent.ok) { err.textContent = sent.data.error || 'Le code n’a pas pu partir. Réessayez.'; err.hidden = false; resend.disabled = false; return; }
             err.hidden = true;
-            view.querySelector('#otpHint').textContent = 'Nouveau code envoyé. Seul le dernier reçu fonctionne.';
+            startWait(sent.data.resendIn);
+            view.querySelector('#otpHint').textContent = 'Un nouveau code arrive dans quelques secondes. Seul le dernier reçu fonctionne.';
           });
           view.querySelector('#otpForm').addEventListener('submit', (event) => {
             event.preventDefault();

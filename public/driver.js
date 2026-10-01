@@ -59,6 +59,20 @@ function badge(status) {
   return `<span class="badge ${type}">${escapeHtml(status)}</span>`;
 }
 
+// Position du téléphone au moment de l'arrivée et de la remise (vérification
+// de l'endroit). Jamais bloquant : sans GPS ou sans autorisation, on continue.
+function quickPosition() {
+  if (!navigator.geolocation) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const done = (value) => { clearTimeout(timer); resolve(value); };
+    const timer = setTimeout(() => resolve(null), 4500);
+    navigator.geolocation.getCurrentPosition(
+      (p) => done({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: Math.round(p.coords.accuracy || 0) }),
+      () => done(null),
+      { enableHighAccuracy: true, maximumAge: 60000, timeout: 4000 },
+    );
+  });
+}
 function actionKey(prefix) {
   const random = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}:${random}`;
@@ -375,6 +389,7 @@ async function renderDetail(id) {
     document.querySelectorAll('.transition').forEach((item) => { item.disabled = true; });
     try {
       const payload = { toStatus, reason, idempotencyKey: actionKey('driver-transition') };
+      if (toStatus === 'Arrivée') { const position = await quickPosition(); if (position) payload.position = position; }
       const result = await sendOrQueue('transition', id, `/api/driver/orders/${encodeURIComponent(id)}/transition`, payload);
       if (result.queued) {
         document.getElementById('transitionResult').innerHTML = '<div class="notice warning">Action enregistrée sur ce téléphone. Elle reste en attente de confirmation du serveur.</div>';
@@ -429,6 +444,8 @@ async function renderDetail(id) {
       requireOnline('Le code de remise doit être vérifié en direct. Reconnectez-vous avant de continuer.');
       const payload = Object.fromEntries(new FormData(form));
       payload.idempotencyKey = form.dataset.actionKey;
+      const position = await quickPosition();
+      if (position) payload.position = position;
       await api(`/api/driver/orders/${encodeURIComponent(id)}/otp/verify`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       });

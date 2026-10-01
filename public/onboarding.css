@@ -128,3 +128,7 @@ body { display: block; }
 #traxo-onboarding .tx-pill:hover .tx-pill-icon svg { stroke: #fff; transform: translateX(2px) rotate(-25deg); }
 #traxo-onboarding .tx-pill:active .tx-pill-icon { transform: scale(.95); }
 @media (max-width: 440px) { #traxo-onboarding .tx-welcome-bottom .tx-pill { width: 100%; justify-content: center; } #traxo-onboarding .tx-header-label { display: none; } }
+#traxo-onboarding .tx-check{display:flex;gap:12px;align-items:flex-start;margin:14px 0 0;padding:13px 14px;border:1px solid #e3e4e8;border-radius:10px;background:#fafafb;cursor:pointer;font-weight:400}
+#traxo-onboarding .tx-check input{flex:0 0 auto;width:18px;height:18px;margin:2px 0 0;accent-color:#e11d2a;cursor:pointer}
+#traxo-onboarding .tx-check strong{display:block;font-size:14px;font-weight:500;color:#202124}
+#traxo-onboarding .tx-check small{display:block;margin-top:2px;font-size:12.5px;color:#7d7f86;line-height:1.5}

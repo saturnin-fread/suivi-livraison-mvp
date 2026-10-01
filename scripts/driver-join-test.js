@@ -100,7 +100,7 @@ async function lastWhatsappCode(digits, since, timeoutMs = 20000) {
     // --- Rejoindre ------------------------------------------------------------
     async function join(token, digits) {
       if (verification === 'whatsapp') {
-        const since = Date.now() - 1000;
+        const since = Date.now();
         let s = await call('POST', `/api/public/driver-invitations/${token}/send-code`, { body: {} });
         assert.strictEqual(s.status, 200, JSON.stringify(s.data));
         assert.strictEqual(s.data.sent, true);

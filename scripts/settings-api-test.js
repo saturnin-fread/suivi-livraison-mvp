@@ -102,7 +102,9 @@ function client(cookie) {
   assert.ok([201, 503].includes(r.status), `devis : envoyé ou non configuré (${r.status} ${r.data.error || ''})`);
 
   // --- Numéro WhatsApp
-  assert.strictEqual((await api('PATCH', '/api/app/account/phone', { phone: '01 97 12 34 56' })).status, 400, 'indicatif obligatoire');
+  assert.strictEqual((await api('PATCH', '/api/app/account/phone', { phone: '12' })).status, 400, 'numéro incorrect refusé');
+  r = await api('PATCH', '/api/app/account/phone', { phone: '01 97 12 34 56' });
+  assert.deepStrictEqual([r.status, r.data.phone], [200, '+2290197123456'], 'numéro béninois sans indicatif accepté');
   r = await api('PATCH', '/api/app/account/phone', { phone: '+229 01 97 12 34 56' });
   assert.deepStrictEqual([r.status, r.data.phone], [200, '+2290197123456']);
   r = await api('GET', '/api/app/account/security');

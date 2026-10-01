@@ -306,7 +306,8 @@ async function run() {
     });
     ensure(oversizedEvidenceResponse.status === 413, 'Une preuve dépassant la limite serveur a été acceptée.');
 
-    const pngBuffer = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    // Image unique par exécution : une photo déjà utilisée pour une autre livraison est refusée.
+    const pngBuffer = Buffer.concat([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'), Buffer.from(`run-${marker}`)]);
     const evidenceForm = (key) => {
       const form = new FormData();
       form.append('file', new Blob([pngBuffer], { type: 'image/png' }), 'preuve.png');

@@ -3064,6 +3064,7 @@ async function renderSettings() {
           <section class="tx-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">Avant le départ</span><h2>Validation des commandes</h2><p>Gardez la main sur les départs en livraison.</p></div></div><div class="tx-panel-body">
             ${toggleRow('driverAssignmentRequired', 'Affecter un livreur pour valider', 'Une demande ne peut être validée qu’en choisissant son livreur : la commande est créée dans la foulée.', rules.driverAssignmentRequired, ro)}
             ${toggleRow('allowEditAfterValidation', 'Laisser le client corriger après validation', 'Tant que la commande n’est pas créée, le client peut encore modifier sa demande depuis son lien.', rules.allowEditAfterValidation, ro)}
+            ${toggleRow('showFullRoute', 'Montrer au client tout le trajet du livreur', 'Le client voit aussi la collecte et les autres arrêts, sans le nom ni l’adresse des autres clients. Désactivé : il voit son livreur seulement quand celui-ci vient chez lui.', rules.showFullRoute, ro)}
           </div></section>
         </div>
         <section class="tx-panel tx-proofs-panel"><div class="tx-panel-head"><div><span class="tx-eyebrow">À l’arrivée</span><h2>Preuves de livraison</h2><p>Ce que le livreur doit fournir pour clôturer une livraison dans son application.</p></div></div><div class="tx-panel-body">
@@ -3077,7 +3078,7 @@ async function renderSettings() {
     if (ro) return;
     const form = box.querySelector('#txDeliveriesForm');
     const err = box.querySelector('#txDeliveryError');
-    const keys = ['customerFormEnabled', 'internalEntryEnabled', 'manualValidation', 'driverAssignmentRequired', 'allowEditAfterValidation'];
+    const keys = ['customerFormEnabled', 'internalEntryEnabled', 'manualValidation', 'driverAssignmentRequired', 'allowEditAfterValidation', 'showFullRoute'];
     const current = () => ({
       rules: Object.fromEntries(keys.map((k) => [k, form.elements[k].checked])),
       proofs: { photoMode: form.elements.photoMode.value, signatureMode: form.elements.signatureMode.value },

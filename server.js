@@ -12,6 +12,7 @@ const { parsePhoneNumberFromString } = require('libphonenumber-js/max');
 const { createRoutingAdapter, RoutingInputError } = require('./lib/routing');
 const { calculateCrmMetrics } = require('./lib/crm-metrics');
 const { computeInsights } = require('./lib/dashboard-insights');
+const { computeEta, learnedParameters } = require('./lib/eta');
 const totpLib = require('./lib/totp');
 const { WhatsAppChannel, internationalDigits, maskPhone } = require('./lib/whatsapp');
 const { buildIncidentPdf } = require('./lib/incident-pdf');
@@ -1453,6 +1454,17 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS delivery_run_events_run_created_idx
         ON delivery_run_events(run_id, created_at ASC, id ASC);
 
+      -- Durée prévue / réelle du dernier trajet vers chaque client : sert à caler
+      -- l'estimation d'arrivée sur la circulation réelle de l'entreprise.
+      CREATE TABLE IF NOT EXISTS eta_samples (
+        order_id BIGINT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        predicted_seconds INTEGER NOT NULL,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        actual_seconds INTEGER,
+        completed_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS eta_samples_company_idx ON eta_samples(company_id, completed_at DESC);
       CREATE TABLE IF NOT EXISTS notification_states (
         user_id BIGINT NOT NULL,
         company_id BIGINT NOT NULL,
@@ -3610,6 +3622,7 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
     if (toStatus === 'Récupérée' && (order.pickup_address || order.pickup_name) && order.pickup_lat == null) {
       rememberPickupPosition(order.id, req.auth).catch(() => {});
     }
+    if (['En livraison', 'Arrivée'].includes(toStatus)) recordEtaSample(order.id, req.auth.company_id, toStatus, req.auth.driver_id);
     return res.json({ orderId: order.id, status: toStatus, version: Number(order.version) + 1 });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -7527,7 +7540,7 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
   try {
     await client.query('BEGIN');
     const orderResult = await client.query(
-      `SELECT id, status, version, pickup_name, pickup_address, pickup_lat FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      `SELECT id, status, version, driver_id, pickup_name, pickup_address, pickup_lat FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
       [req.params.id, req.auth.company_id]
     );
     const order = orderResult.rows[0];
@@ -7570,6 +7583,7 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
       [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
     );
     await client.query('COMMIT');
+    if (['En livraison', 'Arrivée'].includes(toStatus)) recordEtaSample(order.id, req.auth.company_id, toStatus, order.driver_id);
     return res.json({ orderId: order.id, status: toStatus, eventId: event.rows[0].id, version: Number(order.version) + 1 });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -9262,6 +9276,101 @@ app.get('/api/public/requests/:token/photos/:photoId', publicRequestRateLimit, a
 
 
 // Étapes horodatées affichées au client (première occurrence de chaque statut).
+// ---- Estimation d'arrivée ----------------------------------------------------
+const etaLearnedCache = new Map();
+async function etaLearned(companyId) {
+  const hit = etaLearnedCache.get(companyId);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.value;
+  let value = {};
+  try {
+    const [service, traffic] = await Promise.all([
+      pool.query(
+        `SELECT EXTRACT(EPOCH FROM (l.at - a.at))::float AS s FROM
+           (SELECT order_id, MIN(created_at) AS at FROM order_status_events WHERE company_id = $1 AND to_status = 'Arrivée' AND created_at > NOW() - INTERVAL '60 days' GROUP BY order_id) a
+         JOIN (SELECT order_id, MIN(created_at) AS at FROM order_status_events WHERE company_id = $1 AND to_status = 'Livrée' AND created_at > NOW() - INTERVAL '60 days' GROUP BY order_id) l
+           ON l.order_id = a.order_id AND l.at > a.at
+         LIMIT 400`,
+        [companyId]
+      ),
+      pool.query(
+        `SELECT actual_seconds::float / predicted_seconds AS f FROM eta_samples
+         WHERE company_id = $1 AND actual_seconds IS NOT NULL AND predicted_seconds >= 120
+           AND completed_at > NOW() - INTERVAL '60 days' AND actual_seconds BETWEEN 60 AND 14400
+         ORDER BY completed_at DESC LIMIT 400`,
+        [companyId]
+      ),
+    ]);
+    value = learnedParameters({
+      serviceSamples: service.rows.map((r) => Number(r.s)).filter((x) => x > 0 && x < 3600),
+      trafficSamples: traffic.rows.map((r) => Number(r.f)),
+    });
+  } catch (error) {
+    console.error('ETA learning failed:', error.message);
+  }
+  etaLearnedCache.set(companyId, { at: Date.now(), value });
+  return value;
+}
+
+const PRE_PICKUP = ['En préparation', 'Confirmée', 'Vers la collecte'];
+const validPoint = (lat, lng) => lat != null && lng != null && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? { lat: Number(lat), lng: Number(lng) } : null;
+// Arrêts encore à faire avant cette commande dans la tournée du livreur, avec
+// les collectes non encore faites (dans l'ordre prévu).
+async function orderEtaWaypoints(row) {
+  const prior = await pool.query(
+    `SELECT o2.id, o2.status, o2.destination_lat, o2.destination_lng,
+            COALESCE(o2.pickup_lat, o2.picked_up_lat) AS pickup_lat, COALESCE(o2.pickup_lng, o2.picked_up_lng) AS pickup_lng,
+            (o2.pickup_address IS NOT NULL OR o2.pickup_name IS NOT NULL OR o2.pickup_lat IS NOT NULL) AS has_pickup
+     FROM delivery_stops s
+     JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = s.company_id AND r.status IN ('draft', 'planned', 'active')
+     JOIN delivery_stops s2 ON s2.run_id = s.run_id AND s2.removed_at IS NULL AND s2.assignment_active = TRUE AND s2.sequence < s.sequence
+     JOIN orders o2 ON o2.id = s2.order_id AND o2.company_id = s.company_id
+     WHERE s.order_id = $1 AND s.company_id = $2 AND s.removed_at IS NULL AND s.assignment_active = TRUE
+       AND NOT (o2.status = ANY($3::text[]))
+     ORDER BY s2.sequence ASC, s2.id ASC`,
+    [row.order_id, row.company_ref, terminalOrderStatuses]
+  );
+  const ownPickup = row.has_pickup && PRE_PICKUP.includes(row.status) ? validPoint(row.pickup_lat, row.pickup_lng) : null;
+  // En route vers ce client : il ne fait plus d'autre arrêt avant.
+  if (['En livraison', 'Arrivée'].includes(row.status)) return { via: [], stopsBefore: 0, pickup: null, viaPoints: [] };
+  const via = [];
+  const viaPoints = [];
+  if (row.status === 'Vers la collecte' && ownPickup) via.push(ownPickup);
+  for (const o of prior.rows) {
+    if (o.has_pickup && PRE_PICKUP.includes(o.status)) { const p = validPoint(o.pickup_lat, o.pickup_lng); if (p) via.push(p); }
+    const d = validPoint(o.destination_lat, o.destination_lng);
+    if (d) { via.push(d); viaPoints.push(d); }
+  }
+  if (row.status !== 'Vers la collecte' && ownPickup) via.push(ownPickup);
+  return { via: via.slice(0, 40), stopsBefore: prior.rows.length, pickup: ownPickup, viaPoints };
+}
+
+// Calage : durée prévue au départ vers le client, durée réelle à l'arrivée.
+async function recordEtaSample(orderId, companyId, toStatus, driverId) {
+  try {
+    if (toStatus === 'En livraison') {
+      const o = (await pool.query('SELECT destination_lat, destination_lng FROM orders WHERE id = $1 AND company_id = $2', [orderId, companyId])).rows[0];
+      const dest = o && validPoint(o.destination_lat, o.destination_lng);
+      const driver = dest && await driverCurrentPosition(driverId, companyId, 3 * 60 * 1000);
+      if (!driver) return;
+      const route = await routingAdapter.route({ profile: 'motorcycle', coordinates: [driver, dest] });
+      if (route?.status !== 'ok' || !Number.isFinite(Number(route.durationSeconds))) return;
+      await pool.query(
+        `INSERT INTO eta_samples (order_id, company_id, predicted_seconds) VALUES ($1, $2, $3)
+         ON CONFLICT (order_id) DO UPDATE SET predicted_seconds = EXCLUDED.predicted_seconds, started_at = NOW(), actual_seconds = NULL, completed_at = NULL`,
+        [orderId, companyId, Math.round(Number(route.durationSeconds))]
+      );
+    } else if (toStatus === 'Arrivée') {
+      await pool.query(
+        `UPDATE eta_samples SET actual_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::int, completed_at = NOW()
+         WHERE order_id = $1 AND company_id = $2 AND completed_at IS NULL`,
+        [orderId, companyId]
+      );
+    }
+  } catch (error) {
+    console.error('ETA sample failed:', error.message);
+  }
+}
+
 async function publicTrackingSteps(row) {
   const events = await pool.query(
     `SELECT to_status, MIN(created_at) AS at FROM order_status_events
@@ -9285,19 +9394,21 @@ async function publicTrackingSteps(row) {
 // coordonnée). Recalculé au plus toutes les 60 s par lien, ou si le livreur a
 // bougé de plus de 150 m.
 const publicRouteCache = new Map();
-async function publicTrackingRoute(key, driver, destination) {
+async function publicTrackingRoute(key, driver, destination, via = []) {
   if (!key || !destination) return null;
+  const viaKey = via.map((p) => `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`).join(';');
+  key = `${key}|${viaKey}`;
   const cached = publicRouteCache.get(key);
   if (cached && Date.now() - cached.at < 60_000 && haversineKm(cached.driver, driver) * 1000 < 150) return cached.value;
   let value = null;
   try {
     const result = await routingAdapter.route({
       profile: 'motorcycle',
-      coordinates: [driver, { lat: destination.latitude, lng: destination.longitude }],
+      coordinates: [driver, ...via, { lat: destination.latitude, lng: destination.longitude }],
     });
     const coordinates = result?.status === 'ok' ? result.geometry?.value?.coordinates : null;
     if (Array.isArray(coordinates) && coordinates.length >= 2) {
-      value = { coordinates, distanceMeters: result.distanceMeters, durationSeconds: result.durationSeconds };
+      value = { coordinates, distanceMeters: result.distanceMeters, durationSeconds: result.durationSeconds, legs: result.legs || [] };
     }
   } catch (_error) {
     value = null;
@@ -9310,6 +9421,7 @@ async function publicTrackingRoute(key, driver, destination) {
 app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, res) => {
   let deviceId = process.env.TRACCAR_DEVICE_ID;
   let routeKey = null;
+  let trackingRow = null;
   let tracking = {
     orderStatus: null,
     statusChangedAt: null,
@@ -9334,6 +9446,9 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
                o.id AS order_id, o.reference AS order_reference, o.customer_request_id,
                o.status, o.status_changed_at, o.requested_time, o.neighborhood, o.landmark,
                o.destination_lat, o.destination_lng, o.destination_accuracy, o.created_at AS order_created_at,
+               o.driver_id, COALESCE(o.pickup_lat, o.picked_up_lat) AS pickup_lat, COALESCE(o.pickup_lng, o.picked_up_lng) AS pickup_lng,
+               (o.pickup_address IS NOT NULL OR o.pickup_name IS NOT NULL OR o.pickup_lat IS NOT NULL) AS has_pickup,
+               o.pickup_name, c.delivery_settings,
                c.name AS company_name, c.id AS company_ref, c.logo_updated_at AS company_logo_at, r.validated_at AS request_validated_at,
                t.id AS tracking_link_id, t.expires_at, t.created_at, t.revoked_at
         FROM tracking_links t
@@ -9357,6 +9472,7 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
     const row = link.rows[0];
     deviceId = row.traccar_unique_id;
     routeKey = `link:${row.tracking_link_id}`;
+    trackingRow = row;
     tracking = {
       orderStatus: row.status,
       statusChangedAt: row.status_changed_at,
@@ -9395,34 +9511,50 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
     return res.json({ status: 'completed', positionVisible: false, ...publicDetails, message, timestamp: tracking.statusChangedAt });
   }
   const activeDetails = { ...publicDetails, destination: tracking.destination };
-  if (tracking.orderStatus && !publicTrackingPositionStatuses.includes(tracking.orderStatus)) {
-    return res.json({
-      status: 'waiting',
-      positionVisible: false,
-      ...activeDetails,
-      message: 'Le suivi en direct commencera lorsque le livreur prendra la route.',
-    });
+  // Trajet complet visible (collecte, autres arrêts) : au choix de l'entreprise.
+  const fullRoute = Boolean(trackingRow && normalizeDeliverySettings(trackingRow.delivery_settings).showFullRoute);
+  const plan = trackingRow ? await orderEtaWaypoints(trackingRow) : { via: [], stopsBefore: 0, pickup: null, viaPoints: [] };
+  const learned = trackingRow ? await etaLearned(trackingRow.company_ref) : {};
+  const etaBase = {
+    status: tracking.orderStatus, hasPickup: Boolean(trackingRow?.has_pickup), deliveriesBefore: plan.stopsBefore,
+    requestedTime: tracking.requestedTime, learned,
+  };
+  activeDetails.deliveriesBefore = plan.stopsBefore;
+  activeDetails.fullRoute = fullRoute;
+  if (fullRoute && trackingRow?.has_pickup) {
+    activeDetails.pickup = { name: trackingRow.pickup_name || null, ...(plan.pickup ? { latitude: plan.pickup.lat, longitude: plan.pickup.lng } : {}) };
   }
-  activeDetails.positionVisible = true;
+  // Position du livreur montrée au client : en route vers lui, ou trajet complet autorisé.
+  const showStatuses = fullRoute ? [...publicTrackingPositionStatuses, 'Vers la collecte', 'Récupérée'] : publicTrackingPositionStatuses;
+  const positionAllowed = (!tracking.orderStatus || showStatuses.includes(tracking.orderStatus)) && (fullRoute || plan.stopsBefore === 0);
+  const waitingMessage = plan.stopsBefore > 0
+    ? `Votre livreur termine ${plan.stopsBefore} livraison${plan.stopsBefore > 1 ? 's' : ''} avant la vôtre.`
+    : tracking.orderStatus === 'Vers la collecte' ? 'Votre livreur récupère votre colis.'
+      : 'Le suivi en direct commencera lorsque le livreur prendra la route.';
+  // Suivi actif mais position absente : positionVisible reste vrai (le suivi a démarré).
+  const respondWithoutPosition = (status, message, extra = {}) => res.json({
+    status, positionVisible: positionAllowed, ...activeDetails, message,
+    eta: computeEta({ ...etaBase, ...extra }),
+  });
   if (!traccarConfigured() || !deviceId) {
-    return res.json({ status: 'unavailable', ...activeDetails, message: 'La position du livreur n’est pas encore disponible.' });
+    return respondWithoutPosition(positionAllowed ? 'unavailable' : 'waiting', positionAllowed ? 'La position du livreur n’est pas encore disponible.' : waitingMessage);
   }
   const fleetSnapshot = await loadTraccarFleetSnapshot();
   if (fleetSnapshot.status !== 'online') {
-    return res.json({ status: 'unavailable', ...activeDetails, message: 'Le service de localisation est temporairement indisponible.' });
+    return respondWithoutPosition('unavailable', positionAllowed ? 'Le service de localisation est temporairement indisponible.' : waitingMessage);
   }
   const device = fleetSnapshot.devices.find((item) => String(item.uniqueId) === String(deviceId));
-  if (!device) return res.json({ status: 'waiting', ...activeDetails, message: 'Le livreur n’a pas encore transmis de position.' });
-  const position = fleetSnapshot.positions.find((item) => String(item.deviceId) === String(device.id));
+  const position = device && fleetSnapshot.positions.find((item) => String(item.deviceId) === String(device.id));
   const latitude = Number(position?.latitude);
   const longitude = Number(position?.longitude);
-  if (!position || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+  if (!device || !position || !Number.isFinite(latitude) || !Number.isFinite(longitude)
     || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-    return res.json({ status: 'waiting', ...activeDetails, message: 'Position momentanément indisponible.' });
+    return respondWithoutPosition('waiting', positionAllowed ? 'Le livreur n’a pas encore transmis de position.' : waitingMessage);
   }
   const timestamp = position.fixTime || position.deviceTime || position.serverTime || device.lastUpdate || null;
   const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
-  const isStale = !Number.isFinite(timestampMs) || Date.now() - timestampMs > 10 * 60 * 1000;
+  const ageMs = Number.isFinite(timestampMs) ? Date.now() - timestampMs : Infinity;
+  const isStale = ageMs > 10 * 60 * 1000;
   const finiteOrNull = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
   // Sans destination enregistrée, le client peut se situer depuis son téléphone :
   // sa position sert au calcul du trajet puis est oubliée (jamais enregistrée).
@@ -9436,13 +9568,23 @@ app.get('/api/tracking/:token', publicTrackingRateLimit, asyncRoute(async (req, 
       routeTarget = 'viewer';
     }
   }
-  const routeCacheKey = routeTarget === 'viewer' && routeKey ? `${routeKey}:viewer:${routeTo.latitude.toFixed(3)},${routeTo.longitude.toFixed(3)}` : routeKey;
-  const route = await publicTrackingRoute(routeCacheKey, { lat: latitude, lng: longitude }, routeTo);
+  // Au-delà de 30 min sans position, on ne calcule plus de trajet : il serait faux.
+  const route = routeTo && ageMs <= 30 * 60 * 1000
+    ? await publicTrackingRoute(routeTarget === 'viewer' && routeKey ? `${routeKey}:viewer:${routeTo.latitude.toFixed(3)},${routeTo.longitude.toFixed(3)}` : routeKey, { lat: latitude, lng: longitude }, routeTo, plan.via)
+    : null;
+  const eta = computeEta({ ...etaBase, route, stale: isStale, pickedUp: !PRE_PICKUP.includes(tracking.orderStatus) });
+  if (!positionAllowed) {
+    return res.json({ status: 'waiting', positionVisible: false, ...activeDetails, message: waitingMessage, eta, positionAge: Math.round(ageMs / 1000) });
+  }
   return res.json({
     status: isStale ? 'stale' : 'online',
     ...activeDetails,
-    route,
+    positionVisible: true,
+    // Tracé : complet si l'entreprise l'autorise, sinon seulement quand il vient directement.
+    route: route && (fullRoute || plan.via.length === 0) ? { coordinates: route.coordinates, distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds } : null,
     routeTarget: route ? routeTarget : null,
+    detourPoints: fullRoute ? plan.viaPoints.map((p) => ({ latitude: p.lat, longitude: p.lng })) : [],
+    eta,
     latitude,
     longitude,
     speed: finiteOrNull(position.speed),

@@ -206,6 +206,9 @@ async function renderDashboard() {
   await window.TraxoDashboard.render(page, { api, setHeader, openModal, uiToast });
 }
 
+const packageTypeOptions = [['colis', 'Colis'], ['documents', 'Documents'], ['repas', 'Repas'], ['fragile', 'Fragile'], ['vetements', 'Vêtements'], ['autre', 'Autre']];
+const packageTypeLabels = Object.fromEntries(packageTypeOptions);
+
 async function renderNewOrder() {
   setHeader('Nouvelle commande', 'Vous connaissez déjà le client');
   page.classList.add('page-no');
@@ -283,9 +286,37 @@ async function renderNewOrder() {
               <div class="no-field"><label for="f-notes">Consigne pour le livreur <em>(facultatif)</em></label><input class="cl-input" id="f-notes" name="notes" maxlength="1000" placeholder="Ex. appeler en arrivant" /></div>
             </div>
           </section>
+          <section class="no-sec" style="--i:2">
+            <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Le colis</h2></div>
+            <p class="no-sec-sub">Ce que le livreur transporte, et d’où il part.</p>
+            <div class="no-field"><span class="no-label" id="pkgTypeLabel">Type <em>(facultatif)</em></span>
+              <div class="no-chips" role="radiogroup" aria-labelledby="pkgTypeLabel">${packageTypeOptions.map(([v, l]) => `<label class="no-chip"><input type="radio" name="packageType" value="${v}"><span>${escapeHtml(l)}</span></label>`).join('')}</div></div>
+            <div class="no-field"><label for="f-pkg">Contenu <em>(facultatif)</em></label><input class="cl-input" id="f-pkg" name="packageDescription" maxlength="240" placeholder="Ex. 2 robes dans un sac, gâteau d’anniversaire" /></div>
+            <div class="no-field"><span class="no-label" id="pickupLabel">Où le livreur récupère-t-il le colis ?</span>
+              <div class="no-seg" role="radiogroup" aria-labelledby="pickupLabel">
+                <label><input type="radio" name="pickupEnabled" value="false" checked><span>Chez nous</span></label>
+                <label><input type="radio" name="pickupEnabled" value="true"><span>Ailleurs</span></label>
+              </div></div>
+            <div class="no-collapse" id="noPickupWrap" aria-hidden="true"><div>
+              <div class="no-pickup">
+                <div class="no-row">
+                  <div class="no-field no-suggest-wrap"><label for="f-pname">Nom du lieu</label><input class="cl-input" id="f-pname" name="pickupName" maxlength="120" autocomplete="off" placeholder="Ex. Boutique Awa, entrepôt du fournisseur" /><ul class="no-suggest" id="pickupSuggest" role="listbox" hidden></ul></div>
+                  <div class="no-field"><label for="f-pphone">Téléphone sur place <em>(facultatif)</em></label><input class="cl-input" id="f-pphone" name="pickupPhone" type="tel" inputmode="tel" maxlength="30" placeholder="Ex. 01 97 12 34 56" /></div>
+                </div>
+                <div class="no-row">
+                  <div class="no-field"><label for="f-paddr">Quartier ou repère *</label><input class="cl-input" id="f-paddr" name="pickupAddress" maxlength="240" placeholder="Ex. Dantokpa, allée des tissus" /></div>
+                  <div class="no-field"><label for="f-pready">Colis prêt à partir de <em>(facultatif)</em></label><input class="cl-input" id="f-pready" name="pickupReady" maxlength="80" placeholder="Ex. 14 h" /></div>
+                </div>
+                <div class="no-field"><span class="no-label">Position exacte <em>(facultatif)</em></span>
+                  <div class="no-pickmap" id="pickupMap" aria-label="Carte : touchez l’endroit de la collecte"></div>
+                  <p class="no-hint" id="pickupMapHint">Touchez la carte pour placer l’épingle. Sinon, TRAXO retiendra l’endroit où le livreur récupère le colis.</p>
+                  <input type="hidden" name="pickupLat" id="f-plat" /><input type="hidden" name="pickupLng" id="f-plng" /></div>
+              </div>
+            </div></div>
+          </section>
           <div class="no-collapse" id="noDriverWrap" aria-hidden="true"><div>
-            <section class="no-sec" style="--i:2">
-              <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Livreur</h2></div>
+            <section class="no-sec" style="--i:3">
+              <div class="no-sec-head"><span class="no-sec-num">04</span><h2 class="no-sec-title">Livreur</h2></div>
               ${sortedDrivers.length ? `<div class="no-drivers" role="radiogroup" aria-label="Livreur">${sortedDrivers.map(driverCard).join('')}</div>` : '<p class="no-empty">Aucun livreur actif. Ajoutez-en un depuis la page Livreurs.</p>'}
             </section>
           </div></div>
@@ -322,6 +353,71 @@ async function renderNewOrder() {
   };
   document.querySelectorAll('input[name="noMode"]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
   setMode('confirm');
+
+  // Collecte : section dépliée seulement si le colis part d'ailleurs.
+  const pickupWrap = document.getElementById('noPickupWrap');
+  const pickupAddr = document.getElementById('f-paddr');
+  let pickupMap = null;
+  let pickupMarker = null;
+  const setPin = (lat, lng, { pan = true } = {}) => {
+    document.getElementById('f-plat').value = lat == null ? '' : lat.toFixed(6);
+    document.getElementById('f-plng').value = lng == null ? '' : lng.toFixed(6);
+    if (!pickupMap) return;
+    if (lat == null) { if (pickupMarker) { pickupMap.removeLayer(pickupMarker); pickupMarker = null; } return; }
+    if (!pickupMarker) {
+      pickupMarker = L.marker([lat, lng], { draggable: true, title: 'Point de collecte' }).addTo(pickupMap);
+      pickupMarker.on('dragend', () => { const p = pickupMarker.getLatLng(); setPin(p.lat, p.lng, { pan: false }); });
+    } else pickupMarker.setLatLng([lat, lng]);
+    if (pan) pickupMap.setView([lat, lng], Math.max(pickupMap.getZoom(), 16));
+    document.getElementById('pickupMapHint').textContent = 'Épingle posée. Vous pouvez la déplacer si besoin.';
+    pickupAddr.required = false;
+  };
+  const ensurePickupMap = () => {
+    if (pickupMap || typeof L === 'undefined') return;
+    pickupMap = L.map('pickupMap', { zoomControl: true, scrollWheelZoom: false }).setView([6.3703, 2.3912], 12);
+    if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.layerSwitcher(pickupMap, config, { position: 'topright' }));
+    pickupMap.on('click', (event) => setPin(event.latlng.lat, event.latlng.lng, { pan: false }));
+  };
+  const setPickup = (on) => {
+    pickupWrap.classList.toggle('open', on);
+    pickupWrap.setAttribute('aria-hidden', String(!on));
+    pickupWrap.querySelectorAll('input').forEach((i) => { i.tabIndex = on ? 0 : -1; });
+    pickupAddr.required = on && !document.getElementById('f-plat').value;
+    if (on) { ensurePickupMap(); setTimeout(() => pickupMap && pickupMap.invalidateSize(), 320); }
+  };
+  document.querySelectorAll('input[name="pickupEnabled"]').forEach((r) => r.addEventListener('change', () => setPickup(r.value === 'true' && r.checked)));
+  setPickup(false);
+
+  // Carnet automatique : les lieux de collecte déjà utilisés par l'équipe.
+  const pickupName = document.getElementById('f-pname');
+  const suggest = document.getElementById('pickupSuggest');
+  let places = [];
+  let suggestTimer = null;
+  const paintSuggest = () => {
+    const q = pickupName.value.trim().toLowerCase();
+    const shown = places.filter((p) => !q || `${p.name || ''} ${p.address || ''}`.toLowerCase().includes(q)).slice(0, 6);
+    suggest.innerHTML = shown.map((p, i) => `<li role="option" tabindex="-1" data-i="${places.indexOf(p)}"><strong>${escapeHtml(p.name || p.address)}</strong>${p.name && p.address ? `<small>${escapeHtml(p.address)}</small>` : ''}${p.lat != null ? '<em>Position connue</em>' : ''}</li>`).join('');
+    suggest.hidden = !shown.length || document.activeElement !== pickupName;
+  };
+  const loadPlaces = async () => {
+    try { places = (await api(`/api/app/pickup-places?q=${encodeURIComponent(pickupName.value.trim())}`)).places || []; } catch { places = []; }
+    paintSuggest();
+  };
+  pickupName.addEventListener('focus', loadPlaces);
+  pickupName.addEventListener('input', () => { clearTimeout(suggestTimer); suggestTimer = setTimeout(loadPlaces, 180); });
+  pickupName.addEventListener('blur', () => setTimeout(() => { suggest.hidden = true; }, 150));
+  suggest.addEventListener('mousedown', (event) => {
+    const li = event.target.closest('li[data-i]');
+    if (!li) return;
+    event.preventDefault();
+    const p = places[Number(li.dataset.i)];
+    pickupName.value = p.name || '';
+    if (p.address) pickupAddr.value = p.address;
+    if (p.phone) document.getElementById('f-pphone').value = p.phone;
+    if (p.lat != null) { ensurePickupMap(); setPin(p.lat, p.lng); }
+    suggest.hidden = true;
+    pickupAddr.required = !document.getElementById('f-plat').value;
+  });
 
   const digitsOf = (phone) => String(phone || '').replace(/\D/g, '');
   const shareScreen = ({ title, lead, url, message, phone, meta, doneCount, steps, next }) => {
@@ -375,6 +471,9 @@ async function renderNewOrder() {
     const missing = C.firstMissing(form);
     if (missing) { say('Merci de remplir les champs obligatoires.'); missing.focus(); return; }
     const data = C.readFields(form);
+    data.pickupEnabled = data.pickupEnabled === 'true';
+    data.pickupPhoneCountry = data.customerPhoneCountry;
+    if (!data.packageType) delete data.packageType;
     const submit = document.getElementById('noSubmit');
     const label = document.getElementById('noSubmitLabel');
     const idle = label.textContent;
@@ -408,7 +507,8 @@ async function renderNewOrder() {
       }
     } catch (error) {
       say(error.message);
-      if (/téléphone/i.test(error.message)) C.markFieldError(form, 'customerPhone', error.message);
+      if (/collecte/i.test(error.message)) document.getElementById('f-paddr')?.focus();
+      else if (/téléphone/i.test(error.message)) C.markFieldError(form, 'customerPhone', error.message);
       submit.disabled = false;
       label.textContent = idle;
     }
@@ -3629,9 +3729,9 @@ function crmChipColor(label) {
   if (/brouillon|archiv|annul|non partag/.test(s)) return 'grey';
   return 'grey';
 }
-const crmOrderSeq = ['En préparation', 'Confirmée', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
+const crmOrderSeq = ['En préparation', 'Confirmée', 'Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée'];
 function crmOrderStatusColor(status) {
-  const map = { 'Livrée': 'green', 'Confirmée': 'amber', 'En préparation': 'amber', 'Récupérée': 'blue', 'En tournée': 'blue', 'En livraison': 'blue', 'Arrivée': 'blue', 'Brouillon': 'grey', 'Échec': 'red', 'Retour': 'amber', 'Retournée': 'grey', 'Annulée': 'grey' };
+  const map = { 'Livrée': 'green', 'Confirmée': 'amber', 'En préparation': 'amber', 'Vers la collecte': 'amber', 'Récupérée': 'blue', 'En tournée': 'blue', 'En livraison': 'blue', 'Arrivée': 'blue', 'Brouillon': 'grey', 'Échec': 'red', 'Retour': 'amber', 'Retournée': 'grey', 'Annulée': 'grey' };
   return map[status] || 'grey';
 }
 function crmOrderProgress(status) {
@@ -3661,6 +3761,47 @@ function crmMiniSteps(done, total, tone) {
 // Tiroir d'une commande : résumé + TOUTES les actions (plus de page séparée).
 // Le contenu défile ; un menu collant permet de sauter à chaque section.
 // opts.onChange : rappelé après une action (rafraîchit la liste).
+// Modifier le colis et la collecte d'une commande (avant la récupération du colis).
+function openPickupEditor(o, onSaved) {
+  const has = Boolean(o.pickup_address || o.pickup_name || o.pickup_lat != null);
+  const modal = openModal('Colis et collecte', `<form id="pkForm" class="pk-form" novalidate>
+      <div class="field"><label>Type de colis</label><select name="packageType"><option value="">Non précisé</option>${packageTypeOptions.map(([v, l]) => `<option value="${v}" ${o.package_type === v ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}</select></div>
+      <div class="field"><label>Contenu</label><input name="packageDescription" maxlength="240" value="${escapeHtml(o.package_description || '')}" placeholder="Ex. 2 robes dans un sac"></div>
+      <label class="pk-check"><input type="checkbox" name="pickupEnabled" ${has ? 'checked' : ''}> Le colis est à récupérer ailleurs</label>
+      <div id="pkFields" ${has ? '' : 'hidden'}>
+        <div class="field"><label>Nom du lieu</label><input name="pickupName" maxlength="120" value="${escapeHtml(o.pickup_name || '')}" placeholder="Ex. Boutique Awa"></div>
+        <div class="field"><label>Quartier ou repère</label><input name="pickupAddress" maxlength="240" value="${escapeHtml(o.pickup_address || '')}" placeholder="Ex. Dantokpa, allée des tissus"></div>
+        <div class="field"><label>Téléphone sur place</label><input name="pickupPhone" type="tel" maxlength="30" value="${escapeHtml(o.pickup_phone || '')}"></div>
+        <div class="field"><label>Colis prêt à partir de</label><input name="pickupReady" maxlength="80" value="${escapeHtml(o.pickup_ready || '')}" placeholder="Ex. 14 h"></div>
+        ${o.pickup_lat != null ? '<p class="muted">La position exacte enregistrée est conservée.</p>' : ''}
+      </div>
+      <div id="pkError" role="alert"></div>
+    </form>`, '<button class="button secondary" data-modal-close type="button">Annuler</button><button class="button primary" id="pkSave" type="button">Enregistrer</button>');
+  const form = modal.backdrop.querySelector('#pkForm');
+  form.pickupEnabled.addEventListener('change', () => { modal.backdrop.querySelector('#pkFields').hidden = !form.pickupEnabled.checked; });
+  modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
+  modal.backdrop.querySelector('#pkSave').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
+    const body = {
+      packageType: data.packageType || undefined, packageDescription: data.packageDescription,
+      pickupEnabled: form.pickupEnabled.checked, pickupName: data.pickupName, pickupAddress: data.pickupAddress,
+      pickupPhone: data.pickupPhone, pickupPhoneCountry: 'BJ', pickupReady: data.pickupReady,
+      pickupLat: o.pickup_lat, pickupLng: o.pickup_lng,
+    };
+    button.disabled = true;
+    try {
+      await api(`/api/app/orders/${encodeURIComponent(o.id)}/pickup`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      modal.close();
+      uiToast('Colis et collecte mis à jour.', 'success');
+      onSaved();
+    } catch (error) {
+      modal.backdrop.querySelector('#pkError').innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+      button.disabled = false;
+    }
+  });
+}
+
 async function openOrderDrawer(orderId, opts = {}) {
   const existing = document.querySelector('.crm-drawer-wrap');
   if (existing) existing.remove();
@@ -3731,6 +3872,12 @@ async function openOrderDrawer(orderId, opts = {}) {
           <div class="crm-kv"><span>Livreur</span><strong>${o.driver_name ? crmAvatar(o.driver_name, { photoUrl: o.driver_photo, online: o.driver_online }) : '—'}${o.driver_vehicle_type ? ` <span class="crm-muted">· ${escapeHtml(o.driver_vehicle_type)}</span>` : ''}</strong></div>
           <div class="crm-kv"><span>Créneau</span><strong>${escapeHtml(o.requested_time || '—')}</strong></div>
         </section>
+        <section><div class="crm-sec-head"><h4><span class="crm-sec-ic">${secIc.doc}</span>Colis et collecte</h4>${['En préparation', 'Confirmée', 'Vers la collecte'].includes(o.status) ? '<button class="crm-seclink" type="button" id="odEditPickup">Modifier</button>' : ''}</div>
+          <div class="crm-kv"><span>Colis</span><strong>${escapeHtml([packageTypeLabels[o.package_type], o.package_description].filter(Boolean).join(' · ') || '—')}</strong></div>
+          ${o.pickup_address || o.pickup_name || o.pickup_lat != null ? `<div class="crm-kv"><span>Collecte</span><strong>${escapeHtml([o.pickup_name, o.pickup_address].filter(Boolean).join(' · ') || 'Position sur la carte')}${o.pickup_ready ? ` <span class="crm-muted">· prêt à ${escapeHtml(o.pickup_ready)}</span>` : ''}</strong></div>
+          ${o.pickup_phone ? `<div class="crm-kv"><span>Sur place</span><strong><a href="tel:${escapeHtml(String(o.pickup_phone).replace(/[^+\d]/g, ''))}">${escapeHtml(o.pickup_phone)}</a></strong></div>` : ''}`
+          : '<div class="crm-kv"><span>Collecte</span><strong>Le colis part de chez vous</strong></div>'}
+        </section>
         <section><h4><span class="crm-sec-ic">${secIc.track}</span>Suivi de la commande</h4><div class="crm-steps">${stepsHtml}</div></section>
         <section><h4><span class="crm-sec-ic">${secIc.doc}</span>Détails de la commande</h4>
           <div class="crm-kv"><span>Instructions</span><strong>${escapeHtml(instructions)}</strong></div>
@@ -3745,6 +3892,7 @@ async function openOrderDrawer(orderId, opts = {}) {
       </div>`;
     drawer.querySelector('.crm-drawer-close').addEventListener('click', close);
     drawer.querySelector('#odBack')?.addEventListener('click', () => { close(); opts.onBack(); });
+    drawer.querySelector('#odEditPickup')?.addEventListener('click', () => openPickupEditor(o, () => paint(drawer.querySelector('.crm-drawer-body')?.scrollTop || 0)));
     const body = drawer.querySelector('.crm-drawer-body');
     await mountOrderActions(drawer.querySelector('#odActions'), o.id, {
       order: o,
@@ -4516,7 +4664,7 @@ async function renderOperationsWorkspace(initialSegment) {
       title: 'Commandes', newLabel: 'Nouvelle commande', newHref: '/app/nouvelle-commande',
       placeholder: 'Rechercher une commande, un client…', countKey: 'orders',
       endpoint: () => '/api/app/orders', drawerFn: (id) => openOrderDrawer(id, { onChange: loadSegment }), href: (r) => `/app/commandes/${r.id}`,
-      statusValues: ['Confirmée', 'En préparation', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
+      statusValues: ['Confirmée', 'En préparation', 'Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Livrée', 'Échec', 'Retour', 'Retournée', 'Annulée'],
       groupCols: [['status', 'Statut'], ['zone', 'Zone'], ['driver', 'Livreur']],
       groupVal: (r, k) => k === 'status' ? r.status : k === 'zone' ? (r.neighborhood || r.landmark || '—') : (r.driver_name || '—'),
       filterTest: (r, v) => r.status === v,

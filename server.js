@@ -100,7 +100,9 @@ const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
 const publicTrackingPositionStatuses = ['En tournée', 'En livraison', 'Arrivée'];
 const orderTransitions = {
   'En préparation': ['Confirmée', 'Annulée'],
-  'Confirmée': ['Récupérée', 'Annulée'],
+  'Confirmée': ['Vers la collecte', 'Récupérée', 'Annulée'],
+  // Le livreur part chercher le colis au point de collecte.
+  'Vers la collecte': ['Récupérée', 'Annulée'],
   'Récupérée': ['En tournée', 'Retour'],
   'En tournée': ['En livraison', 'Échec', 'Retour'],
   'En livraison': ['Arrivée', 'Échec', 'Retour'],
@@ -117,7 +119,7 @@ const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'
 const paymentAdjustmentTypes = ['refund', 'additional_collection'];
 const invitationRoles = ['manager', 'operator', 'driver'];
 const driverVehicleTypes = ['Moto', 'Tricycle', 'Voiture', 'Vélo', 'Camionnette'];
-const driverTransitionTargets = ['Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
+const driverTransitionTargets = ['Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
 const evidenceTypes = ['photo', 'signature'];
 const evidenceModes = ['off', 'optional', 'required'];
 const runStatuses = ['draft', 'planned', 'active', 'completed', 'cancelled'];
@@ -766,8 +768,11 @@ function otpCodeFor(companyId, orderId, idempotencyKey) {
   return String(digestBytes.readUInt32BE(0) % 1000000).padStart(6, '0');
 }
 
-function allowedOrderTransitions(status) {
-  return orderTransitions[status] || [];
+// « Vers la collecte » n'a de sens que si la commande a un point de collecte.
+function allowedOrderTransitions(status, order = null) {
+  const next = orderTransitions[status] || [];
+  const hasPickup = Boolean(order && (order.pickup_address || order.pickup_name || order.pickup_lat != null));
+  return hasPickup ? next : next.filter((target) => target !== 'Vers la collecte');
 }
 
 function optionalNumber(value) {
@@ -1167,6 +1172,15 @@ async function initDatabase() {
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS confirm_attempts INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS confirm_locked_at TIMESTAMPTZ;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS customer_confirmed_at TIMESTAMPTZ;
+      -- Colis et point de collecte facultatif (le colis est récupéré ailleurs avant la remise).
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS package_description TEXT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS package_type TEXT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_name TEXT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_phone TEXT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_address TEXT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_lat DOUBLE PRECISION;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_lng DOUBLE PRECISION;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_ready TEXT;
       CREATE UNIQUE INDEX IF NOT EXISTS customer_requests_edit_token_unique
         ON customer_requests(edit_token_hash) WHERE edit_token_hash IS NOT NULL;
 
@@ -1188,6 +1202,16 @@ async function initDatabase() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination_lng DOUBLE PRECISION;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination_accuracy DOUBLE PRECISION;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS neighborhood TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS package_description TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS package_type TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_name TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_phone TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_address TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_lat DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_lng DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_ready TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS picked_up_lat DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS picked_up_lng DOUBLE PRECISION;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS landmark TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
@@ -3493,13 +3517,37 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
   ]);
   return res.json({
     ...order,
-    allowedTransitions: allowedOrderTransitions(order.status).filter((status) => driverTransitionTargets.includes(status)),
+    allowedTransitions: allowedOrderTransitions(order.status, order).filter((status) => driverTransitionTargets.includes(status)),
     isTerminal: terminalOrderStatuses.includes(order.status),
     incidents: incidents.rows,
     evidence: evidence.rows,
     run: runContext.rows[0] || null,
   });
 }));
+
+// Position actuelle d'un livreur d'après Traccar (null si indisponible ou trop ancienne).
+async function driverCurrentPosition(driverId, companyId, maxAgeMs = 10 * 60 * 1000) {
+  if (!traccarConfigured()) return null;
+  const row = (await pool.query('SELECT traccar_unique_id FROM drivers WHERE id = $1 AND company_id = $2', [driverId, companyId])).rows[0];
+  if (!row) return null;
+  const snap = await loadTraccarFleetSnapshot();
+  if (snap.status !== 'online') return null;
+  const device = snap.devices.find((d) => String(d.uniqueId) === String(row.traccar_unique_id));
+  const position = device && snap.positions.find((p) => String(p.deviceId) === String(device.id));
+  const lat = Number(position?.latitude);
+  const lng = Number(position?.longitude);
+  const at = position && (position.fixTime || position.deviceTime || position.serverTime);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !at || Date.now() - new Date(at).getTime() > maxAgeMs) return null;
+  return { lat, lng, at };
+}
+async function rememberPickupPosition(orderId, auth) {
+  const position = await driverCurrentPosition(auth.driver_id, auth.company_id);
+  if (!position) return;
+  await pool.query(
+    'UPDATE orders SET picked_up_lat = $3, picked_up_lng = $4 WHERE id = $1 AND company_id = $2 AND picked_up_lat IS NULL',
+    [orderId, auth.company_id, position.lat, position.lng]
+  );
+}
 
 app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async (req, res) => {
   const toStatus = String(req.body.toStatus || '').trim();
@@ -3515,7 +3563,7 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
   try {
     await client.query('BEGIN');
     const orderResult = await client.query(
-      `SELECT id, status, version FROM orders
+      `SELECT id, status, version, pickup_name, pickup_address, pickup_lat FROM orders
        WHERE id = $1 AND company_id = $2 AND driver_id = $3 FOR UPDATE`,
       [req.params.id, req.auth.company_id, req.auth.driver_id]
     );
@@ -3533,7 +3581,7 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
       await client.query('COMMIT');
       return res.json({ orderId: order.id, status: repeated.rows[0].to_status, alreadyApplied: true });
     }
-    if (!allowedOrderTransitions(order.status).includes(toStatus)) {
+    if (!allowedOrderTransitions(order.status, order).includes(toStatus)) {
       throw Object.assign(new Error(`La commande est maintenant « ${order.status} ». Cette action n’est plus possible.`), { statusCode: 409 });
     }
     const event = await client.query(
@@ -3557,6 +3605,11 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
       [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
     );
     await client.query('COMMIT');
+    // Première collecte à un lieu sans position : on retient l'endroit où le
+    // livreur a récupéré le colis (servira aux prochaines commandes).
+    if (toStatus === 'Récupérée' && (order.pickup_address || order.pickup_name) && order.pickup_lat == null) {
+      rememberPickupPosition(order.id, req.auth).catch(() => {});
+    }
     return res.json({ orderId: order.id, status: toStatus, version: Number(order.version) + 1 });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -3791,10 +3844,12 @@ app.patch('/api/app/company', requireCompanyApi, requireCompanyRoles('owner', 'm
 }));
 
 // --- Paramètres > Livraisons : règles opérationnelles ---
-const deliverySettingKeys = ['validateBeforeTracking', 'driverAssignmentRequired', 'allowEditAfterValidation', 'customerFormEnabled', 'internalEntryEnabled', 'manualValidation'];
+const deliverySettingKeys = ['validateBeforeTracking', 'driverAssignmentRequired', 'allowEditAfterValidation', 'customerFormEnabled', 'internalEntryEnabled', 'manualValidation', 'showFullRoute'];
 const defaultDeliverySettings = {
   validateBeforeTracking: true, driverAssignmentRequired: false, allowEditAfterValidation: false,
   customerFormEnabled: true, internalEntryEnabled: true, manualValidation: true,
+  // Le client voit tout le trajet du livreur (collecte, autres arrêts) : au choix de l'entreprise.
+  showFullRoute: false,
 };
 function normalizeDeliverySettings(stored) {
   const out = { ...defaultDeliverySettings };
@@ -5499,6 +5554,55 @@ app.get('/api/app/dashboard', requireCompanyApi, asyncRoute(async (req, res) => 
 // Commande saisie par l'équipe, confirmée ensuite par le client (même lien que le
 // formulaire client). Le client prouve qu'il est le destinataire avec les 4 derniers
 // chiffres de son numéro ; le lien est alors lié à son appareil.
+// ---- Colis et point de collecte ------------------------------------------
+// Facultatif : sans collecte, le colis part de chez l'entreprise. Les champs
+// vivent sur la demande (saisie préremplie) puis sont recopiés sur la commande.
+const packageTypes = ['colis', 'documents', 'repas', 'fragile', 'vetements', 'autre'];
+const PICKUP_COLUMNS = ['package_description', 'package_type', 'pickup_name', 'pickup_phone', 'pickup_address', 'pickup_lat', 'pickup_lng', 'pickup_ready'];
+function pickupFieldsFromBody(body = {}) {
+  const text = (value, max) => { const v = String(value ?? '').trim(); return v ? v.slice(0, max) : null; };
+  const fields = {
+    package_description: text(body.packageDescription, 240),
+    package_type: packageTypes.includes(body.packageType) ? body.packageType : null,
+    pickup_name: null, pickup_phone: null, pickup_address: null, pickup_lat: null, pickup_lng: null, pickup_ready: null,
+  };
+  if (body.packageType && !fields.package_type) return { error: 'Choisissez un type de colis dans la liste.', field: 'packageType' };
+  const enabled = body.pickupEnabled === true || body.pickupEnabled === 'true';
+  if (!enabled) return { fields };
+  fields.pickup_name = text(body.pickupName, 120);
+  fields.pickup_address = text(body.pickupAddress, 240);
+  fields.pickup_ready = text(body.pickupReady, 80);
+  const lat = optionalNumber(body.pickupLat);
+  const lng = optionalNumber(body.pickupLng);
+  if ((lat == null) !== (lng == null) || (lat != null && (lat < -90 || lat > 90 || lng < -180 || lng > 180))) {
+    return { error: 'La position du point de collecte est invalide.', field: 'pickupLat' };
+  }
+  fields.pickup_lat = lat;
+  fields.pickup_lng = lng;
+  if (!fields.pickup_address && lat == null) return { error: 'Indiquez où récupérer le colis : un quartier, un repère ou une épingle sur la carte.', field: 'pickupAddress' };
+  if (String(body.pickupPhone || '').trim()) {
+    const phone = normalizeCustomerPhone({ customerPhone: body.pickupPhone, customerPhoneCountry: body.pickupPhoneCountry || body.customerPhoneCountry });
+    if (!phone) return { error: 'Le numéro du point de collecte semble incorrect.', field: 'pickupPhone' };
+    fields.pickup_phone = phone;
+  }
+  return { fields };
+}
+async function savePickupFields(queryable, table, id, companyId, fields) {
+  if (!['orders', 'customer_requests'].includes(table)) throw new Error('table');
+  const sets = PICKUP_COLUMNS.map((column, i) => `${column} = $${i + 3}`).join(', ');
+  await queryable.query(`UPDATE ${table} SET ${sets} WHERE id = $1 AND company_id = $2`, [id, companyId, ...PICKUP_COLUMNS.map((c) => fields[c] ?? null)]);
+}
+function publicPickupFields(row) {
+  return {
+    packageDescription: row.package_description || null,
+    packageType: row.package_type || null,
+    pickup: row.pickup_address || row.pickup_name || row.pickup_lat != null ? {
+      name: row.pickup_name || null, phone: row.pickup_phone || null, address: row.pickup_address || null,
+      lat: row.pickup_lat ?? null, lng: row.pickup_lng ?? null, ready: row.pickup_ready || null,
+    } : null,
+  };
+}
+
 function prefilledFieldsFromBody(body) {
   const text = (value, max) => { const v = String(value || '').trim(); return v ? v.slice(0, max) : null; };
   return {
@@ -5522,6 +5626,8 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
   const phone = normalizeCustomerPhone(req.body || {});
   if (!phone) return res.status(400).json({ error: 'Le téléphone du client est nécessaire : il sert à protéger son lien de confirmation.', field: 'customerPhone' });
   if (!fields.neighborhood) return res.status(400).json({ error: 'Indiquez le quartier ou la zone de livraison.', field: 'neighborhood' });
+  const pickup = pickupFieldsFromBody(req.body || {});
+  if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
   const token = randomToken(24);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const result = await pool.query(
@@ -5531,6 +5637,7 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
     [req.auth.company_id, token, PREFILLED_REQUEST_STATUS, fields.customerName, phone, fields.neighborhood,
       fields.landmark, fields.notes, fields.requestedTime, expiresAt, req.auth.user_id]
   );
+  await savePickupFields(pool, 'customer_requests', result.rows[0].id, req.auth.company_id, pickup.fields);
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prefilled_created', { expiresAt });
   const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
   const url = `${publicBaseUrl(req)}/demande/${token}`;
@@ -5544,6 +5651,45 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
     phone,
     message: `Bonjour ${firstName}, ${company.name || 'nous'} prépare votre livraison. Vérifiez vos informations et confirmez ici : ${url}`,
   });
+}));
+
+// Colis et collecte modifiables tant que le colis n'est pas récupéré.
+app.patch('/api/app/orders/:id/pickup', requireCompanyApi, asyncRoute(async (req, res) => {
+  const pickup = pickupFieldsFromBody(req.body || {});
+  if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
+  const row = (await pool.query('SELECT id, status FROM orders WHERE id = $1 AND company_id = $2', [req.params.id, req.auth.company_id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Commande introuvable.' });
+  if (!['En préparation', 'Confirmée', 'Vers la collecte'].includes(row.status)) {
+    return res.status(409).json({ error: 'Le colis est déjà récupéré : la collecte ne peut plus être modifiée.' });
+  }
+  if (row.status === 'Vers la collecte' && !pickup.fields.pickup_address && pickup.fields.pickup_lat == null) {
+    return res.status(409).json({ error: 'Le livreur est en route vers la collecte : modifiez le lieu plutôt que de le retirer.' });
+  }
+  await savePickupFields(pool, 'orders', row.id, req.auth.company_id, pickup.fields);
+  await writeAudit(req.auth, 'order', row.id, 'pickup_updated', { pickup: Boolean(pickup.fields.pickup_address || pickup.fields.pickup_lat != null) });
+  const updated = (await pool.query(`SELECT ${PICKUP_COLUMNS.join(', ')} FROM orders WHERE id = $1`, [row.id])).rows[0];
+  return res.json(publicPickupFields(updated));
+}));
+
+// Carnet automatique : les lieux de collecte déjà utilisés, du plus récent au plus ancien.
+app.get('/api/app/pickup-places', requireCompanyApi, asyncRoute(async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 80);
+  const result = await pool.query(
+    `SELECT DISTINCT ON (lower(COALESCE(pickup_name, '')), lower(COALESCE(pickup_address, '')))
+            pickup_name, pickup_phone, pickup_address,
+            COALESCE(pickup_lat, picked_up_lat) AS pickup_lat, COALESCE(pickup_lng, picked_up_lng) AS pickup_lng, created_at
+     FROM orders
+     WHERE company_id = $1 AND (pickup_name IS NOT NULL OR pickup_address IS NOT NULL)
+       AND ($2::text = '' OR pickup_name ILIKE '%' || $2 || '%' OR pickup_address ILIKE '%' || $2 || '%')
+     ORDER BY lower(COALESCE(pickup_name, '')), lower(COALESCE(pickup_address, '')), created_at DESC
+     LIMIT 200`,
+    [req.auth.company_id, q]
+  );
+  const places = result.rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 12).map((r) => ({
+    name: r.pickup_name, phone: r.pickup_phone, address: r.pickup_address,
+    lat: r.pickup_lat == null ? null : Number(r.pickup_lat), lng: r.pickup_lng == null ? null : Number(r.pickup_lng),
+  }));
+  return res.json({ places });
 }));
 
 app.post('/api/app/request-links', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -5709,6 +5855,12 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
         deliveryAddress, request.requested_time, request.location_lat, request.location_lng,
         request.location_accuracy, request.neighborhood, request.landmark, request.notes,
       ]
+    );
+    // Colis et collecte saisis sur la demande : recopiés sur la commande.
+    await client.query(
+      `UPDATE orders o SET ${PICKUP_COLUMNS.map((c) => `${c} = r.${c}`).join(', ')}
+       FROM customer_requests r WHERE o.id = $1 AND r.id = $2 AND r.company_id = o.company_id`,
+      [order.rows[0].id, request.id]
     );
     await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const trackingToken = randomToken(24);
@@ -7023,7 +7175,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
     ...order,
     ...driverDeco,
     trackingLink,
-    allowedTransitions: allowedOrderTransitions(order.status),
+    allowedTransitions: allowedOrderTransitions(order.status, order),
     requiresOtpForDelivery: order.status === 'Arrivée' && !order.proof_id,
     paymentBlocksDelivery: Boolean(order.payment_account_id && ['pending', 'discrepancy'].includes(order.payment_status)),
     isTerminal: terminalOrderStatuses.includes(order.status),
@@ -7375,7 +7527,7 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
   try {
     await client.query('BEGIN');
     const orderResult = await client.query(
-      `SELECT id, status, version FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      `SELECT id, status, version, pickup_name, pickup_address, pickup_lat FROM orders WHERE id = $1 AND company_id = $2 FOR UPDATE`,
       [req.params.id, req.auth.company_id]
     );
     const order = orderResult.rows[0];
@@ -7393,7 +7545,7 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
       await client.query('COMMIT');
       return res.json({ orderId: order.id, status: repeated.rows[0].to_status, eventId: repeated.rows[0].id, alreadyApplied: true });
     }
-    if (!allowedOrderTransitions(order.status).includes(toStatus)) {
+    if (!allowedOrderTransitions(order.status, order).includes(toStatus)) {
       throw Object.assign(new Error(`La commande est maintenant « ${order.status} ». Cette transition n’est plus possible.`), { statusCode: 409 });
     }
 
@@ -8587,6 +8739,8 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   if (!(await companyDeliverySetting(req.auth.company_id, 'internalEntryEnabled'))) {
     return res.status(403).json({ error: 'La saisie interne est désactivée dans vos paramètres Livraisons.' });
   }
+  const pickup = pickupFieldsFromBody(req.body || {});
+  if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
   const client = await pool.connect();
   let committed = false;
   try {
@@ -8603,6 +8757,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
       [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress,
         structured.neighborhood, structured.landmark, structured.notes, structured.requestedTime]
     );
+    await savePickupFields(client, 'orders', order.rows[0].id, req.auth.company_id, pickup.fields);
     await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const token = randomToken(24);
     const tokenStorage = trackingTokenStorage(token);

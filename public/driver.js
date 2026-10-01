@@ -18,9 +18,29 @@ const formatMoney = (value, currency = 'XOF') => value == null ? '—' : new Int
 }).format(Number(value));
 const terminalStatuses = ['Livrée', 'Retournée', 'Annulée'];
 const transitionLabels = {
-  'Récupérée': 'Colis récupéré', 'En tournée': 'Commencer la tournée', 'En livraison': 'Aller vers ce client',
+  'Vers la collecte': 'Je pars chercher le colis', 'Récupérée': 'Colis récupéré', 'En tournée': 'Commencer la tournée', 'En livraison': 'Aller vers ce client',
   'Arrivée': 'Je suis arrivé', 'Échec': 'Signaler un échec', 'Retour': 'Retourner le colis',
 };
+const packageLabels = { colis: 'Colis', documents: 'Documents', repas: 'Repas', fragile: 'Fragile', vetements: 'Vêtements', autre: 'Autre' };
+// Collecte : affichée tant que le colis n'est pas récupéré.
+function pickupCard(order) {
+  const has = order.pickup_address || order.pickup_name || order.pickup_lat != null;
+  if (!has || !['En préparation', 'Confirmée', 'Vers la collecte'].includes(order.status)) return '';
+  const lat = order.pickup_lat;
+  const lng = order.pickup_lng;
+  const nav = lat != null && lng != null ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${lat},${lng}`)}` : null;
+  const phone = String(order.pickup_phone || '').replace(/[^+\d]/g, '');
+  return `<section class="card driver-pickup">
+    <span class="eyebrow">${order.status === 'Vers la collecte' ? 'En route vers la collecte' : 'D’abord, récupérer le colis'}</span>
+    <h2>${escapeHtml(order.pickup_name || 'Point de collecte')}</h2>
+    ${order.pickup_address ? `<p>${escapeHtml(order.pickup_address)}</p>` : ''}
+    ${order.pickup_ready ? `<p class="subtitle">Colis prêt à partir de ${escapeHtml(order.pickup_ready)}</p>` : ''}
+    <div class="driver-actions">
+      ${phone ? `<a class="button secondary" href="tel:${escapeHtml(phone)}">Appeler sur place</a>` : ''}
+      ${nav ? `<a class="button secondary" target="_blank" rel="noopener" href="${nav}">Itinéraire vers la collecte</a>` : ''}
+    </div>
+  </section>`;
+}
 const incidentLabels = {
   client_injoignable: 'Client injoignable', adresse: 'Adresse ou accès', colis: 'Problème de colis',
   paiement: 'Paiement', vehicule: 'Véhicule', gps: 'GPS ou connexion', autre: 'Autre',
@@ -314,7 +334,9 @@ async function renderDetail(id) {
   page.innerHTML = `<a class="driver-back" href="/driver">← Mes livraisons</a>
     <div class="page-header"><div><h1>${escapeHtml(order.customer_name || 'Client')}</h1><p class="subtitle">Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
     ${order.run ? `<section class="card run-context ${String(order.run.next_order_id) === String(order.id) ? 'next' : ''}"><span class="eyebrow">${escapeHtml(runStatusLabels[order.run.status] || order.run.status)} · ${escapeHtml(formatDateOnly(order.run.service_date))}</span><h2>${escapeHtml(order.run.name)}</h2><p>Arrêt ${escapeHtml(order.run.sequence)} sur ${escapeHtml(order.run.total_stops)}.${String(order.run.next_order_id) === String(order.id) ? ' C’est le prochain arrêt prévu.' : ' Un arrêt précédent peut encore être en attente.'}</p><p class="subtitle">L’ordre peut être adapté sur le terrain si nécessaire ; chaque commande conserve son propre statut et ses preuves.</p></section>` : ''}
+    ${pickupCard(order)}
     <section class="card driver-detail-grid">
+      ${order.package_type || order.package_description ? `<div class="detail"><span>Colis</span><strong>${escapeHtml([packageLabels[order.package_type], order.package_description].filter(Boolean).join(' · '))}</strong></div>` : ''}
       <div class="detail"><span>Téléphone</span><strong>${escapeHtml(order.customer_phone || '—')}</strong></div>
       <div class="detail"><span>Destination</span><strong>${escapeHtml(order.delivery_address || order.neighborhood || '—')}</strong></div>
       <div class="detail"><span>Repère</span><strong>${escapeHtml(order.landmark || '—')}</strong></div>

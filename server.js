@@ -3951,7 +3951,7 @@ app.get('/api/driver/runs', requireDriverApi, asyncRoute(async (req, res) => {
             r.status, r.version, r.started_at, r.updated_at
      FROM delivery_runs r
      WHERE r.company_id = $1 AND r.driver_id = $2
-       AND (r.status = 'active' OR (r.status = 'planned' AND r.service_date <= CURRENT_DATE + 14))
+       AND (r.status = 'active' OR (r.status IN ('planned', 'draft') AND r.service_date <= CURRENT_DATE + 14))
      ORDER BY CASE r.status WHEN 'active' THEN 0 ELSE 1 END, r.service_date ASC, r.id ASC
      LIMIT 30`,
     [req.auth.company_id, req.auth.driver_id]
@@ -4007,7 +4007,7 @@ app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
      LEFT JOIN delivery_stops s ON s.order_id = o.id AND s.company_id = o.company_id
        AND s.assignment_active = TRUE AND s.removed_at IS NULL
      LEFT JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = o.company_id
-       AND r.driver_id = o.driver_id AND r.status IN ('planned', 'active')
+       AND r.driver_id = o.driver_id AND r.status IN ('draft', 'planned', 'active')
      WHERE o.company_id = $1 AND o.driver_id = $2
        AND ${history ? 'o.status = ANY($3::text[])' : 'NOT (o.status = ANY($3::text[]))'}
      ORDER BY CASE r.status WHEN 'active' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END,
@@ -4067,7 +4067,7 @@ app.get('/api/driver/orders/:id', requireDriverApi, asyncRoute(async (req, res) 
        JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = s.company_id
        WHERE s.order_id = $1 AND s.company_id = $2 AND r.driver_id = $3
          AND s.removed_at IS NULL AND s.assignment_active = TRUE
-         AND r.status IN ('planned', 'active')
+         AND r.status IN ('draft', 'planned', 'active')
        LIMIT 1`,
       [order.id, req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
     ),
@@ -4107,6 +4107,32 @@ async function rememberPickupPosition(orderId, auth) {
   await pool.query(
     'UPDATE orders SET picked_up_lat = $3, picked_up_lng = $4 WHERE id = $1 AND company_id = $2 AND picked_up_lat IS NULL',
     [orderId, auth.company_id, position.lat, position.lng]
+  );
+}
+
+async function autoStartRunForOrder(client, auth, orderId) {
+  const run = (await client.query(
+    `SELECT r.id, r.status FROM delivery_stops s
+     JOIN delivery_runs r ON r.id = s.run_id AND r.company_id = s.company_id
+     WHERE s.order_id = $1 AND s.company_id = $2 AND s.assignment_active = TRUE AND s.removed_at IS NULL
+       AND r.status IN ('draft', 'planned')
+     LIMIT 1 FOR UPDATE OF r`,
+    [orderId, auth.company_id]
+  )).rows[0];
+  if (!run) return;
+  const updated = await client.query(
+    `UPDATE delivery_runs SET status = 'active', version = version + 1, updated_at = NOW(), started_at = COALESCE(started_at, NOW())
+     WHERE id = $1 RETURNING version`,
+    [run.id]
+  );
+  const key = `auto-start:${run.id}:${orderId}:${Date.now()}`;
+  await appendRunEvent(client, auth, run.id, 'status_changed', key, digest(canonicalJson({ runId: String(run.id), orderId: String(orderId), auto: true })), {
+    fromStatus: run.status, toStatus: 'active', reason: 'Départ du livreur', auto: true, orderId: String(orderId), version: updated.rows[0].version,
+  });
+  await client.query(
+    `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+     VALUES ($1, $2, 'delivery_run', $3, 'status_changed', jsonb_build_object('fromStatus', $4::text, 'toStatus', 'active', 'auto', true, 'orderId', $5::bigint))`,
+    [auth.company_id, auth.user_id, run.id, run.status, orderId]
   );
 }
 
@@ -4165,6 +4191,9 @@ app.post('/api/driver/orders/:id/transition', requireDriverApi, asyncRoute(async
          jsonb_build_object('from', $4::text, 'to', $5::text, 'eventId', $6::bigint))`,
       [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
     );
+    // La tournée démarre d'elle-même au premier départ du livreur : personne
+    // n'a à la planifier puis la lancer à la main.
+    if (ORDER_MOVING_STATUSES.includes(toStatus)) await autoStartRunForOrder(client, req.auth, order.id);
     await client.query('COMMIT');
     // Première collecte à un lieu sans position : on retient l'endroit où le
     // livreur a récupéré le colis (servira aux prochaines commandes).
@@ -7612,6 +7641,57 @@ app.get('/api/app/routing/health', requireCompanyApi, (_req, res) => {
   res.json(routingAdapter.health());
 });
 
+// Itinéraire en direct d'un livreur : de sa position actuelle vers ses
+// prochains points (collecte puis client), quel que soit l'état de la tournée.
+// Ordre : ce qu'il est en train de faire d'abord, puis l'ordre de passage.
+const LIVE_ROUTE_RANK = { 'Arrivée': 0, 'En livraison': 1, 'Vers la collecte': 2, 'Récupérée': 3, 'En tournée': 3 };
+app.get('/api/app/drivers/:id/live-route', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!/^\d+$/.test(String(req.params.id))) return res.status(404).json({ error: 'Livreur introuvable.' });
+  const driver = (await pool.query('SELECT id FROM drivers WHERE id = $1 AND company_id = $2', [req.params.id, req.auth.company_id])).rows[0];
+  if (!driver) return res.status(404).json({ error: 'Livreur introuvable.' });
+  const ordersResult = await pool.query(
+    `SELECT o.id, o.reference, o.status, o.customer_name, o.neighborhood, o.landmark, o.created_at,
+            o.destination_lat, o.destination_lng, o.pickup_name, o.pickup_lat, o.pickup_lng, s.sequence
+     FROM orders o
+     LEFT JOIN delivery_stops s ON s.order_id = o.id AND s.company_id = o.company_id
+       AND s.assignment_active = TRUE AND s.removed_at IS NULL
+     WHERE o.company_id = $1 AND o.driver_id = $2 AND o.archived_at IS NULL
+       AND o.status <> ALL($3::text[]) AND o.status NOT IN ('Échec', 'Retour')
+     ORDER BY o.created_at ASC LIMIT 60`,
+    [req.auth.company_id, driver.id, terminalOrderStatuses]
+  );
+  const point = (lat, lng) => (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) && lat != null && lng != null ? { lat: Number(lat), lng: Number(lng) } : null);
+  const targets = [];
+  for (const o of ordersResult.rows) {
+    const rank = LIVE_ROUTE_RANK[o.status] ?? 4;
+    const base = { orderId: String(o.id), reference: o.reference, status: o.status, customerName: o.customer_name, place: o.neighborhood || o.landmark || null, sequence: o.sequence == null ? null : Number(o.sequence), createdAt: o.created_at };
+    const pickup = point(o.pickup_lat, o.pickup_lng);
+    // Collecte à faire : avant de partir (Confirmée) ou en route vers elle.
+    if (pickup && (rank === 2 || rank === 4)) targets.push({ ...base, kind: 'pickup', label: o.pickup_name || 'Collecte', rank, ...pickup });
+    const dest = point(o.destination_lat, o.destination_lng);
+    if (dest) targets.push({ ...base, kind: 'delivery', label: o.customer_name || 'Client', rank: rank === 2 ? 3 : rank, ...dest });
+  }
+  targets.sort((a, b) => a.rank - b.rank || (a.sequence ?? 1e9) - (b.sequence ?? 1e9) || new Date(a.createdAt) - new Date(b.createdAt) || (a.kind === 'pickup' ? -1 : 1));
+  const kept = targets.slice(0, 24).map(({ rank, createdAt, ...t }) => ({ ...t, active: rank <= 3 }));
+  const position = await driverCurrentPosition(driver.id, req.auth.company_id);
+  const base = { driverId: String(driver.id), targets: kept, origin: position ? { lat: position.lat, lng: position.lng, at: position.at } : null, computedAt: new Date().toISOString() };
+  if (!kept.length) return res.json({ ...base, status: 'no_target', route: null });
+  if (!position) return res.json({ ...base, status: 'no_position', route: null });
+  if (routingAdapter.health().status === 'disabled') return res.json({ ...base, status: 'routing_unavailable', route: null });
+  const route = await routingAdapter.route({ profile: 'motorcycle', coordinates: [{ lat: position.lat, lng: position.lng }, ...kept.map((t) => ({ lat: t.lat, lng: t.lng }))] });
+  if (route.status !== 'ok') return res.json({ ...base, status: 'routing_unavailable', route: null });
+  return res.json({
+    ...base,
+    status: 'ok',
+    route: {
+      distanceMeters: route.distanceMeters,
+      durationSeconds: route.durationSeconds,
+      geometry: route.geometry,
+      legs: route.legs.map((leg) => ({ distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds })),
+    },
+  });
+}));
+
 app.get('/api/app/runs/:id/route', requireCompanyApi, asyncRoute(async (req, res) => {
   const runResult = await pool.query(
     `SELECT r.id, r.name, r.status, r.version, r.driver_id, d.traccar_unique_id
@@ -9686,6 +9766,7 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
        VALUES ($1, $2, 'order', $3, 'status_changed', jsonb_build_object('from', $4::text, 'to', $5::text, 'eventId', $6::bigint))`,
       [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
     );
+    if (ORDER_MOVING_STATUSES.includes(toStatus)) await autoStartRunForOrder(client, req.auth, order.id);
     await client.query('COMMIT');
     if (['En livraison', 'Arrivée'].includes(toStatus)) recordEtaSample(order.id, req.auth.company_id, toStatus, order.driver_id);
     return res.json({ orderId: order.id, status: toStatus, eventId: event.rows[0].id, version: Number(order.version) + 1 });
@@ -11772,6 +11853,16 @@ async function backfillOrderRuns(dbPool) {
         AND NOT EXISTS (SELECT 1 FROM delivery_stops s WHERE s.order_id = o.id AND s.assignment_active = TRUE)
       ON CONFLICT DO NOTHING
     `);
+    // Tournées restées en préparation alors que le livreur est déjà parti :
+    // elles démarrent d'elles-mêmes (même règle qu'au départ du livreur).
+    await client.query(`
+      UPDATE delivery_runs r
+      SET status = 'active', started_at = COALESCE(r.started_at, NOW()), version = r.version + 1, updated_at = NOW()
+      WHERE r.status IN ('draft', 'planned')
+        AND EXISTS (SELECT 1 FROM delivery_stops s JOIN orders o ON o.id = s.order_id AND o.company_id = s.company_id
+                    WHERE s.run_id = r.id AND s.removed_at IS NULL AND s.assignment_active = TRUE
+                      AND o.status = ANY($1::text[]))
+    `, [ORDER_MOVING_STATUSES]);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

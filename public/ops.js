@@ -978,8 +978,9 @@
           <div><button type="button" class="ops-stoplink" data-act="goto" data-src="commandes" data-id="${esc(s.order_id)}">${esc(s.customer_name || s.order_reference || `CMD-${s.order_id}`)}</button><small>${esc([s.neighborhood, s.requested_time].filter(Boolean).join(' · ') || '—')}</small>${chip(s.order_status, ORDER_TONE[s.order_status])}</div>
           ${editable ? `<span class="ops-stopact"><button type="button" class="ops-icon-btn" data-act="stop-move" data-i="${i}" data-d="-1" aria-label="Monter ${esc(s.customer_name || '')}" ${i === 0 ? 'disabled' : ''}>${ic('move-up')}</button><button type="button" class="ops-icon-btn" data-act="stop-move" data-i="${i}" data-d="1" aria-label="Descendre ${esc(s.customer_name || '')}" ${i === stops.length - 1 ? 'disabled' : ''}>${ic('move-down')}</button></span>` : ''}</li>`).join('')}</ol>`
           : '<p class="ops-empty-line">Aucune livraison dans cette tournée.</p>'}
+        ${['draft', 'planned'].includes(d.status) ? '<p class="ops-auto-note">Rien à valider : la tournée démarre toute seule dès que le livreur part avec un colis.</p>' : ''}
         <div class="ops-fiche-actions">
-          ${canAct && next ? fbtn(next[1], 'run-status', { icon: 'check', cls: 'ops-primary', attrs: `data-to="${next[0]}"` }) : ''}
+          ${canAct && next ? fbtn(next[1], 'run-status', { icon: 'check', cls: ['draft', 'planned'].includes(d.status) ? '' : 'ops-primary', attrs: `data-to="${next[0]}"` }) : ''}
           ${fbtn('Ouvrir la tournée', 'fiche-manage', { icon: 'external-link', cls: 'ops-ghost' })}
         </div>`;
     }

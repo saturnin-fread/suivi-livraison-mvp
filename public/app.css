@@ -1461,6 +1461,7 @@ tbody tr[data-href]:hover { background: #f6f9fc; }
 .rd-foot { flex-wrap: wrap; }
 .rd-foot > .button { flex: 1 1 150px; min-width: 0; }
 .rd-foot > .button.danger { flex: 0 1 auto; }
+.rd-auto { flex: 1 1 100%; margin: 0; font-size: 12.5px; color: #5b6878; line-height: 1.45; }
 .rd-cancel { display: grid; gap: 8px; width: 100%; }
 .rd-cancel label { font-size: 12.5px; font-weight: 700; color: var(--ink); }
 .rd-cancel textarea { min-height: 70px; }

@@ -206,6 +206,17 @@
       for (const o of d.unplannedOrders || []) if (!seen.has(String(o.id))) { seen.add(String(o.id)); out.push({ ...o, run: null }); }
       return out;
     }
+    // Ordre réel de passage : celui de l'itinéraire en direct quand il est connu
+    // (ce que le livreur fait maintenant d'abord), sinon l'ordre de la tournée.
+    function orderedStops(d) {
+      const list = stopsOf(d);
+      const r = st.liveRoute;
+      if (!r || String(r.driverId) !== String(d.id) || !r.targets?.length) return list;
+      const rank = new Map();
+      r.targets.filter((t) => t.kind === 'delivery').forEach((t, i) => { if (!rank.has(t.orderId)) rank.set(t.orderId, i); });
+      return list.map((x) => ({ ...x, liveN: rank.has(String(x.id)) ? rank.get(String(x.id)) + 1 : null }))
+        .sort((a, b) => (a.liveN ?? 1e9) - (b.liveN ?? 1e9));
+    }
     const zoneOf = (d) => stopsOf(d)[0]?.neighborhood || (d.position ? 'Position reçue' : 'Aucune position');
     const progressOf = (d) => {
       const run = (d.runs || []).find((r) => r.status === 'active') || (d.runs || [])[0];
@@ -313,7 +324,7 @@
       const speed = d.position && !d.position.stale && d.position.speedKnots != null ? `${Math.round(d.position.speedKnots * 1.852)} km/h` : null;
       const phone = String(d.phone || '').replace(/[^+\d]/g, '');
       const p = progressOf(d);
-      const stops = stopsOf(d);
+      const stops = orderedStops(d);
       const note = s.key === 'stale' ? '<div class="fm-note amber">Le livreur a peut-être avancé depuis. Ce point ne représente pas sa position actuelle.</div>'
         : s.key === 'none' ? '<div class="fm-note">Le livreur apparaîtra sur la carte dès que son application transmettra une position.</div>' : '';
       const route = st.liveRoute && String(st.liveRoute.driverId) === String(d.id) ? liveRouteHtml() : '';
@@ -334,15 +345,30 @@
         ${route}
         ${stops.length ? `<div class="fm-route-head"><h3>${p.run ? esc(p.run.name || 'La tournée du jour') : 'Ses livraisons'}</h3>${p.total ? `<span>${p.done}/${p.total} livrée${p.done > 1 ? 's' : ''}</span>` : ''}</div>
           ${p.total ? `<div class="fm-progress" role="progressbar" aria-label="Tournée livrée" aria-valuenow="${p.done}" aria-valuemin="0" aria-valuemax="${p.total}"><span style="width:${Math.round((p.done / p.total) * 100)}%"></span></div>` : ''}
-          ${stops.map((x, i) => `<div class="fm-stop"><span class="fm-stop-n">${x.sequence ?? i + 1}</span><div><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong><p>${esc(x.neighborhood || x.landmark || x.deliveryAddress || 'Adresse à préciser')} · ${esc(x.status)}${x.destination && d.position ? ` · à ${km(dist([d.position.latitude, d.position.longitude], [x.destination.latitude, x.destination.longitude]))}` : ''}</p>
+          ${stops.map((x, i) => `<div class="fm-stop"><span class="fm-stop-n">${x.liveN ?? x.sequence ?? i + 1}</span><div><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong><p>${esc(x.neighborhood || x.landmark || x.deliveryAddress || 'Adresse à préciser')} · ${esc(x.status)}${x.destination && d.position ? ` · à ${km(dist([d.position.latitude, d.position.longitude], [x.destination.latitude, x.destination.longitude]))}` : ''}</p>
             <div class="fm-stop-acts">${x.destination ? `<button type="button" data-stop="${esc(x.id)}">Voir sur la carte</button>` : '<span class="fm-dim">Sans position GPS</span>'}<button type="button" data-order="${esc(x.id)}">Ouvrir</button></div></div></div>`).join('')}
           ${p.run ? `<button type="button" class="fm-btn fm-wide" data-run="${esc(p.run.id)}">Ouvrir la tournée ${ic('arrow-up-right')}</button>` : ''}`
         : '<p class="fm-quiet">Aucune livraison en cours pour ce livreur.</p>'}`;
     }
     function liveRouteHtml() {
       const r = st.liveRoute;
-      if (r.unavailable) return '<div class="fm-note">Itinéraire routier indisponible pour le moment.</div>';
-      return `<div class="fm-liveroute ${r.planned ? 'planned' : ''}"><i></i><div><strong>${r.planned ? 'Itinéraire prévu' : 'Itinéraire restant'} · ${km(r.distanceMeters)}</strong><small>${r.durationSeconds != null ? `~${Math.round(r.durationSeconds / 60)} min de route, hors arrêts` : 'Durée indisponible'}</small></div></div>`;
+      if (r.loading) return '<div class="fm-liveroute wait"><i></i><div><strong>Calcul de l’itinéraire…</strong></div></div>';
+      if (r.error) return '<div class="fm-note">Itinéraire indisponible pour le moment. Nouvel essai à la prochaine actualisation.</div>';
+      if (r.status === 'no_target') return '<div class="fm-note">Aucun point à rejoindre : pas de commande en cours avec une position.</div>';
+      if (r.status === 'no_position') return '<div class="fm-note amber">Pas de position récente du livreur. L’itinéraire reprendra au prochain signal.</div>';
+      const next = r.targets[0];
+      const leg = r.legs?.[0];
+      const nextKm = leg ? leg.distanceMeters : dist([r.origin.lat, r.origin.lng], [next.lat, next.lng]);
+      const what = next.kind === 'pickup' ? 'Collecte' : 'Livraison';
+      const others = r.targets.length - 1;
+      return `<div class="fm-liveroute ${r.status === 'ok' ? '' : 'crow'}"><i></i><div>
+          <small class="fm-lr-kicker">${what} · prochain point</small>
+          <strong>${esc(next.label)}${next.place ? ` · ${esc(next.place)}` : ''}</strong>
+          <span class="fm-lr-eta">${km(nextKm)}${leg ? ` · ~${Math.max(1, Math.round(leg.durationSeconds / 60))} min` : ' à vol d’oiseau'}</span>
+          ${others > 0 && r.status === 'ok' ? `<small>Ensuite ${plural(others, 'autre point', 'autres points')} · ${km(r.distanceMeters)} et ~${Math.round(r.durationSeconds / 60)} min au total, hors arrêts</small>` : ''}
+          ${r.status !== 'ok' ? '<small>Calcul routier indisponible : ligne droite affichée.</small>' : ''}
+          <small class="fm-lr-live">${ic('radio')}Recalculé à ${clockSec(new Date(r.computedAt).getTime())}, suit le livreur</small>
+        </div></div>`;
     }
 
     // ---------- Historique
@@ -660,9 +686,9 @@
         const owners = st.isolate && sel ? [sel] : (st.showAllStops ? matches() : (sel ? [sel] : []));
         owners.forEach((d) => {
           const mine = sel && String(d.id) === String(sel.id);
-          stopsOf(d).forEach((x, i) => {
+          (mine ? orderedStops(d) : stopsOf(d)).forEach((x, i) => {
             if (!x.destination) return;
-            const html = mine ? `<span class="fm-dest">${esc(x.sequence ?? i + 1)}</span>` : `<span class="fm-dest-dot tone-${job(d).tone}"></span>`;
+            const html = mine ? `<span class="fm-dest">${esc(x.liveN ?? x.sequence ?? i + 1)}</span>` : `<span class="fm-dest-dot tone-${job(d).tone}"></span>`;
             L.marker([x.destination.latitude, x.destination.longitude], { icon: L.divIcon({ className: 'fm-divicon', html, iconSize: mine ? [28, 28] : [12, 12], iconAnchor: mine ? [14, 14] : [6, 6] }), title: x.customerName || `Commande ${x.id}` })
               .addTo(layers.stops)
               .bindPopup(`<div class="fm-popup"><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong><span>${esc(x.neighborhood || x.landmark || x.deliveryAddress || '')}</span><small>${esc(d.name)} · ${esc(x.status)}</small><button type="button" data-order="${esc(x.id)}">Ouvrir la commande</button></div>`);
@@ -696,24 +722,52 @@
       if (n) flyBounds(L.latLngBounds([[w.latitude, w.longitude], [n.d.position.latitude, n.d.position.longitude]]).pad(0.3), 16);
       else fly([w.latitude, w.longitude], 16);
     }
-    async function refreshLiveRoute() {
-      layers.route.clearLayers();
-      st.liveRoute = null;
+    // Itinéraire en direct : recalculé quand le livreur a bougé (≥ 30 m), quand
+    // ses commandes changent, ou au plus tard toutes les 60 s.
+    const routeSig = (d) => stopsOf(d).map((x) => `${x.id}:${x.status}`).join('|');
+    function liveRouteStale(d) {
+      const r = st.liveRoute;
+      if (!r || String(r.driverId) !== String(d.id) || r.error) return true;
+      if (r.loading || r.pending) return false;
+      if (r.sig !== routeSig(d)) return true;
+      if (Date.now() - new Date(r.computedAt).getTime() > 60000) return true;
+      if (d.position && r.origin) return dist([d.position.latitude, d.position.longitude], [r.origin.lat, r.origin.lng]) >= 30;
+      return Boolean(d.position) !== Boolean(r.origin);
+    }
+    let routeSeq = 0;
+    async function refreshLiveRoute({ fit = false, force = false } = {}) {
       const d = selected();
-      if (!d || st.mode !== 'current') return;
-      const run = (d.runs || []).find((r) => r.status === 'active') || (d.runs || []).find((r) => r.status === 'planned') || (d.runs || []).find((r) => r.status === 'draft');
-      if (!run) return;
-      try {
-        const data = await api(`/api/app/runs/${encodeURIComponent(run.id)}/route`);
-        if (String(selected()?.id) !== String(d.id) || st.mode !== 'current') return;
-        const route = data.route;
-        if (route?.status === 'ok' && route.geometry?.value?.coordinates?.length >= 2) {
-          const coords = route.geometry.value.coordinates.map(([lng, lat]) => [lat, lng]);
-          L.polyline(coords, { color: run.status === 'active' ? '#e11d2a' : '#3459a8', weight: 4, opacity: 0.85 }).addTo(layers.route);
-          st.liveRoute = { driverId: d.id, planned: run.status !== 'active', distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds };
-        } else st.liveRoute = { driverId: d.id, unavailable: true };
-      } catch { st.liveRoute = { driverId: d.id, unavailable: true }; }
-      if (selected() && st.mode === 'current') renderTeam();
+      if (!d || st.mode !== 'current') { layers.route.clearLayers(); st.liveRoute = null; return; }
+      if (!force && !liveRouteStale(d)) return;
+      const seq = ++routeSeq;
+      const keep = st.liveRoute && String(st.liveRoute.driverId) === String(d.id) && !st.liveRoute.error;
+      if (!keep) { layers.route.clearLayers(); st.liveRoute = { driverId: d.id, loading: true }; renderTeam(); }
+      else st.liveRoute.pending = true; // l'ancien tracé reste affiché pendant le recalcul
+      let data;
+      try { data = await api(`/api/app/drivers/${encodeURIComponent(d.id)}/live-route`); }
+      catch { if (seq === routeSeq) { st.liveRoute = { driverId: d.id, error: true }; layers.route.clearLayers(); renderTeam(); } return; }
+      if (seq !== routeSeq || String(selected()?.id) !== String(d.id) || st.mode !== 'current') return;
+      st.liveRoute = { driverId: d.id, sig: routeSig(d), status: data.status, targets: data.targets || [], origin: data.origin, computedAt: data.computedAt,
+        distanceMeters: data.route?.distanceMeters, durationSeconds: data.route?.durationSeconds, legs: data.route?.legs || [] };
+      drawLiveRoute(data);
+      renderTeam(); drawCurrent();
+      if (fit && !st.follow && data.origin && data.targets?.[0]) flyBounds(L.latLngBounds([[data.origin.lat, data.origin.lng], [data.targets[0].lat, data.targets[0].lng]]).pad(0.35), 16);
+    }
+    function drawLiveRoute(data) {
+      layers.route.clearLayers();
+      if (!data.origin || !data.targets?.length) return;
+      const coords = data.status === 'ok' && data.route?.geometry?.value?.coordinates?.length >= 2
+        ? data.route.geometry.value.coordinates.map(([lng, lat]) => [lat, lng])
+        : [[data.origin.lat, data.origin.lng], ...data.targets.map((t) => [t.lat, t.lng])];
+      const crow = data.status !== 'ok';
+      L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.9, interactive: false }).addTo(layers.route);
+      L.polyline(coords, { color: '#e11d2a', weight: 5, opacity: 0.95, dashArray: crow ? '8 10' : null, interactive: false }).addTo(layers.route);
+      const next = data.targets[0];
+      L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: '<span class="fm-next-halo" aria-hidden="true"></span>', iconSize: [44, 44], iconAnchor: [22, 22] }), interactive: false, zIndexOffset: -10 }).addTo(layers.route);
+      data.targets.filter((t) => t.kind === 'pickup').forEach((t) => {
+        L.marker([t.lat, t.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pickup" title="Collecte">${ic('package')}</span>`, iconSize: [28, 28], iconAnchor: [14, 14] }), title: `Collecte · ${t.label}` })
+          .addTo(layers.route).bindTooltip(`<div class="fm-tip-card"><strong>Collecte · ${esc(t.label)}</strong><small>Pour ${esc(t.customerName || t.reference || '')}</small></div>`, { direction: 'top', offset: [0, -14], className: 'fm-tip', opacity: 1 });
+      });
     }
     function renderMapState() {
       const d = selected();
@@ -747,7 +801,7 @@
       st.selectedId = String(id); st.follow = false; st.focusWaiting = null; st.tab = 'drivers';
       if (narrow()) st.sheet = 'half';
       if (st.mode === 'history') { loadDriverHistory(); return; }
-      renderTeam(); drawCurrent(); refreshLiveRoute();
+      renderTeam(); drawCurrent(); refreshLiveRoute({ fit: pan, force: true });
       const d = selected();
       if (pan && d?.position) fly([d.position.latitude, d.position.longitude]);
       history.replaceState(null, '', `/app/carte?livreur=${encodeURIComponent(id)}`);
@@ -764,7 +818,7 @@
       }
       st.target = null; st.track = null; st.driverOrders = null;
       layers.history.clearLayers(); layers.playhead.clearLayers();
-      renderPlayer(); renderTeam(); drawCurrent(); refreshLiveRoute();
+      renderPlayer(); renderTeam(); drawCurrent(); refreshLiveRoute({ force: true });
     }
     function fitAll() {
       if (st.mode === 'history' && st.track?.points.length) { drawHistory(true); return; }
@@ -805,8 +859,8 @@
         if (st.follow && d?.position && st.mode === 'current') map.panTo([d.position.latitude, d.position.longitude], { animate: !reduced() });
         if (first) {
           if (d?.position) map.setView([d.position.latitude, d.position.longitude], 15); else fitAll();
-          if (d) refreshLiveRoute();
-        }
+          if (d) refreshLiveRoute({ fit: true, force: true });
+        } else if (d && st.mode === 'current') refreshLiveRoute();
       } catch (error) {
         st.error = `Actualisation impossible : ${error.message}`;
         renderMapState();

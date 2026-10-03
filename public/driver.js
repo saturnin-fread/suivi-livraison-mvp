@@ -52,7 +52,7 @@ const paymentStatusLabels = {
 const paymentMethodLabels = {
   cash: 'Espèces', mobile_money: 'Mobile Money', card: 'Carte', bank_transfer: 'Virement', other: 'Autre',
 };
-const runStatusLabels = { planned: 'Planifiée', active: 'En cours' };
+const runStatusLabels = { draft: 'À démarrer', planned: 'À démarrer', active: 'En cours' };
 
 function badge(status) {
   const type = status === 'Livrée' ? 'success' : ['Échec', 'Retour', 'Retournée', 'Annulée'].includes(status) ? 'danger' : ['Arrivée'].includes(status) ? 'warning' : '';

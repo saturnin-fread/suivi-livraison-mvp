@@ -3426,9 +3426,10 @@ async function openRunDrawer(runId, opts = {}) {
         </section>
       </div>
       ${transitions.length ? `<div class="crm-drawer-foot rd-foot" id="rdFoot">
+        ${['draft', 'planned'].includes(run.status) ? '<p class="rd-auto">Rien à valider : la tournée démarre toute seule dès que le livreur part avec un colis.</p>' : ''}
         ${transitions.includes('cancelled') ? '<button type="button" class="button danger" id="rdCancel">Annuler</button>' : ''}
         ${others.map((status) => `<button type="button" class="button secondary" data-to="${status}">${escapeHtml(runActionLabels[status] || runStatusLabels[status])}</button>`).join('')}
-        ${forward ? `<button type="button" class="button primary" data-to="${forward}">${escapeHtml(runActionLabels[forward])}</button>` : ''}
+        ${forward ? `<button type="button" class="button ${['draft', 'planned'].includes(run.status) ? 'secondary' : 'primary'}" data-to="${forward}">${escapeHtml(runActionLabels[forward])}</button>` : ''}
       </div>` : ''}`;
 
     const body = drawer.querySelector('.crm-drawer-body');

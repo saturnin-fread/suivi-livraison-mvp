@@ -1,0 +1,207 @@
+TRAXO — BRIEF POUR CRÉER DES MAQUETTES PREMIUM
+Version du 2 octobre 2026. À donner tel quel à l'outil qui produit les maquettes.
+
+======================================================================
+1. CE QU'EST TRAXO
+======================================================================
+TRAXO est un logiciel en ligne (SaaS) de gestion et de suivi de livraisons,
+pensé pour l'Afrique de l'Ouest francophone (d'abord le Bénin, Cotonou).
+Clients visés : restaurants, commerces, vendeurs en ligne, sociétés de livraison.
+
+Promesse : CENTRALISER, AUTOMATISER, SIMPLIFIER.
+Règle d'or : ne jamais ajouter d'options inutiles. Une maquette doit enlever
+des clics, pas en ajouter.
+
+Quatre publics, quatre interfaces :
+  A. Le responsable / l'équipe (back-office web, ordinateur et téléphone)
+  B. Le livreur (application web mobile, une main, en plein soleil, réseau faible)
+  C. Le client final (pages publiques sans compte : formulaire, suivi, confirmation)
+  D. L'équipe TRAXO (administration plateforme)
+
+======================================================================
+2. EXIGENCES NON NÉGOCIABLES
+======================================================================
+- Tout en français, ton humain et chaleureux, jamais robotique.
+- 100 % responsive : ordinateur 1440 px, tablette 1024 px, téléphone 390 px.
+  Marge latérale de 16 px sur téléphone, aucun défilement horizontal.
+- Aucun bouton mort : chaque bouton dessiné doit avoir une action réelle et
+  un état (normal, survol, désactivé, chargement, succès, erreur).
+- Pas d'images générées par IA. Uniquement des icônes (Lucide), des formes,
+  des données réalistes. Pas d'illustrations « clipart ».
+- Pas un design « qui fait IA » : pas de dégradés violets, pas de paillettes,
+  pas d'emojis décoratifs, pas de cartes toutes identiques, pas de textes vagues.
+- Ne JAMAIS dessiner de mentions de démonstration dans la maquette finale :
+  pas de « Prototype interactif », « Aperçu côté livreur », « données simulées »,
+  « Application livreur à développer ». Ces éléments ont été retirés à l'intégration.
+- Prévoir tous les états : vide (premier usage), chargement, erreur réseau,
+  liste longue, texte très long, aucun résultat de recherche.
+- Accessibilité : contraste suffisant, focus clavier visible, cibles tactiles
+  de 44 px minimum, libellés lisibles (13 px minimum, 14–15 px de préférence).
+
+======================================================================
+3. IDENTITÉ VISUELLE
+======================================================================
+Police : TraxoSans (graisses 400, 500, 700). À défaut : Inter.
+Icônes : Lucide (trait 1,8 à 2, bouts arrondis).
+Logo : « TRAXO » avec un point rouge (pin de localisation rouge dans le logo).
+
+Back-office (couleurs principales)
+  Rouge TRAXO (action principale) ... #E11D2A   survol #C21824   fond doux #FDECED
+  Encre (textes, titres) ............ #20232A   (plus foncé #0C0D10)
+  Texte secondaire .................. #6F7580
+  Texte discret ..................... #8D939C
+  Bordures .......................... #E8EAED   (léger #F1F2F4)
+  Fond de page ...................... #F6F7F8   cartes blanches #FFFFFF
+  Bouton sombre (secondaire fort) ... #252930
+  Succès / disponible ............... #2F6B4F   fond #E9F3EC
+  Information / en livraison ........ #3459A8   fond #EBF0FB
+  Attention / à faire ............... #8A5300   fond #FDF2DF
+  Aplat sauge (cartes d'équipe) ..... #EDF2ED
+  Aplat abricot (à finaliser) ....... #FFF1EA
+Le rouge est RÉSERVÉ à l'action principale et aux alertes. Une seule action
+rouge par écran.
+
+Pages client (style différent, plus éditorial et calme)
+  Vert profond (action) ............. #1F5446   fond doux #EAF1EC
+  Fond ............................. #F6F6F3   encre #141414
+  Grands titres (34–58 px, gras, serrés), sections numérotées « 01, 02, 03 »,
+  logo de l'entreprise cliente en en-tête (pas celui de TRAXO en avant).
+
+Formes
+  Rayons : boutons et champs 10 px, cartes 14–16 px, pastilles 999 px.
+  Ombres très légères. Hauteur des boutons 42–52 px.
+  Animations sobres (apparition 300–450 ms), respect de « réduire les animations ».
+
+======================================================================
+4. RÈGLES DE RÉDACTION (COPYWRITING)
+======================================================================
+- Phrases courtes, verbes d'action, vouvoiement pour responsables et clients.
+- Dire ce qui se passe et quoi faire ensuite. Exemple : « Ce QR a expiré.
+  Pour votre sécurité, un QR ne vit que 15 minutes. Affichez-en un nouveau. »
+- Messages d'erreur utiles, jamais « Erreur 500 » ni « Une erreur est survenue » seul.
+- Chiffres et heures à la française : « 14 h 30 », « 1 500 FCFA », « 2,4 km ».
+- Prénom de la personne quand on le connaît : « Bonjour Kossi. », « C'est fait, Kossi. »
+- Monnaie : FCFA (XOF). Fuseau : Africa/Porto-Novo (UTC+1).
+- Téléphones béninois : 10 chiffres commençant par 01 (ex. 01 97 12 34 56), indicatif +229.
+- Vocabulaire constant (ne pas varier) : commande, demande, livreur, tournée,
+  collecte, remise, client, encaissement, incident, accès à l'application.
+
+======================================================================
+5. NAVIGATION DU BACK-OFFICE (barre latérale blanche, repliable)
+======================================================================
+  1. Carte d'exploitation  (/app/carte)
+  2. Tableau de bord       (/app)
+  3. Opérations            (/app/operations : demandes, commandes, tournées, incidents en onglets)
+  4. Livreurs              (/app/livreurs)
+  5. Équipe et accès       (/app/equipe)
+  6. Clients               (/app/clients)
+  7. Rapports              (/app/rapports)
+  8. Paramètres            (/app/parametres)
+Barre du haut : titre + sous-titre de la page, recherche globale (Ctrl K),
+cloche de notifications avec pastille rouge, menu du compte (nom de l'entreprise, rôle).
+
+Rôles : Propriétaire, Manager, Opérateur, Livreur.
+Seuls Propriétaire et Manager gèrent les livreurs, la facturation et voient les alertes de vigilance.
+
+======================================================================
+6. CE QUI EXISTE DÉJÀ (à respecter, pas à réinventer)
+======================================================================
+Tableau de bord : 4 indicateurs, période 7 / 30 jours ou personnalisée, filtre par
+livreur, graphiques (courbe / barres), tableau des livraisons avec détail.
+
+Opérations : demandes clients à valider, commandes, tournées du jour (créées
+automatiquement par livreur), incidents. Tiroirs latéraux plutôt que pages.
+
+Nouvelle commande : coordonnées du client, lieu, colis (type : colis, documents,
+repas, fragile, vêtements, autre + contenu), collecte facultative
+(« le colis est à récupérer ailleurs » : chez qui, où, téléphone, heure, épingle).
+Option : le client confirme lui-même avec les 4 derniers chiffres de son numéro.
+
+Statuts d'une commande, dans l'ordre :
+  Confirmée → Vers la collecte (seulement s'il y a une collecte) → Récupérée →
+  En tournée → En livraison → Arrivée → Livrée (validée par un code à 6 chiffres)
+  Autres : Annulée, Échec, Retournée.
+
+Livreurs (kit déjà intégré) :
+  - Vue d'ensemble « Votre équipe » (nombre, disponibles, en livraison, hors ligne)
+    + carte « N accès à finaliser ».
+  - Répertoire : onglets Tous / Invitations / Suspendus, recherche, filtres zone et activité,
+    colonnes Livreur, Activité, Zone, Colis / capacité, Accès à l'app. Export CSV.
+  - Profil : identité, organisation (véhicule, immatriculation, zone, équipe, capacité,
+    disponibilité, note interne, traceur GPS), permissions (appeler le destinataire,
+    signaler un incident), accès à l'application, points d'attention, suspendre, retirer.
+  - Ajout en 3 étapes : Son profil, Son organisation, Son accès.
+  - Invitation par QR code à usage unique (15 min), code de secours TX-XXXXXXXX,
+    lien WhatsApp. Un seul téléphone connecté à la fois.
+  - Page mobile /rejoindre pour le livreur : « Bonjour Kossi. Votre équipe vous attend. »,
+    code WhatsApp à 6 chiffres si le canal est relié, « C'est fait, Kossi. »
+
+Application livreur : liste du jour, détail d'une livraison, carte de collecte
+« D'abord, récupérer le colis », boutons d'étape, encaissement, photo de preuve,
+code de remise, signalement d'incident, file hors ligne.
+
+Pages client : formulaire « Préparer votre livraison » (coordonnées, lieu avec GPS
+obligatoire et épingle, photos du lieu, colis et collecte), page « demande reçue »
+modifiable, suivi en direct avec carte (plan, satellite, hybride), heure d'arrivée
+estimée (heure précise sur le dernier trajet, sinon fourchette « 14 h 10 – 14 h 30 »).
+Par défaut le client ne voit pas les autres arrêts ; l'entreprise peut afficher le
+trajet complet (arrêts anonymes).
+
+Connexion : e-mail + mot de passe, Google, code à 6 chiffres par e-mail OU WhatsApp
+sur un nouvel appareil (choix mémorisé, renvoi après 1 min puis 2 et 3 min),
+double authentification par application, « rester connecté 30 jours ».
+Onboarding en 3 étapes : votre activité, votre ville, votre équipe (avec numéro WhatsApp).
+
+Notifications : cloche + centre de notifications (lu, plus tard, archiver), récapitulatif
+e-mail quotidien ou hebdomadaire. Catégories : demandes, livraisons, tournées, incidents,
+clients, sécurité. Alertes de vigilance (fraude) dans la catégorie sécurité.
+
+Vigilance (anti-fraude) : remise déclarée loin du client, position incohérente,
+photo réutilisée, écarts d'encaissement répétés, essai gratuit réutilisé,
+numéro de livreur dans plusieurs entreprises. Bouton « C'est vérifié ».
+
+Paramètres : vue d'ensemble, Général (logo, coordonnées), Livraisons (règles de
+validation, preuves photo et signature, trajet visible par le client), Équipe et
+permissions, Sécurité (codes de connexion, mot de passe, 2FA, sessions), Facturation.
+
+Formules (prix mensuels) :
+  Essai gratuit 3 jours (une seule fois par personne)
+  Flexible : 1 000 FCFA par livreur (1 à 9 livreurs)
+  Équipe : 10 000 FCFA (jusqu'à 12)   Croissance : 18 000 FCFA (jusqu'à 25)
+  Business : 30 000 FCFA (jusqu'à 50) Grande flotte : sur devis (51 et plus)
+  Remises trimestrielle / annuelle. Une « place » = une personne différente ayant
+  livré dans le mois (supprimer puis recréer un livreur ne libère pas de place).
+  Paiement en ligne prévu via FedaPay (Mobile Money), pas encore branché.
+
+======================================================================
+7. DONNÉES RÉALISTES À UTILISER DANS LES MAQUETTES
+======================================================================
+Entreprises : Maison Aïcha (restaurant), Saveurs du Sud, Boutique Mado.
+Livreurs : Amadou Dossa, Aïcha Sanni, Joël Hounkpè, Esther Adjovi, Marc Ahounou,
+Grâce Agossou, Kossi Mensah. Identifiants LIV-001, LIV-002…
+Quartiers de Cotonou : Akpakpa, Cadjèhoun, Fidjrossè, Haie Vive, Gbégamey,
+Zogbo, Dantokpa (marché), Calavi.
+Véhicules : Moto (la plupart), Tricycle, Voiture, Vélo, Camionnette.
+Montants : 1 500 à 25 000 FCFA.
+
+======================================================================
+8. FORMAT DE LIVRAISON ATTENDU (comme les kits précédents)
+======================================================================
+Un dossier zip contenant :
+  - maquettes/ : captures PNG, ordinateur 1440 px ET téléphone 390 px, chaque état.
+  - components/ : HTML + CSS + JavaScript simple (pas de React, pas de framework,
+    pas de Tailwind), classes préfixées par le module (ex. .dr- pour Livreurs),
+    pour s'intégrer à une application en JavaScript natif.
+  - CONCEPTION_ET_INTEGRATION.md : écrans, parcours, états, textes exacts,
+    règles d'interaction, et les données dont chaque écran a besoin.
+  - assets/ : uniquement des icônes SVG (Lucide, licence ISC) et le logo fourni.
+Ne pas inclure de faux identifiants, de fausses clés ni de vraie donnée personnelle.
+
+======================================================================
+9. PISTES DE PROCHAINES MAQUETTES
+======================================================================
+- Page Clients (fiche client, historique, relance) dans le style du kit Livreurs.
+- Application livreur complète refaite au niveau premium (journée, détail, remise, hors ligne).
+- Écran de paiement d'abonnement (Mobile Money via FedaPay) et factures.
+- Rapports exportables (PDF / Excel) avec aperçu.
+- Section Vigilance : vue regroupée des alertes pour le responsable.

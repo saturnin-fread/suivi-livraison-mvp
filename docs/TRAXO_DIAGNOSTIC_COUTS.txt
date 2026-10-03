@@ -1,0 +1,193 @@
+TRAXO — DIAGNOSTIC DES COÛTS (MAINTENANCE ET ÉVOLUTION)
+Établi le 2 octobre 2026, à partir de la consommation réelle mesurée sur Railway
+pendant les 7 derniers jours.
+
+Conversion utilisée : 1 dollar US ≈ 600 FCFA (arrondi ; le taux réel varie).
+Les tarifs des fournisseurs sont les tarifs publics connus à ce jour : à revérifier
+avant toute décision (ils changent). Le montant exact facturé par Railway se lit
+dans le tableau de bord Railway, rubrique « Usage ».
+
+======================================================================
+RÉSUMÉ EN 6 LIGNES
+======================================================================
+1. Hébergement aujourd'hui : environ 24 $ par mois (≈ 14 500 FCFA).
+2. Ce que TRAXO consomme vraiment : environ 10 $ par mois (≈ 6 000 FCFA).
+3. Environ 14 $ par mois (≈ 8 500 FCFA) partent dans des services qui ne servent
+   pas TRAXO : à vérifier puis supprimer → plus de la moitié de la facture.
+4. Coûts pas encore payés mais à prévoir : sauvegardes, WhatsApp officiel,
+   commission FedaPay, licence de la vue satellite, formalités légales.
+5. Un seul client « Flexible » avec 10 livreurs (10 000 FCFA) couvre déjà
+   l'hébergement actuel de TRAXO.
+6. Le vrai risque n'est pas le coût, mais trois fragilités : pas de sauvegarde
+   vérifiée de la base, WhatsApp non officiel (risque de blocage du numéro),
+   vue satellite utilisée sans licence commerciale.
+
+======================================================================
+1. HÉBERGEMENT RAILWAY — CE QUI TOURNE AUJOURD'HUI
+======================================================================
+Base de calcul (tarifs Railway à l'usage) :
+  mémoire ≈ 10 $ par Go et par mois, processeur ≈ 20 $ par vCPU et par mois,
+  stockage ≈ 0,15 $ par Go et par mois, trafic sortant ≈ 0,05 $ par Go.
+Moyennes mesurées sur 7 jours, coût mensuel estimé :
+
+SERVICES UTILES À TRAXO
+  delivery-app (l'application TRAXO) ..... 0,15 Go  .......... ≈ 1,5 $
+  osrm-benin (calcul des itinéraires) .... 0,34 Go  .......... ≈ 3,4 $
+  tiles-benin (fond de carte du Bénin) ... 0,02 Go  .......... ≈ 0,2 $
+  traccar (positions GPS des livreurs) ... 0,35 Go  .......... ≈ 3,5 $
+  Postgres de TRAXO (base de données) .... 0,08–0,11 Go ...... ≈ 1,0 à 1,4 $
+                                                    SOUS-TOTAL ≈ 10 $ / mois
+                                                               (≈ 6 000 FCFA)
+
+SERVICES QUI NE SERVENT PAS TRAXO (à vérifier, puis supprimer s'ils sont inutiles)
+  Primary ................................ 0,45 Go  .......... ≈ 4,7 $
+  Worker ................................. 0,46 Go  .......... ≈ 4,7 $
+  searxng-railway (moteur de recherche) .. 0,16 Go  .......... ≈ 1,6 $
+  ollama (modèle d'IA local) ............. 0,07 Go  .......... ≈ 0,7 $
+  Redis ................................... très faible ........ ≈ 0,15 $
+  Redis-sPlS .............................. très faible ........ ≈ 0,15 $
+  Second Postgres (doublon) ............... 0,08–0,11 Go ...... ≈ 1,0 à 1,4 $
+                                                    SOUS-TOTAL ≈ 13 à 14 $ / mois
+                                                               (≈ 8 000 FCFA)
+
+TOTAL MESURÉ ≈ 24 $ par mois (≈ 14 500 FCFA), soit ≈ 290 $ par an (≈ 175 000 FCFA).
+Le trafic réseau est négligeable aujourd'hui (moins d'1 Go par mois).
+
+Constats
+- TRAXO n'est relié à AUCUN des deux Redis : la variable REDIS_URL n'existe pas
+  dans l'application. La limitation anti-abus fonctionne en mémoire, ce qui suffit
+  tant qu'il n'y a qu'un seul serveur. Les deux Redis sont donc payés pour rien
+  côté TRAXO (le Redis dédié a été créé mais jamais branché).
+- Il existe deux bases Postgres. L'une sert TRAXO, l'autre semble servir
+  Primary / Worker ou être un reste de l'ancienne installation. À confirmer avant
+  toute suppression : une erreur ici effacerait des données.
+- Primary, Worker, ollama et searxng ressemblent à un autre projet installé dans
+  le même espace. S'ils vous servent ailleurs, déplacez-les dans un projet séparé
+  pour savoir ce que coûte réellement TRAXO. Sinon, les supprimer fait gagner
+  ≈ 8 000 FCFA par mois.
+
+Formule Railway
+- Formule Hobby : 5 $ par mois, dont 5 $ d'usage inclus ; au-delà, l'usage est facturé.
+- Formule Pro : 20 $ par mois, dont 20 $ d'usage inclus ; elle apporte les
+  sauvegardes de volumes, plus de ressources et un meilleur support.
+- Avec TRAXO seul (≈ 10 $), Hobby suffit. Pro devient raisonnable dès les premiers
+  clients payants, surtout pour les sauvegardes.
+
+======================================================================
+2. AUTRES COÛTS DÉJÀ EN PLACE
+======================================================================
+  Nom de domaine gettraxo.app ............ ≈ 15 à 20 $ par an (≈ 10 000 FCFA)
+  E-mails (Brevo, offre gratuite) ........ 0 FCFA tant que l'on reste sous
+                                           ≈ 300 e-mails par jour
+  Connexion Google ........................ gratuit
+  GitHub (code source) ................... gratuit
+  WhatsApp (numéro dédié 0140056766) ..... coût de la SIM et des recharges
+                                           (quelques centaines à milliers de FCFA par mois)
+  Calcul d'itinéraires et fond de carte .. hébergés par nous, déjà comptés plus haut
+
+======================================================================
+3. COÛTS PAS ENCORE PAYÉS — À PRÉVOIR
+======================================================================
+A. Indispensables avant d'avoir de vrais clients
+  - Sauvegarde de la base de données : aujourd'hui, aucune sauvegarde
+    automatique n'est vérifiée. Un incident peut tout effacer
+    (commandes, clients, livreurs).
+    → Formule Railway Pro (sauvegardes incluses) ou export automatique
+      quotidien vers un stockage externe : ≈ 1 à 5 $ par mois.
+  - Formalités légales au Bénin : RCCM et IFU (nécessaires pour FedaPay et
+    pour facturer), et déclaration à l'APDP (Autorité de Protection des
+    Données Personnelles), car TRAXO traite des numéros, adresses et positions.
+    → Coûts administratifs uniques, à faire chiffrer localement.
+  - Relecture juridique des conditions d'utilisation et de la politique de
+    confidentialité par un juriste béninois : coût unique, à faire chiffrer.
+
+B. Liés au paiement des abonnements (FedaPay)
+  - Aucun abonnement fixe connu, mais une commission sur chaque paiement
+    reçu (Mobile Money, carte). À lire dans la grille FedaPay de votre compte.
+    Ordre d'idée : quelques pourcents du montant. Exemple : sur un abonnement
+    de 10 000 FCFA, compter quelques centaines de FCFA de commission.
+  - Développement de l'intégration : quelques jours de travail (voir partie 5).
+
+C. WhatsApp — à moyen terme
+  - Aujourd'hui, l'envoi passe par une connexion non officielle (WhatsApp Web).
+    C'est gratuit, mais WhatsApp peut bloquer le numéro à tout moment.
+  - Par sécurité, TRAXO est plafonné à 40 messages WhatsApp par heure.
+    Avec beaucoup d'entreprises et de livreurs, ce plafond sera atteint : les
+    codes basculeront alors sur l'e-mail.
+  - Solution durable : l'API officielle WhatsApp Business (Meta), via un
+    prestataire agréé. Elle facture chaque message de code (« authentification ») :
+    quelques centimes de dollar par message en Afrique de l'Ouest, soit environ
+    5 à 20 FCFA par code, plus l'éventuel abonnement du prestataire.
+    Exemple : 3 000 codes par mois ≈ 15 000 à 60 000 FCFA.
+  - Alternative ou secours : SMS par un agrégateur local, de l'ordre de
+    15 à 30 FCFA par SMS au Bénin (à faire chiffrer).
+
+D. Vue satellite des cartes
+  - La vue satellite utilise l'imagerie Esri (ArcGIS). Son usage commercial
+    demande normalement un compte ArcGIS Location Platform. Il existe une
+    offre gratuite avec un quota mensuel de tuiles, puis c'est payant.
+  → Il faut créer ce compte et utiliser une clé officielle avant
+    d'avoir beaucoup d'utilisateurs, ou prévoir de retirer la vue satellite.
+
+E. Confort et sécurité (facultatif au début)
+  - Suivi des erreurs (par exemple Sentry) : offre gratuite suffisante au début.
+  - Adresse e-mail professionnelle (contact@gettraxo.app) : ≈ 1 à 6 $ par mois
+    selon le fournisseur.
+  - Applications natives Android / iOS, si un jour l'application web ne suffit
+    plus : Google Play 25 $ une seule fois, Apple 99 $ par an.
+
+======================================================================
+4. CE QUE COÛTERA TRAXO EN GRANDISSANT (ESTIMATION)
+======================================================================
+Hébergement de TRAXO seul (sans les services étrangers) :
+
+  Aujourd'hui, en test ...................... ≈ 10 $ / mois    (≈ 6 000 FCFA)
+  ~20 entreprises, ~100 livreurs ............ ≈ 20 à 30 $ / mois (12 000 à 18 000 FCFA)
+  ~100 entreprises, ~500 livreurs ........... ≈ 50 à 90 $ / mois (30 000 à 55 000 FCFA)
+     → plus de mémoire pour l'application et la base, deux serveurs pour
+       la fiabilité. Il faudra alors brancher Redis : sans lui, la
+       limitation anti-abus ne fonctionne pas correctement sur plusieurs
+       serveurs.
+
+Plus les coûts variables :
+  - commission FedaPay sur les abonnements encaissés ;
+  - messages WhatsApp officiels ou SMS (proportionnels au nombre de connexions
+    et d'invitations) ;
+  - e-mails au-delà de l'offre gratuite de Brevo (≈ 10 à 25 $ par mois pour
+    quelques dizaines de milliers d'e-mails).
+
+Comparaison avec les revenus
+  - Flexible : 1 000 FCFA par livreur et par mois.
+  - 100 livreurs payants ≈ 100 000 FCFA par mois, pour ≈ 15 000 à 25 000 FCFA
+    de coûts techniques (hébergement + messages) : la marge reste confortable.
+  - Le point d'équilibre de l'hébergement actuel (≈ 6 000 FCFA) est atteint
+    avec 6 livreurs payants.
+
+======================================================================
+5. COÛTS D'ÉVOLUTION (DÉVELOPPEMENT)
+======================================================================
+Le développement se fait aujourd'hui avec des assistants d'IA (Claude pour
+le code, un outil séparé pour les maquettes). Leurs abonnements sont un coût
+d'évolution réel : à compter dans le budget mensuel, au tarif de votre formule.
+
+Chantiers à venir, par ordre de priorité :
+  1. Sauvegarde automatique de la base, avec un test de restauration .. ½ jour
+  2. Paiement des abonnements avec FedaPay (souscription,
+     renouvellement, factures, relances, blocage en cas d'impayé) ...... 3 à 5 jours
+  3. Clé officielle pour la vue satellite ................................. ½ jour
+  4. WhatsApp officiel ou SMS de secours ................................. 2 à 3 jours
+  5. Brancher Redis le jour où il faut deux serveurs ...................... ½ jour
+  6. Rapports exportables, page Clients premium, appli livreur premium .... selon les maquettes
+
+======================================================================
+6. ACTIONS RECOMMANDÉES, DANS L'ORDRE
+======================================================================
+  1. Identifier Primary, Worker, ollama, searxng et le second Postgres.
+     S'ils ne servent pas, les supprimer : ≈ 8 000 FCFA d'économie par mois.
+     Je peux le faire, mais seulement après votre confirmation explicite,
+     service par service : une suppression est définitive.
+  2. Supprimer les deux Redis inutilisés (ou garder un seul Redis pour plus tard).
+  3. Mettre en place la sauvegarde quotidienne de la base TRAXO.
+  4. Créer le compte ArcGIS pour la vue satellite.
+  5. Finaliser RCCM / IFU / APDP, puis activer FedaPay.
+  6. Prévoir le passage à WhatsApp officiel avant d'avoir des dizaines de clients.

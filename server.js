@@ -514,7 +514,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -1549,6 +1549,26 @@ async function initDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS driver_fixes_driver_idx ON driver_fixes(driver_id, fixed_at DESC);
+      -- Opérations : corbeille réversible (commandes terminées, incidents
+      -- résolus) et vues enregistrées. Rien n'est effacé : la ligne est masquée.
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_by_user_id BIGINT;
+      ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+      ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS archived_by_user_id BIGINT;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS status_before_archive TEXT;
+      CREATE TABLE IF NOT EXISTS ops_views (
+        id BIGSERIAL PRIMARY KEY,
+        company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL,
+        source TEXT NOT NULL,
+        name TEXT NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        shared BOOLEAN NOT NULL DEFAULT FALSE,
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ops_views_company_idx ON ops_views(company_id, user_id);
       -- Essai gratuit : une seule fois par personne (adresse, numéro, appareil).
       CREATE TABLE IF NOT EXISTS trial_identities (
         key_hash TEXT PRIMARY KEY,
@@ -4497,7 +4517,12 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT COUNT(*) FILTER (WHERE archived_at IS NULL) AS active_requests,
             COUNT(*) FILTER (WHERE status = 'À vérifier' AND archived_at IS NULL) AS to_review,
-            (SELECT COUNT(*) FROM orders WHERE company_id = $1) AS orders,
+            COUNT(*) FILTER (WHERE archived_at IS NOT NULL) AS requests_trash,
+            (SELECT COUNT(*) FROM orders WHERE company_id = $1 AND archived_at IS NULL) AS orders,
+            (SELECT COUNT(*) FROM orders WHERE company_id = $1 AND archived_at IS NULL
+               AND status IN ('Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée')) AS orders_in_progress,
+            (SELECT COUNT(*) FROM orders WHERE company_id = $1 AND archived_at IS NOT NULL) AS orders_trash,
+            (SELECT COUNT(*) FROM delivery_incidents WHERE company_id = $1 AND archived_at IS NOT NULL) AS incidents_trash,
             (SELECT COUNT(*) FROM drivers WHERE company_id = $1) AS drivers,
             (SELECT COUNT(*) FROM delivery_runs WHERE company_id = $1 AND status IN ('draft', 'planned', 'active')) AS open_runs,
             (SELECT COUNT(*) FROM delivery_incidents WHERE company_id = $1 AND status = 'open') AS open_incidents,
@@ -4506,6 +4531,175 @@ app.get('/api/app/summary', requireCompanyApi, asyncRoute(async (req, res) => {
     [req.auth.company_id]
   );
   return res.json(result.rows[0]);
+}));
+
+// --- Opérations : corbeille réversible -------------------------------------
+// Rien n'est supprimé : la ligne quitte les listes actives et peut revenir.
+// Seuls les éléments clos peuvent y aller (commande terminée, incident résolu) ;
+// une demande y va par l'archivage existant.
+const OPS_SOURCES = ['commandes', 'demandes', 'incidents'];
+function opsIdList(raw) {
+  if (!Array.isArray(raw)) return null;
+  const ids = [...new Set(raw.map((v) => String(v)).filter((v) => /^\d{1,18}$/.test(v)))];
+  return ids.length && ids.length <= 500 ? ids : null;
+}
+const opsTrashSql = {
+  commandes: {
+    trash: `UPDATE orders SET archived_at = NOW(), archived_by_user_id = $3, updated_at = NOW()
+            WHERE company_id = $1 AND id = ANY($2::bigint[]) AND archived_at IS NULL
+              AND status = ANY($4::text[]) RETURNING id`,
+    restore: `UPDATE orders SET archived_at = NULL, archived_by_user_id = NULL, updated_at = NOW()
+              WHERE company_id = $1 AND id = ANY($2::bigint[]) AND archived_at IS NOT NULL RETURNING id`,
+    entity: 'order', refused: 'Seules les commandes livrées, annulées ou retournées peuvent aller dans la corbeille.',
+  },
+  incidents: {
+    trash: `UPDATE delivery_incidents SET archived_at = NOW(), archived_by_user_id = $3, updated_at = NOW()
+            WHERE company_id = $1 AND id = ANY($2::bigint[]) AND archived_at IS NULL AND status = 'resolved' RETURNING id`,
+    restore: `UPDATE delivery_incidents SET archived_at = NULL, archived_by_user_id = NULL, updated_at = NOW()
+              WHERE company_id = $1 AND id = ANY($2::bigint[]) AND archived_at IS NOT NULL RETURNING id`,
+    entity: 'incident', refused: 'Seuls les incidents résolus peuvent aller dans la corbeille.',
+  },
+  demandes: {
+    trash: `UPDATE customer_requests SET status_before_archive = status, status = 'Archivée', archived_at = NOW(),
+              version = version + 1, updated_at = NOW()
+            WHERE company_id = $1 AND id = ANY($2::bigint[]) AND archived_at IS NULL RETURNING id`,
+    restore: `UPDATE customer_requests
+              SET status = COALESCE(NULLIF(status_before_archive, 'Archivée'),
+                    CASE WHEN submitted_at IS NOT NULL THEN 'À vérifier' ELSE 'En attente d’informations' END),
+                  status_before_archive = NULL, archived_at = NULL, version = version + 1, updated_at = NOW()
+              WHERE company_id = $1 AND id = ANY($2::bigint[]) AND archived_at IS NOT NULL RETURNING id`,
+    entity: 'customer_request', refused: 'Cette demande est déjà dans la corbeille.',
+  },
+};
+async function opsTrashAction(req, res, mode) {
+  const source = String(req.body?.source || '');
+  if (!OPS_SOURCES.includes(source)) return res.status(400).json({ error: 'Source inconnue.' });
+  const ids = opsIdList(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: 'Sélectionnez entre 1 et 500 éléments.' });
+  const def = opsTrashSql[source];
+  const params = [req.auth.company_id, ids];
+  if (mode === 'trash' && source !== 'demandes') params.push(req.auth.user_id || null);
+  if (mode === 'trash' && source === 'commandes') params.push(terminalOrderStatuses);
+  const result = await pool.query(def[mode], params);
+  const done = result.rows.map((r) => String(r.id));
+  if (done.length) {
+    await pool.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       SELECT $1, $2, $3, x, $4, '{}'::jsonb FROM unnest($5::bigint[]) AS x`,
+      [req.auth.company_id, req.auth.user_id || null, def.entity, mode === 'trash' ? 'trashed' : 'restored', done]
+    );
+  }
+  const skipped = ids.filter((id) => !done.includes(id))
+    .map((id) => ({ id, reason: mode === 'trash' ? def.refused : 'Élément introuvable dans la corbeille.' }));
+  return res.json({ done, skipped });
+}
+app.post('/api/app/ops/trash', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'),
+  asyncRoute((req, res) => opsTrashAction(req, res, 'trash')));
+app.post('/api/app/ops/restore', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'),
+  asyncRoute((req, res) => opsTrashAction(req, res, 'restore')));
+
+// --- Opérations : vues enregistrées --------------------------------------
+// Une vue = une source + des réglages d'affichage (jamais de données). Elle
+// est personnelle, ou partagée avec l'équipe (responsables uniquement).
+const OPS_VIEW_SOURCES = ['commandes', 'demandes', 'tournees', 'incidents'];
+const OPS_VIEW_MAX_PER_USER = 30;
+function sanitizeOpsViewConfig(raw) {
+  const c = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const key = (v) => (typeof v === 'string' && /^[a-z][a-z_]{0,23}$/.test(v) ? v : null);
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const list = (v, max, fn) => (Array.isArray(v) ? [...new Set(v.map(fn).filter(Boolean))].slice(0, max) : []);
+  const out = {
+    layout: c.layout === 'cards' ? 'cards' : 'table',
+    density: c.density === 'compact' ? 'compact' : 'comfortable',
+    pageSize: [5, 10, 20, 50].includes(Number(c.pageSize)) ? Number(c.pageSize) : 10,
+    columns: list(c.columns, 20, key),
+    pill: key(c.pill) || 'all',
+    group: key(c.group),
+    sort: c.sort && key(c.sort.key) ? { key: key(c.sort.key), dir: Number(c.sort.dir) < 0 ? -1 : 1 } : null,
+    filters: {
+      status: list(c.filters?.status, 20, (v) => text(v, 60)),
+      zone: list(c.filters?.zone, 20, (v) => text(v, 80)),
+      driver: list(c.filters?.driver, 20, (v) => (/^\d{1,18}$/.test(String(v)) ? String(v) : null)),
+    },
+  };
+  return out;
+}
+function opsViewOut(row, userId) {
+  return { id: String(row.id), source: row.source, name: row.name, config: row.config, shared: row.shared,
+    mine: String(row.user_id) === String(userId), updatedAt: row.updated_at };
+}
+function opsViewName(raw) {
+  const name = String(raw || '').replace(/\s+/g, ' ').trim();
+  return name.length >= 1 && name.length <= 60 ? name : null;
+}
+app.get('/api/app/ops/views', requireCompanyApi, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT * FROM ops_views WHERE company_id = $1 AND (user_id = $2 OR shared)
+     ORDER BY shared ASC, created_at ASC LIMIT 200`,
+    [req.auth.company_id, req.auth.user_id]
+  );
+  return res.json(result.rows.map((row) => opsViewOut(row, req.auth.user_id)));
+}));
+app.post('/api/app/ops/views', requireCompanyApi, asyncRoute(async (req, res) => {
+  const source = String(req.body?.source || '');
+  if (!OPS_VIEW_SOURCES.includes(source)) return res.status(400).json({ error: 'Source inconnue.' });
+  const name = opsViewName(req.body?.name);
+  if (!name) return res.status(400).json({ error: 'Donnez un nom à la vue (60 caractères au plus).' });
+  const shared = req.body?.shared === true;
+  if (shared && !['owner', 'manager'].includes(req.auth.role)) {
+    return res.status(403).json({ error: 'Seuls les responsables peuvent partager une vue avec l’équipe.' });
+  }
+  const count = await pool.query('SELECT COUNT(*)::int AS n FROM ops_views WHERE company_id = $1 AND user_id = $2',
+    [req.auth.company_id, req.auth.user_id]);
+  if (count.rows[0].n >= OPS_VIEW_MAX_PER_USER) {
+    return res.status(409).json({ error: `Vous avez atteint ${OPS_VIEW_MAX_PER_USER} vues. Supprimez-en une pour continuer.` });
+  }
+  const result = await pool.query(
+    `INSERT INTO ops_views (company_id, user_id, source, name, config, shared)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [req.auth.company_id, req.auth.user_id, source, name, sanitizeOpsViewConfig(req.body?.config), shared]
+  );
+  return res.status(201).json(opsViewOut(result.rows[0], req.auth.user_id));
+}));
+async function loadEditableOpsView(req) {
+  if (!/^\d{1,18}$/.test(req.params.id)) return { status: 404 };
+  const result = await pool.query('SELECT * FROM ops_views WHERE id = $1 AND company_id = $2', [req.params.id, req.auth.company_id]);
+  const view = result.rows[0];
+  const mine = view && String(view.user_id) === String(req.auth.user_id);
+  if (!view || (!mine && !view.shared)) return { status: 404 };
+  if (!mine && !['owner', 'manager'].includes(req.auth.role)) return { status: 403 };
+  return { view };
+}
+app.patch('/api/app/ops/views/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const found = await loadEditableOpsView(req);
+  if (found.status === 404) return res.status(404).json({ error: 'Vue introuvable.' });
+  if (found.status === 403) return res.status(403).json({ error: 'Seuls les responsables peuvent modifier une vue d’équipe.' });
+  const sets = [];
+  const values = [];
+  if ('name' in (req.body || {})) {
+    const name = opsViewName(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Donnez un nom à la vue (60 caractères au plus).' });
+    values.push(name); sets.push(`name = $${values.length}`);
+  }
+  if ('config' in (req.body || {})) { values.push(sanitizeOpsViewConfig(req.body.config)); sets.push(`config = $${values.length}`); }
+  if ('shared' in (req.body || {})) {
+    if (!['owner', 'manager'].includes(req.auth.role)) return res.status(403).json({ error: 'Seuls les responsables peuvent partager une vue avec l’équipe.' });
+    values.push(req.body.shared === true); sets.push(`shared = $${values.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucune modification fournie.' });
+  values.push(found.view.id, req.auth.company_id);
+  const result = await pool.query(
+    `UPDATE ops_views SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${values.length - 1} AND company_id = $${values.length} RETURNING *`,
+    values
+  );
+  return res.json(opsViewOut(result.rows[0], req.auth.user_id));
+}));
+app.delete('/api/app/ops/views/:id', requireCompanyApi, asyncRoute(async (req, res) => {
+  const found = await loadEditableOpsView(req);
+  if (found.status === 404) return res.status(404).json({ error: 'Vue introuvable.' });
+  if (found.status === 403) return res.status(403).json({ error: 'Seuls les responsables peuvent supprimer une vue d’équipe.' });
+  await pool.query('DELETE FROM ops_views WHERE id = $1 AND company_id = $2', [found.view.id, req.auth.company_id]);
+  return res.json({ ok: true });
 }));
 
 // Construit la liste des notifications actionnables d'une entreprise.
@@ -5393,7 +5587,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
     const interactionVisibility = ['owner', 'manager'].includes(req.auth.role)
       ? ['operations', 'manager', 'dispute']
       : ['operations'];
-    const [contacts, locations, orders, interactions] = await Promise.all([
+    const [contacts, locations, orders, interactions, openIncidents] = await Promise.all([
       client.query(
         `SELECT id, kind, label, contact_name, value_display, is_primary,
                 is_active, verified_at, created_at, updated_at
@@ -5428,6 +5622,11 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
          ORDER BY occurred_at DESC, id DESC LIMIT 100`,
         [req.auth.company_id, customerId, interactionVisibility]
       ),
+      client.query(
+        `SELECT COUNT(*)::int AS n FROM delivery_incidents i JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
+         WHERE i.company_id = $1 AND o.customer_id = $2 AND i.status <> 'resolved'`,
+        [req.auth.company_id, customerId]
+      ),
     ]);
     return {
       customer: customer.rows[0],
@@ -5435,6 +5634,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
       locations: locations.rows,
       orders: orders.rows,
       interactions: interactions.rows,
+      openIncidents: openIncidents.rows[0].n,
     };
   });
   if (!result) return res.status(404).json({ error: 'Client introuvable.' });
@@ -6039,10 +6239,12 @@ app.get('/api/app/requests', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT id, token, status, customer_name, customer_phone, requested_time,
             location_lat, location_lng, location_accuracy, neighborhood, landmark, notes,
-            created_at, submitted_at, updated_at, expires_at, archived_at, version
+            created_at, submitted_at, updated_at, expires_at, archived_at, version, customer_id,
+            package_type, package_description,
+            (pickup_address IS NOT NULL OR pickup_name IS NOT NULL OR pickup_lat IS NOT NULL) AS has_pickup
      FROM customer_requests
      WHERE company_id = $1 AND ${archived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'}
-     ORDER BY created_at DESC LIMIT 100`,
+     ORDER BY created_at DESC LIMIT 500`,
     [req.auth.company_id]
   );
   return res.json(result.rows);
@@ -6094,6 +6296,7 @@ app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (re
      SET status = $1,
          validated_at = CASE WHEN $1 = 'Confirmée' THEN NOW() ELSE validated_at END,
          archived_at = CASE WHEN $1 = 'Archivée' THEN NOW() ELSE archived_at END,
+         status_before_archive = CASE WHEN $1 = 'Archivée' THEN status ELSE status_before_archive END,
          version = version + 1, updated_at = NOW()
      WHERE id = $2 AND company_id = $3 AND archived_at IS NULL
      RETURNING id, status, version`,
@@ -7866,10 +8069,27 @@ app.post('/api/app/runs/:id/status', requireCompanyApi, requireCompanyRoles('own
   }
 }));
 
+// Liste des commandes. Par défaut, la corbeille est exclue (?trash=1 pour
+// la consulter, ?trash=all pour les rapports). ?q= cherche côté serveur au-delà des 500 plus récentes.
+const ORDERS_LIST_LIMIT = 500;
 app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
+  const trash = req.query.trash === '1';
+  const withTrash = req.query.trash === 'all';
+  const q = String(req.query.q || '').trim().slice(0, 80);
+  const params = [req.auth.company_id];
+  let search = '';
+  if (q) {
+    params.push(`%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
+    search = ` AND (o.reference ILIKE $2 OR o.customer_name ILIKE $2 OR o.customer_phone ILIKE $2
+      OR o.neighborhood ILIKE $2 OR o.landmark ILIKE $2 OR d.name ILIKE $2 OR o.status ILIKE $2 OR o.id::text = $3)`;
+    params.push(q.replace(/^CMD-/i, ''));
+  }
   const result = await pool.query(
     `SELECT o.id, o.reference, o.status, o.customer_name, o.customer_phone, o.requested_time,
-            o.neighborhood, o.landmark, o.created_at, o.updated_at,
+            o.neighborhood, o.landmark, o.created_at, o.updated_at, o.customer_id,
+            o.package_type, o.package_description, o.archived_at,
+            (o.pickup_address IS NOT NULL OR o.pickup_name IS NOT NULL OR o.pickup_lat IS NOT NULL) AS has_pickup,
+            pa.expected_amount_minor, pa.currency AS payment_currency,
             d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
             (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
             t.token_ciphertext AS tracking_token_ciphertext,
@@ -7878,9 +8098,12 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
      FROM orders o
      JOIN drivers d ON d.id = o.driver_id
      LEFT JOIN tracking_links t ON t.order_id = o.id
-     WHERE o.company_id = $1 ORDER BY o.created_at DESC LIMIT 500`,
-    [req.auth.company_id]
+     LEFT JOIN order_payment_accounts pa ON pa.order_id = o.id
+     WHERE o.company_id = $1${withTrash ? '' : ` AND o.archived_at IS ${trash ? 'NOT NULL' : 'NULL'}`}${search}
+     ORDER BY o.created_at DESC LIMIT ${ORDERS_LIST_LIMIT}`,
+    params
   );
+  res.set('X-List-Limit', String(ORDERS_LIST_LIMIT));
   const online = await driverOnlineByUnique();
   return res.json(result.rows.map((row) => {
     const trackingLink = trackingLinkBusinessView(row);
@@ -7920,7 +8143,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
   );
   const order = result.rows[0];
   if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
-  const [events, incidents, paymentEvents, paymentAdjustments, evidence] = await Promise.all([
+  const [events, incidents, paymentEvents, paymentAdjustments, evidence, opsActivity] = await Promise.all([
     pool.query(
       `SELECT e.id, e.from_status, e.to_status, e.reason, e.metadata, e.created_at,
               COALESCE(u.display_name, 'Système') AS actor_name
@@ -7962,6 +8185,16 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
        ORDER BY created_at ASC`,
       [order.id, req.auth.company_id]
     ),
+    // Actions d'équipe hors changement de statut (attribution, corbeille).
+    pool.query(
+      `SELECT a.id, a.action, a.details, a.created_at, COALESCE(u.display_name, 'Système') AS actor_name,
+              (SELECT d.name FROM drivers d WHERE d.company_id = a.company_id AND d.id = NULLIF(a.details->>'toDriverId', '')::bigint) AS to_driver_name
+       FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+       WHERE a.company_id = $2 AND a.entity_type = 'order' AND a.entity_id = $1
+         AND a.action IN ('reassigned', 'trashed', 'restored')
+       ORDER BY a.created_at ASC, a.id ASC LIMIT 100`,
+      [order.id, req.auth.company_id]
+    ),
   ]);
   const trackingLink = trackingLinkBusinessView(order);
   delete order.tracking_token_ciphertext;
@@ -7986,6 +8219,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
       (total, adjustment) => total + (adjustment.direction === 'inflow' ? Number(adjustment.amount_minor) : -Number(adjustment.amount_minor)), 0
     ),
     evidence: evidence.rows,
+    opsActivity: opsActivity.rows,
   });
 }));
 
@@ -8254,8 +8488,11 @@ app.post('/api/app/orders/:id/reassign', requireCompanyApi, requireCompanyRoles(
     if (terminalOrderStatuses.includes(order.status)) {
       throw Object.assign(new Error('Une commande terminée ne peut pas être réassignée.'), { statusCode: 409 });
     }
+    // checkCapacity (Opérations) : la ligne du livreur est verrouillée pour que
+    // deux attributions simultanées ne dépassent pas sa capacité.
+    const checkCapacity = req.body.checkCapacity === true;
     const driver = await client.query(
-      `SELECT id, name, active FROM drivers WHERE id = $1 AND company_id = $2 AND archived_at IS NULL`,
+      `SELECT id, name, active, capacity FROM drivers WHERE id = $1 AND company_id = $2 AND archived_at IS NULL${checkCapacity ? ' FOR UPDATE' : ''}`,
       [newDriverId, req.auth.company_id]
     );
     if (!driver.rows[0]) throw Object.assign(new Error('Livreur introuvable.'), { statusCode: 404 });
@@ -8263,6 +8500,18 @@ app.post('/api/app/orders/:id/reassign', requireCompanyApi, requireCompanyRoles(
     if (String(order.driver_id) === String(newDriverId)) {
       await client.query('COMMIT');
       return res.json({ orderId: order.id, driverId: newDriverId, driverName: driver.rows[0].name, unchanged: true });
+    }
+    if (checkCapacity) {
+      const load = await client.query(
+        `SELECT COUNT(*)::int AS n FROM orders WHERE company_id = $1 AND driver_id = $2 AND id <> $3
+           AND status <> ALL($4::text[])`,
+        [req.auth.company_id, newDriverId, order.id, terminalOrderStatuses]
+      );
+      const capacity = Number(driver.rows[0].capacity) || 0;
+      if (load.rows[0].n >= capacity) {
+        throw Object.assign(new Error(`${driver.rows[0].name} est complet : ${load.rows[0].n} colis pour une capacité de ${capacity}.`),
+          { statusCode: 409, code: 'driver_full' });
+      }
     }
     await client.query(
       `UPDATE orders SET driver_id = $1, version = version + 1, updated_at = NOW() WHERE id = $2 AND company_id = $3`,
@@ -8302,7 +8551,7 @@ app.post('/api/app/orders/:id/reassign', requireCompanyApi, requireCompanyRoles(
     return res.json({ orderId: order.id, driverId: newDriverId, driverName: driver.rows[0].name });
   } catch (error) {
     await client.query('ROLLBACK');
-    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message, ...(error.code === 'driver_full' ? { code: 'driver_full' } : {}) });
     console.error('Reassign error:', error.message);
     return res.status(500).json({ error: 'Réassignation impossible.' });
   } finally {
@@ -8651,9 +8900,10 @@ app.post('/api/app/incidents/:id/resolve', requireCompanyApi, asyncRoute(async (
 
 app.get('/api/app/incidents', requireCompanyApi, asyncRoute(async (req, res) => {
   const scope = ['open', 'resolved', 'all'].includes(req.query.scope) ? req.query.scope : 'open';
+  const trash = req.query.trash === '1';
   const result = await pool.query(
     `SELECT i.id, i.order_id, i.category, i.severity, i.description, i.status,
-            i.created_at, i.resolved_at, o.customer_name, o.customer_phone,
+            i.created_at, i.resolved_at, i.archived_at, o.customer_name, o.customer_phone, o.customer_id,
             o.neighborhood, o.status AS order_status, o.reference AS order_reference,
             d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
             (d.photo_updated_at IS NOT NULL) AS driver_has_photo, d.photo_updated_at AS driver_photo_at,
@@ -8666,6 +8916,7 @@ app.get('/api/app/incidents', requireCompanyApi, asyncRoute(async (req, res) => 
      LEFT JOIN users assignee ON assignee.id = i.assigned_to_user_id
      LEFT JOIN order_retention_holds h ON h.order_id = o.id AND h.status = 'active'
      WHERE i.company_id = $1 AND ($2 = 'all' OR i.status = $2)
+       AND i.archived_at IS ${trash ? 'NOT NULL' : 'NULL'}
      ORDER BY CASE i.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
               i.created_at DESC, i.id DESC
      LIMIT 300`,

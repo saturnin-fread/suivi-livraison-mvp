@@ -1,0 +1,116 @@
+TRAXO — PRÉSENTATION
+Vos livraisons, au même endroit.
+
+======================================================================
+EN UNE PHRASE
+======================================================================
+TRAXO est un logiciel en ligne qui permet aux entreprises de créer, confier,
+suivre et encaisser leurs livraisons depuis un seul écran, pendant que leurs
+clients suivent leur colis en direct, sans rien installer.
+
+======================================================================
+LE PROBLÈME
+======================================================================
+Au Bénin et en Afrique de l'Ouest, la plupart des livraisons s'organisent
+encore par appels et messages WhatsApp :
+- l'adresse du client est floue (« derrière la pharmacie, portail vert ») ;
+- le responsable ne sait pas où en sont ses livreurs ;
+- le client appelle dix fois pour savoir quand son colis arrive ;
+- l'argent encaissé en espèces est difficile à rapprocher ;
+- rien n'est conservé : ni preuve de remise, ni historique, ni chiffres.
+
+======================================================================
+LA RÉPONSE DE TRAXO
+======================================================================
+Centraliser, automatiser, simplifier.
+
+1. Le client précise lui-même où le livrer
+   L'entreprise envoie un lien. Le client remplit ses coordonnées, partage sa
+   position GPS (ou place une épingle sur la carte), ajoute des photos du lieu,
+   indique ce qu'il attend et, si besoin, où récupérer le colis. Aucun compte,
+   aucune application à installer.
+
+2. L'entreprise valide et confie la livraison
+   La demande arrive dans TRAXO. En un clic, elle devient une commande confiée
+   à un livreur disponible. Les livraisons du jour sont regroupées
+   automatiquement en tournée, par livreur.
+
+3. Le livreur a tout sur son téléphone
+   Ses livraisons du jour, l'adresse et l'itinéraire, le point de collecte s'il
+   y en a un, le numéro du client, l'encaissement, la photo de preuve et le
+   code de remise. L'application fonctionne même quand le réseau est faible.
+
+4. Le client suit son colis en direct
+   Un lien de suivi montre où en est sa livraison et une heure d'arrivée
+   estimée, de plus en plus précise à l'approche. Fini les appels « il est où ? ».
+
+5. La remise est prouvée
+   Le client donne un code à 6 chiffres au livreur. Photo et signature peuvent
+   aussi être exigées. Chaque livraison garde sa trace.
+
+6. Le responsable pilote
+   Carte d'exploitation en temps réel, tableau de bord (livraisons, délais,
+   encaissements, performance par livreur), rapports exportables, gestion des
+   incidents et des clients.
+
+======================================================================
+POUR QUI
+======================================================================
+- Restaurants et services de repas
+- Commerces et boutiques
+- Vendeurs en ligne (réseaux sociaux, WhatsApp)
+- Sociétés et services de livraison
+Que l'entreprise ait 1 livreur ou 50.
+
+======================================================================
+LES POINTS FORTS
+======================================================================
+Simplicité
+- Un livreur rejoint l'équipe en scannant un QR code : ni e-mail ni mot de passe.
+- Le client n'a besoin d'aucun compte.
+- Connexion par code reçu par e-mail ou sur WhatsApp.
+
+Adapté au terrain
+- Pensé pour Cotonou et l'Afrique de l'Ouest : numéros béninois, FCFA,
+  quartiers, repères, Mobile Money (paiement en ligne bientôt disponible).
+- Fonctionne sur téléphone d'entrée de gamme et réseau mobile.
+- Vue satellite pour s'orienter là où les rues n'ont pas de nom.
+
+Confiance et sécurité
+- Chaque livreur ne voit que ses propres livraisons, sur un seul téléphone à la fois.
+- Double authentification pour les responsables, alertes de nouvelles connexions.
+- Vigilance automatique : remise déclarée loin du client, position incohérente,
+  photo de preuve réutilisée, écarts d'encaissement répétés. Le responsable est
+  prévenu ; il garde la décision.
+- Les données du client restent sur son téléphone ; le lien ne s'ouvre pas
+  ailleurs sans vérification.
+
+Transparence
+- L'entreprise choisit ce que voit son client : seulement sa livraison, ou
+  tout le trajet du livreur (utile pour justifier un tarif).
+- Notifications claires, regroupées, avec récapitulatif par e-mail.
+
+======================================================================
+LES FORMULES
+======================================================================
+Essai gratuit ........ 3 jours, une fois par entreprise
+Flexible ............. 1 000 FCFA par livreur et par mois (1 à 9 livreurs)
+Équipe ............... 10 000 FCFA par mois, jusqu'à 12 livreurs
+Croissance ........... 18 000 FCFA par mois, jusqu'à 25 livreurs
+Business ............. 30 000 FCFA par mois, jusqu'à 50 livreurs
+Grande flotte ........ sur devis, 51 livreurs et plus
+Remises pour un paiement trimestriel ou annuel.
+
+======================================================================
+OÙ EN EST TRAXO
+======================================================================
+- Application en ligne : app.gettraxo.app
+- Fonctionnel aujourd'hui : formulaire client, commandes, tournées, application
+  livreur, suivi en direct, preuves de remise, tableau de bord, notifications,
+  gestion des livreurs, vigilance.
+- En cours : paiement des abonnements en ligne par Mobile Money.
+
+======================================================================
+CONTACT
+======================================================================
+TRAXO — app.gettraxo.app

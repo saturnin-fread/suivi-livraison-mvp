@@ -694,7 +694,9 @@
               .bindPopup(`<div class="fm-popup"><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong><span>${esc(x.neighborhood || x.landmark || x.deliveryAddress || '')}</span><small>${esc(d.name)} · ${esc(x.status)}</small><button type="button" data-order="${esc(x.id)}">Ouvrir la commande</button></div>`);
           });
           // Ordre des arrêts, à vol d'oiseau, pour le livreur choisi.
-          if (mine && st.showRuns) {
+          // Inutile quand l'itinéraire en direct est tracé : il montre déjà l'ordre réel.
+          const live = st.liveRoute && String(st.liveRoute.driverId) === String(d.id) && st.liveRoute.targets?.length;
+          if (mine && st.showRuns && !live) {
             const pts = stopsOf(d).filter((x) => x.destination).map((x) => [x.destination.latitude, x.destination.longitude]);
             if (d.position) pts.unshift([d.position.latitude, d.position.longitude]);
             if (pts.length > 1) L.polyline(pts, { color: '#5b6878', weight: 2.5, dashArray: '6 8', opacity: 0.75 }).addTo(layers.runs);
@@ -749,25 +751,71 @@
       if (seq !== routeSeq || String(selected()?.id) !== String(d.id) || st.mode !== 'current') return;
       st.liveRoute = { driverId: d.id, sig: routeSig(d), status: data.status, targets: data.targets || [], origin: data.origin, computedAt: data.computedAt,
         distanceMeters: data.route?.distanceMeters, durationSeconds: data.route?.durationSeconds, legs: data.route?.legs || [] };
-      drawLiveRoute(data);
+      const fitTo = fit && !st.follow && data.origin && data.targets?.[0]
+        ? L.latLngBounds([[data.origin.lat, data.origin.lng], [data.targets[0].lat, data.targets[0].lng]]).pad(0.35) : null;
       renderTeam(); drawCurrent();
-      if (fit && !st.follow && data.origin && data.targets?.[0]) flyBounds(L.latLngBounds([[data.origin.lat, data.origin.lng], [data.targets[0].lat, data.targets[0].lng]]).pad(0.35), 16);
+      drawLiveRoute(data, { fitTo });
     }
-    function drawLiveRoute(data) {
-      layers.route.clearLayers();
-      if (!data.origin || !data.targets?.length) return;
+    // Tracé façon itinéraire : la caméra cadre A → B, la ligne se dessine depuis
+    // le livreur jusqu'au prochain point, puis un flux de points avance dans le
+    // sens de la marche. Tant que la destination ne change pas, les recalculs
+    // déplacent la ligne sans rejouer l'animation.
+    let routeDraw = null;
+    const routeKey = (data) => { const t = data.targets?.[0]; return t ? `${data.driverId}|${t.orderId}:${t.kind}|${data.status}` : ''; };
+    function drawIn(lines, ms, done) {
+      const paths = lines.map((l) => l._path).filter(Boolean);
+      let over = false;
+      const end = () => {
+        if (over) return; over = true; map.off('zoomstart', end);
+        paths.forEach((p) => { p.style.transition = ''; p.style.strokeDasharray = ''; p.style.strokeDashoffset = ''; p.style.opacity = ''; });
+        done();
+      };
+      if (!paths.length) { end(); return; }
+      map.once('zoomstart', end); // un zoom pendant le dessin change la longueur : on affiche tout de suite
+      paths.forEach((p) => { const len = p.getTotalLength(); p.style.transition = 'none'; p.style.strokeDasharray = `${len} ${len}`; p.style.strokeDashoffset = `${len}`; p.style.opacity = ''; });
+      paths[0].getBoundingClientRect();
+      requestAnimationFrame(() => paths.forEach((p) => { p.style.transition = `stroke-dashoffset ${ms}ms cubic-bezier(.5,.05,.25,1)`; p.style.strokeDashoffset = '0'; }));
+      setTimeout(end, ms + 80);
+    }
+    function drawLiveRoute(data, { fitTo = null } = {}) {
+      if (!data.origin || !data.targets?.length) { layers.route.clearLayers(); routeDraw = null; return; }
       const coords = data.status === 'ok' && data.route?.geometry?.value?.coordinates?.length >= 2
         ? data.route.geometry.value.coordinates.map(([lng, lat]) => [lat, lng])
         : [[data.origin.lat, data.origin.lng], ...data.targets.map((t) => [t.lat, t.lng])];
       const crow = data.status !== 'ok';
-      L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.9, interactive: false }).addTo(layers.route);
-      L.polyline(coords, { color: '#e11d2a', weight: 5, opacity: 0.95, dashArray: crow ? '8 10' : null, interactive: false }).addTo(layers.route);
+      const key = routeKey(data);
+      if (routeDraw && routeDraw.key === key && map.hasLayer(routeDraw.line)) {
+        [routeDraw.casing, routeDraw.line, routeDraw.flow].forEach((l) => l?.setLatLngs(coords));
+        return;
+      }
+      layers.route.clearLayers();
+      const style = { interactive: false, lineCap: 'round', lineJoin: 'round' };
+      const casing = L.polyline(coords, { ...style, color: '#9d1320', weight: 10, opacity: 0.9, className: 'fm-route-casing' }).addTo(layers.route);
+      const line = L.polyline(coords, { ...style, color: '#e11d2a', weight: 6, opacity: 1, dashArray: crow ? '8 10' : null, className: 'fm-route-line' }).addTo(layers.route);
+      const flow = crow ? null : L.polyline(coords, { ...style, color: '#ffffff', weight: 4, opacity: 0.9, dashArray: '0.5 15.5', className: 'fm-route-flow' });
       const next = data.targets[0];
-      L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: '<span class="fm-next-halo" aria-hidden="true"></span>', iconSize: [44, 44], iconAnchor: [22, 22] }), interactive: false, zIndexOffset: -10 }).addTo(layers.route);
+      const halo = L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: '<span class="fm-next-halo" aria-hidden="true"></span>', iconSize: [44, 44], iconAnchor: [22, 22] }), interactive: false, zIndexOffset: -10 });
       data.targets.filter((t) => t.kind === 'pickup').forEach((t) => {
         L.marker([t.lat, t.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pickup" title="Collecte">${ic('package')}</span>`, iconSize: [28, 28], iconAnchor: [14, 14] }), title: `Collecte · ${t.label}` })
           .addTo(layers.route).bindTooltip(`<div class="fm-tip-card"><strong>Collecte · ${esc(t.label)}</strong><small>Pour ${esc(t.customerName || t.reference || '')}</small></div>`, { direction: 'top', offset: [0, -14], className: 'fm-tip', opacity: 1 });
       });
+      const draw = { key, casing, line, flow };
+      routeDraw = draw;
+      stage.dataset.route = 'drawing';
+      const finish = () => {
+        if (routeDraw !== draw || !map.hasLayer(line)) return;
+        flow?.addTo(layers.route); halo.addTo(layers.route);
+        stage.dataset.route = 'ready';
+      };
+      const start = () => { if (routeDraw !== draw || !map.hasLayer(line)) return; if (reduced() || crow) finish(); else drawIn([casing, line], 1200, finish); };
+      if (fitTo && !reduced()) {
+        [casing, line].forEach((l) => { if (l._path) l._path.style.opacity = '0'; });
+        flyBounds(fitTo, 16);
+        setTimeout(start, 520); // après le cadrage (0,42 s) : la longueur du tracé est alors stable
+      } else {
+        if (fitTo) flyBounds(fitTo, 16);
+        start();
+      }
     }
     function renderMapState() {
       const d = selected();

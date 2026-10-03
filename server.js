@@ -1901,6 +1901,16 @@ function requireCompanyRoles(...allowedRoles) {
   };
 }
 
+// Une connexion PostgreSQL exécute une requête à la fois : sur le pool, les
+// lectures partent en parallèle ; sur une connexion de transaction, l'une
+// après l'autre (évite l'avertissement de pg et son retrait en pg@9).
+async function runQueries(executor, thunks) {
+  if (executor === pool) return Promise.all(thunks.map((run) => run()));
+  const results = [];
+  for (const run of thunks) results.push(await run());
+  return results;
+}
+
 async function writeAudit(auth, entityType, entityId, action, details = {}) {
   if (!pool) return;
   const result = await pool.query(
@@ -1991,8 +2001,8 @@ async function loadDeliveryRun(companyId, runId, queryable = pool) {
   );
   const run = runResult.rows[0];
   if (!run) return null;
-  const [stops, eligibleOrders, events] = await Promise.all([
-    queryable.query(
+  const [stops, eligibleOrders, events] = await runQueries(queryable, [
+    () => queryable.query(
       `SELECT s.id, s.order_id, s.sequence, s.assignment_active, s.created_at,
               o.status AS order_status, o.reference AS order_reference, o.customer_name, o.customer_phone, o.requested_time,
               o.neighborhood, o.landmark, o.delivery_address, o.destination_lat, o.destination_lng
@@ -2002,7 +2012,7 @@ async function loadDeliveryRun(companyId, runId, queryable = pool) {
        ORDER BY s.sequence ASC, s.id ASC`,
       [runId, companyId]
     ),
-    queryable.query(
+    () => queryable.query(
       `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.requested_time,
               o.neighborhood, o.landmark, o.delivery_address, o.destination_lat, o.destination_lng
        FROM orders o
@@ -2014,7 +2024,7 @@ async function loadDeliveryRun(companyId, runId, queryable = pool) {
        ORDER BY o.created_at ASC, o.id ASC LIMIT 100`,
       [companyId, run.driver_id, terminalOrderStatuses]
     ),
-    queryable.query(
+    () => queryable.query(
       `SELECT e.id, e.event_type, e.details, e.created_at,
               COALESCE(u.display_name, 'Système') AS actor_name
        FROM delivery_run_events e
@@ -5383,10 +5393,10 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
     const stageFilter = stage ? ` WHERE stage = $${values.length + 1}` : '';
     const scopedValues = stage ? [...values, stage] : values;
     const listValues = [...scopedValues, limit, (pageNumber - 1) * limit];
-    const [countResult, rowsResult, stageCountsResult] = await Promise.all([
-      client.query(`${baseCte} SELECT COUNT(*)::int AS total FROM staged${stageFilter}`, scopedValues),
-      client.query(`${baseCte} SELECT * FROM staged${stageFilter} ORDER BY ${sortMap[sort]} LIMIT $${listValues.length - 1} OFFSET $${listValues.length}`, listValues),
-      client.query(`${baseCte} SELECT stage, COUNT(*)::int AS total FROM staged GROUP BY stage`, values),
+    const [countResult, rowsResult, stageCountsResult] = await runQueries(client, [
+      () => client.query(`${baseCte} SELECT COUNT(*)::int AS total FROM staged${stageFilter}`, scopedValues),
+      () => client.query(`${baseCte} SELECT * FROM staged${stageFilter} ORDER BY ${sortMap[sort]} LIMIT $${listValues.length - 1} OFFSET $${listValues.length}`, listValues),
+      () => client.query(`${baseCte} SELECT stage, COUNT(*)::int AS total FROM staged GROUP BY stage`, values),
     ]);
     const stageCounts = { nouveau: 0, actif: 0, a_relancer: 0, inactif: 0 };
     for (const row of stageCountsResult.rows) if (row.stage in stageCounts) stageCounts[row.stage] = row.total;
@@ -5604,8 +5614,8 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
     const interactionVisibility = ['owner', 'manager'].includes(req.auth.role)
       ? ['operations', 'manager', 'dispute']
       : ['operations'];
-    const [contacts, locations, orders, interactions, openIncidents] = await Promise.all([
-      client.query(
+    const [contacts, locations, orders, interactions, openIncidents] = await runQueries(client, [
+      () => client.query(
         `SELECT id, kind, label, contact_name, value_display, is_primary,
                 is_active, verified_at, created_at, updated_at
          FROM customer_contacts
@@ -5613,7 +5623,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
          ORDER BY is_primary DESC, is_active DESC, id ASC`,
         [req.auth.company_id, customerId]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, label, neighborhood, locality, address_text, landmark,
                 delivery_instructions, verified_at, last_used_at, is_active,
                 archived_at, created_at, updated_at
@@ -5622,7 +5632,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
          ORDER BY is_active DESC, last_used_at DESC NULLS LAST, id DESC`,
         [req.auth.company_id, customerId]
       ),
-      client.query(
+      () => client.query(
         `SELECT o.id, o.reference, o.status, o.neighborhood, o.landmark, o.created_at,
                 o.updated_at, d.name AS driver_name
          FROM orders o JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
@@ -5630,7 +5640,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
          ORDER BY o.created_at DESC, o.id DESC LIMIT 100`,
         [req.auth.company_id, customerId]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, channel, direction, purpose, outcome, summary,
                 occurred_at, next_action_at, visibility
          FROM customer_interactions
@@ -5639,7 +5649,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
          ORDER BY occurred_at DESC, id DESC LIMIT 100`,
         [req.auth.company_id, customerId, interactionVisibility]
       ),
-      client.query(
+      () => client.query(
         `SELECT COUNT(*)::int AS n FROM delivery_incidents i JOIN orders o ON o.id = i.order_id AND o.company_id = i.company_id
          WHERE i.company_id = $1 AND o.customer_id = $2 AND i.status <> 'resolved'`,
         [req.auth.company_id, customerId]
@@ -5878,52 +5888,52 @@ app.get('/api/app/crm/metrics', requireCompanyApi, asyncRoute(async (req, res) =
   }
   const companyId = req.auth.company_id;
   const arrays = await withCompanyTransaction(pool, companyId, async (client) => {
-    const [orders, statusEvents, paymentAccounts, paymentEvents, paymentAdjustments, incidents, drivers, runs, stops] = await Promise.all([
-      client.query(
+    const [orders, statusEvents, paymentAccounts, paymentEvents, paymentAdjustments, incidents, drivers, runs, stops] = await runQueries(client, [
+      () => client.query(
         `SELECT id, company_id, driver_id, status, created_at, updated_at
          FROM orders WHERE company_id = $1 AND created_at < $2::timestamptz`,
         [companyId, period.endExclusive]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, order_id, from_status, to_status, created_at
          FROM order_status_events WHERE company_id = $1 AND created_at < $2::timestamptz`,
         [companyId, period.endExclusive]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, order_id, expected_amount_minor, currency, status, created_at
          FROM order_payment_accounts WHERE company_id = $1`,
         [companyId]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, order_id, event_type, amount_minor, currency, created_at
          FROM payment_events
          WHERE company_id = $1 AND created_at >= $2::timestamptz AND created_at < $3::timestamptz`,
         [companyId, period.startInclusive, period.endExclusive]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, order_id, adjustment_type, direction, amount_minor,
                 currency, effective_date, created_at
          FROM payment_adjustments
          WHERE company_id = $1 AND effective_date >= $2::date AND effective_date <= $3::date`,
         [companyId, period.from, period.to]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, order_id, category, status, created_at, resolved_at
          FROM delivery_incidents WHERE company_id = $1 AND created_at <= $2::timestamptz`,
         [companyId, period.asOf]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, active, availability_status, created_at, updated_at
          FROM drivers WHERE company_id = $1`,
         [companyId]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, driver_id, status, service_date, started_at,
                 completed_at, cancelled_at, created_at, updated_at
          FROM delivery_runs WHERE company_id = $1 AND created_at <= $2::timestamptz`,
         [companyId, period.asOf]
       ),
-      client.query(
+      () => client.query(
         `SELECT id, company_id, run_id, order_id, assignment_active, removed_at,
                 created_at, updated_at
          FROM delivery_stops WHERE company_id = $1 AND created_at <= $2::timestamptz`,

@@ -3,65 +3,140 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Activer mon compte — TRAXO</title>
+    <title>Rejoindre l’équipe — TRAXO</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.png" sizes="64x64" type="image/png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="/app.css" />
     <style>
-      .invite-page{min-height:100vh;display:grid;place-items:center;padding:18px}
+      .invite-page{min-height:100vh;display:grid;place-items:center;padding:18px;background:#f6f7f8}
       .invite-card{width:min(500px,100%)}
-      .invite-card button{width:100%;margin-top:18px}
+      .invite-card h1{font-size:26px;letter-spacing:-.02em}
+      .invite-card form > button{width:100%;margin-top:18px}
+      .invite-facts{margin:16px 0 4px;display:grid;gap:8px;padding:14px 16px;border-radius:12px;background:#f6f8fa;font-size:13.5px}
+      .invite-facts div{display:flex;justify-content:space-between;gap:12px}
+      .invite-facts span{color:#66758c}
+      .invite-facts strong{text-align:right}
+      .invite-code{display:flex;gap:8px;align-items:flex-end}
+      .invite-code .field{flex:1}
+      .invite-code button{white-space:nowrap;margin-bottom:1px}
+      .invite-hint{color:#66758c;font-size:12.5px;margin-top:6px}
     </style>
   </head>
   <body>
     <main class="invite-page">
       <section class="card invite-card">
-        <h1>Activer mon compte</h1>
+        <h1>Rejoindre l’équipe</h1>
         <p class="subtitle" id="inviteSummary">Vérification de l’invitation…</p>
-        <form id="inviteForm" hidden>
-          <div class="field" style="margin-top:20px">
-            <label>Nouveau mot de passe</label>
-            <input type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+        <div class="invite-facts" id="inviteFacts" hidden></div>
+        <form id="inviteForm" hidden novalidate>
+          <div id="phoneStep" hidden>
+            <div class="field" style="margin-top:18px">
+              <label for="inviteEmail">Votre adresse e-mail</label>
+              <input id="inviteEmail" type="email" name="email" maxlength="200" autocomplete="email" inputmode="email" />
+              <small>Elle vous servira à vous connecter. Aucune adresse professionnelle n’est exigée.</small>
+            </div>
+            <div class="invite-code" style="margin-top:15px">
+              <div class="field">
+                <label for="inviteCode">Code reçu sur WhatsApp</label>
+                <input id="inviteCode" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 chiffres" />
+              </div>
+              <button type="button" class="secondary" id="sendCode">Recevoir le code</button>
+            </div>
+            <p class="invite-hint" id="codeHint"></p>
+          </div>
+          <div class="field" style="margin-top:18px">
+            <label for="invitePassword">Mot de passe</label>
+            <input id="invitePassword" type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required />
             <small>10 caractères minimum. Une courte phrase est plus facile à retenir.</small>
           </div>
           <div class="field" style="margin-top:15px">
-            <label>Confirmer le mot de passe</label>
-            <input type="password" name="passwordConfirmation" minlength="10" maxlength="128" autocomplete="new-password" required />
+            <label for="invitePassword2">Confirmer le mot de passe</label>
+            <input id="invitePassword2" type="password" name="passwordConfirmation" minlength="10" maxlength="128" autocomplete="new-password" required />
           </div>
-          <button class="primary">Activer mon compte</button>
+          <button class="primary" type="submit">Rejoindre l’équipe</button>
         </form>
-        <div id="inviteResult"></div>
+        <div id="inviteResult" role="alert"></div>
       </section>
     </main>
     <script>
       const token = decodeURIComponent(location.pathname.split('/').pop());
       const summary = document.getElementById('inviteSummary');
+      const facts = document.getElementById('inviteFacts');
       const form = document.getElementById('inviteForm');
       const result = document.getElementById('inviteResult');
+      const sendBtn = document.getElementById('sendCode');
+      const hint = document.getElementById('codeHint');
       const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
       }[character]));
+      let needsCode = false;
+      let timer = null;
+      function countdown(seconds) {
+        clearInterval(timer);
+        let left = seconds;
+        sendBtn.disabled = true;
+        const tick = () => {
+          sendBtn.textContent = left > 0 ? `Nouveau code dans ${left} s` : 'Renvoyer le code';
+          if (left <= 0) { clearInterval(timer); sendBtn.disabled = false; }
+          left -= 1;
+        };
+        tick();
+        timer = setInterval(tick, 1000);
+      }
       async function load() {
         const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}`);
         const invitation = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(invitation.error || 'Invitation indisponible.');
-        summary.innerHTML = `Bonjour <strong>${escapeHtml(invitation.display_name)}</strong>. ${escapeHtml(invitation.company_name)} vous invite comme ${invitation.role === 'driver' ? 'livreur' : invitation.role}.`;
+        summary.innerHTML = `Bonjour <strong>${escapeHtml(invitation.display_name)}</strong>, vous êtes invité·e à rejoindre <strong>${escapeHtml(invitation.company_name)}</strong> sur TRAXO.`;
+        const expires = new Date(invitation.expires_at).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
+        facts.innerHTML = `<div><span>Rôle proposé</span><strong>${escapeHtml(invitation.role_label || invitation.role)}</strong></div>
+          ${invitation.invited_by ? `<div><span>Invitation de</span><strong>${escapeHtml(invitation.invited_by)}</strong></div>` : ''}
+          <div><span>Valable jusqu’au</span><strong>${escapeHtml(expires)}</strong></div>`;
+        facts.hidden = false;
+        needsCode = invitation.verification === 'whatsapp';
+        if (invitation.needsEmail) {
+          document.getElementById('phoneStep').hidden = false;
+          hint.textContent = invitation.phoneMasked ? `Le code part sur le WhatsApp du ${invitation.phoneMasked}.` : '';
+        }
         form.hidden = false;
       }
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const button = form.querySelector('button');
-        button.disabled = true;
+      sendBtn.addEventListener('click', async () => {
+        sendBtn.disabled = true;
         result.innerHTML = '';
         try {
-          const payload = Object.fromEntries(new FormData(form));
+          const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}/send-code`, { method: 'POST' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            if (data.resendIn) countdown(data.resendIn); else sendBtn.disabled = false;
+            throw new Error(data.error || 'Envoi impossible.');
+          }
+          hint.textContent = `Code envoyé sur le WhatsApp du ${data.phoneMasked}. Il arrive dans quelques secondes.`;
+          countdown(data.resendIn || 60);
+          document.getElementById('inviteCode').focus();
+        } catch (error) {
+          result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+        }
+      });
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const button = form.querySelector('button[type="submit"]');
+        const payload = Object.fromEntries(new FormData(form));
+        result.innerHTML = '';
+        if (!document.getElementById('phoneStep').hidden) {
+          if (!/^\S+@\S+\.\S+$/.test(payload.email || '')) { result.innerHTML = '<div class="notice error">Indiquez une adresse e-mail valide.</div>'; return; }
+          if (needsCode && !/^\d{6}$/.test(payload.code || '')) { result.innerHTML = '<div class="notice error">Saisissez le code à 6 chiffres reçu sur WhatsApp.</div>'; return; }
+        }
+        if ((payload.password || '').length < 10) { result.innerHTML = '<div class="notice error">Le mot de passe doit contenir au moins 10 caractères.</div>'; return; }
+        if (payload.password !== payload.passwordConfirmation) { result.innerHTML = '<div class="notice error">Les deux mots de passe ne correspondent pas.</div>'; return; }
+        button.disabled = true;
+        try {
           const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}/accept`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
           });
           const data = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(data.error || 'Activation impossible.');
-          result.innerHTML = '<div class="notice success">Compte activé. Ouverture de votre espace…</div>';
+          result.innerHTML = '<div class="notice success">Bienvenue dans l’équipe. Ouverture de votre espace…</div>';
           location.href = data.redirect;
         } catch (error) {
           result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;

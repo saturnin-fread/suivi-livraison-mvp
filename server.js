@@ -34,6 +34,7 @@ const { createRedisTokenBucket } = require('./lib/redis-rate-limit');
 const {
   createExportContract,
   ExportContractError,
+  neutralizeSpreadsheetText,
   DATASETS: EXPORT_DATASETS,
   OPERATIONAL_LIMITS: EXPORT_LIMITS,
   columnLabel: exportColumnLabel,
@@ -119,7 +120,8 @@ const reasonRequiredStatuses = ['Échec', 'Retour', 'Retournée', 'Annulée'];
 const incidentCategories = ['client_injoignable', 'adresse', 'colis', 'paiement', 'vehicule', 'gps', 'autre'];
 const paymentMethods = ['cash', 'mobile_money', 'card', 'bank_transfer', 'other'];
 const paymentAdjustmentTypes = ['refund', 'additional_collection'];
-const invitationRoles = ['manager', 'operator', 'driver'];
+// « viewer » = Lecture seule : consulte tout, ne modifie rien (garde dans requireCompanyApi).
+const invitationRoles = ['manager', 'operator', 'viewer', 'driver'];
 const driverVehicleTypes = ['Moto', 'Tricycle', 'Voiture', 'Vélo', 'Camionnette'];
 const driverTransitionTargets = ['Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée', 'Échec', 'Retour'];
 const evidenceTypes = ['photo', 'signature'];
@@ -1572,6 +1574,18 @@ async function initDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS ops_views_company_idx ON ops_views(company_id, user_id);
+      -- Équipe et accès : suspension par entreprise, dernière activité,
+      -- invitations par e-mail ou téléphone, lien recopiable (chiffré).
+      ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+      ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS suspended_by_user_id BIGINT;
+      ALTER TABLE app_sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+      ALTER TABLE user_invitations ALTER COLUMN email DROP NOT NULL;
+      ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS phone TEXT;
+      ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS token_ciphertext TEXT;
+      ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS verify_code_hash TEXT;
+      ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS verify_sent_at TIMESTAMPTZ;
+      ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS verify_sends INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS verify_attempts INTEGER NOT NULL DEFAULT 0;
       -- Essai gratuit : une seule fois par personne (adresse, numéro, appareil).
       CREATE TABLE IF NOT EXISTS trial_identities (
         key_hash TEXT PRIMARY KEY,
@@ -1818,6 +1832,7 @@ async function readSession(req, scope) {
     `SELECT s.user_id, s.company_id, s.scope, s.expires_at,
             u.email, u.display_name, u.is_platform_admin, u.disabled,
             c.name AS company_name, c.slug AS company_slug, c.activation_status, c.logo_updated_at AS company_logo_at, c.onboarding_status, m.role, m.driver_id,
+            m.suspended_at AS membership_suspended_at, s.last_seen_at,
             d.active AS driver_active, d.can_contact AS driver_can_contact, d.can_report_incident AS driver_can_report
      FROM app_sessions s
      JOIN users u ON u.id = s.user_id
@@ -1830,7 +1845,13 @@ async function readSession(req, scope) {
   const session = result.rows[0];
   if (!session || session.disabled) return null;
   if (scope === 'company' && (!session.company_id || !session.role)) return null;
+  // Accès suspendu dans cette entreprise : la session ne vaut plus rien.
+  if (scope === 'company' && session.membership_suspended_at) return null;
   if (scope === 'platform' && !session.is_platform_admin) return null;
+  // Dernière activité (Équipe et accès), notée au plus toutes les 5 minutes.
+  if (!session.last_seen_at || Date.now() - new Date(session.last_seen_at).getTime() > 5 * 60 * 1000) {
+    pool.query('UPDATE app_sessions SET last_seen_at = NOW() WHERE token_hash = $1', [digest(token)]).catch(() => {});
+  }
   return session;
 }
 
@@ -1873,6 +1894,12 @@ function requireCompanyApi(req, res, next) {
     // Exceptions : la sécurité du compte personnel (mot de passe, double
     // authentification, sessions, numéro) et la demande de devis restent possibles.
     const previewAllowed = req.path.startsWith('/api/app/account/') || req.path === '/api/app/billing/quote-request';
+    // Lecture seule : tout consulter, ne rien modifier. Restent possibles la
+    // sécurité de son propre compte, ses notifications et ses vues personnelles.
+    const viewerAllowed = req.path.startsWith('/api/app/account/') || req.path.startsWith('/api/app/notifications') || req.path.startsWith('/api/app/ops/views');
+    if (isWrite && session.role === 'viewer' && !viewerAllowed) {
+      return res.status(403).json({ error: 'Votre accès est en lecture seule. Demandez à un responsable de modifier votre rôle.', code: 'READ_ONLY' });
+    }
     if (isWrite && session.activation_status === 'preview' && !previewAllowed) {
       return res.status(402).json({
         error: 'Votre compte est en mode aperçu. Activez-le pour utiliser cette fonctionnalité.',
@@ -3367,15 +3394,60 @@ app.get('/invitation/:token', asyncRoute(async (req, res) => {
 app.get('/api/public/invitations/:token', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const result = await pool.query(
-    `SELECT i.email, i.display_name, i.role, i.expires_at, c.name AS company_name, d.name AS driver_name
+    `SELECT i.email, i.phone, i.display_name, i.role, i.expires_at, c.name AS company_name, d.name AS driver_name,
+            u.display_name AS invited_by
      FROM user_invitations i
      JOIN companies c ON c.id = i.company_id
      LEFT JOIN drivers d ON d.id = i.driver_id
+     LEFT JOIN users u ON u.id = i.created_by_user_id
      WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()`,
     [digest(req.params.token)]
   );
-  if (!result.rows[0]) return res.status(404).json({ error: 'Cette invitation est invalide, expirée ou déjà utilisée.' });
-  return res.json(result.rows[0]);
+  const row = result.rows[0];
+  if (!row) return res.status(404).json({ error: 'Cette invitation est invalide, expirée ou déjà utilisée.' });
+  // Invitation par téléphone : la personne choisit son e-mail de connexion
+  // et prouve qu'elle détient ce numéro avec un code WhatsApp.
+  return res.json({
+    email: row.email, display_name: row.display_name, role: row.role, role_label: TEAM_ROLE_LABELS[row.role] || row.role,
+    expires_at: row.expires_at, company_name: row.company_name, driver_name: row.driver_name, invited_by: row.invited_by,
+    needsEmail: !row.email, phoneMasked: row.phone ? maskPhone(row.phone) : null,
+    verification: !row.email && row.phone ? 'whatsapp' : 'none',
+  });
+}));
+
+const teamInviteRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({ limiter: trackingLimiter('team_invite_ip', { capacity: 30, refillTokens: 30, refillIntervalMs: 600_000, maxEntries: 10_000 }) }),
+  ],
+});
+app.post('/api/public/invitations/:token/send-code', teamInviteRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const found = await pool.query(
+    `SELECT i.id, i.phone, i.email, i.verify_sent_at, i.verify_sends, c.name AS company_name
+     FROM user_invitations i JOIN companies c ON c.id = i.company_id
+     WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()`,
+    [digest(req.params.token)]
+  );
+  const inv = found.rows[0];
+  if (!inv) return res.status(410).json({ error: 'Cette invitation est invalide, expirée ou déjà utilisée.' });
+  if (inv.email || !inv.phone) return res.status(400).json({ error: 'Aucun code n’est nécessaire pour cette invitation.' });
+  const delay = loginCodeResendDelayS(inv.verify_sends || 0);
+  if (inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < delay * 1000) {
+    const resendIn = Math.ceil(delay - (Date.now() - new Date(inv.verify_sent_at).getTime()) / 1000);
+    return res.status(429).json({ error: 'Le code peut mettre un peu de temps à arriver. Vous pourrez en demander un nouveau dans quelques instants.', resendIn });
+  }
+  if (!whatsappAvailableFor(inv.phone)) return res.status(503).json({ error: 'WhatsApp est momentanément indisponible. Réessayez plus tard ou demandez une invitation par e-mail.' });
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  try {
+    await whatsapp.sendText(inv.phone, `*${code}* est votre code pour rejoindre ${inv.company_name} sur TRAXO.\n\nIl expire dans 10 minutes. Ne le communiquez à personne.`, { background: true });
+  } catch (error) {
+    console.error('Invitation code failed:', error.code || error.message);
+    return res.status(502).json({ error: 'Le code n’a pas pu partir sur WhatsApp. Réessayez dans un instant.' });
+  }
+  const sends = (inv.verify_sends || 0) + 1;
+  await pool.query('UPDATE user_invitations SET verify_code_hash = $2, verify_sent_at = NOW(), verify_sends = $3 WHERE id = $1', [inv.id, digest(`invite:${inv.id}:${code}`), sends]);
+  return res.json({ sent: true, phoneMasked: maskPhone(inv.phone), resendIn: loginCodeResendDelayS(sends) });
 }));
 
 app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) => {
@@ -3399,6 +3471,24 @@ app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) =>
     if (!invitation || invitation.accepted_at || invitation.revoked_at || new Date(invitation.expires_at) <= new Date()) {
       throw Object.assign(new Error('Cette invitation est invalide, expirée ou déjà utilisée.'), { statusCode: 410 });
     }
+    // Invitation par téléphone : code WhatsApp obligatoire, puis l'e-mail
+    // choisi par la personne devient son identifiant de connexion.
+    if (!invitation.email) {
+      const code = String(req.body.code || '').replace(/\D/g, '');
+      const fresh = invitation.verify_sent_at && Date.now() - new Date(invitation.verify_sent_at).getTime() < 10 * 60 * 1000;
+      const ok = fresh && invitation.verify_code_hash && code.length === 6
+        && crypto.timingSafeEqual(Buffer.from(digest(`invite:${invitation.id}:${code}`)), Buffer.from(invitation.verify_code_hash));
+      if (!ok) {
+        const attempts = (invitation.verify_attempts || 0) + 1;
+        await client.query(`UPDATE user_invitations SET verify_attempts = $2${attempts >= 5 ? ', revoked_at = NOW()' : ''} WHERE id = $1`, [invitation.id, attempts]);
+        await client.query('COMMIT');
+        if (attempts >= 5) return res.status(423).json({ error: 'Trop d’essais : cette invitation est annulée. Demandez-en une nouvelle.' });
+        return res.status(400).json({ error: !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : 'Ce code ne correspond pas. Vérifiez le message reçu sur WhatsApp.', field: 'code' });
+      }
+      const chosen = normalizeEmail(req.body.email);
+      if (!/^\S+@\S+\.\S+$/.test(chosen)) throw Object.assign(new Error('Indiquez une adresse e-mail valide : elle servira à vous connecter.'), { statusCode: 400 });
+      invitation.email = chosen;
+    }
     const existing = await client.query('SELECT id FROM users WHERE email = $1', [invitation.email]);
     if (existing.rows[0]) {
       throw Object.assign(new Error('Un compte utilise déjà cette adresse. Demandez une nouvelle invitation à l’entreprise.'), { statusCode: 409 });
@@ -3412,9 +3502,9 @@ app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) =>
     }
     const salt = crypto.randomBytes(16).toString('hex');
     const createdUser = await client.query(
-      `INSERT INTO users (email, display_name, password_salt, password_hash)
-       VALUES ($1, $2, $3, $4) RETURNING id`,
-      [invitation.email, invitation.display_name, salt, hashPassword(password, salt)]
+      `INSERT INTO users (email, display_name, password_salt, password_hash, phone, code_channel)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [invitation.email, invitation.display_name, salt, hashPassword(password, salt), invitation.phone || null, invitation.phone && !invitation.verify_code_hash ? null : (invitation.phone ? 'whatsapp' : null)]
     );
     userId = createdUser.rows[0].id;
     await client.query(
@@ -3441,38 +3531,123 @@ app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) =>
   return res.status(201).json({ status: 'accepted', redirect: invitation.role === 'driver' ? '/driver' : '/app' });
 }));
 
+// --- Équipe et accès ------------------------------------------------------
+// Membres, invitations (e-mail ou téléphone), rôles, suspension et retrait.
+// Toutes les règles sont appliquées ici : le propriétaire et les livreurs
+// sont protégés, personne ne modifie son propre accès, et seul un
+// propriétaire gère les administrateurs.
+const TEAM_ROLES = ['manager', 'operator', 'viewer'];
+const TEAM_ROLE_LABELS = { owner: 'Propriétaire', manager: 'Administrateur', operator: 'Opérateur', viewer: 'Lecture seule', driver: 'Livreur' };
+function invitationState(row) {
+  if (row.accepted_at) return 'accepted';
+  if (row.revoked_at) return 'revoked';
+  if (new Date(row.expires_at) <= new Date()) return 'expired';
+  return 'pending';
+}
+function invitationOut(row) {
+  return {
+    id: String(row.id), displayName: row.display_name, email: row.email || null, phone: row.phone || null,
+    role: row.role, driverId: row.driver_id, driverName: row.driver_name || null,
+    state: invitationState(row), expiresAt: row.expires_at, createdAt: row.created_at,
+    invitedBy: row.invited_by || null, canCopy: Boolean(row.token_ciphertext) && invitationState(row) === 'pending',
+  };
+}
+function sealInvitationToken(token) {
+  try { return encryptTrackingToken(token); } catch { return null; }
+}
+function invitationLink(req, token) {
+  return { path: `/invitation/${token}`, url: `${publicBaseUrl(req)}/invitation/${token}` };
+}
+// Peut-on agir sur ce membre ? Renvoie un message d'erreur sinon.
+function teamGuard(auth, member) {
+  if (!member) return { status: 404, error: 'Membre introuvable.' };
+  if (String(member.user_id) === String(auth.user_id)) return { status: 409, error: 'Vous ne pouvez pas modifier votre propre accès ici.' };
+  if (member.role === 'owner') return { status: 409, error: 'Le propriétaire est protégé.' };
+  if (member.role === 'driver') return { status: 409, error: 'Un livreur se gère depuis la page Livreurs.' };
+  if (auth.role === 'manager' && member.role === 'manager') return { status: 403, error: 'Seul le propriétaire peut modifier un administrateur.' };
+  return null;
+}
+async function loadTeamMember(queryable, companyId, membershipId, lock = false) {
+  if (!/^\d{1,18}$/.test(String(membershipId))) return null;
+  const result = await queryable.query(
+    `SELECT m.id, m.user_id, m.role, m.driver_id, m.suspended_at, u.display_name, u.email
+     FROM company_memberships m JOIN users u ON u.id = m.user_id
+     WHERE m.id = $1 AND m.company_id = $2${lock ? ' FOR UPDATE OF m' : ''}`,
+    [membershipId, companyId]
+  );
+  return result.rows[0] || null;
+}
+
 app.get('/api/app/team', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   const [members, invitations] = await Promise.all([
     pool.query(
-      `SELECT m.id, m.role, m.driver_id, u.email, u.display_name, u.disabled, u.created_at,
-              d.name AS driver_name
+      `SELECT m.id, m.user_id, m.role, m.driver_id, m.suspended_at, m.created_at AS joined_at,
+              u.email, u.phone, u.display_name, u.disabled, u.created_at,
+              d.name AS driver_name,
+              (SELECT MAX(COALESCE(s.last_seen_at, s.created_at)) FROM app_sessions s
+                WHERE s.user_id = m.user_id AND s.company_id = m.company_id) AS last_seen_at,
+              EXISTS (SELECT 1 FROM app_sessions s WHERE s.user_id = m.user_id AND s.company_id = m.company_id
+                AND s.expires_at > NOW() AND COALESCE(s.last_seen_at, s.created_at) > NOW() - INTERVAL '5 minutes') AS online
        FROM company_memberships m JOIN users u ON u.id = m.user_id
        LEFT JOIN drivers d ON d.id = m.driver_id
-       WHERE m.company_id = $1 ORDER BY u.display_name, u.email`,
+       WHERE m.company_id = $1
+       ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 WHEN 'operator' THEN 2 WHEN 'viewer' THEN 3 ELSE 4 END,
+                u.display_name, u.email`,
       [req.auth.company_id]
     ),
+    // Invitations encore utiles à voir : en attente, expirées ou annulées
+    // depuis moins de 30 jours (les acceptées deviennent des membres).
     pool.query(
-      `SELECT i.id, i.email, i.display_name, i.role, i.driver_id, i.expires_at, i.created_at, d.name AS driver_name
-       FROM user_invitations i LEFT JOIN drivers d ON d.id = i.driver_id
-       WHERE i.company_id = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()
-       ORDER BY i.created_at DESC`,
+      `SELECT i.id, i.email, i.phone, i.display_name, i.role, i.driver_id, i.expires_at, i.created_at,
+              i.accepted_at, i.revoked_at, i.token_ciphertext, d.name AS driver_name, u.display_name AS invited_by
+       FROM user_invitations i
+       LEFT JOIN drivers d ON d.id = i.driver_id
+       LEFT JOIN users u ON u.id = i.created_by_user_id
+       WHERE i.company_id = $1 AND i.accepted_at IS NULL
+         AND (i.revoked_at IS NULL OR i.revoked_at > NOW() - INTERVAL '30 days')
+         AND i.expires_at > NOW() - INTERVAL '30 days'
+       ORDER BY i.created_at DESC LIMIT 200`,
       [req.auth.company_id]
     ),
   ]);
-  return res.json({ members: members.rows, invitations: invitations.rows });
+  return res.json({
+    me: { userId: String(req.auth.user_id), role: req.auth.role },
+    members: members.rows.map((m) => ({
+      id: String(m.id), userId: String(m.user_id), role: m.role, driverId: m.driver_id, driverName: m.driver_name,
+      displayName: m.display_name, email: m.role === 'driver' && /\.traxo\.invalid$/.test(m.email || '') ? null : m.email,
+      phone: m.phone || null, state: m.suspended_at ? 'suspended' : (m.disabled ? 'disabled' : 'active'),
+      joinedAt: m.joined_at, lastSeenAt: m.last_seen_at, online: Boolean(m.online),
+      me: String(m.user_id) === String(req.auth.user_id),
+    })),
+    invitations: invitations.rows.map(invitationOut),
+  });
 }));
 
 app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
-  const email = normalizeEmail(req.body.email);
-  const displayName = String(req.body.displayName || '').trim();
+  const rawEmail = String(req.body.email || '').trim();
+  const rawPhone = String(req.body.phone || '').trim();
+  const email = rawEmail ? normalizeEmail(rawEmail) : null;
+  const displayName = String(req.body.displayName || '').replace(/\s+/g, ' ').trim();
   const role = String(req.body.role || '').trim();
   const driverId = req.body.driverId ? String(req.body.driverId) : null;
   const notifyByEmail = req.body.notify === 'email';
-  if (!/^\S+@\S+\.\S+$/.test(email) || displayName.length < 2 || displayName.length > 100 || !invitationRoles.includes(role)) {
-    return res.status(400).json({ error: 'Vérifiez le nom, l’adresse e-mail et le rôle de la personne invitée.' });
+  if (displayName.length < 2 || displayName.length > 100) return res.status(400).json({ error: 'Indiquez le nom de la personne (2 à 100 caractères).', field: 'displayName' });
+  if (!invitationRoles.includes(role)) return res.status(400).json({ error: 'Choisissez un rôle.', field: 'role' });
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Vérifiez le téléphone ou l’adresse e-mail.', field: 'contact' });
+  let phone = null;
+  if (rawPhone) {
+    phone = normalizeCustomerPhone({ customerPhone: rawPhone, customerPhoneCountry: req.body.phoneCountry || 'BJ' });
+    if (!phone) return res.status(400).json({ error: 'Vérifiez le téléphone ou l’adresse e-mail.', field: 'contact' });
+  }
+  // Un lien sans coordonnée serait utilisable par n'importe qui : on exige
+  // l'une des deux, vérifiée à l'acceptation (e-mail saisi ou code WhatsApp).
+  if (!email && !phone) return res.status(400).json({ error: 'Ajoutez un téléphone ou une adresse e-mail : il protège le lien d’invitation.', field: 'contact' });
+  if (!email && role === 'driver') return res.status(400).json({ error: 'Un livreur rejoint l’équipe depuis la page Livreurs, avec un QR code.' });
+  if (phone && !email && !whatsappAvailableFor(phone)) {
+    return res.status(409).json({ error: 'WhatsApp n’est pas relié pour l’instant : ajoutez plutôt une adresse e-mail.', field: 'contact' });
   }
   if (req.auth.role === 'manager' && role === 'manager') {
-    return res.status(403).json({ error: 'Seul un propriétaire peut inviter un autre manager.' });
+    return res.status(403).json({ error: 'Seul le propriétaire peut inviter un administrateur.' });
   }
   if (role === 'driver' && !driverId) return res.status(400).json({ error: 'Sélectionnez le livreur associé à ce compte.' });
   if (role !== 'driver' && driverId) return res.status(400).json({ error: 'Un profil livreur ne peut être associé qu’au rôle livreur.' });
@@ -3480,8 +3655,22 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const existingUser = await client.query('SELECT 1 FROM users WHERE email = $1', [email]);
-    if (existingUser.rows[0]) throw Object.assign(new Error('Un compte utilise déjà cette adresse e-mail.'), { statusCode: 409 });
+    if (email) {
+      const existingUser = await client.query('SELECT 1 FROM users WHERE email = $1', [email]);
+      if (existingUser.rows[0]) throw Object.assign(new Error('Un compte utilise déjà cette adresse e-mail.'), { statusCode: 409 });
+    }
+    // Doublon : déjà membre (même téléphone) ou invitation en cours.
+    const dup = await client.query(
+      `SELECT 1 FROM company_memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.company_id = $1 AND $2::text IS NOT NULL AND u.phone = $2
+       UNION ALL
+       SELECT 1 FROM user_invitations i
+        WHERE i.company_id = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()
+          AND ((i.email IS NOT NULL AND i.email = $3) OR ($2::text IS NOT NULL AND i.phone = $2))
+       LIMIT 1`,
+      [req.auth.company_id, phone, email]
+    );
+    if (dup.rows[0] && role !== 'driver') throw Object.assign(new Error('Cette personne a déjà un accès ou une invitation en cours.'), { statusCode: 409 });
     if (role === 'driver') {
       const driver = await client.query(
         `SELECT d.id FROM drivers d
@@ -3498,37 +3687,43 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
         [driverId, req.auth.company_id]
       );
       if (!driver.rows[0]) throw Object.assign(new Error('Ce livreur est introuvable, inactif ou possède déjà un compte.'), { statusCode: 409 });
+      await client.query(
+        `UPDATE user_invitations SET revoked_at = NOW()
+         WHERE company_id = $1 AND email = $2 AND accepted_at IS NULL AND revoked_at IS NULL`,
+        [req.auth.company_id, email]
+      );
     }
+    // Une invitation expirée pour la même personne est remplacée.
     await client.query(
       `UPDATE user_invitations SET revoked_at = NOW()
-       WHERE company_id = $1 AND email = $2 AND accepted_at IS NULL AND revoked_at IS NULL`,
-      [req.auth.company_id, email]
+       WHERE company_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at <= NOW()
+         AND ((email IS NOT NULL AND email = $2) OR ($3::text IS NOT NULL AND phone = $3))`,
+      [req.auth.company_id, email, phone]
     );
     const invitation = await client.query(
       `INSERT INTO user_invitations (
-         company_id, email, display_name, role, driver_id, token_hash, created_by_user_id, expires_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + INTERVAL '48 hours')
+         company_id, email, phone, display_name, role, driver_id, token_hash, token_ciphertext, created_by_user_id, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW() + INTERVAL '48 hours')
        RETURNING id, expires_at`,
-      [req.auth.company_id, email, displayName, role, role === 'driver' ? driverId : null, digest(token), req.auth.user_id]
+      [req.auth.company_id, email, phone, displayName, role, role === 'driver' ? driverId : null, digest(token), sealInvitationToken(token), req.auth.user_id]
     );
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
-       VALUES ($1, $2, 'user_invitation', $3, 'created', jsonb_build_object('role', $4::text, 'email', $5::text))`,
-      [req.auth.company_id, req.auth.user_id, invitation.rows[0].id, role, email]
+       VALUES ($1, $2, 'user_invitation', $3, 'created', jsonb_build_object('role', $4::text, 'email', $5::text, 'phone', $6::text))`,
+      [req.auth.company_id, req.auth.user_id, invitation.rows[0].id, role, email, phone]
     );
     await client.query('COMMIT');
     const baseUrl = publicBaseUrl(req);
-    const inviteUrl = `${baseUrl}/invitation/${token}`;
+    const { path: invitePath, url: inviteUrl } = invitationLink(req, token);
     let emailed = false;
-    if (notifyByEmail) {
+    if (notifyByEmail && email) {
       try {
         const companyRow = await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id]);
         const companyName = companyRow.rows[0]?.name || 'votre équipe';
-        const roleLabelsServer = { manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
         const html = renderEmailShell({
           baseUrl,
           heading: `Vous êtes invité·e à rejoindre ${companyName} sur TRAXO`,
-          introHtml: `Bonjour ${escHtmlServer(displayName)}, vous avez été invité·e comme <strong>${escHtmlServer(roleLabelsServer[role] || role)}</strong>.`,
+          introHtml: `Bonjour ${escHtmlServer(displayName)}, vous avez été invité·e comme <strong>${escHtmlServer(TEAM_ROLE_LABELS[role] || role)}</strong>.`,
           bodyHtml: '<p style="margin:0;font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#475467">Cliquez sur le bouton ci-dessous pour créer votre accès. Le lien est valable 48 heures et à usage unique.</p>',
           ctaLabel: 'Créer mon accès',
           ctaUrl: inviteUrl,
@@ -3545,11 +3740,11 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
         console.error('Invite email failed:', mailError.message);
       }
     }
-    return res.status(201).json({ id: invitation.rows[0].id, path: `/invitation/${token}`, url: inviteUrl, expiresAt: invitation.rows[0].expires_at, emailed });
+    return res.status(201).json({ id: invitation.rows[0].id, path: invitePath, url: inviteUrl, expiresAt: invitation.rows[0].expires_at, emailed });
   } catch (error) {
     await client.query('ROLLBACK');
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
-    if (error.code === '23505') return res.status(409).json({ error: 'Une invitation active existe déjà pour cette adresse ou ce livreur.' });
+    if (error.code === '23505') return res.status(409).json({ error: 'Cette personne a déjà un accès ou une invitation en cours.' });
     console.error('Invitation creation error:', error.message);
     return res.status(500).json({ error: 'Impossible de créer cette invitation.' });
   } finally {
@@ -3568,6 +3763,143 @@ app.post('/api/app/invitations/:id/revoke', requireCompanyApi, requireCompanyRol
   if (!result.rows[0]) return res.status(404).json({ error: 'Invitation active introuvable.' });
   await writeAudit(req.auth, 'user_invitation', result.rows[0].id, 'revoked');
   return res.json({ status: 'revoked' });
+}));
+
+// Renouveler : nouveau jeton, 48 h de plus ; l'ancien lien cesse aussitôt.
+app.post('/api/app/invitations/:id/renew', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.id)) return res.status(404).json({ error: 'Invitation introuvable.' });
+  const token = randomToken();
+  try {
+    const result = await pool.query(
+      `UPDATE user_invitations
+       SET token_hash = $1, token_ciphertext = $2, expires_at = NOW() + INTERVAL '48 hours', revoked_at = NULL,
+           verify_code_hash = NULL, verify_sent_at = NULL, verify_sends = 0, verify_attempts = 0
+       WHERE id = $3 AND company_id = $4 AND accepted_at IS NULL AND role <> 'driver'
+         AND ($5::text = 'owner' OR role <> 'manager')
+       RETURNING id, expires_at`,
+      [digest(token), sealInvitationToken(token), req.params.id, req.auth.company_id, req.auth.role]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Invitation introuvable ou déjà acceptée.' });
+    await writeAudit(req.auth, 'user_invitation', result.rows[0].id, 'renewed');
+    return res.json({ id: String(result.rows[0].id), ...invitationLink(req, token), expiresAt: result.rows[0].expires_at });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Une autre invitation est déjà en cours pour cette personne.' });
+    throw error;
+  }
+}));
+
+// Recopier le lien d'une invitation en attente (jeton chiffré au repos).
+app.post('/api/app/invitations/:id/reveal', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.id)) return res.status(404).json({ error: 'Invitation introuvable.' });
+  const result = await pool.query(
+    `SELECT id, token_ciphertext, expires_at, accepted_at, revoked_at FROM user_invitations
+     WHERE id = $1 AND company_id = $2`,
+    [req.params.id, req.auth.company_id]
+  );
+  const row = result.rows[0];
+  if (!row || invitationState(row) !== 'pending') return res.status(404).json({ error: 'Cette invitation n’est plus en attente.' });
+  if (!row.token_ciphertext) return res.status(409).json({ error: 'Ce lien ne peut plus être affiché : renouvelez l’invitation.' });
+  let token;
+  try { token = decryptTrackingToken(row.token_ciphertext); } catch { return res.status(409).json({ error: 'Ce lien ne peut plus être affiché : renouvelez l’invitation.' }); }
+  return res.json({ ...invitationLink(req, token), expiresAt: row.expires_at });
+}));
+
+app.patch('/api/app/team/members/:id', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const role = String(req.body?.role || '');
+  if (!TEAM_ROLES.includes(role)) return res.status(400).json({ error: 'Rôle inconnu.' });
+  if (req.auth.role === 'manager' && role === 'manager') return res.status(403).json({ error: 'Seul le propriétaire peut nommer un administrateur.' });
+  const member = await loadTeamMember(pool, req.auth.company_id, req.params.id);
+  const blocked = teamGuard(req.auth, member);
+  if (blocked) return res.status(blocked.status).json({ error: blocked.error });
+  if (member.role === role) return res.json({ id: String(member.id), role, unchanged: true });
+  await pool.query('UPDATE company_memberships SET role = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3', [role, member.id, req.auth.company_id]);
+  await writeAudit(req.auth, 'membership', member.id, 'role_changed', { from: member.role, to: role, userId: String(member.user_id) });
+  return res.json({ id: String(member.id), role });
+}));
+
+async function setMemberSuspension(req, res, suspend) {
+  const member = await loadTeamMember(pool, req.auth.company_id, req.params.id);
+  const blocked = teamGuard(req.auth, member);
+  if (blocked) return res.status(blocked.status).json({ error: blocked.error });
+  await pool.query(
+    `UPDATE company_memberships SET suspended_at = ${suspend ? 'NOW()' : 'NULL'}, suspended_by_user_id = $1, updated_at = NOW()
+     WHERE id = $2 AND company_id = $3`,
+    [suspend ? req.auth.user_id : null, member.id, req.auth.company_id]
+  );
+  // Suspendre coupe immédiatement les sessions ouvertes dans cette entreprise.
+  if (suspend) await pool.query('DELETE FROM app_sessions WHERE user_id = $1 AND company_id = $2', [member.user_id, req.auth.company_id]);
+  await writeAudit(req.auth, 'membership', member.id, suspend ? 'suspended' : 'reactivated', { userId: String(member.user_id) });
+  return res.json({ id: String(member.id), state: suspend ? 'suspended' : 'active' });
+}
+app.post('/api/app/team/members/:id/suspend', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute((req, res) => setMemberSuspension(req, res, true)));
+app.post('/api/app/team/members/:id/reactivate', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute((req, res) => setMemberSuspension(req, res, false)));
+
+// Retirer de l'équipe : l'appartenance disparaît, le compte et l'historique
+// (commandes, journal) restent. Annulable pendant une heure.
+app.post('/api/app/team/members/:id/remove', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const member = await loadTeamMember(pool, req.auth.company_id, req.params.id);
+  const blocked = teamGuard(req.auth, member);
+  if (blocked) return res.status(blocked.status).json({ error: blocked.error });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM company_memberships WHERE id = $1 AND company_id = $2', [member.id, req.auth.company_id]);
+    await client.query('DELETE FROM app_sessions WHERE user_id = $1 AND company_id = $2', [member.user_id, req.auth.company_id]);
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       VALUES ($1, $2, 'membership', $3, 'removed', $4)`,
+      [req.auth.company_id, req.auth.user_id, member.id, { userId: String(member.user_id), role: member.role, suspended: Boolean(member.suspended_at), name: member.display_name }]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  return res.json({ removed: String(member.id), userId: String(member.user_id) });
+}));
+
+app.post('/api/app/team/members/restore', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const userId = String(req.body?.userId || '');
+  if (!/^\d{1,18}$/.test(userId)) return res.status(400).json({ error: 'Personne introuvable.' });
+  const removed = await pool.query(
+    `SELECT details FROM audit_logs
+     WHERE company_id = $1 AND entity_type = 'membership' AND action = 'removed'
+       AND details->>'userId' = $2 AND created_at > NOW() - INTERVAL '1 hour'
+     ORDER BY id DESC LIMIT 1`,
+    [req.auth.company_id, userId]
+  );
+  const details = removed.rows[0]?.details;
+  if (!details) return res.status(410).json({ error: 'Ce retrait ne peut plus être annulé. Invitez à nouveau la personne.' });
+  if (req.auth.role === 'manager' && details.role === 'manager') return res.status(403).json({ error: 'Seul le propriétaire peut rétablir un administrateur.' });
+  try {
+    const inserted = await pool.query(
+      `INSERT INTO company_memberships (company_id, user_id, role, suspended_at) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [req.auth.company_id, userId, details.role, details.suspended ? new Date() : null]
+    );
+    await writeAudit(req.auth, 'membership', inserted.rows[0].id, 'restored', { userId, role: details.role });
+    return res.json({ id: String(inserted.rows[0].id), role: details.role });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Cette personne fait déjà partie de l’équipe.' });
+    throw error;
+  }
+}));
+
+app.get('/api/app/team/members/:id/history', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const member = await loadTeamMember(pool, req.auth.company_id, req.params.id);
+  if (!member) return res.status(404).json({ error: 'Membre introuvable.' });
+  const result = await pool.query(
+    `SELECT a.action, a.details, a.created_at, a.entity_type, COALESCE(u.display_name, 'Système') AS actor_name
+     FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+     WHERE a.company_id = $1 AND (
+       (a.entity_type = 'membership' AND (a.entity_id = $2 OR a.details->>'userId' = $3))
+       OR (a.entity_type = 'user_invitation' AND a.action = 'accepted' AND a.user_id = $4)
+     )
+     ORDER BY a.created_at DESC, a.id DESC LIMIT 30`,
+    [req.auth.company_id, member.id, String(member.user_id), member.user_id]
+  );
+  return res.json(result.rows.map((r) => ({ action: r.action, details: r.details, at: r.created_at, actor: r.actor_name })));
 }));
 
 app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
@@ -4614,7 +4946,7 @@ app.post('/api/app/ops/restore', requireCompanyApi, requireCompanyRoles('owner',
 // --- Opérations : vues enregistrées --------------------------------------
 // Une vue = une source + des réglages d'affichage (jamais de données). Elle
 // est personnelle, ou partagée avec l'équipe (responsables uniquement).
-const OPS_VIEW_SOURCES = ['commandes', 'demandes', 'tournees', 'incidents'];
+const OPS_VIEW_SOURCES = ['commandes', 'demandes', 'tournees', 'incidents', 'clients'];
 const OPS_VIEW_MAX_PER_USER = 30;
 function sanitizeOpsViewConfig(raw) {
   const c = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -4636,6 +4968,31 @@ function sanitizeOpsViewConfig(raw) {
     },
   };
   return out;
+}
+// Vues du carnet clients : affichage, filtres, tri, colonnes, portée.
+function sanitizeClientsViewConfig(raw) {
+  const c = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const key = (v) => (typeof v === 'string' && /^[a-z][a-z_]{0,23}$/.test(v) ? v : null);
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const list = (v, max, fn) => (Array.isArray(v) ? [...new Set(v.map(fn).filter(Boolean))].slice(0, max) : []);
+  const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
+  return {
+    layout: oneOf(c.layout, ['list', 'cards', 'stage'], 'list'),
+    scope: oneOf(c.scope, ['current', 'archived'], 'current'),
+    pageSize: [6, 12, 24].includes(Number(c.pageSize)) ? Number(c.pageSize) : 12,
+    q: text(c.q, 120),
+    columns: list(c.columns, 12, key),
+    sort: oneOf(c.sort, ['recent', 'name', 'orders'], 'recent'),
+    filters: {
+      stage: list(c.filters?.stage, 4, (v) => (CUSTOMER_STAGES.includes(v) ? v : null)),
+      city: list(c.filters?.city, 20, (v) => text(v, 80)),
+      type: list(c.filters?.type, 2, (v) => (['person', 'organization'].includes(v) ? v : null)),
+      frequency: oneOf(c.filters?.frequency, ['any', 'none', 'occasional', 'recurring'], 'any'),
+    },
+  };
+}
+function sanitizeViewConfig(source, raw) {
+  return source === 'clients' ? sanitizeClientsViewConfig(raw) : sanitizeOpsViewConfig(raw);
 }
 function opsViewOut(row, userId) {
   return { id: String(row.id), source: row.source, name: row.name, config: row.config, shared: row.shared,
@@ -4670,7 +5027,7 @@ app.post('/api/app/ops/views', requireCompanyApi, asyncRoute(async (req, res) =>
   const result = await pool.query(
     `INSERT INTO ops_views (company_id, user_id, source, name, config, shared)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [req.auth.company_id, req.auth.user_id, source, name, sanitizeOpsViewConfig(req.body?.config), shared]
+    [req.auth.company_id, req.auth.user_id, source, name, sanitizeViewConfig(source, req.body?.config), shared]
   );
   return res.status(201).json(opsViewOut(result.rows[0], req.auth.user_id));
 }));
@@ -4694,7 +5051,7 @@ app.patch('/api/app/ops/views/:id', requireCompanyApi, asyncRoute(async (req, re
     if (!name) return res.status(400).json({ error: 'Donnez un nom à la vue (60 caractères au plus).' });
     values.push(name); sets.push(`name = $${values.length}`);
   }
-  if ('config' in (req.body || {})) { values.push(sanitizeOpsViewConfig(req.body.config)); sets.push(`config = $${values.length}`); }
+  if ('config' in (req.body || {})) { values.push(sanitizeViewConfig(found.view.source, req.body.config)); sets.push(`config = $${values.length}`); }
   if ('shared' in (req.body || {})) {
     if (!['owner', 'manager'].includes(req.auth.role)) return res.status(403).json({ error: 'Seuls les responsables peuvent partager une vue avec l’équipe.' });
     values.push(req.body.shared === true); sets.push(`shared = $${values.length}`);
@@ -5303,7 +5660,10 @@ if (process.env.NODE_ENV !== 'test') {
 
 app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
   const pageNumber = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-  const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+  // all=1 : le carnet complet (jusqu'à 2 000 fiches) pour filtrer, trier et
+  // regrouper dans la page Clients ; sinon pagination serveur (Rapports…).
+  const allMode = req.query.all === '1';
+  const limit = allMode ? 2000 : Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
   const query = String(req.query.q || '').trim().slice(0, 120);
   const allowedStatuses = ['active', 'do_not_contact', 'archived', 'merged', 'anonymized'];
   const status = req.query.status ? String(req.query.status) : null;
@@ -5331,6 +5691,7 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
           AND search_contact.value_display ILIKE $2
       ))
       AND ($3::text IS NULL OR c.status = $3)
+      AND c.removed_at IS NULL
       -- Par défaut on masque les fiches archivées/fusionnées/anonymisées ;
       -- elles restent accessibles via un filtre de statut explicite.
       AND ($3::text IS NOT NULL OR c.status NOT IN ('archived', 'merged', 'anonymized'))`;
@@ -5340,8 +5701,11 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
     const baseCte = `
       WITH base AS (
         SELECT c.id, c.customer_code, c.customer_type, c.sector, c.pipeline_stage,
-               c.display_name, c.status, c.created_at, c.updated_at,
+               c.display_name, c.status, c.created_at, c.updated_at, c.main_city,
                primary_contact.value_display AS primary_phone,
+               primary_email.value_display AS primary_email,
+               tag_list.names AS tags, loc_text.search AS location_search,
+               COUNT(DISTINCT o.id) FILTER (WHERE o.status NOT IN ('Livrée', 'Annulée', 'Retournée'))::int AS active_order_count,
                loc.locality AS primary_locality, loc.neighborhood AS primary_neighborhood,
                lastord.status AS last_order_status, lastord.created_at AS last_order_at,
                COUNT(DISTINCT o.id)::int AS order_count,
@@ -5354,6 +5718,22 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
             AND cc.kind = 'phone' AND cc.is_active = TRUE
           ORDER BY cc.is_primary DESC, cc.id ASC LIMIT 1
         ) primary_contact ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT ce.value_display FROM customer_contacts ce
+          WHERE ce.company_id = c.company_id AND ce.customer_id = c.id
+            AND ce.kind = 'email' AND ce.is_active = TRUE
+          ORDER BY ce.is_primary DESC, ce.id ASC LIMIT 1
+        ) primary_email ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT array_agg(t.name ORDER BY t.name) AS names FROM customer_tags ct
+          JOIN crm_tags t ON t.company_id = ct.company_id AND t.id = ct.tag_id AND t.archived_at IS NULL
+          WHERE ct.company_id = c.company_id AND ct.customer_id = c.id
+        ) tag_list ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT string_agg(concat_ws(' ', cl2.label, cl2.neighborhood, cl2.locality, cl2.address_text, cl2.landmark), ' ') AS search
+          FROM customer_locations cl2
+          WHERE cl2.company_id = c.company_id AND cl2.customer_id = c.id AND cl2.is_active = TRUE
+        ) loc_text ON TRUE
         LEFT JOIN LATERAL (
           SELECT cl.locality, cl.neighborhood FROM customer_locations cl
           WHERE cl.company_id = c.company_id AND cl.customer_id = c.id AND cl.is_active = TRUE
@@ -5368,7 +5748,8 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
         LEFT JOIN customer_locations l ON l.company_id = c.company_id AND l.customer_id = c.id
         LEFT JOIN delivery_incidents i ON i.company_id = c.company_id AND i.order_id = o.id
         WHERE ${filters}
-        GROUP BY c.id, primary_contact.value_display, loc.locality, loc.neighborhood, lastord.status, lastord.created_at
+        GROUP BY c.id, primary_contact.value_display, primary_email.value_display, tag_list.names, loc_text.search,
+                 loc.locality, loc.neighborhood, lastord.status, lastord.created_at
       ),
       auto AS (
         SELECT *,
@@ -5419,42 +5800,131 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
   });
 }));
 
-// Création manuelle d'un client depuis le CRM (bouton « Nouveau client »).
-app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
-  const displayName = String(req.body?.displayName ?? req.body?.display_name ?? '').trim().slice(0, 200);
-  if (!displayName) return res.status(400).json({ error: 'Le nom du client est requis.' });
-  const sector = String(req.body?.sector ?? req.body?.customerType ?? req.body?.customer_type ?? '').trim().slice(0, 120) || null;
-  const phone = String(req.body?.phone ?? '').trim().slice(0, 320);
-  // Validation du téléphone : rejette la saisie sans chiffres exploitables
-  // (ex. « essai »), source de fiches parasites.
-  if (phone) {
-    const digits = phone.replace(/\D/g, '');
-    if (digits.length < 6) return res.status(400).json({ error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' });
-  }
-  const created = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
-    const inserted = await client.query(
-      `INSERT INTO customers (company_id, customer_code, sector, display_name, status,
-         created_by_user_id, updated_by_user_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'active', $5, $5, NOW(), NOW())
-       RETURNING id`,
-      [req.auth.company_id, `MANUAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, sector, displayName, req.auth.user_id || null]
-    );
-    const id = inserted.rows[0].id;
-    await client.query(
-      `UPDATE customers SET customer_code = $1 WHERE id = $2 AND company_id = $3`,
-      [`CL-${String(id).padStart(4, '0')}`, id, req.auth.company_id]
-    );
-    if (phone) {
-      await client.query(
-        `INSERT INTO customer_contacts (company_id, customer_id, kind, value_display, value_normalized,
-           is_primary, created_by_user_id, updated_by_user_id)
-         VALUES ($1, $2, 'phone', $3, $4, TRUE, $5, $5)`,
-        [req.auth.company_id, id, phone, phone.replace(/[^\d+]/g, ''), req.auth.user_id || null]
-      );
-    }
-    return id;
+// --- Carnet clients -----------------------------------------------------
+// Téléphone comparé sur ses 8 derniers chiffres : le même numéro saisi avec ou
+// sans +229 est reconnu. Un doublon bloque l'enregistrement, sauf si l'équipe
+// confirme que le numéro est partagé (allowDuplicate) : rien n'est fusionné.
+const phoneKey = (value) => String(value || '').replace(/\D/g, '').slice(-8);
+const CUSTOMER_STAGES = ['nouveau', 'actif', 'a_relancer', 'inactif'];
+const CUSTOMER_CHANNELS = ['call', 'whatsapp', 'sms', 'email'];
+async function findPhoneDuplicate(client, companyId, phone, exceptId = null) {
+  const key = phoneKey(phone);
+  if (key.length < 8) return null;
+  const found = await client.query(
+    `SELECT c.id, c.customer_code, c.display_name, c.status FROM customers c
+     JOIN customer_contacts cc ON cc.company_id = c.company_id AND cc.customer_id = c.id
+       AND cc.kind = 'phone' AND cc.is_active = TRUE
+     WHERE c.company_id = $1 AND c.removed_at IS NULL AND c.status NOT IN ('merged', 'anonymized')
+       AND ($3::bigint IS NULL OR c.id <> $3)
+       AND right(regexp_replace(COALESCE(cc.value_normalized, cc.value_display), '[^0-9]', '', 'g'), 8) = $2
+     ORDER BY c.id LIMIT 1`,
+    [companyId, key, exceptId]
+  );
+  return found.rows[0] || null;
+}
+function duplicateError(dup) {
+  return Object.assign(new Error(`Ce numéro appartient déjà à ${dup.display_name} (${dup.customer_code}${dup.status === 'archived' ? ', archivé' : ''}).`), {
+    statusCode: 409, payload: { code: 'DUPLICATE_PHONE', duplicate: { id: String(dup.id), code: dup.customer_code, name: dup.display_name, archived: dup.status === 'archived' } },
   });
-  return res.status(201).json({ id: created, customer_code: `CL-${String(created).padStart(4, '0')}` });
+}
+function parsePhoneInput(raw, country) {
+  const text = String(raw || '').trim();
+  if (!text) return { value: null };
+  const parsed = normalizeCustomerPhone({ customerPhone: text, customerPhoneCountry: country || 'BJ' });
+  if (!parsed) return { error: 'Ce numéro de téléphone semble incorrect (ex. : 01 97 12 34 56).' };
+  return { value: parsed };
+}
+async function upsertPrimaryContact(client, auth, customerId, kind, value) {
+  const existing = await client.query(
+    `SELECT id FROM customer_contacts WHERE company_id = $1 AND customer_id = $2 AND kind = $3 AND is_active = TRUE
+     ORDER BY is_primary DESC, id ASC LIMIT 1`,
+    [auth.company_id, customerId, kind]
+  );
+  if (!value) {
+    if (existing.rows[0]) await client.query('UPDATE customer_contacts SET is_active = FALSE, is_primary = FALSE, updated_at = NOW() WHERE id = $1 AND company_id = $2', [existing.rows[0].id, auth.company_id]);
+    return;
+  }
+  const normalized = kind === 'phone' ? value.replace(/[^\d+]/g, '') : value.toLowerCase();
+  if (existing.rows[0]) {
+    await client.query(
+      `UPDATE customer_contacts SET value_display = $1, value_normalized = $2, is_primary = TRUE,
+         updated_by_user_id = $3, updated_at = NOW(), version = version + 1 WHERE id = $4 AND company_id = $5`,
+      [value, normalized, auth.user_id || null, existing.rows[0].id, auth.company_id]
+    );
+  } else {
+    await client.query(
+      `INSERT INTO customer_contacts (company_id, customer_id, kind, value_display, value_normalized, is_primary, created_by_user_id, updated_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6, $6)`,
+      [auth.company_id, customerId, kind, value, normalized, auth.user_id || null]
+    );
+  }
+}
+async function setCustomerTags(client, auth, customerId, names) {
+  const clean = [...new Set((Array.isArray(names) ? names : []).map((n) => String(n || '').replace(/\s+/g, ' ').trim().slice(0, 40)).filter(Boolean))].slice(0, 12);
+  await client.query('DELETE FROM customer_tags WHERE company_id = $1 AND customer_id = $2', [auth.company_id, customerId]);
+  for (const name of clean) {
+    const tag = await client.query(
+      `SELECT id FROM crm_tags WHERE company_id = $1 AND lower(name) = lower($2) AND archived_at IS NULL ORDER BY id LIMIT 1`,
+      [auth.company_id, name]
+    );
+    const tagId = tag.rows[0]?.id || (await client.query(
+      `INSERT INTO crm_tags (company_id, name, created_by_user_id) VALUES ($1, $2, $3) RETURNING id`,
+      [auth.company_id, name, auth.user_id || null]
+    )).rows[0].id;
+    await client.query(
+      `INSERT INTO customer_tags (company_id, customer_id, tag_id, assigned_by_user_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+      [auth.company_id, customerId, tagId, auth.user_id || null]
+    );
+  }
+}
+const textField = (value, max) => {
+  const t = String(value ?? '').replace(/\s+$/g, '').trim();
+  return t ? t.slice(0, max) : null;
+};
+
+// Création manuelle d'un client (bouton « Nouveau client ») : le nom suffit.
+app.post('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res) => {
+  const b = req.body || {};
+  const displayName = String(b.displayName ?? b.display_name ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!displayName) return res.status(400).json({ error: 'Le nom du client est requis.', field: 'displayName' });
+  const phone = parsePhoneInput(b.phone, b.phoneCountry);
+  if (phone.error) return res.status(400).json({ error: phone.error, field: 'phone' });
+  const email = textField(b.email, 200);
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Cette adresse e-mail semble incorrecte.', field: 'email' });
+  const customerType = b.customerType === 'organization' ? 'organization' : 'person';
+  const stage = CUSTOMER_STAGES.includes(b.stage) ? b.stage : null;
+  const channel = CUSTOMER_CHANNELS.includes(b.preferredChannel) ? b.preferredChannel : null;
+  const language = textField(b.preferredLanguage, 35);
+  if (language && language.length < 2) return res.status(400).json({ error: 'Langue : 2 à 35 caractères.', field: 'preferredLanguage' });
+  try {
+    const created = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+      if (phone.value && b.allowDuplicate !== true) {
+        const dup = await findPhoneDuplicate(client, req.auth.company_id, phone.value);
+        if (dup) throw duplicateError(dup);
+      }
+      const inserted = await client.query(
+        `INSERT INTO customers (company_id, customer_code, customer_type, sector, display_name, status, pipeline_stage,
+           preferred_language, preferred_channel, main_city, driver_instructions,
+           created_by_user_id, updated_by_user_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9, $10, $11, $11, NOW(), NOW())
+         RETURNING id`,
+        [req.auth.company_id, `MANUAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, customerType,
+          textField(b.sector ?? b.customer_type, 120), displayName, stage, language, channel,
+          textField(b.city, 120), textField(b.driverInstructions, 1000), req.auth.user_id || null]
+      );
+      const id = inserted.rows[0].id;
+      await client.query(`UPDATE customers SET customer_code = $1 WHERE id = $2 AND company_id = $3`, [`CL-${String(id).padStart(4, '0')}`, id, req.auth.company_id]);
+      if (phone.value) await upsertPrimaryContact(client, req.auth, id, 'phone', phone.value);
+      if (email) await upsertPrimaryContact(client, req.auth, id, 'email', email);
+      if (Array.isArray(b.tags)) await setCustomerTags(client, req.auth, id, b.tags);
+      return id;
+    });
+    await writeAudit(req.auth, 'customer', created, 'created', {});
+    return res.status(201).json({ id: created, customer_code: `CL-${String(created).padStart(4, '0')}` });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message, ...(error.payload || {}) });
+    throw error;
+  }
 }));
 
 // Mise à jour légère d'un client : stade de pipeline (glisser-déposer) et/ou
@@ -5482,7 +5952,41 @@ app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req
     }
     values.push(status);
     sets.push(`status = $${values.length}`);
+    sets.push(status === 'archived' ? 'archived_at = COALESCE(archived_at, NOW())' : 'archived_at = NULL');
   }
+  if ('customerType' in (req.body || {})) {
+    values.push(req.body.customerType === 'organization' ? 'organization' : 'person');
+    sets.push(`customer_type = $${values.length}`);
+  }
+  if ('mainCity' in (req.body || {})) {
+    values.push(textField(req.body.mainCity, 120));
+    sets.push(`main_city = $${values.length}`);
+  }
+  if ('driverInstructions' in (req.body || {})) {
+    const text = textField(req.body.driverInstructions, 1000);
+    values.push(text);
+    sets.push(`driver_instructions = $${values.length}`);
+  }
+  if ('defaultLocationId' in (req.body || {})) {
+    const locId = req.body.defaultLocationId ? String(req.body.defaultLocationId) : null;
+    if (locId && !/^\d{1,18}$/.test(locId)) return res.status(400).json({ error: 'Lieu introuvable.' });
+    values.push(locId);
+    sets.push(`default_location_id = (SELECT l.id FROM customer_locations l WHERE l.id = $${values.length}::bigint AND l.company_id = customers.company_id AND l.customer_id = customers.id)`);
+  }
+  // Coordonnées et étiquettes : tables liées, traitées dans la même transaction.
+  const contactChanges = {};
+  if ('phone' in (req.body || {})) {
+    const phone = parsePhoneInput(req.body.phone, req.body.phoneCountry);
+    if (phone.error) return res.status(400).json({ error: phone.error, field: 'phone' });
+    contactChanges.phone = phone.value;
+  }
+  if ('email' in (req.body || {})) {
+    const email = textField(req.body.email, 200);
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Cette adresse e-mail semble incorrecte.', field: 'email' });
+    contactChanges.email = email;
+  }
+  const tagChange = Array.isArray(req.body?.tags) ? req.body.tags : null;
+  if (!sets.length && (Object.keys(contactChanges).length || tagChange)) sets.push('display_name = display_name');
   if ('displayName' in (req.body || {})) {
     const name = String(req.body.displayName || '').trim();
     if (name.length < 1 || name.length > 160) return res.status(400).json({ error: 'Le nom doit contenir entre 1 et 160 caractères.' });
@@ -5522,13 +6026,246 @@ app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req
   const idParam = `$${values.length}`;
   values.push(req.auth.company_id);
   const companyParam = `$${values.length}`;
-  const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => client.query(
-    `UPDATE customers SET ${sets.join(', ')}, updated_by_user_id = ${updatedBy}, updated_at = NOW(), version = version + 1
-     WHERE id = ${idParam} AND company_id = ${companyParam} RETURNING id`,
-    values
-  ));
+  let result;
+  try {
+    result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+      if (contactChanges.phone && req.body.allowDuplicate !== true) {
+        const dup = await findPhoneDuplicate(client, req.auth.company_id, contactChanges.phone, customerId);
+        if (dup) throw duplicateError(dup);
+      }
+      const updated = await client.query(
+        `UPDATE customers SET ${sets.join(', ')}, updated_by_user_id = ${updatedBy}, updated_at = NOW(), version = version + 1
+         WHERE id = ${idParam} AND company_id = ${companyParam} AND removed_at IS NULL RETURNING id`,
+        values
+      );
+      if (!updated.rows[0]) return updated;
+      if ('phone' in contactChanges) await upsertPrimaryContact(client, req.auth, customerId, 'phone', contactChanges.phone);
+      if ('email' in contactChanges) await upsertPrimaryContact(client, req.auth, customerId, 'email', contactChanges.email);
+      if (tagChange) await setCustomerTags(client, req.auth, customerId, tagChange);
+      return updated;
+    });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message, ...(error.payload || {}) });
+    throw error;
+  }
   if (!result.rows[0]) return res.status(404).json({ error: 'Client introuvable.' });
+  const changed = Object.keys(req.body || {}).filter((k) => !['phoneCountry', 'allowDuplicate'].includes(k));
+  await writeAudit(req.auth, 'customer', customerId, 'updated', { fields: changed });
   return res.json({ id: result.rows[0].id });
+}));
+
+// Actions groupées du carnet : étape, archivage, restauration, suppression
+// (retrait logique réversible : la fiche quitte toutes les vues, ses
+// commandes et son historique restent).
+app.post('/api/app/crm/customers/bulk', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  const action = String(req.body?.action || '');
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).filter((v) => /^\d{1,18}$/.test(v)))];
+  if (!ids.length || ids.length > 1000) return res.status(400).json({ error: 'Sélectionnez entre 1 et 1 000 fiches.' });
+  if (['remove', 'unremove'].includes(action) && !['owner', 'manager'].includes(req.auth.role)) {
+    return res.status(403).json({ error: 'Seuls les responsables peuvent supprimer une fiche client.' });
+  }
+  const sql = {
+    stage: `UPDATE customers SET pipeline_stage = $3, updated_at = NOW(), version = version + 1
+            WHERE company_id = $1 AND id = ANY($2::bigint[]) AND removed_at IS NULL AND status NOT IN ('merged', 'anonymized') RETURNING id`,
+    archive: `UPDATE customers SET status = 'archived', archived_at = NOW(), updated_at = NOW(), version = version + 1
+              WHERE company_id = $1 AND id = ANY($2::bigint[]) AND removed_at IS NULL AND status IN ('active', 'do_not_contact') RETURNING id`,
+    restore: `UPDATE customers SET status = 'active', archived_at = NULL, updated_at = NOW(), version = version + 1
+              WHERE company_id = $1 AND id = ANY($2::bigint[]) AND removed_at IS NULL AND status = 'archived' RETURNING id`,
+    remove: `UPDATE customers SET removed_at = NOW(), removed_by_user_id = $3, updated_at = NOW()
+             WHERE company_id = $1 AND id = ANY($2::bigint[]) AND removed_at IS NULL AND status NOT IN ('merged', 'anonymized') RETURNING id`,
+    unremove: `UPDATE customers SET removed_at = NULL, removed_by_user_id = NULL, updated_at = NOW()
+               WHERE company_id = $1 AND id = ANY($2::bigint[]) AND removed_at IS NOT NULL RETURNING id`,
+  }[action];
+  if (!sql) return res.status(400).json({ error: 'Action inconnue.' });
+  const params = [req.auth.company_id, ids];
+  if (action === 'stage') {
+    const stage = req.body.stage;
+    if (stage !== null && !CUSTOMER_STAGES.includes(stage)) return res.status(400).json({ error: 'Étape inconnue.' });
+    params.push(stage);
+  }
+  if (action === 'remove') params.push(req.auth.user_id || null);
+  const result = await withCompanyTransaction(pool, req.auth.company_id, (client) => client.query(sql, params));
+  const done = result.rows.map((r) => String(r.id));
+  if (done.length) {
+    await pool.query(
+      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+       SELECT $1, $2, 'customer', x, $3, $4 FROM unnest($5::bigint[]) AS x`,
+      [req.auth.company_id, req.auth.user_id || null, `bulk_${action}`, action === 'stage' ? { stage: params[2] } : {}, done]
+    );
+  }
+  return res.json({ done, skipped: ids.filter((id) => !done.includes(id)) });
+}));
+
+// Export CSV du carnet (résultats filtrés ou sélection explicite) : réservé
+// aux responsables, journalisé, cellules « formule » neutralisées. Notes et
+// consignes ne sont pas exportées.
+const CUSTOMER_STAGE_LABELS = { nouveau: 'Nouveau', actif: 'Actif', a_relancer: 'À relancer', inactif: 'Inactif' };
+app.post('/api/app/crm/customers/export', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).filter((v) => /^\d{1,18}$/.test(v)))];
+  if (!ids.length || ids.length > 2000) return res.status(400).json({ error: 'Rien à exporter : sélectionnez entre 1 et 2 000 fiches.' });
+  const rows = await withCompanyTransaction(pool, req.auth.company_id, async (client) => (await client.query(
+    `SELECT c.id, c.customer_type, c.display_name, c.status, c.pipeline_stage, c.created_at,
+            COALESCE(c.main_city, loc.locality) AS city,
+            (SELECT cc.value_display FROM customer_contacts cc WHERE cc.company_id = c.company_id AND cc.customer_id = c.id
+               AND cc.kind = 'phone' AND cc.is_active = TRUE ORDER BY cc.is_primary DESC, cc.id LIMIT 1) AS phone,
+            (SELECT ce.value_display FROM customer_contacts ce WHERE ce.company_id = c.company_id AND ce.customer_id = c.id
+               AND ce.kind = 'email' AND ce.is_active = TRUE ORDER BY ce.is_primary DESC, ce.id LIMIT 1) AS email,
+            (SELECT COUNT(*)::int FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS order_count,
+            (SELECT MAX(o.created_at) FROM orders o WHERE o.company_id = c.company_id AND o.customer_id = c.id) AS last_order_at,
+            (SELECT COUNT(*)::int FROM customer_locations l WHERE l.company_id = c.company_id AND l.customer_id = c.id AND l.is_active = TRUE) AS location_count
+     FROM customers c
+     LEFT JOIN LATERAL (
+       SELECT cl.locality FROM customer_locations cl WHERE cl.company_id = c.company_id AND cl.customer_id = c.id AND cl.is_active = TRUE
+       ORDER BY cl.last_used_at DESC NULLS LAST, cl.id DESC LIMIT 1
+     ) loc ON TRUE
+     WHERE c.company_id = $1 AND c.id = ANY($2::bigint[]) AND c.removed_at IS NULL
+       AND c.status NOT IN ('merged', 'anonymized')
+     ORDER BY c.display_name, c.id`,
+    [req.auth.company_id, ids]
+  )).rows);
+  const days = (d) => (Date.now() - new Date(d).getTime()) / 86400000;
+  const stageOf = (r) => {
+    if (r.pipeline_stage) return r.pipeline_stage;
+    if (!r.last_order_at) return days(r.created_at) <= 30 ? 'nouveau' : 'inactif';
+    if (days(r.created_at) <= 21 && r.order_count <= 2) return 'nouveau';
+    if (days(r.last_order_at) <= 30) return 'actif';
+    return days(r.last_order_at) <= 90 ? 'a_relancer' : 'inactif';
+  };
+  const safe = (v) => neutralizeSpreadsheetText(v == null ? '' : String(v));
+  const keys = ['id', 'name', 'type', 'phone', 'email', 'stage', 'city', 'orders', 'locations', 'archived'];
+  const labels = ['ID', 'Nom', 'Type', 'Téléphone', 'E-mail', 'Étape', 'Ville', 'Commandes', 'Lieux', 'Archivé'];
+  const data = rows.map((r) => ({
+    id: `CL-${String(r.id).padStart(4, '0')}`,
+    name: safe(r.display_name),
+    type: r.customer_type === 'organization' ? 'Entreprise' : 'Particulier',
+    phone: safe(r.phone),
+    email: safe(r.email),
+    stage: CUSTOMER_STAGE_LABELS[stageOf(r)],
+    city: safe(r.city),
+    orders: r.order_count,
+    locations: r.location_count,
+    archived: r.status === 'archived' ? 'Oui' : 'Non',
+  }));
+  const csv = buildExportCsv(labels, keys, data);
+  try {
+    await pool.query(
+      `INSERT INTO export_logs (company_id, actor_user_id, dataset, role, status, purpose, columns, row_count, artifact_bytes, artifact_sha256)
+       VALUES ($1, $2, 'customers_csv', $3, 'downloaded', 'carnet_clients', $4, $5, $6, $7)`,
+      [req.auth.company_id, req.auth.user_id || null, req.auth.role, JSON.stringify(keys), data.length,
+        Buffer.byteLength(csv), crypto.createHash('sha256').update(csv).digest('hex')]
+    );
+  } catch (error) {
+    console.warn('Échec d’écriture du journal d’export :', error.message);
+  }
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="clients-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.send(csv);
+}));
+
+async function ownCustomer(client, companyId, customerId) {
+  if (!/^\d{1,18}$/.test(String(customerId))) return null;
+  const r = await client.query('SELECT id FROM customers WHERE id = $1 AND company_id = $2 AND removed_at IS NULL', [customerId, companyId]);
+  return r.rows[0] || null;
+}
+
+// Contacts supplémentaires (nom, téléphone, rôle).
+app.post('/api/app/crm/customers/:id/contacts', requireCompanyApi, asyncRoute(async (req, res) => {
+  const name = textField(req.body?.name, 120);
+  const role = textField(req.body?.role, 80);
+  const phone = parsePhoneInput(req.body?.phone, req.body?.phoneCountry);
+  if (!name) return res.status(400).json({ error: 'Indiquez le nom du contact.', field: 'name' });
+  if (phone.error || !phone.value) return res.status(400).json({ error: phone.error || 'Indiquez le téléphone du contact.', field: 'phone' });
+  const row = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    if (!(await ownCustomer(client, req.auth.company_id, req.params.id))) return null;
+    return (await client.query(
+      `INSERT INTO customer_contacts (company_id, customer_id, kind, label, contact_name, value_display, value_normalized,
+         is_primary, created_by_user_id, updated_by_user_id)
+       VALUES ($1, $2, 'phone', $3, $4, $5, $6, FALSE, $7, $7) RETURNING id`,
+      [req.auth.company_id, req.params.id, role, name, phone.value, phone.value.replace(/[^\d+]/g, ''), req.auth.user_id || null]
+    )).rows[0];
+  });
+  if (!row) return res.status(404).json({ error: 'Client introuvable.' });
+  await writeAudit(req.auth, 'customer', req.params.id, 'contact_added', { name });
+  return res.status(201).json({ id: String(row.id) });
+}));
+app.delete('/api/app/crm/customers/:id/contacts/:contactId', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.contactId)) return res.status(404).json({ error: 'Contact introuvable.' });
+  const result = await withCompanyTransaction(pool, req.auth.company_id, (client) => client.query(
+    `UPDATE customer_contacts SET is_active = FALSE, updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND customer_id = $3 AND is_primary = FALSE AND is_active = TRUE RETURNING contact_name`,
+    [req.params.contactId, req.auth.company_id, req.params.id]
+  ));
+  if (!result.rows[0]) return res.status(404).json({ error: 'Contact introuvable (le contact principal se modifie dans les informations).' });
+  await writeAudit(req.auth, 'customer', req.params.id, 'contact_removed', { name: result.rows[0].contact_name });
+  return res.json({ ok: true });
+}));
+
+// Lieux de livraison. Modifier l'adresse efface la position GPS : une
+// ancienne précision ne doit pas rester attachée à une nouvelle adresse.
+function locationFields(b) {
+  return {
+    label: textField(b?.label, 100), locality: textField(b?.city, 200), neighborhood: textField(b?.neighborhood, 200),
+    address: textField(b?.address, 1000), landmark: textField(b?.landmark, 500),
+  };
+}
+app.post('/api/app/crm/customers/:id/locations', requireCompanyApi, asyncRoute(async (req, res) => {
+  const f = locationFields(req.body);
+  if (!f.label) return res.status(400).json({ error: 'Donnez un nom au lieu (ex. Domicile, Bureau).', field: 'label' });
+  if (!f.address && !f.neighborhood) return res.status(400).json({ error: 'Indiquez une adresse ou un quartier.', field: 'address' });
+  const row = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    if (!(await ownCustomer(client, req.auth.company_id, req.params.id))) return null;
+    const inserted = (await client.query(
+      `INSERT INTO customer_locations (company_id, customer_id, label, locality, neighborhood, address_text, landmark,
+         coordinate_source, created_by_user_id, updated_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $8) RETURNING id`,
+      [req.auth.company_id, req.params.id, f.label, f.locality, f.neighborhood, f.address, f.landmark, req.auth.user_id || null]
+    )).rows[0];
+    if (req.body?.isDefault === true) await client.query('UPDATE customers SET default_location_id = $1 WHERE id = $2 AND company_id = $3', [inserted.id, req.params.id, req.auth.company_id]);
+    return inserted;
+  });
+  if (!row) return res.status(404).json({ error: 'Client introuvable.' });
+  await writeAudit(req.auth, 'customer', req.params.id, 'location_added', { label: f.label });
+  return res.status(201).json({ id: String(row.id) });
+}));
+app.patch('/api/app/crm/customers/:id/locations/:locationId', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.locationId)) return res.status(404).json({ error: 'Lieu introuvable.' });
+  const f = locationFields(req.body);
+  if (!f.label) return res.status(400).json({ error: 'Donnez un nom au lieu.', field: 'label' });
+  if (!f.address && !f.neighborhood) return res.status(400).json({ error: 'Indiquez une adresse ou un quartier.', field: 'address' });
+  const result = await withCompanyTransaction(pool, req.auth.company_id, (client) => client.query(
+    `UPDATE customer_locations SET
+       label = $1, locality = $2, neighborhood = $3, address_text = $4, landmark = $5,
+       latitude = CASE WHEN address_text IS NOT DISTINCT FROM $4 AND neighborhood IS NOT DISTINCT FROM $3 THEN latitude END,
+       longitude = CASE WHEN address_text IS NOT DISTINCT FROM $4 AND neighborhood IS NOT DISTINCT FROM $3 THEN longitude END,
+       accuracy_meters = CASE WHEN address_text IS NOT DISTINCT FROM $4 AND neighborhood IS NOT DISTINCT FROM $3 THEN accuracy_meters END,
+       coordinate_source = CASE WHEN address_text IS NOT DISTINCT FROM $4 AND neighborhood IS NOT DISTINCT FROM $3 THEN coordinate_source END,
+       coordinates_captured_at = CASE WHEN address_text IS NOT DISTINCT FROM $4 AND neighborhood IS NOT DISTINCT FROM $3 THEN coordinates_captured_at END,
+       updated_by_user_id = $6, updated_at = NOW(), version = version + 1
+     WHERE id = $7 AND company_id = $8 AND customer_id = $9 RETURNING id`,
+    [f.label, f.locality, f.neighborhood, f.address, f.landmark, req.auth.user_id || null, req.params.locationId, req.auth.company_id, req.params.id]
+  ));
+  if (!result.rows[0]) return res.status(404).json({ error: 'Lieu introuvable.' });
+  await writeAudit(req.auth, 'customer', req.params.id, 'location_updated', { label: f.label });
+  return res.json({ id: String(result.rows[0].id) });
+}));
+
+// Notes internes datées (visibles par l'équipe, jamais par le client).
+app.post('/api/app/crm/customers/:id/notes', requireCompanyApi, asyncRoute(async (req, res) => {
+  const text = textField(req.body?.text, 2000);
+  if (!text || text.length < 2) return res.status(400).json({ error: 'Écrivez votre note.', field: 'text' });
+  const row = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
+    if (!(await ownCustomer(client, req.auth.company_id, req.params.id))) return null;
+    const key = crypto.randomUUID();
+    return (await client.query(
+      `INSERT INTO customer_interactions (company_id, customer_id, channel, direction, purpose, summary, occurred_at,
+         actor_user_id, visibility, idempotency_key, request_fingerprint)
+       VALUES ($1, $2, 'internal', 'internal', 'other', $3, NOW(), $4, 'operations', $5, $6) RETURNING id, occurred_at`,
+      [req.auth.company_id, req.params.id, text, req.auth.user_id || null, `note-${key}`, digest(`note:${key}:${text}`)]
+    )).rows[0];
+  });
+  if (!row) return res.status(404).json({ error: 'Client introuvable.' });
+  return res.status(201).json({ id: String(row.id), at: row.occurred_at });
 }));
 
 // Doublons potentiels d'un client : autres fiches partageant un téléphone
@@ -5605,16 +6342,20 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
   if (!Number.isInteger(customerId) || customerId < 1) return res.status(404).json({ error: 'Client introuvable.' });
   const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const customer = await client.query(
-      `SELECT id, customer_code, customer_type, sector, display_name, status,
-              preferred_language, preferred_channel, service_notes, created_at, updated_at
-       FROM customers WHERE id = $1 AND company_id = $2`,
+      `SELECT c.id, c.customer_code, c.customer_type, c.sector, c.display_name, c.status,
+              c.preferred_language, c.preferred_channel, c.service_notes, c.created_at, c.updated_at,
+              c.archived_at, c.removed_at, c.driver_instructions, c.main_city, c.default_location_id,
+              c.pipeline_stage, c.created_from_request_id, c.merged_into_customer_id, c.version,
+              u.display_name AS created_by_name
+       FROM customers c LEFT JOIN users u ON u.id = c.created_by_user_id
+       WHERE c.id = $1 AND c.company_id = $2`,
       [customerId, req.auth.company_id]
     );
     if (!customer.rows[0]) return null;
     const interactionVisibility = ['owner', 'manager'].includes(req.auth.role)
       ? ['operations', 'manager', 'dispute']
       : ['operations'];
-    const [contacts, locations, orders, interactions, openIncidents] = await runQueries(client, [
+    const [contacts, locations, orders, interactions, openIncidents, tags, activity, firstOrder] = await runQueries(client, [
       () => client.query(
         `SELECT id, kind, label, contact_name, value_display, is_primary,
                 is_active, verified_at, created_at, updated_at
@@ -5626,7 +6367,9 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
       () => client.query(
         `SELECT id, label, neighborhood, locality, address_text, landmark,
                 delivery_instructions, verified_at, last_used_at, is_active,
-                archived_at, created_at, updated_at
+                archived_at, created_at, updated_at, coordinate_source,
+                (latitude IS NOT NULL) AS has_gps, accuracy_meters,
+                (SELECT COUNT(*)::int FROM orders lo WHERE lo.company_id = customer_locations.company_id AND lo.customer_location_id = customer_locations.id) AS order_count
          FROM customer_locations
          WHERE company_id = $1 AND customer_id = $2 AND anonymized_at IS NULL
          ORDER BY is_active DESC, last_used_at DESC NULLS LAST, id DESC`,
@@ -5634,19 +6377,21 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
       ),
       () => client.query(
         `SELECT o.id, o.reference, o.status, o.neighborhood, o.landmark, o.created_at,
-                o.updated_at, d.name AS driver_name
-         FROM orders o JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+                o.updated_at, d.name AS driver_name, cl.label AS location_label
+         FROM orders o
+         LEFT JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+         LEFT JOIN customer_locations cl ON cl.company_id = o.company_id AND cl.id = o.customer_location_id
          WHERE o.company_id = $1 AND o.customer_id = $2
-         ORDER BY o.created_at DESC, o.id DESC LIMIT 100`,
+         ORDER BY o.created_at DESC, o.id DESC LIMIT 200`,
         [req.auth.company_id, customerId]
       ),
       () => client.query(
-        `SELECT id, channel, direction, purpose, outcome, summary,
-                occurred_at, next_action_at, visibility
-         FROM customer_interactions
-         WHERE company_id = $1 AND customer_id = $2 AND anonymized_at IS NULL
-           AND visibility = ANY($3::text[])
-         ORDER BY occurred_at DESC, id DESC LIMIT 100`,
+        `SELECT ci.id, ci.channel, ci.direction, ci.purpose, ci.outcome, ci.summary,
+                ci.occurred_at, ci.next_action_at, ci.visibility, u.display_name AS author_name
+         FROM customer_interactions ci LEFT JOIN users u ON u.id = ci.actor_user_id
+         WHERE ci.company_id = $1 AND ci.customer_id = $2 AND ci.anonymized_at IS NULL
+           AND ci.visibility = ANY($3::text[])
+         ORDER BY ci.occurred_at DESC, ci.id DESC LIMIT 100`,
         [req.auth.company_id, customerId, interactionVisibility]
       ),
       () => client.query(
@@ -5654,14 +6399,60 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
          WHERE i.company_id = $1 AND o.customer_id = $2 AND i.status <> 'resolved'`,
         [req.auth.company_id, customerId]
       ),
+      () => client.query(
+        `SELECT t.name FROM customer_tags ct
+         JOIN crm_tags t ON t.company_id = ct.company_id AND t.id = ct.tag_id AND t.archived_at IS NULL
+         WHERE ct.company_id = $1 AND ct.customer_id = $2 ORDER BY t.name`,
+        [req.auth.company_id, customerId]
+      ),
+      () => client.query(
+        `SELECT a.id, a.action, a.details, a.created_at, u.display_name AS author_name
+         FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+         WHERE a.company_id = $1 AND a.entity_type = 'customer' AND a.entity_id = $2
+         ORDER BY a.created_at DESC, a.id DESC LIMIT 60`,
+        [req.auth.company_id, customerId]
+      ),
+      () => client.query(
+        `SELECT MIN(created_at) AS first_at FROM orders WHERE company_id = $1 AND customer_id = $2`,
+        [req.auth.company_id, customerId]
+      ),
     ]);
+    const finished = ['Livrée', 'Annulée', 'Retournée'];
+    const orderRows = orders.rows;
+    const lastOrder = orderRows[0] || null;
+    const c = customer.rows[0];
+    // Même règle que la liste : étape manuelle prioritaire, sinon dérivée.
+    const now = Date.now();
+    const days = (date) => (now - new Date(date).getTime()) / 86400000;
+    let autoStage = 'inactif';
+    if (!lastOrder) autoStage = days(c.created_at) <= 30 ? 'nouveau' : 'inactif';
+    else if (days(c.created_at) <= 21 && orderRows.length <= 2) autoStage = 'nouveau';
+    else if (days(lastOrder.created_at) <= 30) autoStage = 'actif';
+    else if (days(lastOrder.created_at) <= 90) autoStage = 'a_relancer';
+    const origin = c.created_from_request_id ? 'request'
+      : String(c.customer_code || '').startsWith('AUTO-') ? 'order' : 'manual';
     return {
-      customer: customer.rows[0],
+      customer: {
+        ...c,
+        tags: tags.rows.map((row) => row.name),
+        stage: c.pipeline_stage || autoStage,
+        stage_source: c.pipeline_stage ? 'manual' : 'auto',
+        origin,
+      },
       contacts: contacts.rows,
       locations: locations.rows,
-      orders: orders.rows,
+      orders: orderRows,
       interactions: interactions.rows,
+      activity: activity.rows,
       openIncidents: openIncidents.rows[0].n,
+      counters: {
+        orders: orderRows.length,
+        active: orderRows.filter((o) => !finished.includes(o.status)).length,
+        delivered: orderRows.filter((o) => o.status === 'Livrée').length,
+        failed: orderRows.filter((o) => ['Annulée', 'Retournée'].includes(o.status)).length,
+        firstOrderAt: firstOrder.rows[0].first_at,
+        lastOrderAt: lastOrder ? lastOrder.created_at : null,
+      },
     };
   });
   if (!result) return res.status(404).json({ error: 'Client introuvable.' });
@@ -6172,6 +6963,19 @@ function phoneLastDigits(phone, count = 4) {
   return String(phone || '').replace(/\D/g, '').slice(-count);
 }
 
+// Client choisi depuis sa fiche (« Nouvelle commande ») : identifiant validé
+// dans l'entreprise, sinon ignoré (la fiche est alors retrouvée ou créée).
+async function chosenCustomerId(executor, companyId, value) {
+  const id = Number(value);
+  if (!Number.isInteger(id) || id < 1) return null;
+  const row = (await executor.query(
+    `SELECT id FROM customers WHERE company_id = $1 AND id = $2 AND removed_at IS NULL
+       AND status NOT IN ('merged', 'anonymized')`,
+    [companyId, id]
+  )).rows[0];
+  return row ? row.id : null;
+}
+
 app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req, res) => {
   if (!(await companyDeliverySetting(req.auth.company_id, 'internalEntryEnabled'))) {
     return res.status(403).json({ error: 'La saisie par votre équipe est désactivée dans vos paramètres Livraisons.' });
@@ -6187,10 +6991,11 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const result = await pool.query(
     `INSERT INTO customer_requests (company_id, token, status, customer_name, customer_phone, neighborhood,
-       landmark, notes, requested_time, expires_at, prefilled_by_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+       landmark, notes, requested_time, expires_at, prefilled_by_user_id, customer_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
     [req.auth.company_id, token, PREFILLED_REQUEST_STATUS, fields.customerName, phone, fields.neighborhood,
-      fields.landmark, fields.notes, fields.requestedTime, expiresAt, req.auth.user_id]
+      fields.landmark, fields.notes, fields.requestedTime, expiresAt, req.auth.user_id,
+      await chosenCustomerId(pool, req.auth.company_id, req.body?.customerId)]
   );
   await savePickupFields(pool, 'customer_requests', result.rows[0].id, req.auth.company_id, pickup.fields);
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prefilled_created', { expiresAt });
@@ -6415,9 +7220,10 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
         request.location_accuracy, request.neighborhood, request.landmark, request.notes,
       ]
     );
-    // Colis et collecte saisis sur la demande : recopiés sur la commande.
+    // Colis et collecte saisis sur la demande : recopiés sur la commande, avec
+    // la fiche client choisie par l'équipe le cas échéant.
     await client.query(
-      `UPDATE orders o SET ${PICKUP_COLUMNS.map((c) => `${c} = r.${c}`).join(', ')}
+      `UPDATE orders o SET ${PICKUP_COLUMNS.map((c) => `${c} = r.${c}`).join(', ')}, customer_id = r.customer_id
        FROM customer_requests r WHERE o.id = $1 AND r.id = $2 AND r.company_id = o.company_id`,
       [order.rows[0].id, request.id]
     );
@@ -9911,6 +10717,10 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
         structured.neighborhood, structured.landmark, structured.notes, structured.requestedTime]
     );
     await savePickupFields(client, 'orders', order.rows[0].id, req.auth.company_id, pickup.fields);
+    const chosenCustomer = await chosenCustomerId(client, req.auth.company_id, req.body.customerId);
+    if (chosenCustomer) {
+      await client.query('UPDATE orders SET customer_id = $1 WHERE id = $2 AND company_id = $3', [chosenCustomer, order.rows[0].id, req.auth.company_id]);
+    }
     await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
     const token = randomToken(24);
     const tokenStorage = trackingTokenStorage(token);

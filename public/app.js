@@ -3150,13 +3150,6 @@ async function renderSettings() {
   await load();
 }
 
-// Illustrations Opérations, en SVG inline : vectoriel, léger, aux couleurs TRAXO.
-const opsArt = {
-  form: '<svg viewBox="0 0 240 210" fill="none" aria-hidden="true"><defs><radialGradient id="fBlob" cx="50%" cy="45%" r="55%"><stop offset="0" stop-color="#f8cccc"/><stop offset="1" stop-color="#fdecec" stop-opacity="0"/></radialGradient><radialGradient id="fSh" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#243049" stop-opacity=".18"/><stop offset="1" stop-color="#243049" stop-opacity="0"/></radialGradient></defs><ellipse cx="126" cy="104" rx="98" ry="88" fill="url(#fBlob)"/><ellipse cx="122" cy="184" rx="60" ry="12" fill="url(#fSh)"/><g transform="rotate(-5 122 104)"><path d="M80 44h72l26 26v96a7 7 0 0 1-7 7H80a7 7 0 0 1-7-7V51a7 7 0 0 1 7-7z" fill="#fff" stroke="#e7ebf2" stroke-width="2"/><path d="M152 44v19a7 7 0 0 0 7 7h19z" fill="#eef1f6"/><g stroke="#e9edf3" stroke-width="7" stroke-linecap="round"><path d="M92 88h60"/><path d="M92 106h60"/><path d="M92 124h44"/></g><path d="M92 142h32" stroke="#e11d2a" stroke-width="7" stroke-linecap="round"/></g><g transform="translate(146 128)"><rect x="0" y="0" width="48" height="48" rx="15" fill="#e11d2a"/><g stroke="#fff" stroke-width="4.6" stroke-linecap="round"><path d="M24 14v20"/><path d="M14 24h20"/></g></g></svg>',
-  package: '<svg viewBox="0 0 260 214" fill="none" aria-hidden="true"><defs><radialGradient id="pBlob" cx="50%" cy="45%" r="55%"><stop offset="0" stop-color="#dbe3f0"/><stop offset="1" stop-color="#eef1f6" stop-opacity="0"/></radialGradient><radialGradient id="pSh" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#243049" stop-opacity=".18"/><stop offset="1" stop-color="#243049" stop-opacity="0"/></radialGradient><filter id="pToast" x="-30%" y="-30%" width="160%" height="180%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#243049" flood-opacity="0.16"/></filter></defs><ellipse cx="120" cy="96" rx="104" ry="86" fill="url(#pBlob)"/><ellipse cx="120" cy="176" rx="62" ry="11" fill="url(#pSh)"/><path d="M64 78l56 32v58l-56-32z" fill="#dbe3ef" stroke="#c6cfdd" stroke-width="2" stroke-linejoin="round"/><path d="M176 78l-56 32v58l56-32z" fill="#c6d0e0" stroke="#c6cfdd" stroke-width="2" stroke-linejoin="round"/><path d="M120 46l56 32-56 32-56-32z" fill="#f5f8fc" stroke="#c6cfdd" stroke-width="2" stroke-linejoin="round"/><path d="M112 50L126 58L92 78L78 70Z" fill="#e11d2a"/><path d="M120 110L114 106.5L114 132L120 136Z" fill="#e11d2a"/><path d="M120 110L126 106.5L126 132L120 136Z" fill="#c81824"/><g filter="url(#pToast)" transform="translate(168 26)"><rect x="0" y="0" width="82" height="38" rx="11" fill="#fff"/><circle cx="21" cy="19" r="11" fill="#e11d2a"/><path d="M16 19l3.4 3.4L27 15" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><g stroke="#e6ebf2" stroke-width="4.5" stroke-linecap="round"><path d="M40 15h32"/><path d="M40 26h20"/></g></g><path d="M176 74c24-4 22-30 2-40" stroke="#f2b5b5" stroke-width="2.5" stroke-dasharray="1 8" stroke-linecap="round" fill="none"/></svg>',
-  phone: '<svg viewBox="0 0 240 230" fill="none" aria-hidden="true"><defs><radialGradient id="phGlow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#e11d2a" stop-opacity=".26"/><stop offset="1" stop-color="#e11d2a" stop-opacity="0"/></radialGradient></defs><path d="M40 120c-16-46 26-92 78-88 46 4 74 40 70 84-4 44-44 66-92 64-30-1-46-24-56-60z" fill="#fbe3e4"/><ellipse cx="120" cy="160" rx="92" ry="30" stroke="#f3cccc" stroke-width="2" fill="none"/><circle cx="30" cy="160" r="4" fill="#e11d2a"/><circle cx="212" cy="150" r="3.5" fill="#f0a3a3"/><rect x="78" y="30" width="84" height="168" rx="16" fill="#fff" stroke="#c9ced8" stroke-width="3"/><rect x="105" y="38" width="30" height="5" rx="2.5" fill="#dfe4ec"/><rect x="86" y="50" width="68" height="124" rx="7" fill="#f6f8fb"/><g stroke="#dde3ec" stroke-width="3" stroke-linecap="round"><path d="M86 84h68"/><path d="M86 120h68"/><path d="M86 150h68"/><path d="M104 50v124"/><path d="M134 50v124"/><path d="M86 66l44 26"/></g><rect x="92" y="56" width="12" height="18" rx="2" fill="#fbdada"/><rect x="138" y="126" width="12" height="20" rx="2" fill="#fbdada"/><ellipse cx="120" cy="120" rx="26" ry="15" fill="url(#phGlow)"/><path d="M120 84c-14 0-25 11-25 25 0 17 25 37 25 37s25-20 25-37c0-14-11-25-25-25z" fill="#e11d2a"/><circle cx="120" cy="109" r="9" fill="#fff"/><circle cx="120" cy="109" r="4.5" fill="#e11d2a"/><circle cx="120" cy="186" r="5.5" fill="#e7ebf1"/><g stroke="#e11d2a" stroke-width="4" stroke-linecap="round" fill="none"><path d="M60 66a30 30 0 0 1 0 40"/><path d="M48 54a48 48 0 0 1 0 64"/></g><g stroke="#f2a6a6" stroke-width="4" stroke-linecap="round" fill="none"><path d="M180 66a30 30 0 0 0 0 40"/><path d="M192 54a48 48 0 0 0 0 64"/></g></svg>',
-  scooter: '<svg viewBox="0 0 290 210" fill="none" aria-hidden="true"><path d="M44 150c-16-44 26-92 84-92 40 0 44 34 92 30 42-3 58 44 32 70-30 30-186 34-208-8z" fill="#fbe3e4"/><path d="M78 140c46 6 60-34 100-28 28 4 40-16 46-30" stroke="#ef8f8f" stroke-width="3.5" stroke-dasharray="1 10" stroke-linecap="round" fill="none"/><path d="M238 40c-11 0-20 9-20 20 0 14 20 30 20 30s20-16 20-30c0-11-9-20-20-20z" fill="#e11d2a"/><circle cx="238" cy="60" r="7" fill="#fff"/><circle cx="238" cy="60" r="3.5" fill="#e11d2a"/><ellipse cx="238" cy="96" rx="12" ry="3.5" fill="#e6b9b9" opacity=".5"/><g stroke="#f2a6a6" stroke-width="3" stroke-linecap="round"><path d="M258 30l7-8"/><path d="M262 44l9-4"/></g><g fill="none" stroke="#d51a26" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="94" cy="154" r="17" fill="#fff"/><circle cx="192" cy="154" r="17" fill="#fff"/><rect x="58" y="86" width="38" height="38" rx="5" fill="#fff"/><path d="M96 124c7 9 4 20-4 30"/><path d="M94 154c16-9 36-11 50-11"/><path d="M140 143c22 0 32-10 34-32"/><path d="M100 116h46c9 0 13 5 15 13"/><path d="M174 111l18 43"/><path d="M174 111l-13-6"/><path d="M176 128l11 6"/></g><circle cx="94" cy="154" r="5" fill="#d51a26"/><circle cx="192" cy="154" r="5" fill="#d51a26"/><g stroke="#f2a6a6" stroke-width="4.5" stroke-linecap="round"><path d="M26 120h24"/><path d="M16 136h34"/><path d="M30 150h18"/></g></svg>',
-};
 const opsIco = {
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>',
   form: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v3"/><path d="M9 13h4"/><path d="M9 17h2"/><path d="M17 15v4"/><path d="M15 17h4"/></svg>',
@@ -4039,37 +4032,22 @@ async function openRequestDrawer(requestId, opts = {}) {
   }
 }
 
+// Opérations : table, vues et fiche dans public/ops.js (kit « Operations
+// Premium ») ; les actions restent dans les tiroirs ci-dessus.
 async function renderOperations() {
-  setHeader('Opérations', 'Démarrez une livraison et suivez l’activité');
-  const params = new URLSearchParams(location.search);
-  const vue = params.get('vue');
-  const workspaceSegments = ['commandes', 'demandes', 'tournees', 'incidents'];
-  if (vue === 'creer') return renderOperationsCreate();
-  if (workspaceSegments.includes(vue)) return renderOperationsWorkspace(vue);
-  return renderOperationsHome();
-}
-
-// Niveau 1 : deux entrées d'action (façon maquette).
-function renderOperationsHome() {
-  page.innerHTML = `
-    <div class="ops-accent"></div>
-    <div class="page-header"><div><h1>Opérations</h1><p class="subtitle">Lancez une livraison ou suivez celles en cours.</p></div></div>
-    <div class="ops-home">
-      <a class="ops-home-card tint-red" href="/app/operations?vue=creer">
-        <span class="ops-home-ic">${opsIco.form}</span>
-        <h3>Nouvelle livraison</h3>
-        <p>Envoyez un lien au client ou saisissez vous-même son adresse.</p>
-        <span class="ops-home-arrow">${opsIco.arrow}</span>
-        <span class="ops-home-art">${opsArt.form}</span>
-      </a>
-      <a class="ops-home-card tint-slate" href="/app/operations?vue=commandes">
-        <span class="ops-home-ic">${opsIco.box}</span>
-        <h3>Suivre l’activité</h3>
-        <p>Commandes, demandes, tournées et incidents au même endroit.</p>
-        <span class="ops-home-arrow">${opsIco.arrow}</span>
-        <span class="ops-home-art">${opsArt.package}</span>
-      </a>
-    </div>`;
+  setHeader('Opérations', 'De la demande à la livraison.');
+  const vue = new URLSearchParams(location.search).get('vue');
+  if (!window.TraxoOps) return vue === 'creer' ? renderOperationsCreate() : renderOperationsWorkspace(vue);
+  // Accueil et Nouvelle livraison : kit « Entrée » ; la table de suivi : kit « Operations ».
+  if (!vue || vue === 'creer') {
+    setHeader('Opérations', 'Démarrez une livraison et suivez l’activité.');
+    return window.TraxoOps.renderEntry(page, { api, publicLink, actionKey }, vue === 'creer' ? 'new' : 'home');
+  }
+  await window.TraxoOps.render(page, {
+    api, uiToast, uiConfirm, openModal, context, packageTypes: packageTypeOptions,
+    openOrderDrawer, openIncidentDrawer, openRunDrawer, openRequestDrawer, openPickupEditor,
+    newIncident: (onChange) => pickOrderForIncident(onChange),
+  });
 }
 
 // Niveau 2 : « Créer un formulaire » — deux façons de capter un client.
@@ -5312,7 +5290,7 @@ const REPORT_ART = {
 };
 const REPORT_SOURCES = [
   { key: 'orders', dataset: 'operations', label: 'Commandes', icon: 'box',
-    desc: 'Exportez vos commandes, leur statut, leur affectation et leurs informations de livraison.', list: '/api/app/orders' },
+    desc: 'Exportez vos commandes, leur statut, leur affectation et leurs informations de livraison.', list: '/api/app/orders?trash=all' },
   { key: 'routes', dataset: 'routes', label: 'Tournées', icon: 'route',
     desc: 'Exportez vos tournées, leurs livreurs, leurs arrêts et leur état.', list: '/api/app/runs' },
   { key: 'incidents', dataset: 'incidents', label: 'Incidents', icon: 'alert',

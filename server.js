@@ -344,6 +344,13 @@ function mapConfiguration() {
       attribution: String(process.env.MAP_LABELS_ATTRIBUTION || '&copy; Esri'),
       maxZoom: maxZoom(process.env.MAP_LABELS_MAX_ZOOM),
     } : null,
+    // Plan sombre en raster (facultatif) : utile quand les tuiles vectorielles,
+    // qui ont leur propre style sombre, ne répondent pas.
+    dark: process.env.MAP_DARK_TILE_URL ? {
+      url: String(process.env.MAP_DARK_TILE_URL),
+      attribution: String(process.env.MAP_DARK_TILE_ATTRIBUTION || process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors'),
+      maxZoom: maxZoom(process.env.MAP_DARK_TILE_MAX_ZOOM),
+    } : null,
   };
 }
 
@@ -7429,6 +7436,21 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
       [req.auth.company_id]
     ),
   ]);
+  // Livraisons qui attendent un livreur (demande à valider ou validée sans
+  // commande), avec la position partagée par le client : à placer sur la carte.
+  const waitingResult = await pool.query(
+    `SELECT r.id, r.status, r.customer_name, r.neighborhood, r.landmark, r.location_lat, r.location_lng, r.created_at, r.updated_at
+     FROM customer_requests r
+     LEFT JOIN orders o ON o.customer_request_id = r.id AND o.company_id = r.company_id
+     WHERE r.company_id = $1 AND r.archived_at IS NULL AND r.status IN ('À vérifier', 'Validée') AND o.id IS NULL
+       AND r.location_lat IS NOT NULL AND r.location_lng IS NOT NULL
+     ORDER BY r.updated_at DESC LIMIT 200`,
+    [req.auth.company_id]
+  );
+  const waiting = waitingResult.rows
+    .filter((r) => Number.isFinite(Number(r.location_lat)) && Number.isFinite(Number(r.location_lng)))
+    .map((r) => ({ id: String(r.id), status: r.status, customerName: r.customer_name, neighborhood: r.neighborhood, landmark: r.landmark,
+      latitude: Number(r.location_lat), longitude: Number(r.location_lng), createdAt: r.created_at }));
 
   const pendingRequests = Number(pendingRequestsResult.rows[0]?.pending || 0);
   const ordersTruncated = ordersResult.rows.length > 500;
@@ -7560,6 +7582,7 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
       ordersTruncated,
     },
     drivers,
+    waiting,
   });
 }));
 

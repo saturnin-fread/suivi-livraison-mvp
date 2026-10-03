@@ -934,7 +934,7 @@ async function mountIncidentDossier(root, id, opts = {}) {
 async function renderOperationsMap() {
   if (window.TraxoFleetMap) {
     setHeader('Carte d’exploitation', 'Votre équipe sur le terrain.');
-    return window.TraxoFleetMap.render(page, { api, context, openOrderDrawer, openRunDrawer });
+    return window.TraxoFleetMap.render(page, { api, context, openOrderDrawer, openRunDrawer, openRequestDrawer });
   }
   setHeader('Carte d’exploitation', 'Vos livreurs et vos livraisons en direct');
   page.classList.add('page-map');

@@ -62,7 +62,7 @@ const paymentMethodLabels = {
 const paymentAdjustmentLabels = {
   refund: 'Remboursement au client', additional_collection: 'Complément reçu', reversal: 'Écriture inverse',
 };
-const roleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
+const roleLabels = { owner: 'Propriétaire', manager: 'Administrateur', operator: 'Opérateur', viewer: 'Lecture seule', driver: 'Livreur' };
 const runStatusLabels = {
   draft: 'En préparation', planned: 'Planifiée', active: 'En cours', completed: 'Terminée', cancelled: 'Annulée',
 };
@@ -154,7 +154,7 @@ async function api(url, options = {}) {
     throw new Error('Session expirée.');
   }
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || 'Une erreur est survenue.');
+  if (!response.ok) throw Object.assign(new Error(payload.error || 'Une erreur est survenue.'), { status: response.status, payload });
   return payload;
 }
 
@@ -354,6 +354,31 @@ async function renderNewOrder() {
   document.querySelectorAll('input[name="noMode"]').forEach((r) => r.addEventListener('change', () => setMode(r.value)));
   setMode('confirm');
 
+  // Depuis une fiche client (« Nouvelle commande ») : coordonnées et lieu
+  // habituel préremplis, et la commande rejoint cette fiche.
+  const fromClient = new URLSearchParams(location.search).get('client');
+  if (/^\d{1,18}$/.test(fromClient || '')) {
+    try {
+      const d = await api(`/api/app/crm/customers/${encodeURIComponent(fromClient)}`);
+      const phone = (d.contacts || []).find((c) => c.kind === 'phone' && c.is_active && c.is_primary) || (d.contacts || []).find((c) => c.kind === 'phone' && c.is_active);
+      const places = (d.locations || []).filter((l) => l.is_active);
+      const place = places.find((l) => String(l.id) === String(d.customer.default_location_id)) || places[0];
+      form.querySelector('#f-name').value = d.customer.display_name || '';
+      if (phone) {
+        const raw = String(phone.value_display || '').trim();
+        form.querySelector('#f-phone').value = /^\+229/.test(raw.replace(/\s/g, '')) ? raw.replace(/^\+229\s*/, '') : raw;
+      }
+      if (place) {
+        form.querySelector('#f-zone').value = [place.neighborhood || place.address_text, place.locality].filter(Boolean).join(', ').slice(0, 160);
+        if (place.landmark) form.querySelector('#f-landmark').value = place.landmark.slice(0, 240);
+      }
+      const notes = form.querySelector('[name="notes"]');
+      if (notes && !notes.value && d.customer.driver_instructions) notes.value = d.customer.driver_instructions;
+      form.insertAdjacentHTML('afterbegin', `<input type="hidden" name="customerId" value="${escapeHtml(fromClient)}"><p class="no-notice no-client-pick">Commande pour <strong>${escapeHtml(d.customer.display_name)}</strong> (CL-${escapeHtml(String(d.customer.id).padStart(4, '0'))}) : elle rejoindra sa fiche. <button type="button" class="no-textlink" id="noUnpick">Ne pas lier à cette fiche</button></p>`);
+      form.querySelector('#noUnpick').addEventListener('click', () => { form.querySelector('[name="customerId"]')?.remove(); form.querySelector('.no-client-pick')?.remove(); });
+    } catch { /* fiche introuvable : formulaire vierge */ }
+  }
+
   // Collecte : section dépliée seulement si le colis part d'ailleurs.
   const pickupWrap = document.getElementById('noPickupWrap');
   const pickupAddr = document.getElementById('f-paddr');
@@ -442,7 +467,7 @@ async function renderNewOrder() {
     };
     main.querySelector('[data-copy="url"]').addEventListener('click', () => copy(url, 'Lien copié.'));
     main.querySelector('[data-copy="message"]').addEventListener('click', () => copy(message, 'Message copié.'));
-    main.querySelector('#noAgain').addEventListener('click', () => renderNewOrder());
+    main.querySelector('#noAgain').addEventListener('click', () => { history.replaceState(null, '', '/app/nouvelle-commande'); renderNewOrder(); });
     document.getElementById('noDone').focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -2047,154 +2072,17 @@ async function renderDrivers() {
   await window.TraxoDrivers.render(page, { api, setHeader, uiToast, uiConfirm, publicLink, context, vehicleTypes: driverVehicleOptions });
 }
 
+// Équipe et accès : rendu dans public/team.js (kit « Équipe »).
 async function renderTeam() {
-  setHeader('Équipe et accès', 'Gérez les personnes qui utilisent TRAXO.');
-  const [team, drivers] = await Promise.all([api('/api/app/team'), api('/api/app/drivers')]);
-  const linkedDriverIds = new Set([
-    ...team.members.filter((member) => member.driver_id).map((member) => String(member.driver_id)),
-    ...team.invitations.filter((invitation) => invitation.driver_id).map((invitation) => String(invitation.driver_id)),
-  ]);
-  const availableDrivers = drivers.filter((driver) => driver.active && !linkedDriverIds.has(String(driver.id)));
-  const myEmail = (context.user && context.user.email) ? String(context.user.email).toLowerCase() : '';
-  const roleLabel = (r) => roleLabels[r] || traxoRoleLabels[r] || r;
-
-  const membersRows = team.members.map((m) => {
-    const isMe = myEmail && String(m.email || '').toLowerCase() === myEmail;
-    return `<tr>
-      <td><div class="team-person"><strong>${isMe ? 'Vous' : escapeHtml(m.display_name)}</strong><small>${isMe ? 'Compte principal' : escapeHtml(m.email)}</small></div></td>
-      <td>${escapeHtml(roleLabel(m.role))}${m.driver_name ? ` <span class="team-muted">· ${escapeHtml(m.driver_name)}</span>` : ''}</td>
-      <td>${badge(m.disabled ? 'Désactivé' : 'Actif')}</td>
-    </tr>`;
-  }).join('');
-
-  const pendingHtml = team.invitations.length
-    ? `<div class="team-block-head"><h2>Invitations en attente</h2><span class="team-count">${team.invitations.length}</span></div>
-       <div class="team-table-wrap"><table class="team-table"><thead><tr><th>Personne</th><th>Rôle</th><th>Expire</th><th></th></tr></thead><tbody>${team.invitations.map((inv) => `<tr>
-         <td><div class="team-person"><strong>${escapeHtml(inv.display_name)}</strong><small>${escapeHtml(inv.email)}</small></div></td>
-         <td>${escapeHtml(roleLabel(inv.role))}${inv.driver_name ? ` <span class="team-muted">· ${escapeHtml(inv.driver_name)}</span>` : ''}</td>
-         <td class="team-muted">${escapeHtml(formatDate(inv.expires_at))}</td>
-         <td class="team-actions"><button class="team-revoke revokeInvitation" data-id="${escapeHtml(inv.id)}" type="button">Révoquer</button></td>
-       </tr>`).join('')}</tbody></table></div>`
-    : '<p class="team-empty">Invitations en attente : aucune</p>';
-
-  page.innerHTML = `<div class="page-header"><div><h1>Équipe et accès</h1><p class="subtitle">Gérez les personnes qui utilisent TRAXO.</p></div></div>
-    <section class="team-block">
-      <div class="team-block-head"><h2>Membres</h2><span class="team-count">${team.members.length} membre${team.members.length > 1 ? 's' : ''}</span></div>
-      <div class="team-table-wrap"><table class="team-table"><thead><tr><th>Personne</th><th>Rôle</th><th>Statut</th></tr></thead><tbody>${membersRows}</tbody></table></div>
-    </section>
-    <hr class="team-sep"/>
-    <section class="team-block">
-      <h2>Inviter une personne</h2>
-      <form id="invitationForm" class="team-invite">
-        <div class="team-invite-row">
-          <div class="field"><label>Nom</label><input name="displayName" minlength="2" maxlength="100" placeholder="Nom de la personne" required autocomplete="off"/></div>
-          <div class="field"><label>Téléphone ou e-mail</label><input name="email" type="text" placeholder="06 12 34 56 78 ou nom@exemple.com" required autocomplete="off"/></div>
-          <div class="field team-role-field"><label>Rôle</label><select name="role" id="invitationRole"><option value="operator">Opérateur</option>${context.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}</select></div>
-          <button class="button accent team-invite-send" id="inviteSend" type="submit">Envoyer l’invitation</button>
-        </div>
-        <div class="field team-driver-field" id="driverField" hidden><label>Profil livreur associé</label><select name="driverId" id="invitationDriver"><option value="">Sélectionner</option>${availableDrivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join('')}</select></div>
-      </form>
-      <div class="team-invite-foot"><button type="button" class="team-link" id="shareLinkBtn">Créer un lien à partager</button><span class="team-sepbar">|</span><span class="team-muted">Le lien d’invitation reste valable 48 h.</span></div>
-      <p class="team-muted team-driver-hint">Un livreur à ajouter ? Passez par la page <a href="/app/livreurs?nouveau=1">Livreurs</a> : il rejoint l’équipe en scannant un QR code, sans e-mail ni mot de passe.</p>
-      <div id="invitationResult"></div>
-    </section>
-    <hr class="team-sep"/>
-    <section class="team-block" id="pendingInvitations">${pendingHtml}</section>`;
-
-  const roleSel = document.getElementById('invitationRole');
-  const driverField = document.getElementById('driverField');
-  const driverSelect = document.getElementById('invitationDriver');
-  const updateDriverField = () => {
-    const isDriver = roleSel.value === 'driver';
-    driverField.hidden = !isDriver;
-    driverSelect.required = isDriver;
-    if (!isDriver) driverSelect.value = '';
-  };
-  roleSel.addEventListener('change', updateDriverField);
-  updateDriverField();
-
-  const form = document.getElementById('invitationForm');
-  const isEmail = (v) => /^\S+@\S+\.\S+$/.test(String(v || '').trim());
-  const setResult = (html) => { document.getElementById('invitationResult').innerHTML = html; };
-
-  async function submitInvite(notify) {
-    const data = Object.fromEntries(new FormData(form));
-    if (!String(data.displayName || '').trim()) { setResult('<div class="notice error">Indiquez le nom de la personne.</div>'); return; }
-    if (roleSel.value === 'driver' && !data.driverId) { setResult('<div class="notice error">Sélectionnez le livreur associé à ce compte.</div>'); return; }
-    if (!isEmail(data.email)) {
-      setResult('<div class="notice warning">Une adresse e-mail est nécessaire pour créer l’accès (le compte se connecte par e-mail). Le lien pourra ensuite être partagé par téléphone / WhatsApp.</div>');
-      return;
-    }
-    const sendBtn = document.getElementById('inviteSend');
-    const shareBtn = document.getElementById('shareLinkBtn');
-    sendBtn.disabled = true; shareBtn.disabled = true;
-    setResult('<div class="notice">Création de l’invitation…</div>');
-    try {
-      const result = await api('/api/app/invitations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ displayName: data.displayName, email: data.email, role: data.role, driverId: data.driverId || undefined, notify }),
-      });
-      const url = publicLink(result.path);
-      if (notify === 'email' && result.emailed) {
-        setResult(`<div class="notice success"><strong>Invitation envoyée</strong> à ${escapeHtml(data.email)}. <span class="team-muted">Vous pouvez aussi partager le lien :</span><div class="team-linkbox"><input readonly value="${escapeHtml(url)}" id="inviteLinkField"/><button class="button secondary small" type="button" id="copyInvite">Copier</button></div></div>`);
-      } else {
-        const note = notify === 'email' ? '<div class="notice-sub">L’envoi automatique n’a pas pu se faire — partagez le lien manuellement.</div>' : '';
-        setResult(`<div class="notice success"><strong>Lien d’accès créé</strong> pour ${escapeHtml(data.displayName)}. À partager (WhatsApp, e-mail…). Valable 48 h.${note}<div class="team-linkbox"><input readonly value="${escapeHtml(url)}" id="inviteLinkField"/><button class="button secondary small" type="button" id="copyInvite">Copier</button></div></div>`);
-      }
-      form.reset(); updateDriverField();
-      document.getElementById('copyInvite')?.addEventListener('click', (event) => {
-        const field = document.getElementById('inviteLinkField');
-        field.select(); navigator.clipboard?.writeText(field.value); event.currentTarget.textContent = 'Copié';
-      });
-      // Rafraîchir la liste des invitations en attente.
-      try { const fresh = await api('/api/app/team'); renderPending(fresh.invitations); } catch { /* ignore */ }
-    } catch (error) {
-      setResult(`<div class="notice error">${escapeHtml(error.message)}</div>`);
-    } finally {
-      sendBtn.disabled = false; shareBtn.disabled = false;
-    }
-  }
-
-  function renderPending(invitations) {
-    const box = document.getElementById('pendingInvitations');
-    if (!box) return;
-    box.innerHTML = invitations.length
-      ? `<div class="team-block-head"><h2>Invitations en attente</h2><span class="team-count">${invitations.length}</span></div>
-         <div class="team-table-wrap"><table class="team-table"><thead><tr><th>Personne</th><th>Rôle</th><th>Expire</th><th></th></tr></thead><tbody>${invitations.map((inv) => `<tr>
-           <td><div class="team-person"><strong>${escapeHtml(inv.display_name)}</strong><small>${escapeHtml(inv.email)}</small></div></td>
-           <td>${escapeHtml(roleLabel(inv.role))}${inv.driver_name ? ` <span class="team-muted">· ${escapeHtml(inv.driver_name)}</span>` : ''}</td>
-           <td class="team-muted">${escapeHtml(formatDate(inv.expires_at))}</td>
-           <td class="team-actions"><button class="team-revoke revokeInvitation" data-id="${escapeHtml(inv.id)}" type="button">Révoquer</button></td>
-         </tr>`).join('')}</tbody></table></div>`
-      : '<p class="team-empty">Invitations en attente : aucune</p>';
-    wireRevoke();
-  }
-
-  function wireRevoke() {
-    document.querySelectorAll('.revokeInvitation').forEach((button) => button.addEventListener('click', async () => {
-      if (!(await uiConfirm('Révoquer cette invitation ?', { message: 'Le lien d’invitation ne fonctionnera plus.', tone: 'danger', confirmLabel: 'Révoquer' }))) return;
-      button.disabled = true;
-      try {
-        await api(`/api/app/invitations/${encodeURIComponent(button.dataset.id)}/revoke`, { method: 'POST' });
-        const fresh = await api('/api/app/team');
-        renderPending(fresh.invitations);
-      } catch (error) {
-        button.disabled = false;
-        setResult(`<div class="notice error">${escapeHtml(error.message)}</div>`);
-      }
-    }));
-  }
-
-  form.addEventListener('submit', (event) => { event.preventDefault(); submitInvite('email'); });
-  document.getElementById('shareLinkBtn').addEventListener('click', () => submitInvite('link'));
-  wireRevoke();
+  setHeader('Équipe et accès', 'Les personnes qui travaillent avec vous.');
+  await window.TraxoTeam.render(page, { api, context });
 }
 
 const setIcons = {
   whatsapp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l1.7-5A8.5 8.5 0 1 1 8 19.4L3 21z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-2-1-1 .8c-1-.5-1.6-1.1-2.1-2.1l.8-1-1-2L9 9.5z"/></svg>',
 };
 
-const traxoRoleLabels = { owner: 'Propriétaire', manager: 'Manager', operator: 'Opérateur', driver: 'Livreur' };
+const traxoRoleLabels = { owner: 'Propriétaire', manager: 'Administrateur', operator: 'Opérateur', viewer: 'Lecture seule', driver: 'Livreur' };
 
 // Pictogrammes Lucide (licence ISC) du kit Paramètres.
 const txPaths = {
@@ -2555,76 +2443,28 @@ async function renderSettings() {
   }
 
   // ---- Équipe & permissions -----------------------------------------------
+  // Résumé ; les invitations, rôles et accès se gèrent dans Équipe et accès.
   async function team(box) {
     const data = await api('/api/app/team');
-    const me = String(context.user.email || '').toLowerCase();
-    const members = data.members || [];
-    const invitations = (data.invitations || []).filter((i) => i.role !== 'driver');
-    const driverInvites = (data.invitations || []).length - invitations.length;
-    const memberRow = (m) => `<div class="tx-member-row"><div class="tx-person"><span class="tx-avatar">${escapeHtml(txInitials(m.display_name || m.driver_name || m.email))}</span><div><strong>${escapeHtml(m.display_name || m.driver_name || m.email)}${String(m.email || '').toLowerCase() === me ? ' <span class="tx-muted">· Vous</span>' : ''}</strong><p>${escapeHtml(m.email || '')}</p></div></div><span>${escapeHtml(traxoRoleLabels[m.role] || m.role)}</span><span>${m.disabled ? '<span class="tx-badge">Suspendu</span>' : '<span class="tx-badge tx-badge-green">Actif</span>'}</span></div>`;
-    const inviteRow = (i) => {
-      const canRevoke = isOwner || i.role !== 'manager';
-      return `<div class="tx-member-row"><div class="tx-person"><span class="tx-avatar">${txIcon('mail')}</span><div><strong>${escapeHtml(i.display_name || i.email)}</strong><p>${escapeHtml(i.email)} · invitation valable jusqu’au ${escapeHtml(formatDate(i.expires_at))}</p></div></div><span>${escapeHtml(traxoRoleLabels[i.role] || i.role)}</span><span class="tx-member-acts"><span class="tx-badge tx-badge-amber">Invité</span>${canRevoke ? `<button type="button" class="tx-text-button" data-revoke="${escapeHtml(i.id)}">Annuler</button>` : ''}</span></div>`;
-    };
+    const members = (data.members || []).filter((m) => m.role !== 'driver');
+    const drivers = (data.members || []).length - members.length;
+    const pending = (data.invitations || []).filter((i) => i.state === 'pending' && i.role !== 'driver');
+    const stateBadge = (state) => (state === 'active' ? '<span class="tx-badge tx-badge-green">Actif</span>' : '<span class="tx-badge">Suspendu</span>');
+    const memberRow = (m) => `<div class="tx-member-row"><div class="tx-person"><span class="tx-avatar">${escapeHtml(txInitials(m.displayName || m.email || '?'))}</span><div><strong>${escapeHtml(m.displayName || m.email || 'Membre')}${m.me ? ' <span class="tx-muted">· Vous</span>' : ''}</strong><p>${escapeHtml(m.email || m.phone || '')}</p></div></div><span>${escapeHtml(traxoRoleLabels[m.role] || m.role)}</span><span>${stateBadge(m.state)}</span></div>`;
+    const inviteRow = (i) => `<div class="tx-member-row"><div class="tx-person"><span class="tx-avatar">${txIcon('mail')}</span><div><strong>${escapeHtml(i.displayName || i.email || i.phone)}</strong><p>${escapeHtml(i.email || i.phone || '')} · valable jusqu’au ${escapeHtml(formatDate(i.expiresAt))}</p></div></div><span>${escapeHtml(traxoRoleLabels[i.role] || i.role)}</span><span><span class="tx-badge tx-badge-amber">Invitation en attente</span></span></div>`;
     const roles = [
-      ['crown', 'Propriétaire', 'Tous les accès, y compris la facturation et le choix de la formule.'],
-      ['users', 'Manager', 'L’équipe, les livreurs et les réglages. La facturation reste réservée au propriétaire.'],
+      ['crown', 'Propriétaire', 'Tous les accès, y compris la facturation et la propriété du compte.'],
+      ['users', 'Administrateur', 'L’équipe, les livreurs, les exports et les réglages. La facturation reste au propriétaire.'],
       ['user-round', 'Opérateur', 'Les demandes, les commandes, les tournées et les incidents.'],
-      ['bike', 'Livreur', 'Ses propres livraisons, depuis l’application livreur.'],
+      ['eye', 'Lecture seule', 'Consulte l’activité sans rien modifier.'],
     ];
-    box.innerHTML = `${heading('Équipe et permissions', 'Chacun sait ce qu’il peut faire, et vous gardez le contrôle.', txButton(`${txIcon('plus')} Inviter un membre`, 'id="txInvite"', 'tx-button-primary'))}
-      <section class="tx-panel"><div class="tx-panel-head"><div><h2>Membres de l’espace <span class="tx-badge">${members.length + invitations.length}</span></h2><p>Les personnes qui accèdent à votre espace TRAXO.</p></div><a class="tx-button tx-button-quiet" href="/app/equipe">Gérer les accès ${txIcon('arrow-right')}</a></div>
+    box.innerHTML = `${heading('Équipe et permissions', 'Chacun sait ce qu’il peut faire, et vous gardez le contrôle.', `<a class="tx-button tx-button-primary" href="/app/equipe?inviter=1">${txIcon('plus')} Inviter une personne</a>`)}
+      <section class="tx-panel"><div class="tx-panel-head"><div><h2>Membres de l’espace <span class="tx-badge">${members.length + pending.length}</span></h2><p>Les personnes qui accèdent à votre espace TRAXO.</p></div><a class="tx-button tx-button-quiet" href="/app/equipe">Gérer les accès ${txIcon('arrow-right')}</a></div>
         <div class="tx-member-row tx-table-head"><span>Membre</span><span>Rôle</span><span>Statut</span></div>
-        ${members.map(memberRow).join('')}${invitations.map(inviteRow).join('')}
+        ${members.map(memberRow).join('')}${pending.map(inviteRow).join('')}
       </section>
       <section class="tx-panel tx-role-section"><h2>Qui peut faire quoi ?</h2><div class="tx-role-grid">${roles.map(([i, t, d]) => `<div class="tx-role">${txIcon(i)}<h3>${t}</h3><p>${d}</p></div>`).join('')}</div></section>
-      ${infoStrip(`Les comptes livreurs se créent depuis <a href="/app/equipe">Équipe et accès</a>, à partir d’une fiche livreur${driverInvites ? ` (${txPlural(driverInvites, 'invitation livreur', 'invitations livreur')} en attente)` : ''}. Pour changer un rôle ou suspendre un accès, passez aussi par cette page.`)}`;
-    box.querySelector('#txInvite').addEventListener('click', () => openInviteDialog(() => team(box)));
-    box.querySelectorAll('[data-revoke]').forEach((b) => b.addEventListener('click', async () => {
-      if (!(await uiConfirm('Annuler cette invitation ?', { message: 'Le lien envoyé ne fonctionnera plus.', tone: 'danger', confirmLabel: 'Annuler l’invitation', cancelLabel: 'Garder' }))) return;
-      try { await api(`/api/app/invitations/${encodeURIComponent(b.dataset.revoke)}/revoke`, { method: 'POST' }); uiToast('Invitation annulée.', 'success'); team(box); } catch (error) { uiToast(error.message, 'error'); }
-    }));
-  }
-
-  function openInviteDialog(onDone) {
-    const roleHelp = { operator: 'Traite les demandes, les commandes, les tournées et les incidents au quotidien.', manager: 'Gère l’équipe, les livreurs et les réglages. Aucun accès à la facturation.' };
-    const modal = openModal('Inviter un membre', `<p class="tx-dialog-intro">Travaillez ensemble, avec les accès adaptés à son rôle.</p>
-      <form id="txInviteForm">
-        <label class="tx-field" for="txInvName">Nom<input id="txInvName" name="displayName" required minlength="2" maxlength="100" autocomplete="off"></label>
-        <label class="tx-field" for="txInvEmail">Adresse e-mail<input id="txInvEmail" name="email" type="email" required autocomplete="off"></label>
-        <label class="tx-field" for="txInvRole">Rôle<select id="txInvRole" name="role"><option value="operator">Opérateur</option>${isOwner ? '<option value="manager">Manager</option>' : ''}</select><small id="txInvRoleHelp">${roleHelp.operator}</small></label>
-        <label class="tx-check"><input type="checkbox" name="notify" checked> Envoyer l’invitation par e-mail</label>
-        <p class="tx-error" id="txInvError" role="alert" hidden></p>
-      </form>`, '<button class="button secondary" type="button" data-modal-close>Annuler</button><button class="button primary" type="submit" form="txInviteForm">Inviter</button>', { className: 'tx-modal' });
-    const $m = (s) => modal.backdrop.querySelector(s);
-    $m('[data-modal-close]').addEventListener('click', modal.close);
-    $m('#txInvRole').addEventListener('change', (e) => { $m('#txInvRoleHelp').textContent = roleHelp[e.target.value]; });
-    $m('#txInviteForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const f = event.currentTarget;
-      const submit = modal.backdrop.querySelector('button.primary');
-      submit.disabled = true;
-      try {
-        const result = await api('/api/app/invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName: f.displayName.value.trim(), email: f.email.value.trim(), role: f.role.value, notify: f.notify.checked ? 'email' : '' }) });
-        modal.close();
-        showInviteLink(result, f.email.value.trim(), onDone);
-      } catch (error) {
-        $m('#txInvError').textContent = error.message; $m('#txInvError').hidden = false; submit.disabled = false;
-      }
-    });
-    setTimeout(() => $m('#txInvName')?.focus(), 50);
-  }
-
-  function showInviteLink(result, email, onDone) {
-    const modal = openModal('Invitation créée', `<p class="tx-dialog-intro">${result.emailed ? `Un e-mail a été envoyé à <strong>${escapeHtml(email)}</strong>.` : 'Aucun e-mail n’a été envoyé : partagez ce lien vous-même.'} Le lien est valable 48 heures et ne sert qu’une fois.</p>
-      <label class="tx-field" for="txInvLink">Lien d’invitation<input id="txInvLink" value="${escapeHtml(result.url)}" readonly></label>`,
-    '<button class="button secondary" type="button" id="txInvCopy">Copier le lien</button><button class="button primary" type="button" data-modal-close>Terminé</button>', { className: 'tx-modal' });
-    const close = () => { modal.close(); onDone(); };
-    modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', close);
-    modal.backdrop.querySelector('.modal-close').addEventListener('click', onDone);
-    modal.backdrop.querySelector('#txInvCopy').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(result.url); uiToast('Lien copié.', 'success'); } catch { modal.backdrop.querySelector('#txInvLink').select(); uiToast('Copiez le lien sélectionné.', 'info'); }
-    });
+      ${infoStrip(`Les livreurs${drivers ? ` (${drivers})` : ''} rejoignent l’équipe depuis la page <a href="/app/livreurs">Livreurs</a>, avec un QR code. Pour inviter, changer un rôle ou suspendre un accès, ouvrez <a href="/app/equipe">Équipe et accès</a>.`)}`;
   }
 
   // ---- Sécurité -----------------------------------------------------------
@@ -5655,6 +5495,10 @@ async function start() {
     if (incidentDetail) return await renderIncidentDetail(incidentDetail[1]);
     const runDetail = path.match(/^\/app\/tournees\/(\d+)$/);
     if (runDetail) { location.replace(`/app/operations?vue=tournees&tournee=${encodeURIComponent(runDetail[1])}`); return; }
+    if (/^\/app\/clients(\/(\d+|nouveau))?$/.test(path) && window.TraxoClients) {
+      setHeader('Clients', 'Vos clients, leurs lieux et leurs commandes.');
+      return await window.TraxoClients.render(page, { api, context, uiConfirm });
+    }
     const customerDetail = path.match(/^\/app\/clients\/(\d+)$/);
     if (customerDetail) return await renderCustomerDetail(customerDetail[1]);
     if (path === '/app') return await renderDashboard();

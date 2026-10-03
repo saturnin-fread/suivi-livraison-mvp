@@ -516,7 +516,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -3631,6 +3631,7 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
   const role = String(req.body.role || '').trim();
   const driverId = req.body.driverId ? String(req.body.driverId) : null;
   const notifyByEmail = req.body.notify === 'email';
+  const notifyByWhatsApp = req.body.notify === 'whatsapp';
   if (displayName.length < 2 || displayName.length > 100) return res.status(400).json({ error: 'Indiquez le nom de la personne (2 à 100 caractères).', field: 'displayName' });
   if (!invitationRoles.includes(role)) return res.status(400).json({ error: 'Choisissez un rôle.', field: 'role' });
   if (email && !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Vérifiez le téléphone ou l’adresse e-mail.', field: 'contact' });
@@ -3740,7 +3741,19 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
         console.error('Invite email failed:', mailError.message);
       }
     }
-    return res.status(201).json({ id: invitation.rows[0].id, path: invitePath, url: inviteUrl, expiresAt: invitation.rows[0].expires_at, emailed });
+    // Envoi WhatsApp seulement s'il est demandé ; la copie du lien reste possible.
+    let whatsapped = false;
+    if (notifyByWhatsApp && phone && whatsappAvailableFor(phone)) {
+      try {
+        const companyRow = await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id]);
+        const companyName = companyRow.rows[0]?.name || 'Votre équipe';
+        await whatsapp.sendText(phone, `Bonjour ${displayName}, ${companyName} vous invite à rejoindre son équipe sur TRAXO (${TEAM_ROLE_LABELS[role] || role}).\n\nCréez votre accès ici : ${inviteUrl}\n\nLe lien est valable 48 heures. Un code vous sera envoyé pour confirmer votre numéro.`, { background: true });
+        whatsapped = true;
+      } catch (waError) {
+        console.error('Invite WhatsApp failed:', waError.message);
+      }
+    }
+    return res.status(201).json({ id: invitation.rows[0].id, path: invitePath, url: inviteUrl, expiresAt: invitation.rows[0].expires_at, emailed, whatsapped });
   } catch (error) {
     await client.query('ROLLBACK');
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });

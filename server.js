@@ -516,7 +516,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -7374,7 +7374,7 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
   const [driversResult, runsResult, ordersResult, pendingRequestsResult] = await Promise.all([
     pool.query(
       `SELECT d.id, d.name, d.phone, d.vehicle_type, d.capacity, d.availability_status,
-              d.active, d.traccar_unique_id,
+              d.active, d.traccar_unique_id, d.photo_updated_at,
               COUNT(DISTINCT o.id) FILTER (WHERE o.status <> ALL($2::text[]))::int AS active_orders,
               COUNT(DISTINCT i.id) FILTER (WHERE i.status = 'open')::int AS open_incidents
        FROM drivers d
@@ -7525,6 +7525,8 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
       operationalState,
       activeOrders: Number(driver.active_orders || 0),
       openIncidents: Number(driver.open_incidents || 0),
+      hasPhoto: Boolean(driver.photo_updated_at),
+      photoVersion: driver.photo_updated_at ? new Date(driver.photo_updated_at).getTime() : null,
       position: hasCoordinates ? {
         latitude: Number(rawPosition.latitude),
         longitude: Number(rawPosition.longitude),
@@ -8379,6 +8381,93 @@ function downsampleTrack(points, max) {
 
 // Historique GPS d'un livreur (rejeu). Interroge l'historique Traccar, borné et
 // isolé par entreprise : seul un livreur de la session peut être consulté.
+// Arrêts (au moins 3 min dans un rayon de 40 m) et trous de signal (plus de
+// 5 min sans point), calculés sur les points bruts : le nettoyage retire les
+// points immobiles, qui sont justement ceux d'un arrêt.
+function trackStopsAndGaps(points) {
+  const R = 6371000;
+  const toRad = (value) => (value * Math.PI) / 180;
+  const dist = (a, b) => {
+    const h = Math.sin(toRad(b.latitude - a.latitude) / 2) ** 2
+      + Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(toRad(b.longitude - a.longitude) / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  };
+  const t = (p) => new Date(p.timestamp).getTime();
+  const stops = [];
+  const gaps = [];
+  let i = 0;
+  while (i < points.length) {
+    let j = i;
+    while (j + 1 < points.length && dist(points[i], points[j + 1]) <= 40) j += 1;
+    const minutes = (t(points[j]) - t(points[i])) / 60000;
+    if (j > i && minutes >= 3) {
+      stops.push({ latitude: points[i].latitude, longitude: points[i].longitude, from: points[i].timestamp, to: points[j].timestamp, minutes: Math.round(minutes) });
+      i = j + 1;
+    } else i += 1;
+  }
+  for (let k = 1; k < points.length; k += 1) {
+    const minutes = (t(points[k]) - t(points[k - 1])) / 60000;
+    if (minutes > 5) gaps.push({ from: points[k - 1].timestamp, to: points[k].timestamp, minutes: Math.round(minutes) });
+  }
+  let meters = 0;
+  return { stops, gaps, dist, measure(list) { meters = 0; for (let k = 1; k < list.length; k += 1) meters += dist(list[k - 1], list[k]); return Math.round(meters); } };
+}
+
+// Trace GPS d'un appareil sur une période : points Traccar triés, nettoyés,
+// calés sur la voirie si OSRM le permet, avec arrêts, trous et distance.
+async function loadDeviceTrack(uniqueId, from, to) {
+  if (!traccarConfigured()) return { status: 'not_configured', positions: [] };
+  const snapshot = await loadTraccarFleetSnapshot();
+  const device = snapshot.devices.find((item) => String(item.uniqueId) === String(uniqueId));
+  if (!device) return { status: 'no_device', positions: [] };
+  const auth = { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD };
+  const response = await axios.get(`${process.env.TRACCAR_URL}/api/positions`, {
+    auth, timeout: 15000,
+    params: { deviceId: device.id, from: new Date(from).toISOString(), to: new Date(to).toISOString() },
+  });
+  const raw = (Array.isArray(response.data) ? response.data : [])
+    .map((point) => ({
+      latitude: Number(point.latitude),
+      longitude: Number(point.longitude),
+      timestamp: point.fixTime || point.deviceTime || point.serverTime || null,
+      speedKnots: point.speed != null && Number.isFinite(Number(point.speed)) ? Number(point.speed) : null,
+      course: point.course != null && Number.isFinite(Number(point.course)) ? Number(point.course) : null,
+      accuracy: point.accuracy != null && Number.isFinite(Number(point.accuracy)) ? Number(point.accuracy) : null,
+    }))
+    .filter((point) => point.timestamp && Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
+      && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const usable = raw.filter((point) => point.accuracy == null || point.accuracy <= 500);
+  const analysis = trackStopsAndGaps(usable);
+  const cleaned = cleanGpsTrack(raw);
+  const MAX_POINTS = 5000;
+  const truncated = cleaned.length > MAX_POINTS;
+  const output = truncated ? cleaned.slice(cleaned.length - MAX_POINTS) : cleaned;
+  // Calage sur la voirie (OSRM) : best-effort, la trace nettoyée suffit sinon.
+  let roadGeometry = null;
+  let matchInfo = null;
+  try {
+    if (routingAdapter.health().capabilities.match && output.length >= 2) {
+      const matched = await routingAdapter.match({
+        profile: 'motorcycle',
+        points: downsampleTrack(output, 100).map((point) => ({ lat: point.latitude, lng: point.longitude, accuracy: point.accuracy })),
+      });
+      if (matched.status === 'ok' && matched.geometry?.value?.coordinates?.length >= 2) {
+        roadGeometry = matched.geometry.value.coordinates.map(([lng, lat]) => [lat, lng]);
+        matchInfo = { matchedPoints: matched.matchedPoints, totalPoints: matched.totalPoints, confidence: matched.confidence };
+      }
+    }
+  } catch (matchError) {
+    console.error('Map-matching error:', matchError.message);
+  }
+  return {
+    status: 'online', rawCount: raw.length, count: output.length, cleaned: raw.length - cleaned.length, truncated,
+    positions: output, roadGeometry, match: matchInfo,
+    stops: analysis.stops, gaps: analysis.gaps, distanceMeters: analysis.measure(output),
+  };
+}
+
+// Historique GPS d'un livreur sur une période (7 jours au plus).
 app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, res) => {
   const driverResult = await pool.query(
     `SELECT id, name, traccar_unique_id FROM drivers WHERE id = $1 AND company_id = $2`,
@@ -8395,73 +8484,111 @@ app.get('/api/app/drivers/:id/track', requireCompanyApi, asyncRoute(async (req, 
   if (to > now) to = now;
   if (from >= to) return res.status(400).json({ error: 'La date de début doit précéder la date de fin.' });
   if (to - from > MAX_WINDOW_MS) from = to - MAX_WINDOW_MS;
-
-  if (!traccarConfigured()) return res.json({ status: 'not_configured', positions: [], message: 'Le service GPS n’est pas configuré.' });
-
-  const snapshot = await loadTraccarFleetSnapshot();
-  const device = snapshot.devices.find((item) => String(item.uniqueId) === String(driver.traccar_unique_id));
-  if (!device) return res.json({ status: 'no_device', positions: [], message: 'Aucun appareil GPS n’est associé à ce livreur.' });
-
   try {
-    const auth = { username: process.env.TRACCAR_USER, password: process.env.TRACCAR_PASSWORD };
-    const response = await axios.get(`${process.env.TRACCAR_URL}/api/positions`, {
-      auth, timeout: 15000,
-      params: { deviceId: device.id, from: new Date(from).toISOString(), to: new Date(to).toISOString() },
-    });
-    const raw = Array.isArray(response.data) ? response.data : [];
-    const positions = raw
-      .map((point) => ({
-        latitude: Number(point.latitude),
-        longitude: Number(point.longitude),
-        timestamp: point.fixTime || point.deviceTime || point.serverTime || null,
-        speedKnots: point.speed != null && Number.isFinite(Number(point.speed)) ? Number(point.speed) : null,
-        course: point.course != null && Number.isFinite(Number(point.course)) ? Number(point.course) : null,
-        accuracy: point.accuracy != null && Number.isFinite(Number(point.accuracy)) ? Number(point.accuracy) : null,
-      }))
-      .filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
-        && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180)
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    const rawCount = positions.length;
-    const cleaned = cleanGpsTrack(positions);
-    const MAX_POINTS = 5000;
-    const truncated = cleaned.length > MAX_POINTS;
-    const output = truncated ? cleaned.slice(cleaned.length - MAX_POINTS) : cleaned;
-
-    // Map-matching (snap-to-roads) : la trace collée au réseau routier, si un
-    // moteur OSRM est configuré. Best-effort — un échec renvoie simplement la
-    // trace nettoyée, jamais d'erreur.
-    let roadGeometry = null;
-    let matchInfo = null;
-    try {
-      if (routingAdapter.health().capabilities.match && output.length >= 2) {
-        const matched = await routingAdapter.match({
-          profile: 'motorcycle',
-          points: downsampleTrack(output, 100).map((point) => ({ lat: point.latitude, lng: point.longitude, accuracy: point.accuracy })),
-        });
-        if (matched.status === 'ok' && matched.geometry?.value?.coordinates?.length >= 2) {
-          roadGeometry = matched.geometry.value.coordinates.map(([lng, lat]) => [lat, lng]);
-          matchInfo = { matchedPoints: matched.matchedPoints, totalPoints: matched.totalPoints, confidence: matched.confidence };
-        }
-      }
-    } catch (matchError) {
-      console.error('Map-matching error:', matchError.message);
-    }
-
-    return res.json({
-      status: 'online',
-      driverId: driver.id,
-      from: new Date(from).toISOString(),
-      to: new Date(to).toISOString(),
-      rawCount,
-      count: output.length,
-      cleaned: rawCount - cleaned.length,
-      truncated,
-      positions: output,
-      roadGeometry,
-      match: matchInfo,
-    });
+    const track = await loadDeviceTrack(driver.traccar_unique_id, from, to);
+    if (track.status === 'not_configured') return res.json({ ...track, message: 'Le service GPS n’est pas configuré.' });
+    if (track.status === 'no_device') return res.json({ ...track, message: 'Aucun appareil GPS n’est associé à ce livreur.' });
+    return res.json({ ...track, driverId: driver.id, from: new Date(from).toISOString(), to: new Date(to).toISOString() });
   } catch (error) {
     console.error('Traccar track error:', error.response?.status || error.message);
+    return res.status(502).json({ error: 'Historique GPS temporairement indisponible.' });
+  }
+}));
+
+// Commandes d'un livreur sur une période (pour rejouer chacune).
+app.get('/api/app/drivers/:id/orders', requireCompanyApi, asyncRoute(async (req, res) => {
+  const from = Date.parse(req.query.from);
+  const to = Date.parse(req.query.to);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return res.status(400).json({ error: 'Période incorrecte.' });
+  const result = await pool.query(
+    `SELECT o.id, o.reference, o.customer_name, o.status, o.neighborhood,
+            MIN(e.created_at) AS first_at, MAX(e.created_at) AS last_at
+     FROM orders o
+     JOIN order_status_events e ON e.order_id = o.id AND e.company_id = o.company_id
+     WHERE o.company_id = $1 AND o.driver_id = $2 AND o.archived_at IS NULL
+       AND e.created_at BETWEEN $3 AND $4
+     GROUP BY o.id ORDER BY MIN(e.created_at) ASC LIMIT 100`,
+    [req.auth.company_id, req.params.id, new Date(from), new Date(to)]
+  );
+  return res.json({ orders: result.rows.map((o) => ({
+    id: String(o.id), reference: o.reference || `CMD-${o.id}`, customerName: o.customer_name, status: o.status,
+    neighborhood: o.neighborhood, firstAt: o.first_at, lastAt: o.last_at,
+  })) });
+}));
+
+// Trajet d'une commande, y compris terminée : du départ du livreur (collecte
+// ou livraison) jusqu'à la remise, l'échec ou le retour. Si la commande a
+// changé de livreur, chaque portion est lue sur l'appareil du bon livreur.
+const ORDER_MOVING_STATUSES = ['Vers la collecte', 'Récupérée', 'En tournée', 'En livraison', 'Arrivée'];
+const ORDER_END_STATUSES = ['Livrée', 'Retournée', 'Annulée'];
+app.get('/api/app/orders/:id/track', requireCompanyApi, asyncRoute(async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.id)) return res.status(404).json({ error: 'Commande introuvable.' });
+  const orderResult = await pool.query(
+    `SELECT o.id, o.reference, o.status, o.customer_name, o.neighborhood, o.landmark, o.driver_id, o.created_at,
+            o.destination_lat, o.destination_lng, o.pickup_lat, o.pickup_lng, o.pickup_name, o.pickup_address,
+            o.picked_up_lat, o.picked_up_lng, d.name AS driver_name
+     FROM orders o LEFT JOIN drivers d ON d.id = o.driver_id AND d.company_id = o.company_id
+     WHERE o.id = $1 AND o.company_id = $2`,
+    [req.params.id, req.auth.company_id]
+  );
+  const order = orderResult.rows[0];
+  if (!order) return res.status(404).json({ error: 'Commande introuvable.' });
+  const [eventsResult, reassignResult] = await Promise.all([
+    pool.query(
+      `SELECT to_status, created_at FROM order_status_events WHERE order_id = $1 AND company_id = $2 ORDER BY created_at ASC, id ASC`,
+      [order.id, req.auth.company_id]
+    ),
+    pool.query(
+      `SELECT details, created_at FROM audit_logs WHERE company_id = $1 AND entity_type = 'order' AND entity_id = $2 AND action = 'reassigned'
+       ORDER BY created_at ASC, id ASC`,
+      [req.auth.company_id, order.id]
+    ),
+  ]);
+  const events = eventsResult.rows;
+  const startEvent = events.find((e) => ORDER_MOVING_STATUSES.includes(e.to_status));
+  const endEvent = events.find((e) => ORDER_END_STATUSES.includes(e.to_status) && (!startEvent || e.created_at >= startEvent.created_at));
+  const coord = (lat, lng) => (lat != null && lng != null && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? { latitude: Number(lat), longitude: Number(lng) } : null);
+  const base = {
+    order: {
+      id: String(order.id), reference: order.reference || `CMD-${order.id}`, status: order.status, customerName: order.customer_name,
+      neighborhood: order.neighborhood, landmark: order.landmark, driverName: order.driver_name,
+      destination: coord(order.destination_lat, order.destination_lng),
+      pickup: coord(order.pickup_lat, order.pickup_lng), pickupName: order.pickup_name || order.pickup_address || null,
+      pickedUpAt: coord(order.picked_up_lat, order.picked_up_lng),
+    },
+    milestones: events.map((e) => ({ status: e.to_status, at: e.created_at })),
+  };
+  if (!startEvent) return res.json({ ...base, status: 'not_started', segments: [] });
+  const PAD = 3 * 60 * 1000;
+  const from = new Date(startEvent.created_at).getTime() - PAD;
+  const to = Math.min(Date.now(), (endEvent ? new Date(endEvent.created_at).getTime() : Date.now()) + PAD);
+  if (to - from > 24 * 60 * 60 * 1000) return res.json({ ...base, status: 'too_long', segments: [], from: new Date(from).toISOString(), to: new Date(to).toISOString() });
+  // Portions par livreur : le livreur d'origine jusqu'au premier changement, etc.
+  const changes = reassignResult.rows.filter((r) => new Date(r.created_at).getTime() > from && new Date(r.created_at).getTime() < to);
+  const parts = [];
+  let cursor = from;
+  let currentDriver = changes.length ? changes[0].details?.fromDriverId : order.driver_id;
+  for (const change of changes) {
+    const at = new Date(change.created_at).getTime();
+    parts.push({ driverId: currentDriver, from: cursor, to: at });
+    cursor = at; currentDriver = change.details?.toDriverId;
+  }
+  parts.push({ driverId: currentDriver || order.driver_id, from: cursor, to });
+  const ids = [...new Set(parts.map((p) => String(p.driverId)).filter((v) => /^\d+$/.test(v)))];
+  const drivers = ids.length ? (await pool.query(
+    'SELECT id, name, traccar_unique_id FROM drivers WHERE company_id = $1 AND id = ANY($2::bigint[])', [req.auth.company_id, ids]
+  )).rows : [];
+  try {
+    const segments = [];
+    for (const part of parts) {
+      const driver = drivers.find((d) => String(d.id) === String(part.driverId));
+      if (!driver) { segments.push({ driverId: part.driverId ? String(part.driverId) : null, driverName: null, from: new Date(part.from).toISOString(), to: new Date(part.to).toISOString(), status: 'no_driver', positions: [] }); continue; }
+      const track = await loadDeviceTrack(driver.traccar_unique_id, part.from, part.to);
+      segments.push({ driverId: String(driver.id), driverName: driver.name, from: new Date(part.from).toISOString(), to: new Date(part.to).toISOString(), ...track });
+    }
+    return res.json({ ...base, status: 'ok', from: new Date(from).toISOString(), to: new Date(to).toISOString(), ended: Boolean(endEvent), segments });
+  } catch (error) {
+    console.error('Traccar order track error:', error.response?.status || error.message);
     return res.status(502).json({ error: 'Historique GPS temporairement indisponible.' });
   }
 }));

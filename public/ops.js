@@ -856,6 +856,7 @@
           ${canAct ? fbtn('Lien de suivi', 'compose', { icon: 'link', attrs: 'data-c="share"' }) : ''}
           ${canAct && !issue ? fbtn('Signaler un incident', 'compose', { icon: 'circle-alert', attrs: 'data-c="incident"' }) : ''}
           ${issue ? fbtn('Voir l’incident', 'goto', { icon: 'arrow-up-right', attrs: `data-src="incidents" data-id="${esc(issue.id)}"` }) : ''}
+          ${d.driver_name && !['En préparation', 'Confirmée'].includes(d.status) ? `<a class="ops-btn" href="/app/carte?commande=${encodeURIComponent(d.id)}">${ic('route')}Voir le trajet</a>` : ''}
           ${fbtn('Tout gérer', 'fiche-manage', { icon: 'external-link', cls: 'ops-ghost' })}
         </div>
         <p class="ops-note">« Tout gérer » ouvre la livraison complète : code de remise, preuves, encaissement.</p>`;

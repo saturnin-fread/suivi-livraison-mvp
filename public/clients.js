@@ -426,7 +426,7 @@
       if (!rows.length) return '<p class="cl-quiet">Aucune commande pour ce client pour le moment.</p>';
       return `<div class="cl-order-wrap"><table class="cl-order-table"><thead><tr><th>Commande</th><th>Statut</th><th>Livraison</th><th>Livreur</th></tr></thead><tbody>
         ${rows.map((o) => `<tr><td><a href="/app/operations?vue=commandes&commande=${encodeURIComponent(o.id)}">${esc(o.reference || `CMD-${o.id}`)}</a><small>${esc(dShort(o.created_at))}</small></td>
-          <td><span class="cl-badge ${ORDER_TONE(o.status)}">${esc(o.status)}</span></td><td>${esc(o.location_label && !/^Livraison commande/.test(o.location_label) ? o.location_label : o.neighborhood || '—')}</td><td>${esc(o.driver_name || 'À attribuer')}</td></tr>`).join('')}</tbody></table></div>`;
+          <td><span class="cl-badge ${ORDER_TONE(o.status)}">${esc(o.status)}</span></td><td>${esc(o.location_label && !/^Livraison commande/.test(o.location_label) ? o.location_label : o.neighborhood || '—')}</td><td>${esc(o.driver_name || 'À attribuer')}${o.driver_name && !['En préparation', 'Confirmée'].includes(o.status) ? `<small><a href="/app/carte?commande=${encodeURIComponent(o.id)}">Voir le trajet</a></small>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
     }
     function ordersTab(c) {
       const statuses = [...new Set(c.orders.map((o) => o.status))];

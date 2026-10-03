@@ -151,6 +151,9 @@
 .fm-next-halo { display: block; width: 44px; height: 44px; border-radius: 50%; border: 3px solid rgba(225, 29, 42, .55); background: rgba(225, 29, 42, .12); animation: fm-halo 1.8s ease-out infinite; }
 @keyframes fm-halo { 0% { transform: scale(.55); opacity: 1; } 100% { transform: scale(1.25); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .fm-next-halo { animation: none; opacity: .8; } }
+.fm-route-flow { animation: fm-flow .7s linear infinite; }
+@keyframes fm-flow { to { stroke-dashoffset: -16; } }
+@media (prefers-reduced-motion: reduce) { .fm-route-flow { animation: none; } }
 .fm-pickup { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #17202b; color: #fff; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(15, 23, 32, .3); }
 .fm-pickup svg { width: 14px; height: 14px; }
 

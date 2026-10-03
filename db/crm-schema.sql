@@ -740,4 +740,15 @@ COMMENT ON TABLE customer_merge_events IS
 COMMENT ON TABLE crm_audit_events IS
   'Audit CRM minimal sans secret ni contenu personnel brut.';
 
+-- Fiche client (Opérations) : canal de contact préféré, facultatif.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS preferred_channel TEXT;
+DO $pc$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_preferred_channel_ck') THEN
+    ALTER TABLE customers ADD CONSTRAINT customers_preferred_channel_ck
+      CHECK (preferred_channel IS NULL OR preferred_channel IN ('call', 'whatsapp', 'sms', 'email'));
+  END IF;
+END
+$pc$;
+
 COMMIT;

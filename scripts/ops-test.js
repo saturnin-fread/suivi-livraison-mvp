@@ -161,12 +161,45 @@ const key = () => crypto.randomUUID();
     assert.strictEqual(r.status, 200);
     created.views = [];
 
+    // Informations commerciales
+    r = await call('PATCH', `/api/app/orders/${o1}/commercial`, { cookie: staff, body: { items: [{ name: 'Robe', qty: 0, unitMinor: 5000 }] } });
+    assert.strictEqual(r.status, 400, 'quantité nulle refusée');
+    r = await call('PATCH', `/api/app/orders/${o1}/commercial`, { cookie: staff, body: { weightKg: 'lourd' } });
+    assert.strictEqual(r.status, 400, 'poids invalide refusé');
+    r = await call('PATCH', `/api/app/orders/${o1}/commercial`, { cookie: staff, body: { merchantPayment: 'banque' } });
+    assert.strictEqual(r.status, 400, 'règlement inconnu refusé');
+    r = await call('PATCH', `/api/app/orders/${o1}/commercial`, { cookie: staff, body: { sellerReference: ' BOUT-1247 ', items: [{ name: 'Produits de soin', qty: 3, unitMinor: 8000 }, { name: '  ', qty: 1, unitMinor: 1 }], weightKg: '0,8', deliveryFeeMinor: 2000, merchantPayment: 'paid', evil: 1 } });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+    assert.deepStrictEqual(r.data.commercial, { sellerReference: 'BOUT-1247', items: [{ name: 'Produits de soin', qty: 3, unitMinor: 8000 }], deliveryFeeMinor: 2000, weightKg: 0.8, merchantPayment: 'paid' });
+    list = await call('GET', '/api/app/orders', { cookie: staff });
+    row = list.data.find((x) => String(x.id) === o1);
+    assert.strictEqual(row.commercial.items[0].qty, 3, 'liste : articles');
+    assert.ok('customer_email' in row, 'liste : e-mail client');
+    detail = (await call('GET', `/api/app/orders/${o1}`, { cookie: staff })).data;
+    assert.ok(detail.opsActivity.some((a) => a.action === 'commercial_updated'), 'activité : informations commerciales');
+    r = await call('PATCH', `/api/app/orders/${o1}/commercial`, { cookie: staff, body: {} });
+    assert.strictEqual(r.data.commercial, null, 'effacement');
+
+    // Refus de demande avec motif conservé
+    r = await call('POST', '/api/app/request-links', { cookie: staff, body: { idempotencyKey: key() } });
+    const req2 = String((await pool.query('SELECT id FROM customer_requests WHERE token = $1', [r.data.token])).rows[0].id);
+    r = await call('POST', `/api/app/requests/${req2}/status`, { cookie: staff, body: { status: 'Refusée', reason: 'Zone pas encore desservie' } });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+    const audit = (await pool.query(`SELECT details FROM audit_logs WHERE entity_type = 'customer_request' AND entity_id = $1 ORDER BY id DESC LIMIT 1`, [req2])).rows[0];
+    assert.strictEqual(audit.details.reason, 'Zone pas encore desservie', 'motif conservé');
+
     // Fiche client : compteur d'incidents ouverts
     const cust = (await pool.query('SELECT customer_id FROM orders WHERE id = $1', [o1])).rows[0].customer_id;
     if (cust) {
       const c = await call('GET', `/api/app/crm/customers/${cust}`, { cookie: staff });
       assert.strictEqual(c.status, 200);
       assert.strictEqual(typeof c.data.openIncidents, 'number');
+      let u = await call('PATCH', `/api/app/crm/customers/${cust}`, { cookie: staff, body: { preferredChannel: 'pigeon' } });
+      assert.strictEqual(u.status, 400, 'canal inconnu refusé');
+      u = await call('PATCH', `/api/app/crm/customers/${cust}`, { cookie: staff, body: { preferredChannel: 'whatsapp', preferredLanguage: 'Fon' } });
+      assert.strictEqual(u.status, 200, JSON.stringify(u.data));
+      const c2 = await call('GET', `/api/app/crm/customers/${cust}`, { cookie: staff });
+      assert.deepStrictEqual([c2.data.customer.preferred_channel, c2.data.customer.preferred_language], ['whatsapp', 'Fon']);
     }
     console.log('ops-test: OK');
   } finally {

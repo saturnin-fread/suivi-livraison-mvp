@@ -102,6 +102,8 @@ const sha = (v) => crypto.createHash('sha256').update(v).digest('hex');
     assert.strictEqual(r.status, 200);
     const snap = r.data.drivers.find((d) => String(d.id) === String(d1));
     assert.ok(snap && 'hasPhoto' in snap && snap.position, 'livreur localisé avec indicateur de photo');
+    assert.ok(Array.isArray(r.data.waiting), 'livraisons à attribuer');
+    assert.ok(r.data.waiting.every((w) => Number.isFinite(w.latitude) && Number.isFinite(w.longitude) && ['À vérifier', 'Validée'].includes(w.status)), 'à attribuer : positions et statuts valides');
     console.log('map-history-test: OK');
   } finally {
     if (created.length) await pool.query('UPDATE drivers SET active = FALSE WHERE id = ANY($1::bigint[])', [created]);

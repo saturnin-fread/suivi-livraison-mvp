@@ -932,6 +932,10 @@ async function mountIncidentDossier(root, id, opts = {}) {
 }
 
 async function renderOperationsMap() {
+  if (window.TraxoFleetMap) {
+    setHeader('Carte d’exploitation', 'Votre équipe sur le terrain.');
+    return window.TraxoFleetMap.render(page, { api, context, openOrderDrawer, openRunDrawer });
+  }
   setHeader('Carte d’exploitation', 'Vos livreurs et vos livraisons en direct');
   page.classList.add('page-map');
   const bikeSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>';

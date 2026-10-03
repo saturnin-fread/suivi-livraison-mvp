@@ -140,7 +140,7 @@ const key = () => crypto.randomUUID();
     assert.strictEqual(view.config.pageSize, 20);
     assert.ok(!('evil' in view.config), 'clé inconnue ignorée');
     assert.strictEqual(view.mine, true);
-    r = await call('POST', '/api/app/ops/views', { cookie: staff, body: { source: 'clients', name: 'x' } });
+    r = await call('POST', '/api/app/ops/views', { cookie: staff, body: { source: 'factures', name: 'x' } });
     assert.strictEqual(r.status, 400, 'source inconnue');
     r = await call('POST', '/api/app/ops/views', { cookie: staff, body: { source: 'commandes', name: '' } });
     assert.strictEqual(r.status, 400, 'nom vide');

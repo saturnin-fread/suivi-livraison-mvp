@@ -740,6 +740,14 @@ COMMENT ON TABLE customer_merge_events IS
 COMMENT ON TABLE crm_audit_events IS
   'Audit CRM minimal sans secret ni contenu personnel brut.';
 
+-- Carnet clients : retrait logique (réversible), consignes pour le livreur,
+-- ville principale et lieu habituel.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS removed_by_user_id BIGINT;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS driver_instructions TEXT;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS main_city TEXT;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS default_location_id BIGINT;
+
 -- Fiche client (Opérations) : canal de contact préféré, facultatif.
 ALTER TABLE customers ADD COLUMN IF NOT EXISTS preferred_channel TEXT;
 DO $pc$

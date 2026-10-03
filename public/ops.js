@@ -29,6 +29,12 @@
     'chevrons-right': '<path d="m6 17 5-5-5-5" /> <path d="m13 17 5-5-5-5" />',
     'chevron-left': '<path d="m15 18-6-6 6-6" />',
     'chevron-right': '<path d="m9 18 6-6-6-6" />',
+    'link': '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /> <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />',
+    'refresh-cw': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" />',
+    'file-text': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /> <path d="M14 2v4a2 2 0 0 0 2 2h4" /> <path d="M10 9H8" /> <path d="M16 13H8" /> <path d="M16 17H8" />',
+    'shopping-bag': '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" /> <path d="M3 6h18" /> <path d="M16 10a4 4 0 0 1-8 0" />',
+    'archive': '<rect width="20" height="5" x="2" y="3" rx="1" /> <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" /> <path d="M10 12h4" />',
+    'check-check': '<path d="M18 6 7 17l-5-5" /> <path d="m22 10-7.5 7.5L13 16" />',
     'arrow-left': '<path d="m12 19-7-7 7-7" /> <path d="M19 12H5" />',
     'arrow-right': '<path d="M5 12h14" /> <path d="m12 5 7 7-7 7" />',
     'x': '<path d="M18 6 6 18" /> <path d="m6 6 12 12" />',
@@ -125,6 +131,13 @@
   const bar = (pct) => `<span class="ops-bar"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i></span>`;
 
   const orderRef = (r) => r.reference || `CMD-${r.id}`;
+  // Valeur de la commande : déclarée, sinon somme des articles.
+  const declaredValue = (c) => {
+    if (!c) return null;
+    if (c.declaredValueMinor != null) return c.declaredValueMinor;
+    const items = Array.isArray(c.items) ? c.items : [];
+    return items.length ? items.reduce((a, it) => a + Number(it.qty || 0) * Number(it.unitMinor || 0), 0) : null;
+  };
   const SOURCES = {
     commandes: {
       label: 'Commandes', icon: 'package', count: 'orders', trashCount: 'orders_trash',
@@ -147,6 +160,9 @@
         { key: 'package', label: 'Colis', cell: (r) => `<span class="ops-two"><span>${esc(PACKAGE_LABEL[r.package_type] || (r.package_type ? r.package_type : '—'))}</span>${r.package_description ? `<small>${esc(r.package_description)}</small>` : ''}</span>`, text: (r) => [PACKAGE_LABEL[r.package_type] || r.package_type, r.package_description].filter(Boolean).join(' · ') },
         { key: 'pickup', label: 'Collecte', cell: (r) => (r.has_pickup ? chip('À récupérer', 'amber') : '<span class="ops-dim">Non</span>'), text: (r) => (r.has_pickup ? 'À récupérer' : 'Non') },
         { key: 'amount', label: 'À encaisser', cell: (r) => (r.expected_amount_minor != null ? `<b class="ops-num">${money(r.expected_amount_minor, r.payment_currency)}</b>` : '<span class="ops-dim">—</span>'), text: (r) => (r.expected_amount_minor != null ? money(r.expected_amount_minor, r.payment_currency) : ''), sort: (r) => Number(r.expected_amount_minor || 0) },
+        { key: 'email', label: 'E-mail', cell: (r) => (r.customer_email ? esc(r.customer_email) : '<span class="ops-dim">—</span>'), text: (r) => r.customer_email },
+        { key: 'items', label: 'Articles', cell: (r) => { const it = r.commercial?.items || []; return it.length ? `<span class="ops-two"><span>${esc(it[0].name)}${it.length > 1 ? ` +${it.length - 1}` : ''}</span><small>${plural(it.reduce((a, x) => a + Number(x.qty || 0), 0), 'article', 'articles')}</small></span>` : '<span class="ops-dim">—</span>'; }, text: (r) => (r.commercial?.items || []).map((x) => `${x.qty} × ${x.name}`).join(', ') },
+        { key: 'value', label: 'Valeur déclarée', cell: (r) => { const v = declaredValue(r.commercial); return v != null ? `<span class="ops-num">${money(v)}</span>` : '<span class="ops-dim">—</span>'; }, text: (r) => { const v = declaredValue(r.commercial); return v != null ? money(v) : ''; }, sort: (r) => Number(declaredValue(r.commercial) || 0) },
         { key: 'date', label: 'Date', cell: (r) => `<span class="ops-num">${esc(when(r.created_at))}</span>`, text: (r) => when(r.created_at), sort: (r) => +new Date(r.created_at) },
       ],
       defaults: ['client', 'destination', 'driver', 'suivi', 'status', 'date'],
@@ -156,7 +172,7 @@
       statusLabel: (s) => s,
       zone: (r) => r.neighborhood || '',
       driver: (r) => (r.driver_id ? [String(r.driver_id), r.driver_name] : null),
-      text: (r) => `${orderRef(r)} ${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''} ${r.landmark || ''} ${r.driver_name || ''} ${r.status || ''} ${r.package_description || ''}`,
+      text: (r) => `${orderRef(r)} ${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.customer_email || ''} ${r.neighborhood || ''} ${r.landmark || ''} ${r.driver_name || ''} ${r.status || ''} ${r.package_description || ''} ${r.commercial?.sellerReference || ''}`,
       trashable: (r) => TERMINAL.includes(r.status),
       trashNote: 'Seules les commandes livrées, annulées ou retournées vont dans la corbeille.',
       assign: true, fiche: ['livraison', 'client', 'colis', 'activite'],
@@ -221,6 +237,7 @@
       zone: () => '',
       driver: (r) => (r.driver_id ? [String(r.driver_id), r.driver_name] : null),
       text: (r) => `${r.name || ''} TRN-${r.id} ${r.driver_name || ''} ${RUN_LABEL[r.status] || ''}`,
+      fiche: ['arrets', 'activite'],
       sort: { key: 'day', dir: -1 },
     },
     demandes: {
@@ -257,7 +274,7 @@
     },
   };
   const ORDER = ['commandes', 'incidents', 'tournees', 'demandes'];
-  const TAB_LABEL = { livraison: 'Livraison', client: 'Client', colis: 'Colis', activite: 'Activité', incident: 'Incident', demande: 'Demande' };
+  const TAB_LABEL = { arrets: 'Les arrêts', livraison: 'Livraison', client: 'Client', colis: 'Colis', activite: 'Activité', incident: 'Incident', demande: 'Demande' };
   const SIZES = [5, 10, 20, 50];
 
   function defaultCfg(source) {
@@ -407,7 +424,7 @@
       const dirty = view && JSON.stringify(normalizeCfg(view.source, view.config)) !== JSON.stringify(st.cfg);
       const editable = view && (view.mine || canShare);
       root.innerHTML = `
-        ${st.flash ? `<div class="ops-flash ops-flash-${st.flash.tone}" role="status"><span>${esc(st.flash.text)}</span>${st.flash.undo ? '<button type="button" class="ops-link" data-act="undo">Annuler</button>' : ''}<button type="button" class="ops-icon-btn" data-act="flash-close" aria-label="Fermer">${ic('x')}</button></div>` : ''}
+        ${st.flash && !(st.fiche && !wide.matches) ? flashHtml() : ''}
         <header class="ops-head">
           <div>
             <h1>Opérations</h1>
@@ -467,6 +484,10 @@
       st.lastFiche = st.fiche ? st.fiche.id : null;
       renderList();
       if (st.fiche) renderFiche();
+    }
+    // Sur petit écran, la fiche couvre la page : le message s'affiche dedans.
+    function flashHtml() {
+      return `<div class="ops-flash ops-flash-${st.flash.tone}" role="status"><span>${esc(st.flash.text)}</span>${st.flash.undo ? '<button type="button" class="ops-link" data-act="undo">Annuler</button>' : ''}<button type="button" class="ops-icon-btn" data-act="flash-close" aria-label="Fermer">${ic('x')}</button></div>`;
     }
     const filterCount = () => st.cfg.filters.status.length + st.cfg.filters.zone.length + st.cfg.filters.driver.length;
 
@@ -680,21 +701,55 @@
     }
 
     // ---- Fiche latérale --------------------------------------------------
+    // Comme dans le kit : l'essentiel, puis l'action utile, sans quitter la
+    // table. Chaque action appelle la route serveur existante ; « Tout gérer »
+    // ouvre le tiroir complet (preuves, encaissement, photos…).
+    const meId = String(deps.context?.user?.id || '');
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const key = (p) => (deps.actionKey ? deps.actionKey(p) : `${p}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const tel = (v) => (v ? `<a href="tel:${esc(String(v).replace(/\s+/g, ''))}">${esc(v)}</a>` : '');
+    const banner = (title, text, tone = 'green', icon = 'check') => `<div class="ops-banner ops-banner-${tone}">${ic(icon)}<div><b>${esc(title)}</b>${text ? `<p>${esc(text)}</p>` : ''}</div></div>`;
+    const fbtn = (label, act, { icon = '', cls = '', attrs = '' } = {}) => `<button type="button" class="ops-btn ${cls}" data-act="${act}" ${attrs}>${icon ? ic(icon) : ''}${esc(label)}</button>`;
+    const CHANNEL = { call: 'Téléphone', whatsapp: 'WhatsApp', sms: 'SMS', email: 'E-mail' };
+    const MERCHANT = { paid: 'Déclaré payé au vendeur', due: 'À régler au vendeur', unknown: 'Non renseigné' };
+    const RUN_EVENT = { created: 'Tournée créée', order_added: 'Colis ajouté', order_removed: 'Colis retiré', reordered: 'Ordre de passage modifié', status_changed: 'État modifié' };
+    const NEEDS_REASON = ['Échec', 'Annulée', 'Retour'];
+    async function copyText(text, done) {
+      try { await navigator.clipboard.writeText(text); uiToast(done || 'Lien copié.', 'success'); }
+      catch { uiToast('Copie impossible : sélectionnez le lien et copiez-le.', 'error'); }
+    }
+
+    function ficheUrl(id) {
+      const e = encodeURIComponent(id);
+      if (st.source === 'commandes') return `/api/app/orders/${e}`;
+      if (st.source === 'incidents') return `/api/app/incidents/${e}`;
+      if (st.source === 'tournees') return `/api/app/runs/${e}`;
+      return `/api/app/requests/${e}`;
+    }
     async function openFiche(id, tab) {
       const S0 = S();
       if (!S0.fiche) return openExisting(id);
-      st.fiche = { id: String(id), tab: tab || S0.fiche[0], data: null, cust: undefined, error: null };
+      const keepTab = st.fiche && st.fiche.id === String(id) ? st.fiche.tab : null;
+      st.fiche = { id: String(id), tab: tab || keepTab || S0.fiche[0], data: null, cust: undefined, error: null, action: null };
       draw();
       try {
-        const url = st.source === 'commandes' ? `/api/app/orders/${encodeURIComponent(id)}`
-          : st.source === 'incidents' ? `/api/app/incidents/${encodeURIComponent(id)}`
-            : `/api/app/requests/${encodeURIComponent(id)}`;
-        const data = await api(url);
+        const data = await api(ficheUrl(id));
         if (st.fiche?.id !== String(id)) return;
         st.fiche.data = data;
       } catch (error) { if (st.fiche) st.fiche.error = error.message; }
       renderFiche();
       if (st.fiche?.tab === 'client') loadCustomer();
+    }
+    // Relit la fiche ouverte sans la refermer (après une action).
+    async function refreshFiche(message) {
+      const f = st.fiche;
+      if (!f) return;
+      try { f.data = await api(ficheUrl(f.id)); } catch (error) { f.error = error.message; }
+      f.action = null; f.cust = f.tab === 'client' ? undefined : f.cust;
+      if (message) flash(message);
+      await Promise.all([load(), loadCounts()]);
+      draw();
+      if (f.tab === 'client') loadCustomer();
     }
     function customerIdOf() {
       const f = st.fiche;
@@ -720,6 +775,16 @@
       if (st.source === 'tournees') return deps.openRunDrawer(id, { onChange });
       return deps.openRequestDrawer(id, { onChange });
     }
+    async function goto(src, id, tab) {
+      if (st.source !== src) await switchSource(src);
+      openFiche(id, tab);
+    }
+    async function driverList() {
+      if (!st.drivers) {
+        try { st.drivers = (await api('/api/app/drivers')).filter((d) => d.active && !d.suspended); } catch { st.drivers = []; }
+      }
+      return st.drivers;
+    }
 
     const field = (label, value) => `<div class="ops-field"><dt>${esc(label)}</dt><dd>${value || '<span class="ops-dim">—</span>'}</dd></div>`;
     function renderFiche() {
@@ -728,112 +793,198 @@
       const f = st.fiche;
       const S0 = S();
       const d = f.data;
-      if (f.error) { el.innerHTML = `<div class="ops-fiche-in"><div class="ops-fiche-top"><span></span><button type="button" class="ops-icon-btn" data-act="fiche-close" aria-label="Fermer">${ic('x')}</button></div><div class="ops-state ops-error">${esc(f.error)}</div></div>`; return; }
-      if (!d) { el.innerHTML = `<div class="ops-fiche-in"><div class="ops-fiche-top"><span></span><button type="button" class="ops-icon-btn" data-act="fiche-close" aria-label="Fermer">${ic('x')}</button></div><div class="ops-state"><span class="ops-spin"></span>Chargement…</div></div>`; return; }
+      const close = `<button type="button" class="ops-icon-btn" data-act="fiche-close" aria-label="Fermer la fiche">${ic('x')}</button>`;
+      if (f.error) { el.innerHTML = `<div class="ops-fiche-in"><div class="ops-fiche-top"><span></span>${close}</div><div class="ops-state ops-error">${esc(f.error)}</div></div>`; return; }
+      if (!d) { el.innerHTML = `<div class="ops-fiche-in"><div class="ops-fiche-top"><span></span>${close}</div><div class="ops-state"><span class="ops-spin"></span>Chargement…</div></div>`; return; }
       let code = ''; let title = ''; let status = ''; let date = '';
       if (st.source === 'commandes') { code = orderRef(d); title = d.customer_name; status = chip(d.status, ORDER_TONE[d.status]); date = when(d.created_at); }
       if (st.source === 'incidents') { const i = d.incident; code = `INC-${i.id}`; title = INC_CATEGORY[i.category] || i.category; status = chip(INC_STATUS[i.status] || i.status, i.status === 'resolved' ? 'green' : 'red'); date = when(i.created_at); }
       if (st.source === 'demandes') { code = `DEM-${d.id}`; title = d.customer_name || 'En attente du client'; status = chip(REQUEST_LABEL[d.status] || d.status, REQUEST_TONE[d.status]); date = when(d.created_at); }
+      if (st.source === 'tournees') { code = `TRN-${d.id}`; title = d.name || `Tournée ${d.id}`; status = chip(RUN_LABEL[d.status] || d.status, RUN_TONE[d.status]); date = `${dayOnly(d.service_date)} · ${d.driver_name || ''}`; }
       const tabs = S0.fiche.map((t) => `<button type="button" role="tab" data-act="fiche-tab" data-t="${t}" aria-selected="${f.tab === t}">${esc(TAB_LABEL[t])}</button>`).join('');
       el.innerHTML = `<div class="ops-fiche-in">
-        <div class="ops-fiche-top"><small>${esc(code)}</small><button type="button" class="ops-icon-btn" data-act="fiche-close" aria-label="Fermer la fiche">${ic('x')}</button></div>
+        ${st.flash && !wide.matches ? flashHtml() : ''}
+        <div class="ops-fiche-top"><small>${esc(code)}</small>${close}</div>
         <h2>${esc(title || '—')}</h2>
         <div class="ops-fiche-meta">${status}<span>${esc(date)}</span></div>
         <div class="ops-fiche-tabs" role="tablist">${tabs}</div>
-        <div class="ops-fiche-body" role="tabpanel">${ficheBody()}</div>
+        <div class="ops-fiche-body" role="tabpanel">${ficheBody()}${f.action && f.actionTab === f.tab ? composeHtml() : ''}</div>
       </div>`;
-      const key = `${f.id}:${f.tab}`;
-      if (key !== st.lastTab) el.querySelector('.ops-fiche-body')?.classList.add('ops-anim');
-      st.lastTab = key;
+      const k = `${f.id}:${f.tab}`;
+      if (k !== st.lastTab) el.querySelector('.ops-fiche-body')?.classList.add('ops-anim');
+      st.lastTab = k;
     }
 
     function ficheBody() {
-      const f = st.fiche; const d = f.data;
+      const f = st.fiche;
       if (f.tab === 'client') return clientTab();
-      if (st.source === 'commandes') {
-        if (f.tab === 'livraison') {
-          const s = orderStage(d.status);
-          const at = (status) => d.events?.slice().reverse().find((e) => e.to_status === status)?.created_at;
-          const stepAt = [at('Confirmée') || d.created_at, at('Récupérée'), at('En tournée') || at('En livraison'), at('Livrée')];
-          const timeline = s.tone === 'off'
-            ? `<p class="ops-closed">${ic('x')}Commande ${esc(String(d.status).toLowerCase())}${d.cancelled_at ? ` le ${esc(when(d.cancelled_at))}` : ''} : plus aucune étape à venir.</p>`
-            : `<ol class="ops-timeline">${STEPS.map(([icon, label], i) => `<li class="${i < s.done ? 'done' : i === s.current ? `now ${s.tone}` : ''}"><span>${ic(icon)}</span><div><b>${esc(label)}</b><small>${i < s.done && stepAt[i] ? esc(when(stepAt[i])) : i === s.current ? esc(d.status) : 'À venir'}</small></div></li>`).join('')}</ol>`;
-          return `${timeline}
-            <dl class="ops-fields">
-              ${field('Destination', esc([...new Set([d.neighborhood, d.delivery_address].filter(Boolean))].join(' · ')))}
-              ${field('Repère', esc(d.landmark || ''))}
-              ${field('Créneau', esc(d.requested_time || ''))}
-              ${field('Téléphone du client', d.customer_phone ? `<a href="tel:${esc(String(d.customer_phone).replace(/\s+/g, ''))}">${esc(d.customer_phone)}</a>` : '')}
-              ${field('Livreur', d.driver_name ? `${esc(d.driver_name)}${d.driver_phone ? ` · <a href="tel:${esc(String(d.driver_phone).replace(/\s+/g, ''))}">${esc(d.driver_phone)}</a>` : ''}` : '')}
-              ${field('Suivi client', esc(TRACKING_LABEL[d.trackingLink?.state] || 'Pas de lien actif'))}
-              ${d.failure_reason ? field('Motif', esc(d.failure_reason)) : ''}
-            </dl>
-            <div class="ops-fiche-actions"><button type="button" class="ops-btn ops-primary" data-act="fiche-manage">Gérer la livraison${ic('arrow-right')}</button></div>
-            <p class="ops-note">Statuts, preuves de remise, encaissement et lien de suivi se gèrent dans la livraison.</p>`;
-        }
-        if (f.tab === 'colis') {
-          const pickup = d.pickup_address || d.pickup_name || d.pickup_lat != null;
-          const amount = d.payment_account_id ? `${money(d.expected_amount_minor, d.payment_currency)} · ${esc(PAYMENT_LABEL[d.payment_status] || d.payment_status || '')}` : '';
-          return `<dl class="ops-fields">
-              ${field('Type de colis', esc(PACKAGE_LABEL[d.package_type] || d.package_type || 'Non précisé'))}
-              ${field('Contenu', esc(d.package_description || ''))}
-              ${field('À encaisser à la remise', amount || '<span class="ops-dim">Aucun encaissement demandé</span>')}
-              ${d.collected_amount_minor != null ? field('Encaissé', money(d.collected_amount_minor, d.payment_currency)) : ''}
-            </dl>
-            <h3 class="ops-sub">${ic('map-pin')}Collecte</h3>
-            ${pickup ? `<dl class="ops-fields">
-              ${field('Lieu', esc(d.pickup_name || ''))}
-              ${field('Adresse ou repère', esc(d.pickup_address || ''))}
-              ${field('Téléphone sur place', d.pickup_phone ? `<a href="tel:${esc(String(d.pickup_phone).replace(/\s+/g, ''))}">${esc(d.pickup_phone)}</a>` : '')}
-              ${field('Prêt à partir de', esc(d.pickup_ready || ''))}
-            </dl>` : '<p class="ops-empty-line">Le livreur part avec le colis : pas de collecte ailleurs.</p>'}
-            ${canAct && PRE_PICKUP.includes(d.status) ? `<div class="ops-fiche-actions"><button type="button" class="ops-btn" data-act="pickup-edit">${ic('pencil')}Modifier le colis et la collecte</button></div>` : ''}
-            <p class="ops-note">Montant déclaré par votre entreprise. Le livreur l’encaisse à la remise ; TRAXO enregistre ce qui est déclaré et ne prélève rien.</p>`;
-        }
-        return activity();
-      }
-      if (st.source === 'incidents') {
-        const i = d.incident;
-        if (f.tab === 'incident') {
-          return `<dl class="ops-fields">
-              ${field('Priorité', chip(INC_SEVERITY[i.severity] || i.severity, i.severity === 'high' ? 'red' : i.severity === 'medium' ? 'amber' : 'grey'))}
-              ${field('Description', esc(i.description || ''))}
-              ${field('Commande', `${esc(i.order_reference || `CMD-${i.order_id}`)} · ${esc(i.order_status || '')}`)}
-              ${field('Client', esc([i.customer_name, i.customer_phone].filter(Boolean).join(' · ')))}
-              ${field('Livreur', esc(i.driver_name || ''))}
-              ${field('Déclaré par', esc(i.opened_by || ''))}
-              ${field('Suivi par', esc(i.assigned_to || 'Personne'))}
-              ${i.resolution ? field('Résolution', esc(i.resolution)) : ''}
-            </dl>
-            <div class="ops-fiche-actions"><button type="button" class="ops-btn ops-primary" data-act="fiche-manage">${i.status === 'resolved' ? 'Ouvrir le dossier' : 'Traiter l’incident'}${ic('arrow-right')}</button></div>`;
-        }
-        const ev = (d.events || []).slice().reverse();
-        return ev.length ? `<ol class="ops-acts">${ev.map((e) => `<li><b>${esc(INC_EVENT[e.event_type] || e.event_type)}</b>${e.body ? `<p>${esc(e.body)}</p>` : ''}<small>${esc(when(e.created_at))} · ${esc(e.actor_name)}</small></li>`).join('')}</ol>` : '<p class="ops-empty-line">Aucune activité.</p>';
-      }
-      // Demandes
-      const shared = d.location_lat != null;
-      return `<dl class="ops-fields">
-          ${field('Téléphone', d.customer_phone ? `<a href="tel:${esc(String(d.customer_phone).replace(/\s+/g, ''))}">${esc(d.customer_phone)}</a>` : '')}
-          ${field('Destination', esc([d.neighborhood, d.landmark].filter(Boolean).join(' · ')))}
-          ${field('Position', shared ? chip('Partagée', 'green') : chip(d.submitted_at ? 'Manquante' : 'Pas encore', d.submitted_at ? 'red' : 'grey'))}
-          ${field('Créneau', esc(d.requested_time || ''))}
-          ${field('Photos du lieu', d.photo_ids?.length ? plural(d.photo_ids.length, 'photo', 'photos') : '')}
-          ${field('Remarques', esc(d.notes || ''))}
-          ${d.order_id ? field('Commande', `${esc(d.order_reference || `CMD-${d.order_id}`)} · ${esc(d.order_status || '')}`) : ''}
+      if (st.source === 'commandes') return f.tab === 'livraison' ? orderTab() : f.tab === 'colis' ? goodsTab() : activity();
+      if (st.source === 'incidents') return f.tab === 'incident' ? incidentTab() : incidentActivity();
+      if (st.source === 'tournees') return f.tab === 'arrets' ? runTab() : runActivity();
+      return requestTab();
+    }
+
+    function orderTab() {
+      const d = st.fiche.data;
+      const s = orderStage(d.status);
+      const issue = (d.incidents || []).find((i) => i.status !== 'resolved');
+      const at = (status) => d.events?.slice().reverse().find((e) => e.to_status === status)?.created_at;
+      const stepAt = [at('Confirmée') || d.created_at, at('Récupérée'), at('En tournée') || at('En livraison'), at('Livrée')];
+      const advancing = { 'En préparation': 'La commande attend sa confirmation.', 'Confirmée': 'Le livreur peut aller chercher le colis.', 'Vers la collecte': 'Le livreur part récupérer le colis.', 'Récupérée': 'Le colis est entre les mains du livreur.', 'En tournée': 'Le livreur est en route vers le client.', 'En livraison': 'Le livreur est en route vers le client.', 'Retour': 'Le colis revient vers votre entreprise.' };
+      let head;
+      if (issue) head = banner('Un point à régler', `${INC_CATEGORY[issue.category] || issue.category}. Retrouvez les informations dans les incidents.`, 'rose', 'circle-alert');
+      else if (d.status === 'Livrée') head = banner('Livraison terminée', 'Le colis a été remis. Son historique reste disponible.');
+      else if (d.status === 'Annulée' || d.status === 'Retournée') head = banner(d.status === 'Annulée' ? 'Commande annulée' : 'Colis retourné', 'Cette livraison ne fait plus partie de la tournée.', 'sand', 'circle-alert');
+      else if (d.status === 'Échec') head = banner('La livraison a échoué', d.failure_reason || 'Préparez une nouvelle tentative ou un retour.', 'rose', 'circle-alert');
+      else if (d.status === 'Arrivée') head = banner('Le livreur est arrivé', 'La remise se confirme avec le code à 6 chiffres du client.', 'blue', 'map-pin');
+      else head = banner('La livraison avance', advancing[d.status] || '', 'blue', 'package');
+      const timeline = s.tone === 'off' ? ''
+        : `<ol class="ops-timeline">${STEPS.map(([icon, label], i) => `<li class="${i < s.done ? 'done' : i === s.current ? `now ${s.tone}` : ''}"><span>${ic(icon)}</span><div><b>${esc(label)}</b><small>${i < s.done && stepAt[i] ? esc(when(stepAt[i])) : i === s.current ? esc(d.status) : 'À venir'}</small></div></li>`).join('')}</ol>`;
+      const canChange = canAct && !d.isTerminal;
+      const addr = String(d.delivery_address || '');
+      const where = addr && d.neighborhood && addr.toLowerCase().includes(String(d.neighborhood).toLowerCase()) ? addr : [d.neighborhood, addr].filter(Boolean).join(' · ');
+      return `${head}${timeline}
+        <dl class="ops-fields">
+          ${field('Contact du destinataire', tel(d.customer_phone))}
+          ${field('Où et quand', `${esc(where || '—')}${d.landmark || d.requested_time ? `<small>${esc([d.landmark, d.requested_time].filter(Boolean).join(' · '))}</small>` : ''}`)}
+          ${field('Livreur', `${esc(d.driver_name || 'À attribuer')}${d.driver_phone ? ` · ${tel(d.driver_phone)}` : ''}${canChange ? ' <button type="button" class="ops-textact" data-act="compose" data-c="assign">Changer</button>' : ''}`)}
+          ${d.notes ? field('Consigne de livraison', esc(d.notes)) : ''}
+          ${field('Suivi client', esc(TRACKING_LABEL[d.trackingLink?.state] || 'Pas de lien actif'))}
         </dl>
-        ${!d.submitted_at ? '<p class="ops-empty-line">Le client n’a pas encore rempli le formulaire. Le profil client sera créé avec ses réponses.</p>' : ''}
-        <div class="ops-fiche-actions"><button type="button" class="ops-btn ops-primary" data-act="fiche-manage">${d.status === 'À vérifier' ? 'Valider la demande' : 'Ouvrir la demande'}${ic('arrow-right')}</button></div>`;
+        <div class="ops-fiche-actions">
+          ${canChange && (d.allowedTransitions || []).length ? fbtn(d.status === 'Échec' ? 'Préparer la suite' : 'Mettre à jour la livraison', 'compose', { icon: 'check', cls: 'ops-primary', attrs: 'data-c="status"' }) : ''}
+          ${canAct ? fbtn('Lien de suivi', 'compose', { icon: 'link', attrs: 'data-c="share"' }) : ''}
+          ${canAct && !issue ? fbtn('Signaler un incident', 'compose', { icon: 'circle-alert', attrs: 'data-c="incident"' }) : ''}
+          ${issue ? fbtn('Voir l’incident', 'goto', { icon: 'arrow-up-right', attrs: `data-src="incidents" data-id="${esc(issue.id)}"` }) : ''}
+          ${fbtn('Tout gérer', 'fiche-manage', { icon: 'external-link', cls: 'ops-ghost' })}
+        </div>
+        <p class="ops-note">« Tout gérer » ouvre la livraison complète : code de remise, preuves, encaissement.</p>`;
+    }
+
+    function goodsTab() {
+      const d = st.fiche.data;
+      const c = d.commercial || {};
+      const items = Array.isArray(c.items) ? c.items : [];
+      const value = declaredValue(c);
+      const pickup = d.pickup_address || d.pickup_name || d.pickup_lat != null;
+      const cod = d.payment_account_id ? `${money(d.expected_amount_minor, d.payment_currency)} · ${esc(PAYMENT_LABEL[d.payment_status] || d.payment_status || '')}` : '';
+      return `<div class="ops-goods-head"><span class="ops-goods-ic">${ic('shopping-bag')}</span><div><b>Ce qui doit être livré</b><small>Référence vendeur · ${esc(c.sellerReference || 'Non renseignée')}</small></div></div>
+        ${items.length ? `<ul class="ops-items">${items.map((it) => `<li><div><b>${esc(it.name)}</b><small>Quantité ${esc(it.qty)} · ${money(it.unitMinor)} / unité</small></div><span class="ops-num">${money(Number(it.qty) * Number(it.unitMinor))}</span></li>`).join('')}</ul>`
+          : `<p class="ops-empty-line">${esc(PACKAGE_LABEL[d.package_type] || 'Colis')}${d.package_description ? ` : ${esc(d.package_description)}` : ''}. Aucun article détaillé.</p>`}
+        <dl class="ops-fields ops-fields-2">
+          ${field('Valeur de la commande', value != null ? money(value) : '')}
+          ${field('Poids déclaré', c.weightKg != null ? `${esc(String(c.weightKg).replace('.', ','))} kg` : '')}
+          ${field('Livraison annoncée', c.deliveryFeeMinor != null ? money(c.deliveryFeeMinor) : '')}
+          ${field('Origine', d.customer_request_id ? 'Formulaire client' : 'Saisie par votre équipe')}
+          ${field('Type de colis', esc(PACKAGE_LABEL[d.package_type] || d.package_type || 'Non précisé'))}
+          ${field('À encaisser par le livreur', cod || '<span class="ops-dim">Rien à encaisser</span>')}
+        </dl>
+        <div class="ops-commercial">${ic('file-text')}<div><small>Informations commerciales</small><b>${esc(MERCHANT[c.merchantPayment] || MERCHANT.unknown)}</b><p>Information déclarée par l’entreprise. TRAXO n’encaisse pas ce paiement et ne confirme pas un règlement bancaire.</p></div></div>
+        ${canAct ? `<div class="ops-fiche-actions">${fbtn('Modifier les informations commerciales', 'compose', { icon: 'pencil', attrs: 'data-c="commercial"' })}</div>` : ''}
+        <h3 class="ops-sub">${ic('map-pin')}Collecte</h3>
+        ${pickup ? `<dl class="ops-fields">
+          ${field('Lieu', esc(d.pickup_name || ''))}
+          ${field('Adresse ou repère', esc(d.pickup_address || ''))}
+          ${field('Téléphone sur place', tel(d.pickup_phone))}
+          ${field('Prêt à partir de', esc(d.pickup_ready || ''))}
+        </dl>` : '<p class="ops-empty-line">Le livreur part avec le colis : pas de collecte ailleurs.</p>'}
+        ${canAct && PRE_PICKUP.includes(d.status) ? `<div class="ops-fiche-actions">${fbtn('Modifier le colis et la collecte', 'pickup-edit', { icon: 'pencil' })}</div>` : ''}
+        <dl class="ops-fields ops-consigne">${field('Consigne au livreur', esc(d.notes || 'Aucune consigne particulière.'))}</dl>`;
     }
 
     function activity() {
       const d = st.fiche.data;
       const items = [];
       (d.events || []).forEach((e) => items.push({ at: e.created_at, title: e.from_status ? `${e.from_status} → ${e.to_status}` : `Commande ${String(e.to_status || 'créée').toLowerCase()}`, body: e.reason, who: e.actor_name }));
-      (d.opsActivity || []).forEach((a) => items.push({ at: a.created_at, title: a.action === 'reassigned' ? `Attribuée à ${a.to_driver_name || 'un autre livreur'}` : a.action === 'trashed' ? 'Mise à la corbeille' : 'Restaurée depuis la corbeille', who: a.actor_name }));
+      const OPS_LABEL = { trashed: 'Mise à la corbeille', restored: 'Restaurée depuis la corbeille', commercial_updated: 'Informations commerciales modifiées' };
+      (d.opsActivity || []).forEach((a) => items.push({ at: a.created_at, title: a.action === 'reassigned' ? `Attribuée à ${a.to_driver_name || 'un autre livreur'}` : OPS_LABEL[a.action] || a.action, who: a.actor_name }));
       (d.incidents || []).forEach((i) => items.push({ at: i.created_at, title: `Incident : ${INC_CATEGORY[i.category] || i.category}`, body: i.description, who: i.opened_by }));
       (d.paymentEvents || []).forEach((p) => items.push({ at: p.created_at, title: p.event_type === 'collected' ? `Encaissement déclaré : ${money(p.amount_minor, p.currency)}` : `Paiement : ${p.event_type}`, body: p.reason, who: p.actor_name }));
       items.sort((a, b) => new Date(b.at) - new Date(a.at));
       return items.length ? `<ol class="ops-acts">${items.map((it) => `<li><b>${esc(it.title)}</b>${it.body ? `<p>${esc(it.body)}</p>` : ''}<small>${esc(when(it.at))}${it.who ? ` · ${esc(it.who)}` : ''}</small></li>`).join('')}</ol>` : '<p class="ops-empty-line">Aucune activité pour le moment.</p>';
+    }
+
+    function incidentTab() {
+      const i = st.fiche.data.incident;
+      const resolved = i.status === 'resolved';
+      const mine = meId && String(i.assigned_to_user_id || '') === meId;
+      const head = resolved ? banner('Le problème est résolu', 'Le compte rendu est conservé dans l’historique.', 'green', 'check-check')
+        : banner(i.severity === 'high' ? 'À traiter en priorité' : 'Un point à régler', 'Consultez le signalement, puis indiquez la suite donnée.', 'rose', 'circle-alert');
+      return `${head}
+        <dl class="ops-fields">
+          ${field('Ce qui s’est passé', esc(i.description || ''))}
+          ${field('Livraison concernée', `${esc(i.customer_name || '—')}<small>${esc(i.order_reference || `CMD-${i.order_id}`)}${i.neighborhood ? ` · ${esc(i.neighborhood)}` : ''} · ${esc(i.order_status || '')}</small>`)}
+          ${field('Prise en charge', `${esc(i.assigned_to || 'Personne pour le moment')}<small>Priorité ${esc((INC_SEVERITY[i.severity] || i.severity || '').toLowerCase())}</small>`)}
+          ${field('Livreur', esc(i.driver_name || ''))}
+          ${i.resolution ? field('Compte rendu', esc(i.resolution)) : ''}
+        </dl>
+        <div class="ops-fiche-actions">
+          ${!resolved && canShare && !mine ? fbtn('Je prends en charge', 'take', { icon: 'user-round', cls: 'ops-primary' }) : ''}
+          ${!resolved && canAct ? fbtn('Marquer comme résolu', 'compose', { icon: 'check-check', cls: mine || !canShare ? 'ops-primary' : '', attrs: 'data-c="resolve"' }) : ''}
+          ${fbtn('Voir la commande', 'goto', { icon: 'arrow-up-right', attrs: `data-src="commandes" data-id="${esc(i.order_id)}"` })}
+          ${fbtn('Ouvrir le dossier', 'fiche-manage', { icon: 'external-link', cls: 'ops-ghost' })}
+        </div>`;
+    }
+    function incidentActivity() {
+      const ev = (st.fiche.data.events || []).slice().reverse();
+      return ev.length ? `<ol class="ops-acts">${ev.map((e) => `<li><b>${esc(INC_EVENT[e.event_type] || e.event_type)}</b>${e.body ? `<p>${esc(e.body)}</p>` : ''}<small>${esc(when(e.created_at))} · ${esc(e.actor_name)}</small></li>`).join('')}</ol>` : '<p class="ops-empty-line">Aucune activité.</p>';
+    }
+
+    function requestTab() {
+      const d = st.fiche.data;
+      const shared = d.location_lat != null;
+      const complete = shared && d.customer_phone && d.customer_name;
+      const waiting = ['En attente d’informations', 'À confirmer par le client'].includes(d.status);
+      const open = !d.archived_at && !['Confirmée', 'Refusée'].includes(d.status);
+      let head;
+      if (waiting) head = banner('Le client n’a pas encore répondu', 'Partagez-lui le formulaire. Ses coordonnées et sa position arriveront ici.', 'blue', 'inbox');
+      else if (d.status === 'Confirmée') head = banner('La demande est devenue une commande', 'Retrouvez la livraison et son livreur depuis la commande.');
+      else if (d.status === 'Refusée') head = banner('Demande refusée', 'Le motif est conservé dans l’historique.', 'sand', 'circle-alert');
+      else if (d.archived_at) head = banner('Demande archivée', 'Restaurez-la depuis la corbeille si besoin.', 'sand');
+      else if (complete) head = banner('Tout est prêt pour vérifier', 'Les coordonnées et la position du client ont été reçues.');
+      else head = banner('Il manque la position du client', 'Le même formulaire lui permet de compléter sa demande avant validation.', 'sand', 'map-pin');
+      const place = [d.neighborhood, d.landmark].filter(Boolean).join(' · ');
+      const position = shared ? `Position reçue${d.location_accuracy != null ? ` · précision ± ${Math.round(d.location_accuracy)} m` : ''}` : 'Position non partagée';
+      const canValidate = canAct && ['À vérifier', 'Informations à compléter', 'Validée'].includes(d.status) && !d.order_id;
+      return `${head}
+        ${waiting ? field('Ce qui se passe ensuite', 'Le client remplit le formulaire et partage sa position. Vous vérifiez sa demande avant de créer la commande.') : `<dl class="ops-fields">
+          ${field('Le client', `${esc(d.customer_name || '—')}${d.customer_phone ? `<small>${tel(d.customer_phone)}</small>` : ''}`)}
+          ${field('Lieu de livraison', `${esc(place || '—')}<small>${esc(position)}</small>`)}
+          ${field('Créneau souhaité', esc(d.requested_time || ''))}
+          ${d.notes ? field('Message du client', esc(d.notes)) : ''}
+          ${d.photo_ids?.length ? field('Photos du lieu', `${plural(d.photo_ids.length, 'photo', 'photos')} · visibles dans « Ouvrir la demande »`) : ''}
+          ${d.order_id ? field('Commande', `${esc(d.order_reference || `CMD-${d.order_id}`)} · ${esc(d.order_status || '')}`) : ''}
+        </dl>`}
+        <div class="ops-fiche-actions">
+          ${d.order_id ? fbtn('Voir la commande', 'goto', { icon: 'arrow-up-right', cls: 'ops-primary', attrs: `data-src="commandes" data-id="${esc(d.order_id)}"` }) : ''}
+          ${canValidate ? fbtn(shared ? 'Vérifier et attribuer' : 'Position requise', 'compose', { icon: 'check', cls: 'ops-primary', attrs: `data-c="approve" ${shared ? '' : 'disabled'}` }) : ''}
+          ${open && d.token ? fbtn(waiting ? 'Copier le lien du formulaire' : 'Copier le formulaire', 'copy-form', { icon: 'copy', cls: waiting ? 'ops-primary' : '' }) : ''}
+          ${canAct && open ? fbtn('Refuser la demande', 'compose', { cls: 'ops-danger', attrs: 'data-c="reject"' }) : ''}
+          ${canAct && !d.archived_at && d.status !== 'Confirmée' ? fbtn('Archiver', 'archive-request', { icon: 'archive' }) : ''}
+          ${fbtn('Ouvrir la demande', 'fiche-manage', { icon: 'external-link', cls: 'ops-ghost' })}
+        </div>`;
+    }
+
+    function runTab() {
+      const d = st.fiche.data;
+      const stops = d.stops || [];
+      const done = stops.filter((s) => TERMINAL.includes(s.order_status)).length;
+      const editable = canAct && d.canReorderStops;
+      const next = [['planned', 'Planifier la tournée'], ['active', 'Démarrer la tournée'], ['completed', 'Terminer la tournée']].find(([to]) => (d.allowedTransitions || []).includes(to));
+      return `<div class="ops-routeprog"><b>${done}<span> / ${stops.length}</span></b><p>${plural(done, 'livraison terminée', 'livraisons terminées')} · ${stops.length - done} restante${stops.length - done > 1 ? 's' : ''}</p>${bar(stops.length ? Math.round((done / stops.length) * 100) : 0)}</div>
+        <div class="ops-label">Ordre de passage <span>${d.canReorderStops ? 'Modifiable' : 'Tournée en cours ou terminée'}</span></div>
+        ${stops.length ? `<ol class="ops-stops">${stops.map((s, i) => `<li><span class="ops-stopnum ${TERMINAL.includes(s.order_status) ? 'done' : ''}">${s.order_status === 'Livrée' ? ic('check') : i + 1}</span>
+          <div><button type="button" class="ops-stoplink" data-act="goto" data-src="commandes" data-id="${esc(s.order_id)}">${esc(s.customer_name || s.order_reference || `CMD-${s.order_id}`)}</button><small>${esc([s.neighborhood, s.requested_time].filter(Boolean).join(' · ') || '—')}</small>${chip(s.order_status, ORDER_TONE[s.order_status])}</div>
+          ${editable ? `<span class="ops-stopact"><button type="button" class="ops-icon-btn" data-act="stop-move" data-i="${i}" data-d="-1" aria-label="Monter ${esc(s.customer_name || '')}" ${i === 0 ? 'disabled' : ''}>${ic('move-up')}</button><button type="button" class="ops-icon-btn" data-act="stop-move" data-i="${i}" data-d="1" aria-label="Descendre ${esc(s.customer_name || '')}" ${i === stops.length - 1 ? 'disabled' : ''}>${ic('move-down')}</button></span>` : ''}</li>`).join('')}</ol>`
+          : '<p class="ops-empty-line">Aucune livraison dans cette tournée.</p>'}
+        <div class="ops-fiche-actions">
+          ${canAct && next ? fbtn(next[1], 'run-status', { icon: 'check', cls: 'ops-primary', attrs: `data-to="${next[0]}"` }) : ''}
+          ${fbtn('Ouvrir la tournée', 'fiche-manage', { icon: 'external-link', cls: 'ops-ghost' })}
+        </div>`;
+    }
+    function runActivity() {
+      const ev = (st.fiche.data.events || []).slice().reverse();
+      return ev.length ? `<ol class="ops-acts">${ev.map((e) => `<li><b>${esc(e.event_type === 'status_changed' && e.details?.toStatus ? `Tournée ${String(RUN_LABEL[e.details.toStatus] || e.details.toStatus).toLowerCase()}` : RUN_EVENT[e.event_type] || e.event_type)}</b><small>${esc(when(e.created_at))} · ${esc(e.actor_name)}</small></li>`).join('')}</ol>` : '<p class="ops-empty-line">Aucune activité.</p>';
     }
 
     function clientTab() {
@@ -852,21 +1003,270 @@
       const emails = contacts.filter((c) => c.kind === 'email' && c.is_active !== false);
       const loc = locations.find((l) => l.is_active !== false) || locations[0];
       const delivered = orders.filter((o) => o.status === 'Livrée').length;
+      const segment = orders.length > 1 ? chip('Client régulier', 'green') : chip('Nouveau client', 'blue');
+      const profile = customer.customer_type === 'organization' ? 'Entreprise' : 'Particulier';
+      const pref = [CHANNEL[customer.preferred_channel], customer.preferred_language].filter(Boolean).join(' · ');
       return `<div class="ops-cust-head">${avatar(customer.display_name)}<div><b>${esc(customer.display_name)}</b><small>${esc(customer.customer_code || '')}${customer.created_at ? ` · Depuis ${esc(since(customer.created_at))}` : ''}</small></div></div>
-        <div class="ops-tags">${chip(customer.customer_type === 'organization' ? 'Entreprise' : 'Particulier', 'grey')}${customer.sector ? chip(customer.sector, 'blue') : ''}${customer.status === 'do_not_contact' ? chip('Ne pas contacter', 'red') : ''}</div>
+        <div class="ops-tags">${segment}${chip(profile, 'grey')}${customer.status === 'do_not_contact' ? chip('Ne pas contacter', 'red') : ''}</div>
         <div class="ops-counters"><div><b>${orders.length}${orders.length >= 100 ? '+' : ''}</b><span>${orders.length > 1 ? 'commandes' : 'commande'}</span></div><div><b>${delivered}</b><span>${delivered > 1 ? 'livrées' : 'livrée'}</span></div><div><b>${openIncidents}</b><span>${openIncidents > 1 ? 'incidents ouverts' : 'incident ouvert'}</span></div></div>
         <dl class="ops-fields ops-fields-2">
-          ${field('Téléphone', phones.map((p) => `<a href="tel:${esc(String(p.value_display).replace(/\s+/g, ''))}">${esc(p.value_display)}</a>`).join('<br>'))}
-          ${emails.length ? field('E-mail', emails.map((e) => `<a href="mailto:${esc(e.value_display)}">${esc(e.value_display)}</a>`).join('<br>')) : ''}
-          ${customer.preferred_language ? field('Langue', esc(customer.preferred_language)) : ''}
-          ${loc ? field('Adresse de livraison', `${esc([loc.neighborhood, loc.address_text].filter(Boolean).join(' · ') || loc.label || '')}${loc.landmark ? `<small>${esc(loc.landmark)}</small>` : ''}`) : ''}
+          ${field('Téléphone', phones.map((p) => tel(p.value_display)).join('<br>'))}
+          ${field('Entreprise / profil', esc([profile, customer.sector].filter(Boolean).join(' · ')))}
+          ${field('E-mail', emails.map((e) => `<a href="mailto:${esc(e.value_display)}">${esc(e.value_display)}</a>`).join('<br>'))}
+          ${field('Contact préféré', `${esc(pref || 'Non renseigné')}${canAct ? ' <button type="button" class="ops-textact" data-act="compose" data-c="contact">Modifier</button>' : ''}`)}
         </dl>
+        ${loc ? `<dl class="ops-fields ops-consigne">${field('Adresse de livraison', `${esc([loc.neighborhood, loc.address_text].filter(Boolean).join(' · ') || loc.label || '')}${loc.landmark ? `<small>${esc(loc.landmark)}</small>` : ''}`)}</dl>` : ''}
         <form class="ops-note-form" data-form="note">
           <div class="ops-note-label"><label for="opsNote">Note interne</label><small>Votre équipe uniquement</small></div>
           <textarea id="opsNote" name="note" maxlength="2000" rows="3" placeholder="Ex. Appeler à l’arrivée.">${esc(customer.service_notes || '')}</textarea>
           <button type="submit" class="ops-btn ops-sm">${ic('save')}Enregistrer la note</button>
         </form>
         ${orders.length ? `<h3 class="ops-sub">Commandes de ce client</h3><ul class="ops-mini">${orders.slice(0, 6).map((o) => `<li><button type="button" data-act="fiche-order" data-id="${esc(o.id)}"><span><b>${esc(o.reference || `CMD-${o.id}`)}</b><small>${esc(when(o.created_at))}</small></span>${chip(o.status, ORDER_TONE[o.status])}${ic('chevron-right')}</button></li>`).join('')}</ul>` : ''}`;
+    }
+
+    // ---- Actions de la fiche (formulaire intégré) -------------------------
+    function composeHtml() {
+      const f = st.fiche; const d = f.data; const a = f.action;
+      let title = ''; let content = ''; let submit = 'Enregistrer'; let danger = false;
+      const driverOptions = (current) => (st.drivers || []).map((dr) => `<option value="${esc(dr.id)}" ${String(dr.id) === String(current) ? 'selected' : ''}>${esc(dr.name)} · ${esc(dr.activeOrders)}/${esc(dr.capacity)} colis${dr.activeOrders >= dr.capacity ? ' (complet)' : ''}</option>`).join('');
+      if (a === 'assign') {
+        title = 'Choisir un livreur';
+        content = st.drivers ? `<label class="ops-fld">Livreur<select name="driver" required>${driverOptions(d.driver_id)}</select></label><p class="ops-help">La capacité du livreur est vérifiée. La commande rejoint sa tournée du jour.</p>` : '<div class="ops-state"><span class="ops-spin"></span>Chargement des livreurs…</div>';
+        submit = 'Attribuer la livraison';
+      }
+      if (a === 'status') {
+        title = 'Où en est la livraison ?';
+        const options = (d.allowedTransitions || []).filter((s) => s !== 'Livrée');
+        const otp = (d.allowedTransitions || []).includes('Livrée') || d.status === 'Arrivée';
+        content = `${options.length ? `<label class="ops-fld">Nouvelle étape<select name="status" required><option value="">Choisir une étape</option>${options.map((s) => `<option value="${esc(s)}">${esc(d.status === 'Échec' && s === 'Confirmée' ? 'Nouvelle tentative' : s)}</option>`).join('')}</select></label>
+          <label class="ops-fld">Un détail à ajouter ?<textarea name="note" maxlength="500" placeholder="Ex. Le client sera disponible cet après-midi."></textarea><small>Un motif est nécessaire en cas d’échec, de retour ou d’annulation.</small></label>` : ''}
+          ${otp ? '<p class="ops-help">La remise « Livrée » se confirme avec le code du client, depuis « Tout gérer ».</p>' : ''}`;
+        submit = 'Enregistrer l’étape';
+        if (!options.length) submit = '';
+      }
+      if (a === 'share') {
+        const link = f.link || {};
+        const valid = link.path && !['revoked', 'expired'].includes(d.trackingLink?.state);
+        title = 'Partager le suivi';
+        content = `<p class="ops-help">Le client retrouve uniquement le suivi de cette livraison.</p>
+          ${link.loading ? '<div class="ops-state"><span class="ops-spin"></span>Préparation du lien…</div>' : `<input class="ops-linkvalue" readonly aria-label="Lien de suivi" value="${esc(valid ? deps.publicLink(link.path) : link.error || 'Lien désactivé ou expiré')}">`}
+          <div class="ops-fiche-actions">${fbtn('Copier le lien', 'link-copy', { icon: 'copy', attrs: valid ? '' : 'disabled' })}${fbtn('Nouveau lien', 'link-new', { icon: 'refresh-cw' })}${fbtn('Désactiver le lien', 'compose', { cls: 'ops-danger', attrs: `data-c="revoke" ${valid ? '' : 'disabled'}` })}</div>
+          <p class="ops-help">${d.trackingLink?.expiresAt && valid ? `Valable jusqu’au ${esc(when(d.trackingLink.expiresAt))}.` : 'Un nouveau lien remplace l’ancien, qui cesse aussitôt de fonctionner.'}</p>`;
+        return `<div class="ops-compose"><div class="ops-compose-head"><h3>${title}</h3><button type="button" class="ops-icon-btn" data-act="compose-cancel" aria-label="Fermer le partage">${ic('x')}</button></div>${content}</div>`;
+      }
+      if (a === 'revoke') {
+        title = 'Désactiver ce lien ?'; danger = true;
+        content = '<p class="ops-help">Le client ne pourra plus ouvrir ce lien. Vous pourrez en créer un nouveau.</p><label class="ops-fld">Motif<textarea name="note" required minlength="8" maxlength="300" placeholder="Ex. Lien envoyé à la mauvaise personne."></textarea></label>';
+        submit = 'Désactiver le lien';
+      }
+      if (a === 'incident') {
+        title = 'Que s’est-il passé ?';
+        content = `<label class="ops-fld">Type de problème<select name="category">${Object.entries(INC_CATEGORY).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></label>
+          <label class="ops-fld">Priorité<select name="severity"><option value="medium">Normale</option><option value="high">À traiter vite</option><option value="low">Faible</option></select></label>
+          <label class="ops-fld">Décrivez la situation<textarea name="note" required minlength="8" maxlength="1000" placeholder="Quelques mots pour aider votre équipe à intervenir."></textarea></label>`;
+        submit = 'Enregistrer l’incident';
+      }
+      if (a === 'resolve') {
+        title = 'Comment cela a-t-il été réglé ?';
+        content = '<label class="ops-fld">Compte rendu<textarea name="note" required minlength="5" maxlength="2000" placeholder="Ex. Client joint, livraison reprogrammée à 14 h."></textarea></label>';
+        submit = 'Résoudre l’incident';
+      }
+      if (a === 'approve') {
+        title = 'Confirmer cette demande';
+        content = st.drivers ? `<p class="ops-help">Une commande sera créée pour ${esc(d.customer_name || 'ce client')}. Le formulaire ne sera plus modifiable par le client.</p><label class="ops-fld">Livreur<select name="driver" required><option value="">Choisir un livreur</option>${driverOptions('')}</select></label>` : '<div class="ops-state"><span class="ops-spin"></span>Chargement des livreurs…</div>';
+        submit = 'Confirmer et créer la commande';
+      }
+      if (a === 'reject') {
+        title = 'Refuser cette demande'; danger = true;
+        content = '<label class="ops-fld">Motif du refus<textarea name="note" required minlength="5" maxlength="500" placeholder="Ex. Cette zone n’est pas encore desservie."></textarea></label><p class="ops-help">Le motif reste dans votre historique. Aucun message automatique n’est envoyé.</p>';
+        submit = 'Confirmer le refus';
+      }
+      if (a === 'contact') {
+        const c = f.cust?.customer || {};
+        title = 'Contact préféré';
+        content = `<label class="ops-fld">Canal<select name="channel"><option value="">Non renseigné</option>${Object.entries(CHANNEL).map(([k, l]) => `<option value="${k}" ${c.preferred_channel === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+          <label class="ops-fld">Langue<input name="language" maxlength="35" value="${esc(c.preferred_language || '')}" placeholder="Ex. Français, Fon, Yoruba"></label>
+          <p class="ops-help">Renseigné par votre équipe, avec l’accord du client. Facultatif.</p>`;
+      }
+      if (a === 'commercial') {
+        const c = d.commercial || {};
+        const items = f.items || (Array.isArray(c.items) && c.items.length ? c.items : [{ name: '', qty: 1, unitMinor: '' }]);
+        f.items = items;
+        title = 'Informations commerciales';
+        content = `<label class="ops-fld">Référence vendeur<input name="sellerReference" maxlength="60" value="${esc(c.sellerReference || '')}" placeholder="Ex. BOUT-1247"></label>
+          <fieldset class="ops-itemsedit"><legend>Articles</legend>${items.map((it, i) => `<div class="ops-itemrow" data-row-i="${i}">
+            <input name="itemName" maxlength="120" value="${esc(it.name || '')}" placeholder="Article" aria-label="Article ${i + 1}">
+            <input name="itemQty" type="number" min="1" max="999" value="${esc(it.qty ?? 1)}" aria-label="Quantité">
+            <input name="itemUnit" type="number" min="0" step="1" value="${esc(it.unitMinor ?? '')}" placeholder="Prix FCFA" aria-label="Prix unitaire en FCFA">
+            <button type="button" class="ops-icon-btn" data-act="item-del" data-i="${i}" aria-label="Retirer l’article">${ic('x')}</button></div>`).join('')}
+            <button type="button" class="ops-textact" data-act="item-add" ${items.length >= 20 ? 'disabled' : ''}>${ic('plus')}Ajouter un article</button></fieldset>
+          <div class="ops-fld-2">
+            <label class="ops-fld">Valeur de la commande (FCFA)<input name="declaredValueMinor" type="number" min="0" step="1" value="${esc(c.declaredValueMinor ?? '')}" placeholder="Calculée depuis les articles"></label>
+            <label class="ops-fld">Poids (kg)<input name="weightKg" inputmode="decimal" value="${esc(c.weightKg ?? '')}" placeholder="Ex. 0,8"></label>
+            <label class="ops-fld">Livraison annoncée (FCFA)<input name="deliveryFeeMinor" type="number" min="0" step="1" value="${esc(c.deliveryFeeMinor ?? '')}"></label>
+            <label class="ops-fld">Règlement au vendeur<select name="merchantPayment">${Object.entries(MERCHANT).map(([k, l]) => `<option value="${k}" ${(c.merchantPayment || 'unknown') === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+          </div>
+          <p class="ops-help">Information déclarée par l’entreprise. TRAXO n’encaisse pas ce paiement et ne confirme pas un règlement bancaire.</p>`;
+      }
+      return `<form class="ops-compose" data-form="action" novalidate><div class="ops-compose-head"><h3>${esc(title)}</h3><button type="button" class="ops-icon-btn" data-act="compose-cancel" aria-label="Fermer cette action">${ic('x')}</button></div>${content}
+        <p class="ops-form-error" role="alert"></p>
+        <div class="ops-fiche-actions">${submit ? `<button type="submit" class="ops-btn ${danger ? 'ops-danger-solid' : 'ops-primary'}">${esc(submit)}</button>` : ''}<button type="button" class="ops-btn ops-ghost" data-act="compose-cancel">Annuler</button></div></form>`;
+    }
+
+    function readItems(form) {
+      return [...form.querySelectorAll('.ops-itemrow')].map((row) => ({
+        name: row.querySelector('[name="itemName"]').value,
+        qty: row.querySelector('[name="itemQty"]').value,
+        unitMinor: row.querySelector('[name="itemUnit"]').value,
+      }));
+    }
+
+    async function openCompose(action) {
+      const f = st.fiche;
+      if (!f) return;
+      f.action = action; f.actionTab = f.tab; f.items = null;
+      if (action === 'share') f.link = { loading: true };
+      renderFiche();
+      root.querySelector('.ops-compose')?.scrollIntoView({ block: 'nearest' });
+      if (action === 'assign' || action === 'approve') { await driverList(); if (st.fiche === f && f.action === action) renderFiche(); }
+      if (action === 'share') {
+        try {
+          const out = await api(`/api/app/orders/${encodeURIComponent(f.id)}/tracking-link/reveal`, { method: 'POST' });
+          f.link = { path: out.trackingLink?.path || null, error: out.trackingLink?.path ? null : 'Lien désactivé ou expiré' };
+        } catch (error) { f.link = { error: error.message }; }
+        if (st.fiche === f && f.action === 'share') renderFiche();
+      }
+      root.querySelector('.ops-compose select, .ops-compose input:not([readonly]), .ops-compose textarea')?.focus({ preventScroll: true });
+    }
+
+    async function submitAction(form) {
+      const f = st.fiche; const d = f.data; const a = f.action;
+      const err = form.querySelector('.ops-form-error');
+      const fail = (m) => { err.textContent = m; btn.disabled = false; };
+      const btn = form.querySelector('[type="submit"]');
+      const v = (n) => (form.elements[n] ? String(form.elements[n].value || '').trim() : '');
+      btn.disabled = true; err.textContent = '';
+      const id = encodeURIComponent(f.id);
+      try {
+        if (a === 'assign') {
+          if (!v('driver')) return fail('Choisissez un livreur.');
+          const out = await api(`/api/app/orders/${id}/reassign`, json('POST', { driverId: Number(v('driver')), checkCapacity: true }));
+          st.drivers = null;
+          return refreshFiche(out.unchanged ? 'Ce livreur a déjà cette livraison.' : `La livraison a été attribuée à ${out.driverName}.`);
+        }
+        if (a === 'status') {
+          const to = v('status');
+          if (!to) return fail('Choisissez une étape.');
+          if (NEEDS_REASON.includes(to) && v('note').length < 5) return fail('Ajoutez quelques mots pour expliquer cette étape.');
+          await api(`/api/app/orders/${id}/transition`, json('POST', { toStatus: to, reason: v('note'), idempotencyKey: key('transition') }));
+          return refreshFiche(`Étape enregistrée : ${to}.`);
+        }
+        if (a === 'revoke') {
+          if (v('note').length < 8) return fail('Le motif doit contenir au moins 8 caractères.');
+          await api(`/api/app/orders/${id}/tracking-link/revoke`, json('POST', { reason: v('note'), expectedVersion: d.trackingLink?.version, idempotencyKey: key('tracking-link-revoke') }));
+          return refreshFiche('Le lien de suivi est désactivé.');
+        }
+        if (a === 'incident') {
+          if (v('note').length < 8) return fail('Décrivez la situation en quelques mots (8 caractères au moins).');
+          await api(`/api/app/orders/${id}/incidents`, json('POST', { category: v('category'), severity: v('severity'), description: v('note'), idempotencyKey: key('incident') }));
+          return refreshFiche('L’incident est enregistré. Votre équipe le retrouve dans les incidents.');
+        }
+        if (a === 'resolve') {
+          if (v('note').length < 5) return fail('Ajoutez un court compte rendu.');
+          await api(`/api/app/incidents/${id}/resolve`, json('POST', { resolution: v('note'), idempotencyKey: key('incident-resolve') }));
+          return refreshFiche('L’incident est résolu.');
+        }
+        if (a === 'approve') {
+          if (!v('driver')) return fail('Choisissez un livreur.');
+          await api(`/api/app/requests/${id}/convert`, json('POST', { driverId: Number(v('driver')) }));
+          st.drivers = null;
+          return refreshFiche('La commande est créée et attribuée.');
+        }
+        if (a === 'reject') {
+          if (v('note').length < 5) return fail('Indiquez le motif du refus.');
+          await api(`/api/app/requests/${id}/status`, json('POST', { status: 'Refusée', reason: v('note') }));
+          return refreshFiche('La demande est refusée. Le motif est conservé.');
+        }
+        if (a === 'contact') {
+          const cid = f.cust?.customer?.id;
+          await api(`/api/app/crm/customers/${encodeURIComponent(cid)}`, json('PATCH', { preferredChannel: v('channel') || null, preferredLanguage: v('language') }));
+          f.cust = undefined;
+          return refreshFiche('Le contact préféré est enregistré.');
+        }
+        if (a === 'commercial') {
+          const items = readItems(form).filter((it) => it.name.trim()).map((it) => ({ name: it.name, qty: Number(it.qty || 1), unitMinor: it.unitMinor === '' ? 0 : Number(it.unitMinor) }));
+          const body = { sellerReference: v('sellerReference'), items, declaredValueMinor: v('declaredValueMinor'), weightKg: v('weightKg'), deliveryFeeMinor: v('deliveryFeeMinor'), merchantPayment: v('merchantPayment') };
+          await api(`/api/app/orders/${id}/commercial`, json('PATCH', body));
+          return refreshFiche('Les informations commerciales sont enregistrées.');
+        }
+      } catch (error) { return fail(error.message); }
+      return fail('Action inconnue.');
+    }
+
+    async function ficheAct(act, t) {
+      const f = st.fiche;
+      if (act === 'compose') { openCompose(t.dataset.c); return true; }
+      if (act === 'compose-cancel') { if (f) { f.action = null; renderFiche(); } return true; }
+      if (act === 'goto') { goto(t.dataset.src, t.dataset.id); return true; }
+      if (act === 'link-copy') { const input = root.querySelector('.ops-linkvalue'); if (input) copyText(input.value, 'Lien de suivi copié.'); return true; }
+      if (act === 'link-new') {
+        if (!(await uiConfirm('Créer un nouveau lien de suivi ?', { message: 'L’ancien lien cessera immédiatement de fonctionner.', tone: 'danger', confirmLabel: 'Créer un nouveau lien' }))) return true;
+        try {
+          await api(`/api/app/orders/${encodeURIComponent(f.id)}/tracking-link/rotate`, json('POST', { expiresInDays: 7, expectedVersion: f.data.trackingLink?.version, idempotencyKey: key('tracking-link-rotate') }));
+          await refreshFiche('Nouveau lien créé. L’ancien ne fonctionne plus.');
+          openCompose('share');
+        } catch (error) { uiToast(error.message, 'error'); }
+        return true;
+      }
+      if (act === 'copy-form') { if (f?.data?.token) copyText(deps.publicLink(`/demande/${f.data.token}`), 'Lien du formulaire copié.'); return true; }
+      if (act === 'archive-request') {
+        try {
+          const out = await api('/api/app/ops/trash', json('POST', { source: 'demandes', ids: [f.id] }));
+          st.fiche = null;
+          flash('La demande est archivée.', 'ok', out.done.length ? { source: 'demandes', ids: out.done } : null);
+          await reload();
+        } catch (error) { uiToast(error.message, 'error'); }
+        return true;
+      }
+      if (act === 'take') {
+        try {
+          await api(`/api/app/incidents/${encodeURIComponent(f.id)}/assign`, json('POST', { userId: meId, idempotencyKey: key('incident-assign') }));
+          await refreshFiche('Vous suivez cet incident.');
+        } catch (error) { uiToast(error.message, 'error'); }
+        return true;
+      }
+      if (act === 'stop-move') {
+        const stops = (f.data.stops || []).map((s) => s.id);
+        const i = Number(t.dataset.i); const j = i + Number(t.dataset.d);
+        if (j < 0 || j >= stops.length) return true;
+        [stops[i], stops[j]] = [stops[j], stops[i]];
+        try {
+          await api(`/api/app/runs/${encodeURIComponent(f.id)}/reorder`, json('POST', { stopIds: stops, expectedVersion: f.data.version, idempotencyKey: key('run-reorder') }));
+          await refreshFiche('Ordre de passage enregistré.');
+        } catch (error) { uiToast(error.message, 'error'); }
+        return true;
+      }
+      if (act === 'run-status') {
+        try {
+          await api(`/api/app/runs/${encodeURIComponent(f.id)}/status`, json('POST', { toStatus: t.dataset.to, reason: '', expectedVersion: f.data.version, idempotencyKey: key('run-status') }));
+          await refreshFiche(`Tournée : ${String(RUN_LABEL[t.dataset.to] || t.dataset.to).toLowerCase()}.`);
+        } catch (error) { uiToast(error.message, 'error'); }
+        return true;
+      }
+      if (act === 'item-add' || act === 'item-del') {
+        const form = root.querySelector('[data-form="action"]');
+        const items = readItems(form);
+        if (act === 'item-add' && items.length < 20) items.push({ name: '', qty: 1, unitMinor: '' });
+        if (act === 'item-del') items.splice(Number(t.dataset.i), 1);
+        const keep = Object.fromEntries(['sellerReference', 'declaredValueMinor', 'weightKg', 'deliveryFeeMinor', 'merchantPayment'].map((n) => [n, form.elements[n]?.value]));
+        f.items = items.length ? items : [{ name: '', qty: 1, unitMinor: '' }];
+        renderFiche();
+        const again = root.querySelector('[data-form="action"]');
+        Object.entries(keep).forEach(([n, val]) => { if (again.elements[n] && val != null) again.elements[n].value = val; });
+        if (act === 'item-add') again.querySelectorAll('[name="itemName"]')[f.items.length - 1]?.focus();
+        return true;
+      }
+      return false;
     }
 
     // ---- Actions ----------------------------------------------------------
@@ -1058,6 +1458,7 @@
       if (!t && rowEl && !event.target.closest('input, a, button, label, select')) { openFiche(rowEl.dataset.row); return; }
       if (!t) return;
       const act = t.dataset.act;
+      if (await ficheAct(act, t)) return;
       if (act === 'tab') return switchSource(t.dataset.src);
       if (act === 'stat') return switchSource(t.dataset.src, t.dataset.pill);
       if (act === 'view') return applyView(t.dataset.id);
@@ -1089,7 +1490,7 @@
       if (act === 'confirm-trash') return trashSelected();
       if (act === 'bulk-restore') return restore(st.source, selectedRows().map((r) => String(r.id)));
       if (act === 'undo') { const u = st.flash?.undo; st.flash = null; if (u) restore(u.source, u.ids); return; }
-      if (act === 'flash-close') { st.flash = null; root.querySelector('.ops-flash')?.remove(); return; }
+      if (act === 'flash-close') { st.flash = null; root.querySelectorAll('.ops-flash').forEach((n) => n.remove()); return; }
       if (act === 'pg') { st.page = Math.max(1, Number(t.dataset.p) || 1); renderList(); root.querySelector('#opsMain')?.scrollIntoView({ block: 'nearest' }); return; }
       if (act === 'col-move') {
         const k = t.dataset.k; const dir = Number(t.dataset.d);
@@ -1164,6 +1565,7 @@
       event.preventDefault();
       if (form.dataset.form === 'view') return submitView(form);
       if (form.dataset.form === 'note') return saveNote(form);
+      if (form.dataset.form === 'action') return submitAction(form);
       if (form.dataset.form === 'goto') {
         const total = Math.max(1, Math.ceil(filtered().length / st.cfg.pageSize));
         st.page = Math.min(total, Math.max(1, Number(form.p.value) || 1));
@@ -1192,8 +1594,8 @@
     if (/^\d{1,18}$/.test(fid || '')) {
       params.delete(focus);
       try { history.replaceState(null, '', `${location.pathname}?${params.toString()}`); } catch { /* ignore */ }
-      // Une demande arrive pour être traitée : on ouvre directement son tiroir.
-      if (st.source === 'demandes' || st.source === 'tournees') openExisting(fid); else openFiche(fid);
+      // Une demande arrive pour être traitée (photos, validation) : son tiroir complet.
+      if (st.source === 'demandes') openExisting(fid); else openFiche(fid);
     }
   }
 

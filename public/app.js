@@ -4044,7 +4044,7 @@ async function renderOperations() {
     return window.TraxoOps.renderEntry(page, { api, publicLink, actionKey }, vue === 'creer' ? 'new' : 'home');
   }
   await window.TraxoOps.render(page, {
-    api, uiToast, uiConfirm, openModal, context, packageTypes: packageTypeOptions,
+    api, uiToast, uiConfirm, openModal, context, packageTypes: packageTypeOptions, actionKey, publicLink,
     openOrderDrawer, openIncidentDrawer, openRunDrawer, openRequestDrawer, openPickupEditor,
     newIncident: (onChange) => pickOrderForIncident(onChange),
   });

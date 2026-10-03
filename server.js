@@ -1556,6 +1556,9 @@ async function initDatabase() {
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS archived_by_user_id BIGINT;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS status_before_archive TEXT;
+      -- Informations commerciales déclarées par l'entreprise (articles, valeur,
+      -- poids, prix annoncé, règlement au vendeur). TRAXO n'encaisse rien.
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS commercial JSONB;
       CREATE TABLE IF NOT EXISTS ops_views (
         id BIGSERIAL PRIMARY KEY,
         company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -5482,6 +5485,20 @@ app.patch('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req
     values.push(sector || null);
     sets.push(`sector = $${values.length}`);
   }
+  if ('preferredChannel' in (req.body || {})) {
+    const channel = req.body.preferredChannel;
+    if (channel !== null && channel !== '' && !['call', 'whatsapp', 'sms', 'email'].includes(String(channel))) {
+      return res.status(400).json({ error: 'Canal de contact inconnu.' });
+    }
+    values.push(channel ? String(channel) : null);
+    sets.push(`preferred_channel = $${values.length}`);
+  }
+  if ('preferredLanguage' in (req.body || {})) {
+    const language = String(req.body.preferredLanguage || '').trim();
+    if (language && (language.length < 2 || language.length > 35)) return res.status(400).json({ error: 'Langue : 2 à 35 caractères.' });
+    values.push(language || null);
+    sets.push(`preferred_language = $${values.length}`);
+  }
   if ('serviceNotes' in (req.body || {})) {
     const notes = String(req.body.serviceNotes || '').trim();
     if (notes.length > 2000) return res.status(400).json({ error: 'Notes trop longues (2000 caractères max).' });
@@ -5579,7 +5596,7 @@ app.get('/api/app/crm/customers/:id', requireCompanyApi, asyncRoute(async (req, 
   const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
     const customer = await client.query(
       `SELECT id, customer_code, customer_type, sector, display_name, status,
-              preferred_language, service_notes, created_at, updated_at
+              preferred_language, preferred_channel, service_notes, created_at, updated_at
        FROM customers WHERE id = $1 AND company_id = $2`,
       [customerId, req.auth.company_id]
     );
@@ -6303,7 +6320,8 @@ app.post('/api/app/requests/:id/status', requireCompanyApi, asyncRoute(async (re
     [req.body.status, req.params.id, req.auth.company_id]
   );
   if (!result.rows[0]) return res.status(404).json({ error: 'Demande introuvable ou déjà archivée.' });
-  await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'status_changed', { status: req.body.status });
+  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+  await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'status_changed', { status: req.body.status, ...(reason ? { reason } : {}) });
   return res.json(result.rows[0]);
 }));
 
@@ -8087,7 +8105,7 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.id, o.reference, o.status, o.customer_name, o.customer_phone, o.requested_time,
             o.neighborhood, o.landmark, o.created_at, o.updated_at, o.customer_id,
-            o.package_type, o.package_description, o.archived_at,
+            o.package_type, o.package_description, o.archived_at, o.commercial, o.customer_request_id,
             (o.pickup_address IS NOT NULL OR o.pickup_name IS NOT NULL OR o.pickup_lat IS NOT NULL) AS has_pickup,
             pa.expected_amount_minor, pa.currency AS payment_currency,
             d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
@@ -8104,6 +8122,22 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     params
   );
   res.set('X-List-Limit', String(ORDERS_LIST_LIMIT));
+  // E-mail connu du client (contacts CRM, isolés par entreprise).
+  const customerIds = [...new Set(result.rows.map((row) => row.customer_id).filter(Boolean))];
+  const emails = new Map();
+  if (customerIds.length) {
+    try {
+      const found = await withCompanyTransaction(pool, req.auth.company_id, (client) => client.query(
+        `SELECT DISTINCT ON (customer_id) customer_id, value_display FROM customer_contacts
+         WHERE company_id = $1 AND customer_id = ANY($2::bigint[]) AND kind = 'email'
+           AND is_active = TRUE AND anonymized_at IS NULL
+         ORDER BY customer_id, is_primary DESC, id ASC`,
+        [req.auth.company_id, customerIds]
+      ));
+      found.rows.forEach((row) => emails.set(String(row.customer_id), row.value_display));
+    } catch (error) { console.error('Orders list emails:', error.message); }
+  }
+  result.rows.forEach((row) => { row.customer_email = row.customer_id ? emails.get(String(row.customer_id)) || null : null; });
   const online = await driverOnlineByUnique();
   return res.json(result.rows.map((row) => {
     const trackingLink = trackingLinkBusinessView(row);
@@ -8191,7 +8225,7 @@ app.get('/api/app/orders/:id', requireCompanyApi, asyncRoute(async (req, res) =>
               (SELECT d.name FROM drivers d WHERE d.company_id = a.company_id AND d.id = NULLIF(a.details->>'toDriverId', '')::bigint) AS to_driver_name
        FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
        WHERE a.company_id = $2 AND a.entity_type = 'order' AND a.entity_id = $1
-         AND a.action IN ('reassigned', 'trashed', 'restored')
+         AND a.action IN ('reassigned', 'trashed', 'restored', 'commercial_updated')
        ORDER BY a.created_at ASC, a.id ASC LIMIT 100`,
       [order.id, req.auth.company_id]
     ),
@@ -8473,6 +8507,62 @@ app.post('/api/app/orders/:id/tracking-link/revoke', requireCompanyApi, requireC
 // Réassignation d'une commande à un autre livreur (version simplifiée) : on
 // change le livreur, on déplace la commande de la tournée du jour de l'ancien
 // livreur vers celle du nouveau. Interdit sur une commande terminée.
+// Informations commerciales d'une commande, déclarées par l'entreprise.
+// Validation stricte : montants entiers en FCFA, listes bornées.
+function parseCommercial(body) {
+  const b = body && typeof body === 'object' ? body : {};
+  const int = (v, max) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 && n <= max ? n : NaN;
+  };
+  const text = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const out = {};
+  const ref = text(b.sellerReference, 60);
+  if (ref) out.sellerReference = ref;
+  if (b.items !== undefined) {
+    if (!Array.isArray(b.items) || b.items.length > 20) return { error: 'Vingt articles au plus.' };
+    const items = [];
+    for (const it of b.items) {
+      const name = text(it?.name, 120);
+      if (!name) continue;
+      const qty = int(it?.qty ?? 1, 999);
+      const unitMinor = int(it?.unitMinor, 100000000);
+      if (Number.isNaN(qty) || !qty) return { error: `Quantité invalide pour « ${name} ».` };
+      if (Number.isNaN(unitMinor)) return { error: `Prix invalide pour « ${name} ».` };
+      items.push({ name, qty, unitMinor });
+    }
+    if (items.length) out.items = items;
+  }
+  for (const [key, max] of [['declaredValueMinor', 1000000000], ['deliveryFeeMinor', 10000000]]) {
+    const v = int(b[key], max);
+    if (Number.isNaN(v)) return { error: 'Montant invalide : un nombre entier en FCFA.' };
+    if (v !== null) out[key] = v;
+  }
+  if (b.weightKg !== undefined && b.weightKg !== null && b.weightKg !== '') {
+    const w = Number(String(b.weightKg).replace(',', '.'));
+    if (!Number.isFinite(w) || w < 0 || w > 1000) return { error: 'Poids invalide (0 à 1 000 kg).' };
+    out.weightKg = Math.round(w * 100) / 100;
+  }
+  if (b.merchantPayment !== undefined && b.merchantPayment !== '') {
+    if (!['paid', 'due', 'unknown'].includes(b.merchantPayment)) return { error: 'Règlement au vendeur inconnu.' };
+    out.merchantPayment = b.merchantPayment;
+  }
+  return { value: Object.keys(out).length ? out : null };
+}
+app.patch('/api/app/orders/:id/commercial', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  if (!numericIdPattern.test(req.params.id)) return res.status(404).json({ error: 'Commande introuvable.' });
+  const parsed = parseCommercial(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const result = await pool.query(
+    `UPDATE orders SET commercial = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3 RETURNING id, commercial`,
+    [parsed.value, req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
+  await writeAudit(req.auth, 'order', result.rows[0].id, 'commercial_updated', {});
+  return res.json(result.rows[0]);
+}));
+
 app.post('/api/app/orders/:id/reassign', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
   const newDriverId = Number(req.body.driverId);
   if (!Number.isInteger(newDriverId) || newDriverId <= 0) return res.status(400).json({ error: 'Sélectionnez un livreur.' });

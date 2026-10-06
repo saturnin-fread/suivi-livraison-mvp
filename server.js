@@ -54,6 +54,7 @@ const {
   ROUTES_NUMERIC_COLUMNS,
 } = require('./lib/crm-dataset-exports');
 const { buildPremiumWorkbook } = require('./lib/crm-premium-xlsx');
+const reportBundle = require('./lib/report-bundle');
 const { DATASET_COLUMN_DEFS: EXPORT_COLUMN_DEFS } = require('./lib/crm-export-contract');
 const EXPORT_DATASET_TITLES = { operations: 'Commandes', customers: 'Clients', incidents: 'Incidents', routes: 'Tournées' };
 // Logo chargé une fois pour la couverture des exports premium (repli sans logo).
@@ -524,7 +525,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap|reports)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -1398,6 +1399,14 @@ async function initDatabase() {
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS request_fingerprint TEXT;
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS resolution_idempotency_key TEXT;
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS resolution_fingerprint TEXT;
+      -- Essai « Excel enrichi » : un par entreprise, enregistré côté serveur.
+      CREATE TABLE IF NOT EXISTS company_export_access (
+        company_id BIGINT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+        excel_trial_started_at TIMESTAMPTZ,
+        excel_trial_ends_at TIMESTAMPTZ,
+        excel_trial_started_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
       ALTER TABLE delivery_incidents ADD COLUMN IF NOT EXISTS assigned_to_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
 
       CREATE TABLE IF NOT EXISTS incident_events (
@@ -6569,6 +6578,122 @@ function buildExportCsv(headerLabels, columnKeys, rows) {
   const body = rows.map((row) => columnKeys.map((column) => esc(row[column])).join(',')).join('\r\n');
   return `﻿${header}${body ? `\r\n${body}` : ''}`;
 }
+
+// ---- Rapports unifiés (Commandes, Tournées, Incidents, Clients) ----------
+const EXCEL_TRIAL_HOURS = 168;
+async function excelAccess(companyId) {
+  const row = (await pool.query('SELECT excel_trial_started_at, excel_trial_ends_at FROM company_export_access WHERE company_id = $1', [companyId])).rows[0];
+  if (!row || !row.excel_trial_started_at) return { state: 'eligible', trialHours: EXCEL_TRIAL_HOURS };
+  const ends = new Date(row.excel_trial_ends_at);
+  return { state: ends.getTime() > Date.now() ? 'trial' : 'expired', trialStartedAt: row.excel_trial_started_at, trialEndsAt: row.excel_trial_ends_at, trialHours: EXCEL_TRIAL_HOURS };
+}
+function reportErrorResponse(res, error) {
+  if (error instanceof reportBundle.ReportError) return res.status(error.status).json({ error: error.message, code: error.code });
+  throw error;
+}
+const reportFiltersLabel = (sel, driverName) => [sel.zone ? `Zone : ${sel.zone}` : '', driverName ? `Livreur : ${driverName}` : '', sel.query ? `Recherche : « ${sel.query} »` : ''].filter(Boolean).join(' · ');
+
+app.get('/api/app/reports/options', requireCompanyApi, asyncRoute(async (req, res) => {
+  const role = String(req.auth.role || '');
+  const [zones, drivers, access] = await Promise.all([
+    pool.query(
+      `SELECT neighborhood AS zone, COUNT(*)::int AS n FROM orders
+       WHERE company_id = $1 AND archived_at IS NULL AND neighborhood IS NOT NULL AND neighborhood <> '' AND created_at > NOW() - INTERVAL '400 days'
+       GROUP BY neighborhood ORDER BY n DESC, neighborhood LIMIT 150`, [req.auth.company_id]),
+    pool.query('SELECT id, name FROM drivers WHERE company_id = $1 ORDER BY active DESC, name LIMIT 300', [req.auth.company_id]),
+    excelAccess(req.auth.company_id),
+  ]);
+  return res.json({
+    families: reportBundle.FAMILY_KEYS.map((key) => ({ key, name: reportBundle.FAMILIES[key].name, allowed: reportBundle.FAMILIES[key].roles.includes(role), fields: reportBundle.FAMILIES[key].fields })),
+    maxDays: { owner: 366, manager: 366, operator: 31 }[role] || 31,
+    zones: zones.rows.map((r) => r.zone).sort((a, b) => a.localeCompare(b, 'fr')),
+    drivers: drivers.rows.map((d) => ({ id: String(d.id), name: d.name })),
+    excel: access,
+    canStartTrial: ['owner', 'manager'].includes(role),
+    supportEmail: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(process.env.SUPPORT_EMAIL || '')) ? process.env.SUPPORT_EMAIL : 'support@gettraxo.app',
+  });
+}));
+
+app.post('/api/app/reports/preview', requireCompanyApi, asyncRoute(async (req, res) => {
+  let sel;
+  try { sel = reportBundle.normalizeSelection(req.body, String(req.auth.role || '')); } catch (error) { return reportErrorResponse(res, error); }
+  // L'aperçu ne compte que les lignes et n'envoie au navigateur que les colonnes choisies.
+  try {
+    const families = await withCompanyTransaction(pool, req.auth.company_id, (client) => reportBundle.loadSelection(client, req.auth.company_id, sel));
+    return res.json({
+      period: { from: sel.from, to: sel.to, label: reportBundle.periodLabel(sel) },
+      total: families.reduce((a, x) => a + x.rows.length, 0),
+      families: families.map((fam) => ({
+        key: fam.key, name: fam.name, count: fam.rows.length, statuses: fam.statuses,
+        fields: fam.fields.map((x) => x.key),
+        rows: fam.rows.slice(0, reportBundle.PREVIEW_LIMIT).map((r) => Object.fromEntries(fam.fields.map((x) => [x.key, x.type === 'date' ? reportBundle.localStamp(r[x.key]) : r[x.key]]))),
+        previewLimited: fam.rows.length > reportBundle.PREVIEW_LIMIT,
+      })),
+    });
+  } catch (error) { return reportErrorResponse(res, error); }
+}));
+
+app.post('/api/app/reports/excel-trial', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  // Activation volontaire et idempotente : un seul essai par entreprise.
+  await pool.query(
+    `INSERT INTO company_export_access (company_id, excel_trial_started_at, excel_trial_ends_at, excel_trial_started_by)
+     VALUES ($1, NOW(), NOW() + make_interval(hours => $2), $3)
+     ON CONFLICT (company_id) DO UPDATE SET
+       excel_trial_started_at = COALESCE(company_export_access.excel_trial_started_at, EXCLUDED.excel_trial_started_at),
+       excel_trial_ends_at = COALESCE(company_export_access.excel_trial_ends_at, EXCLUDED.excel_trial_ends_at),
+       excel_trial_started_by = COALESCE(company_export_access.excel_trial_started_by, EXCLUDED.excel_trial_started_by),
+       updated_at = NOW()`,
+    [req.auth.company_id, EXCEL_TRIAL_HOURS, req.auth.user_id]
+  );
+  const access = await excelAccess(req.auth.company_id);
+  await writeAudit(req.auth, 'company', req.auth.company_id, 'excel_trial_started', { endsAt: access.trialEndsAt });
+  return res.json(access);
+}));
+
+app.post('/api/app/reports/export', requireCompanyApi, asyncRoute(async (req, res) => {
+  const auth = req.auth;
+  const format = ['csv', 'svg', 'xlsx'].includes(req.body?.format) ? req.body.format : null;
+  if (!format) return res.status(400).json({ error: 'Choisissez un format.', code: 'BAD_FORMAT' });
+  let sel;
+  try { sel = reportBundle.normalizeSelection(req.body, String(auth.role || '')); } catch (error) { return reportErrorResponse(res, error); }
+  if (format === 'xlsx') {
+    const access = await excelAccess(auth.company_id);
+    if (access.state !== 'trial') {
+      return res.status(402).json({ error: access.state === 'expired' ? 'Votre essai Excel est terminé. Le CSV et le SVG restent gratuits.' : 'Activez l’essai Excel pour préparer ce classeur.', code: 'EXCEL_ACCESS_REQUIRED', excel: access });
+    }
+  }
+  const logContract = { dataset: `rapport:${sel.sources.join('+')}`, role: auth.role, purpose: 'reporting', period: { from: sel.from, to: sel.to }, columns: sel.fields, filters: { zone: sel.zone, driver: sel.driver, status: sel.status, query: sel.query ? 'oui' : null, format } };
+  let families;
+  try {
+    families = await withCompanyTransaction(pool, auth.company_id, (client) => reportBundle.loadSelection(client, auth.company_id, sel));
+  } catch (error) {
+    await recordExportLog(auth, logContract, 'failed', { failureCode: error.code || 'QUERY_FAILED' });
+    return reportErrorResponse(res, error);
+  }
+  const total = families.reduce((a, x) => a + x.rows.length, 0);
+  if (!total && format !== 'svg') {
+    await recordExportLog(auth, logContract, 'failed', { failureCode: 'EMPTY' });
+    return res.status(422).json({ error: 'Aucune donnée ne correspond à votre sélection.', code: 'EMPTY' });
+  }
+  const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [auth.company_id])).rows[0] || {};
+  const driverName = sel.driver ? (await pool.query('SELECT name FROM drivers WHERE id = $1 AND company_id = $2', [sel.driver, auth.company_id])).rows[0]?.name : null;
+  const meta = { companyName: company.name || '', filtersLabel: reportFiltersLabel(sel, driverName) };
+  const stamp = `${sel.from}_${sel.to}`;
+  let buffer; let type; let name;
+  if (format === 'csv' && families.length === 1) { buffer = Buffer.from(reportBundle.toCsv(families[0]), 'utf8'); type = 'text/csv; charset=utf-8'; name = `TRAXO_${families[0].file}_${stamp}.csv`; }
+  else if (format === 'csv') { buffer = await reportBundle.toZip(families); type = 'application/zip'; name = `TRAXO_Export_${stamp}.zip`; }
+  else if (format === 'svg') { buffer = Buffer.from(reportBundle.toSvg(families, sel, meta), 'utf8'); type = 'image/svg+xml'; name = `TRAXO_Synthese_${stamp}.svg`; }
+  else { buffer = await reportBundle.toXlsx(families, sel, meta); type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; name = `TRAXO_Bilan_activite_${stamp}.xlsx`; }
+  await recordExportLog(auth, logContract, 'completed', {
+    rowCount: total, worksheetCount: format === 'xlsx' ? families.length + 1 : families.length,
+    artifactBytes: buffer.length, artifactSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+  });
+  res.set('Content-Type', type);
+  res.set('Content-Disposition', `attachment; filename="${name}"`);
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Export-Rows', String(total));
+  return res.send(buffer);
+}));
 
 app.post('/api/app/crm/exports', requireCompanyApi, asyncRoute(async (req, res) => {
   const auth = req.auth;

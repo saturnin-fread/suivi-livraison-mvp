@@ -5222,7 +5222,8 @@ function reportSetSource(key) {
 }
 
 async function renderReports() {
-  setHeader('Rapports', 'Exportez les données utiles de votre activité');
+  setHeader('Rapports', 'Vos données, au même endroit.');
+  if (window.TraxoReports) return window.TraxoReports.render(page, { api, context, uiToast });
   page.classList.remove('page-crm');
   const sourceKey = new URLSearchParams(location.search).get('source');
   const source = REPORT_SOURCES.find((s) => s.key === sourceKey);

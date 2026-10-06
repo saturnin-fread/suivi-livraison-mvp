@@ -167,15 +167,42 @@ function setHeader(title, hint) {
 const operationsRoutes = ['/app/operations', '/app/demandes', '/app/nouvelle-commande', '/app/commandes', '/app/tournees', '/app/incidents'];
 function activateNavigation() {
   const pathname = location.pathname;
-  document.querySelectorAll('.nav a').forEach((link) => {
+  const billing = pathname === '/app/parametres' && new URLSearchParams(location.search).get('section') === 'billing';
+  document.querySelectorAll('.nav a[data-route]').forEach((link) => {
     const route = link.dataset.route;
     let active;
-    if (route === '/app') active = pathname === '/app';
+    if (route === 'billing') active = billing;
+    else if (route === '/app') active = pathname === '/app';
     else if (route === '/app/operations') active = operationsRoutes.some((base) => pathname === base || pathname.startsWith(`${base}/`));
+    else if (route === '/app/parametres') active = pathname.startsWith(route) && !billing;
     else active = pathname.startsWith(route);
     link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
+  // Le groupe « Espace de travail » s'ouvre quand il contient la page active,
+  // sinon il garde le choix de l'utilisateur.
+  const group = document.getElementById('navWorkspace');
+  if (group) {
+    let saved = null;
+    try { saved = localStorage.getItem('traxo.navWorkspace'); } catch { /* ignore */ }
+    const containsActive = Boolean(group.querySelector('a.active'));
+    setWorkspaceGroup(containsActive || saved === '1');
+  }
 }
+function setWorkspaceGroup(open) {
+  const group = document.getElementById('navWorkspace');
+  const btn = document.getElementById('navWorkspaceBtn');
+  if (!group || !btn) return;
+  group.classList.toggle('open', open);
+  btn.setAttribute('aria-expanded', String(open));
+}
+document.getElementById('navWorkspaceBtn')?.addEventListener('click', () => {
+  const group = document.getElementById('navWorkspace');
+  const open = !group.classList.contains('open');
+  if (!open && group.querySelector('a.active')) return; // ne jamais cacher la page courante
+  setWorkspaceGroup(open);
+  try { localStorage.setItem('traxo.navWorkspace', open ? '1' : '0'); } catch { /* ignore */ }
+});
 
 function renderError(error) {
   page.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
@@ -1828,139 +1855,42 @@ function readLogoFile(file) {
 }
 
 // ---- Recherche globale (Ctrl/⌘ K) ------------------------------------
-// Pages, actions rapides et données (commandes, demandes, tournées, livreurs,
-// clients). Les listes sont mises en cache 60 s ; les clients sont cherchés
-// côté serveur. Flèches pour naviguer, Entrée pour ouvrir, Échap pour fermer.
-const paletteState = { cache: null, cachedAt: 0 };
-const paletteIcons = {
-  page: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
-  order: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></svg>',
-  request: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
-  run: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H12"/></svg>',
-  driver: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></svg>',
-  client: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-  action: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
-};
-const paletteNormalize = (value) => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-
-async function paletteData() {
-  if (paletteState.cache && Date.now() - paletteState.cachedAt < 60_000) return paletteState.cache;
-  const safe = (promise) => promise.catch(() => []);
-  const [orders, requests, runs, drivers] = await Promise.all([
-    safe(api('/api/app/orders')), safe(api('/api/app/requests?scope=active')), safe(api('/api/app/runs')), safe(api('/api/app/drivers')),
-  ]);
-  paletteState.cache = { orders, requests, runs, drivers };
-  paletteState.cachedAt = Date.now();
-  return paletteState.cache;
-}
-
-function openCommandPalette() {
-  if (document.querySelector('.cp-backdrop')) return;
-  const go = (href) => () => { location.href = href; };
-  const staticItems = [
-    { group: 'Aller à', icon: 'page', label: 'Carte d’exploitation', run: go('/app/carte') },
-    { group: 'Aller à', icon: 'page', label: 'Tableau de bord', run: go('/app') },
-    { group: 'Aller à', icon: 'page', label: 'Opérations › Commandes', run: go('/app/operations?vue=commandes') },
-    { group: 'Aller à', icon: 'page', label: 'Opérations › Demandes', run: go('/app/operations?vue=demandes') },
-    { group: 'Aller à', icon: 'page', label: 'Opérations › Tournées', run: go('/app/operations?vue=tournees') },
-    { group: 'Aller à', icon: 'page', label: 'Opérations › Incidents', run: go('/app/operations?vue=incidents') },
-    { group: 'Aller à', icon: 'page', label: 'Livreurs', run: go('/app/livreurs') },
-    { group: 'Aller à', icon: 'page', label: 'Clients', run: go('/app/clients') },
-    { group: 'Aller à', icon: 'page', label: 'Rapports et exports', run: go('/app/rapports') },
-    { group: 'Aller à', icon: 'page', label: 'Paramètres', run: go('/app/parametres') },
-    { group: 'Actions', icon: 'action', label: 'Nouvelle commande', run: go('/app/nouvelle-commande') },
-    { group: 'Actions', icon: 'action', label: 'Nouvelle demande (lien client)', run: go('/app/operations?vue=creer') },
-    { group: 'Actions', icon: 'action', label: 'Déclarer un incident', run: () => pickOrderForIncident() },
-    { group: 'Actions', icon: 'action', label: 'Sécurité du compte (double authentification)', run: go('/app/parametres?section=security') },
+// Module public/search.js : données cherchées côté serveur (/api/app/search,
+// numéros partiels, codes, contacts et lieux des clients), pages et actions
+// filtrées ici selon le rôle. Flèches, Entrée, Échap ; la fiche exacte s'ouvre.
+function palettePages() {
+  const manager = ['owner', 'manager'].includes(context?.user?.role);
+  const p = (title, href, path, keywords = '') => ({ title, href, path, keywords });
+  return [
+    p('Carte d’exploitation', '/app/carte', ['Au quotidien'], 'map livreurs position'),
+    p('Tableau de bord', '/app', ['Au quotidien'], 'dashboard statistiques'),
+    p('Commandes', '/app/operations?vue=commandes', ['Opérations'], 'livraisons'),
+    p('Demandes', '/app/operations?vue=demandes', ['Opérations'], 'liens clients'),
+    p('Tournées', '/app/operations?vue=tournees', ['Opérations'], 'itinéraires'),
+    p('Incidents', '/app/operations?vue=incidents', ['Opérations'], 'problèmes'),
+    p('Livreurs', '/app/livreurs', ['Au quotidien']),
+    p('Clients', '/app/clients', ['Au quotidien'], 'carnet contacts'),
+    p('Rapports et exports', '/app/rapports', ['Pilotage'], 'csv excel export bilan'),
+    ...(manager ? [p('Équipe et accès', '/app/equipe', ['Espace de travail'], 'membres rôles invitations')] : []),
+    p('Paramètres', '/app/parametres', ['Espace de travail'], 'réglages entreprise'),
+    p('Sécurité du compte', '/app/parametres?section=security', ['Paramètres'], 'double authentification mot de passe'),
+    p('Facturation', '/app/parametres?section=billing', ['Paramètres'], 'abonnement factures paiement'),
+    p('Notifications', '/app/notifications', ['Compte']),
   ];
-  const backdrop = document.createElement('div');
-  backdrop.className = 'cp-backdrop';
-  backdrop.innerHTML = `<div class="cp" role="dialog" aria-modal="true" aria-label="Recherche globale">
-      <div class="cp-input"><span>${fleetIcons.search}</span><input type="search" id="cpInput" placeholder="Rechercher une commande, un client, un livreur, une page…" autocomplete="off" spellcheck="false"><kbd>Échap</kbd></div>
-      <div class="cp-results" id="cpResults" role="listbox"></div>
-      <div class="cp-foot"><span><kbd>↑</kbd><kbd>↓</kbd> naviguer</span><span><kbd>Entrée</kbd> ouvrir</span><span><kbd>Ctrl</kbd><kbd>K</kbd> rouvrir</span></div>
-    </div>`;
-  const input = backdrop.querySelector('#cpInput');
-  const results = backdrop.querySelector('#cpResults');
-  let items = [];
-  let active = 0;
-  let customerTimer = null;
-  let customers = [];
-  let lastCustomerQuery = '';
-  const close = () => { document.removeEventListener('keydown', onKey, true); backdrop.remove(); };
-  const choose = (item) => { close(); item.run(); };
-
-  const build = (data, raw) => {
-    const q = paletteNormalize(raw.trim());
-    const match = (text) => !q || paletteNormalize(text).includes(q);
-    const out = staticItems.filter((item) => match(`${item.label} ${item.group}`)).slice(0, q ? 6 : 14);
-    if (q && data) {
-      const take = (list, max) => list.slice(0, max);
-      out.push(...take(data.orders.filter((o) => match(`${o.reference || ''} CMD-${o.id} ${o.customer_name || ''} ${o.customer_phone || ''} ${o.neighborhood || ''} ${o.driver_name || ''}`)), 6).map((o) => ({
-        group: 'Commandes', icon: 'order', label: `${orderCode(o.reference, o.id)} · ${o.customer_name || 'Client'}`, hint: `${o.status}${o.neighborhood ? ` · ${o.neighborhood}` : ''}`, run: () => openOrderDrawer(o.id),
-      })));
-      out.push(...take(data.requests.filter((r) => match(`DEM-${r.id} ${r.customer_name || ''} ${r.customer_phone || ''} ${r.neighborhood || ''}`)), 5).map((r) => ({
-        group: 'Demandes', icon: 'request', label: `DEM-${r.id} · ${r.customer_name || 'En attente du client'}`, hint: requestStatusLabel(r.status), run: () => openRequestDrawer(r.id),
-      })));
-      out.push(...take(data.runs.filter((r) => match(`${r.name || ''} TRN-${r.id} ${r.driver_name || ''}`)), 4).map((r) => ({
-        group: 'Tournées', icon: 'run', label: r.name || `Tournée ${r.id}`, hint: `${r.driver_name || ''} · ${runStatusLabels[r.status] || r.status}`, run: () => openRunDrawer(r.id),
-      })));
-      out.push(...take(data.drivers.filter((d) => match(`${d.name || ''} ${d.phone || ''} ${d.vehicleType || ''}`)), 4).map((d) => ({
-        group: 'Livreurs', icon: 'driver', label: d.name, hint: d.vehicleType || 'Livreur', run: go(`/app/livreurs?livreur=${encodeURIComponent(d.id)}`),
-      })));
-      out.push(...customers.slice(0, 5).map((c) => ({
-        group: 'Clients', icon: 'client', label: c.display_name || c.name || `Client ${c.id}`, hint: c.primary_phone || c.phone || '', run: go(`/app/clients/${encodeURIComponent(c.id)}`),
-      })));
-    }
-    return out;
-  };
-
-  const paint = (data) => {
-    items = build(data, input.value);
-    active = Math.min(active, Math.max(0, items.length - 1));
-    if (!items.length) { results.innerHTML = '<div class="cp-empty">Aucun résultat. Essayez un nom, un numéro (CMD-…, DEM-…) ou un quartier.</div>'; return; }
-    let group = '';
-    results.innerHTML = items.map((item, i) => {
-      const head = item.group !== group ? `<div class="cp-group">${escapeHtml(item.group)}</div>` : '';
-      group = item.group;
-      return `${head}<button type="button" class="cp-item${i === active ? ' on' : ''}" data-i="${i}" role="option" aria-selected="${i === active}"><span class="cp-ic">${paletteIcons[item.icon]}</span><span class="cp-label">${escapeHtml(item.label)}</span>${item.hint ? `<span class="cp-hint">${escapeHtml(item.hint)}</span>` : ''}</button>`;
-    }).join('');
-    results.querySelectorAll('.cp-item').forEach((button) => {
-      button.addEventListener('click', () => choose(items[Number(button.dataset.i)]));
-      button.addEventListener('mousemove', () => { if (active !== Number(button.dataset.i)) { active = Number(button.dataset.i); setActive(); } });
-    });
-  };
-  const setActive = () => results.querySelectorAll('.cp-item').forEach((button, i) => {
-    button.classList.toggle('on', i === active);
-    button.setAttribute('aria-selected', String(i === active));
-    if (i === active) button.scrollIntoView({ block: 'nearest' });
-  });
-  const onKey = (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); close(); }
-    else if (event.key === 'ArrowDown') { event.preventDefault(); active = Math.min(items.length - 1, active + 1); setActive(); }
-    else if (event.key === 'ArrowUp') { event.preventDefault(); active = Math.max(0, active - 1); setActive(); }
-    else if (event.key === 'Enter' && items[active]) { event.preventDefault(); choose(items[active]); }
-  };
-  let data = null;
-  input.addEventListener('input', () => {
-    active = 0;
-    paint(data);
-    const q = input.value.trim();
-    clearTimeout(customerTimer);
-    if (q.length >= 2 && q !== lastCustomerQuery) {
-      customerTimer = setTimeout(async () => {
-        lastCustomerQuery = q;
-        try { customers = (await api(`/api/app/crm/customers?limit=5&q=${encodeURIComponent(q)}`)).customers || []; } catch { customers = []; }
-        if (input.value.trim() === q) paint(data);
-      }, 220);
-    } else if (q.length < 2) customers = [];
-  });
-  backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close(); });
-  document.addEventListener('keydown', onKey, true);
-  document.body.appendChild(backdrop);
-  paint(null);
-  input.focus();
-  paletteData().then((loaded) => { data = loaded; if (document.body.contains(backdrop)) paint(data); });
+}
+function paletteActions() {
+  const canWrite = context?.user?.role !== 'viewer';
+  const a = (title, extra) => ({ title, path: ['Action'], ...extra });
+  return canWrite ? [
+    a('Nouvelle commande', { href: '/app/nouvelle-commande', keywords: 'créer livraison' }),
+    a('Nouvelle demande (lien client)', { href: '/app/operations?vue=creer', keywords: 'lien position' }),
+    a('Déclarer un incident', { run: () => pickOrderForIncident(), keywords: 'problème' }),
+    ...(window.TraxoSupport ? [a('Contacter le support', { run: () => window.TraxoSupport.open(), keywords: 'aide demande assistance' })] : []),
+  ] : [];
+}
+function openCommandPalette(initialQuery = '') {
+  if (!window.TraxoSearch) { uiToast?.('La recherche n’a pas pu se charger. Rechargez la page.'); return; }
+  window.TraxoSearch.open({ api, pages: palettePages(), actions: paletteActions(), initialQuery });
 }
 
 document.addEventListener('keydown', (event) => {
@@ -2141,7 +2071,7 @@ async function renderSettings() {
   const isOwner = context.user.role === 'owner';
   const tabs = [
     ...settingsTabs.filter((t) => canEdit || !t.editors),
-    ...(context.user.isPlatformAdmin ? [{ key: 'whatsapp', label: 'WhatsApp TRAXO' }, { key: 'vigilance', label: 'Vigilance TRAXO' }] : []),
+    ...(context.user.isPlatformAdmin ? [{ key: 'support', label: 'Support TRAXO' }, { key: 'whatsapp', label: 'WhatsApp TRAXO' }, { key: 'vigilance', label: 'Vigilance TRAXO' }] : []),
   ];
   const params = new URLSearchParams(location.search);
   let section = (params.get('section') || 'overview').toLowerCase();
@@ -2186,7 +2116,7 @@ async function renderSettings() {
       if (yes) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
     content.innerHTML = '<div class="loading-state" style="padding:40px">Chargement…</div>';
-    const views = { overview, general, deliveries, team, security, billing, plans: plansView, whatsapp: renderWhatsApp, vigilance: renderVigilance };
+    const views = { overview, general, deliveries, team, security, billing, plans: plansView, whatsapp: renderWhatsApp, vigilance: renderVigilance, support: renderSupportDesk };
     try {
       await views[section](content);
       if (context.company.activationStatus === 'preview' && ['general', 'deliveries', 'team', 'billing', 'plans'].includes(section)) {
@@ -2767,6 +2697,81 @@ async function renderSettings() {
   // ---- Vigilance TRAXO (administrateur plateforme) ------------------------
   // Cas qui concernent plusieurs entreprises : essais gratuits réutilisés,
   // numéros de livreur présents dans plusieurs espaces.
+  // Bureau du support TRAXO : toutes les demandes, réponses, notes internes, statuts.
+  async function renderSupportDesk(box) {
+    const deskParams = new URLSearchParams(location.search);
+    const desk = { filter: 'open', q: '', id: deskParams.get('demande'), upload: null, busy: false };
+    const labels = { received: 'Reçue', in_progress: 'En cours', waiting_customer: 'Réponse attendue', resolved: 'Résolue' };
+    const tone = { received: 'tx-badge', in_progress: 'tx-badge tx-badge-blue', waiting_customer: 'tx-badge tx-badge-red', resolved: 'tx-badge tx-badge-green' };
+    const post = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const stillHere = () => document.body.contains(box) && section === 'support';
+    async function list() {
+      if (!stillHere()) return;
+      const data = await api(`/api/app/platform/support/tickets?status=${desk.filter}&q=${encodeURIComponent(desk.q)}`);
+      const c = data.counts || {};
+      const filters = [['open', 'Ouvertes', (c.received || 0) + (c.in_progress || 0) + (c.waiting_customer || 0)], ['received', 'Reçues', c.received || 0], ['in_progress', 'En cours', c.in_progress || 0], ['waiting_customer', 'Réponse attendue', c.waiting_customer || 0], ['resolved', 'Résolues', c.resolved || 0], ['all', 'Toutes', Object.values(c).reduce((a, b) => a + b, 0)]];
+      box.innerHTML = `${heading('Support TRAXO', 'Les demandes des entreprises, une discussion par sujet. Les notes internes ne sont jamais visibles du client.')}
+        <section class="tx-panel sd"><div class="sd-tools"><div class="sd-filters" role="group" aria-label="Statut">${filters.map(([k, n, v]) => `<button type="button" data-filter="${k}" aria-pressed="${desk.filter === k}">${n}<em>${v}</em></button>`).join('')}</div>
+          <input type="search" class="sd-q" placeholder="Référence, sujet ou entreprise…" value="${escapeHtml(desk.q)}" aria-label="Rechercher une demande"></div>
+          <div class="sd-list">${data.tickets.length ? data.tickets.map((t) => `<button type="button" class="sd-row" data-open="${escapeHtml(t.id)}"><span class="sd-ref">${escapeHtml(t.reference)}${t.unread ? '<i class="sd-dot" aria-label="Nouveau message client"></i>' : ''}</span><span class="sd-main"><strong>${escapeHtml(t.subject)}</strong><small>${escapeHtml(t.companyName)} · ${escapeHtml(t.categoryLabel)}${t.assignedTo ? ` · ${escapeHtml(t.assignedTo)}` : ''}</small></span><span class="${tone[t.status]}">${labels[t.status]}</span><span class="sd-when">${escapeHtml(formatDate(t.lastActivityAt))}</span></button>`).join('') : '<p class="tx-muted sd-empty">Aucune demande pour ce filtre.</p>'}</div></section>`;
+      box.querySelectorAll('[data-filter]').forEach((b) => b.addEventListener('click', () => { desk.filter = b.dataset.filter; list(); }));
+      let timer;
+      box.querySelector('.sd-q').addEventListener('input', (e) => { clearTimeout(timer); timer = setTimeout(() => { desk.q = e.target.value; list().then(() => { const q = box.querySelector('.sd-q'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }); }, 300); });
+      box.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => { desk.id = b.dataset.open; detail(); }));
+    }
+    async function detail() {
+      if (!stillHere()) return;
+      try { history.replaceState(null, '', `/app/parametres?section=support&demande=${encodeURIComponent(desk.id)}`); } catch { /* ignore */ }
+      const data = await api(`/api/app/platform/support/tickets/${encodeURIComponent(desk.id)}`);
+      const t = data.ticket;
+      const evLabel = (e) => (e.kind === 'created' ? 'Demande créée' : e.kind === 'reopened' ? 'Rouverte par le client' : e.kind === 'assigned' ? 'Attribution modifiée' : `Statut : ${labels[e.to] || e.to}`);
+      const items = [...data.messages.map((m) => ({ at: m.createdAt, m })), ...data.events.map((e) => ({ at: e.at, e }))].sort((a, b) => (new Date(a.at) - new Date(b.at)) || (a.e && !b.e ? -1 : !a.e && b.e ? 1 : 0));
+      const file = (f) => {
+        const url = `/api/app/platform/support/files/${encodeURIComponent(f.id)}`;
+        if (f.kind === 'image') return `<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(f.name)}" class="sd-img"></a>`;
+        if (f.kind === 'audio') return `<audio controls preload="none" src="${url}"></audio>`;
+        return `<a href="${url}?download=1">${escapeHtml(f.name)}</a>`;
+      };
+      box.innerHTML = `<div class="sd-back"><button type="button" class="tx-button tx-button-quiet" data-back>← Toutes les demandes</button></div>
+        <section class="tx-panel sd"><div class="sd-head"><div><span class="sd-ref">${escapeHtml(t.reference)} · ${escapeHtml(t.categoryLabel)} · ${escapeHtml(t.companyName)} (espace #${escapeHtml(t.companyId)})</span><h2>${escapeHtml(t.subject)}</h2><small class="tx-muted">Ouverte par ${escapeHtml(t.createdBy || '—')} · ${escapeHtml(formatDate(t.createdAt))}</small></div>
+          <div class="sd-ctrl"><label>Statut<select data-status>${Object.entries(labels).map(([k, n]) => `<option value="${k}" ${t.status === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+          <label>Attribuée à<input data-assign value="${escapeHtml(t.assignedTo || '')}" placeholder="Facultatif" maxlength="80"></label></div></div>
+          <div class="sd-thread">${items.map((it) => it.e ? `<p class="sd-event">${escapeHtml(evLabel(it.e))} · ${escapeHtml(formatDate(it.e.at))}</p>`
+            : `<div class="sd-msg ${it.m.author === 'support' ? 'mine' : ''} ${it.m.internal ? 'internal' : ''}"><small>${it.m.internal ? 'Note interne · ' : ''}${escapeHtml(it.m.authorLabel)} · ${escapeHtml(formatDate(it.m.createdAt))}</small>${it.m.body ? `<p>${escapeHtml(it.m.body)}</p>` : ''}${it.m.attachments.map(file).join('')}</div>`).join('')}</div>
+          <form class="sd-reply" novalidate><textarea name="message" rows="4" maxlength="5000" placeholder="Votre réponse au client…" aria-label="Réponse"></textarea>
+            <div class="sd-file-line"></div>
+            <div class="sd-reply-tools"><label class="sd-check"><input type="checkbox" name="internal"> Note interne (invisible du client)</label>
+              <label>Après l’envoi<select name="status"><option value="">Statut inchangé</option><option value="waiting_customer">Réponse attendue du client</option><option value="resolved">Résolue</option><option value="in_progress">En cours</option></select></label>
+              <label class="tx-button tx-button-quiet sd-attach">Joindre<input type="file" hidden accept="image/jpeg,image/png,image/webp,application/pdf,audio/*"></label>
+              <button type="submit" class="tx-button tx-button-primary">Envoyer</button></div></form></section>`;
+      const form = box.querySelector('.sd-reply');
+      const key = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())).replace(/-/g, '');
+      box.querySelector('[data-back]').addEventListener('click', () => { desk.id = null; try { history.replaceState(null, '', '/app/parametres?section=support'); } catch { /* ignore */ } list(); });
+      box.querySelector('[data-status]').addEventListener('change', async (e) => { try { await post(`/api/app/platform/support/tickets/${t.id}/status`, { status: e.target.value }); uiToast('Statut mis à jour.'); detail(); } catch (error) { uiToast(error.message, 'error'); } });
+      box.querySelector('[data-assign]').addEventListener('change', async (e) => { try { await post(`/api/app/platform/support/tickets/${t.id}/assign`, { assignee: e.target.value }); uiToast('Attribution enregistrée.'); } catch (error) { uiToast(error.message, 'error'); } });
+      form.querySelector('input[type="file"]').addEventListener('change', async (e) => {
+        const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+        const line = form.querySelector('.sd-file-line'); line.textContent = `Envoi de ${f.name}…`;
+        try {
+          const res = await fetch(`/api/app/platform/support/uploads?name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+          const out = await res.json(); if (!res.ok) throw new Error(out.error || 'Envoi impossible.');
+          desk.upload = out; line.textContent = `Pièce jointe : ${out.name}`;
+        } catch (error) { desk.upload = null; line.textContent = error.message; }
+      });
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault(); if (desk.busy) return;
+        const fd = new FormData(form);
+        desk.busy = true; form.querySelector('[type="submit"]').disabled = true;
+        try {
+          await post(`/api/app/platform/support/tickets/${t.id}/messages`, { message: fd.get('message'), internal: fd.get('internal') === 'on', status: fd.get('status') || undefined, uploadId: desk.upload?.id, idempotencyKey: key });
+          desk.upload = null; desk.busy = false; uiToast(fd.get('internal') === 'on' ? 'Note interne ajoutée.' : 'Réponse envoyée au client.'); detail();
+        } catch (error) { desk.busy = false; form.querySelector('[type="submit"]').disabled = false; uiToast(error.message, 'error'); }
+      });
+      const thread = box.querySelector('.sd-thread'); thread.scrollTop = thread.scrollHeight;
+    }
+    if (desk.id && /^\d{1,18}$/.test(desk.id)) await detail(); else await list();
+  }
+
   async function renderVigilance(box) {
     const data = await api('/api/app/platform/signals');
     const list = data.signals || [];
@@ -5482,6 +5487,7 @@ async function start() {
     context = await api('/api/app/context');
     document.getElementById('companyName').textContent = context.company.name;
     document.getElementById('topCompany').textContent = context.company.name;
+    const crumbCompany = document.getElementById('topCrumbCompany'); if (crumbCompany) crumbCompany.textContent = context.company.name;
     document.getElementById('topRole').textContent = roleLabels[context.user.role] || context.user.role;
     document.getElementById('userName').textContent = context.user.name || context.user.email;
     document.getElementById('userEmail').textContent = context.user.email;
@@ -5494,6 +5500,7 @@ async function start() {
       document.querySelector('[data-route="/app/equipe"]')?.remove();
     }
     activateNavigation();
+    try { window.TraxoSupport?.init({ api, context, toast: uiToast }); } catch (error) { console.error('support', error); }
     const path = location.pathname;
     const detail = path.match(/^\/app\/demandes\/(\d+)$/);
     if (detail) { location.replace(`/app/operations?vue=demandes&demande=${encodeURIComponent(detail[1])}`); return; }
@@ -5582,6 +5589,7 @@ const tnIcons = {
   delivered: '<path d="M20 6 9 17l-5-5"/>',
   client: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/>',
   security: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  support: '<path d="M3 11h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5Zm0 0a9 9 0 1 1 18 0m0 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"/><path d="M21 16v2a4 4 0 0 1-4 4h-5"/>',
   vigilance: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
   sliders: '<path d="M21 5H3"/><path d="M15 12H3"/><path d="M17 19H3"/><circle cx="19" cy="12" r="2"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -5596,7 +5604,7 @@ const tnIcons = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
 };
 const tnIcon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tnIcons[name] || ''}</svg>`;
-const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red', vigilance: 'tn-sand' };
+const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red', vigilance: 'tn-sand', support: 'tn-blue' };
 const tnCategoryLabels = { incidents: 'Incident de livraison', requests: 'Demandes clients', deliveries: 'Livraisons', runs: 'Tournées', clients: 'Clients', security: 'Sécurité' };
 const tnTime = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''; };
 function tnDayGroup(iso) {

@@ -55,6 +55,8 @@ const {
 } = require('./lib/crm-dataset-exports');
 const { buildPremiumWorkbook } = require('./lib/crm-premium-xlsx');
 const reportBundle = require('./lib/report-bundle');
+const { createGlobalSearch } = require('./lib/global-search');
+const { createSupport, SupportError, MAX_FILE_BYTES: SUPPORT_MAX_FILE_BYTES } = require('./lib/support');
 const { DATASET_COLUMN_DEFS: EXPORT_COLUMN_DEFS } = require('./lib/crm-export-contract');
 const EXPORT_DATASET_TITLES = { operations: 'Commandes', customers: 'Clients', incidents: 'Incidents', routes: 'Tournées' };
 // Logo chargé une fois pour la couverture des exports premium (repli sans logo).
@@ -525,7 +527,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap|reports)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap|reports|search|support)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -1915,10 +1917,10 @@ function requireCompanyApi(req, res, next) {
     const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     // Exceptions : la sécurité du compte personnel (mot de passe, double
     // authentification, sessions, numéro) et la demande de devis restent possibles.
-    const previewAllowed = req.path.startsWith('/api/app/account/') || req.path === '/api/app/billing/quote-request';
+    const previewAllowed = req.path.startsWith('/api/app/account/') || req.path === '/api/app/billing/quote-request' || req.path.startsWith('/api/app/support/');
     // Lecture seule : tout consulter, ne rien modifier. Restent possibles la
     // sécurité de son propre compte, ses notifications et ses vues personnelles.
-    const viewerAllowed = req.path.startsWith('/api/app/account/') || req.path.startsWith('/api/app/notifications') || req.path.startsWith('/api/app/ops/views');
+    const viewerAllowed = req.path.startsWith('/api/app/account/') || req.path.startsWith('/api/app/notifications') || req.path.startsWith('/api/app/ops/views') || req.path.startsWith('/api/app/support/');
     if (isWrite && session.role === 'viewer' && !viewerAllowed) {
       return res.status(403).json({ error: 'Votre accès est en lecture seule. Demandez à un responsable de modifier votre rôle.', code: 'READ_ONLY' });
     }
@@ -5460,6 +5462,19 @@ async function buildNotificationItems(cid, { currentSessionHash = null, userId =
       });
     }
   }
+  // Support : une réponse non lue ouvre directement la bonne demande. Même source
+  // que la pastille du support : lire la demande retire la notification.
+  if (support && userId) {
+    for (const u of await support.unreadFor({ company_id: cid, user_id: userId, role }).catch(() => [])) {
+      items.push({
+        id: `support-${u.id}-${u.message_id}`, category: 'support', type: 'support', priority: 'action',
+        title: 'Nouvelle réponse du support', summary: `${u.reference} · ${u.subject}`,
+        meta: u.status === 'waiting_customer' ? 'Votre réponse attendue' : u.status === 'resolved' ? 'Résolue' : 'Support TRAXO',
+        detail: 'L’équipe TRAXO vous a répondu. Ouvrez la demande pour lire la réponse et continuer l’échange.',
+        ref: u.reference, at: u.created_at, href: `/app?support=${u.id}`, cta: 'Lire la réponse',
+      });
+    }
+  }
   items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   return items;
 }
@@ -6648,6 +6663,161 @@ app.post('/api/app/reports/excel-trial', requireCompanyApi, requireCompanyRoles(
   const access = await excelAccess(req.auth.company_id);
   await writeAudit(req.auth, 'company', req.auth.company_id, 'excel_trial_started', { endsAt: access.trialEndsAt });
   return res.json(access);
+}));
+
+// --- Recherche globale (Ctrl/⌘ K) -------------------------------------------
+// Numéros (fragment, format international), codes CMD/DEM/TRN/INC, et mots
+// présents n'importe où dans la fiche (contacts, lieux, notes). Toujours limitée
+// à l'entreprise de la session ; les tables CRM passent par la RLS.
+const globalSearch = pool ? createGlobalSearch({ pool, withCompanyTransaction }) : null;
+const globalSearchRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createTokenPolicy({ limiter: trackingLimiter('search-user', { capacity: 90, refillTokens: 90, refillIntervalMs: 60_000, maxEntries: 20_000 }), key: (req) => `u${req.auth?.user_id || 'x'}` }),
+  ],
+});
+app.get('/api/app/search', requireCompanyApi, globalSearchRateLimit, asyncRoute(async (req, res) => {
+  if (!globalSearch) return res.status(503).json({ error: 'Recherche momentanément indisponible.' });
+  const result = await globalSearch.search(req.auth.company_id, req.query.q, { scope: String(req.query.scope || 'all') });
+  res.set('Cache-Control', 'no-store');
+  return res.json(result);
+}));
+
+// --- Support TRAXO : demandes (tickets) --------------------------------------
+// Une demande = un sujet, une référence TRX-…, un statut, sa propre discussion.
+// Reste accessible en mode aperçu et en lecture seule (voir requireCompanyApi).
+function supportRecipient() {
+  const configured = String(process.env.SUPPORT_EMAIL || '').trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured)) return configured;
+  return String(process.env.PLATFORM_ADMIN_EMAILS || '').split(',').map(normalizeEmail).find(Boolean) || null;
+}
+async function notifySupport(kind, { ticket, message = '', auth = null } = {}) {
+  if (!pool || !ticket) return;
+  const base = publicBaseUrl(null);
+  const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [ticket.company_id])).rows[0] || {};
+  const excerpt = String(message || '').slice(0, 1200);
+  if (['ticket_created', 'customer_message', 'ticket_reopened'].includes(kind)) {
+    const to = supportRecipient();
+    if (!to) return;
+    const title = { ticket_created: 'Nouvelle demande', customer_message: 'Nouveau message', ticket_reopened: 'Demande rouverte' }[kind];
+    const lines = [`${ticket.reference} · ${ticket.subject}`, `Entreprise : ${company.name || '—'} (espace #${ticket.company_id})`, `De : ${auth?.display_name || auth?.email || '—'}`];
+    await sendEmail({
+      to,
+      subject: `[${ticket.reference}] ${title} — ${ticket.subject}`,
+      html: renderEmailShell({
+        baseUrl: base, heading: `${title} au support`,
+        introHtml: lines.map((l) => escHtmlServer(l)).join('<br>'),
+        bodyHtml: excerpt ? `<p style="white-space:pre-wrap;margin:0">${escHtmlServer(excerpt)}</p>` : '<p style="margin:0">(pièce jointe seulement)</p>',
+        ctaLabel: 'Ouvrir la demande', ctaUrl: base ? `${base}/app/parametres?section=support&demande=${ticket.id}` : undefined,
+        footerNote: 'Répondez depuis TRAXO : la réponse par e-mail n’est pas encore rattachée à la demande.',
+      }),
+      text: [...lines, '', excerpt].join('\n'),
+    }).catch((error) => console.error('support email', error.message));
+    return;
+  }
+  // Réponse du support ou changement d'état : prévenir la personne qui a ouvert la demande.
+  const owner = ticket.created_by_user_id ? (await pool.query('SELECT email, display_name FROM users WHERE id = $1', [ticket.created_by_user_id])).rows[0] : null;
+  if (!owner?.email) return;
+  const heading = kind === 'support_reply' ? 'Nouvelle réponse de l’équipe TRAXO'
+    : ticket.status === 'resolved' ? 'Votre demande est résolue' : 'Nous attendons votre réponse';
+  await sendEmail({
+    to: owner.email,
+    subject: `[${ticket.reference}] ${heading}`,
+    html: renderEmailShell({
+      baseUrl: base, heading,
+      introHtml: `${escHtmlServer(ticket.reference)} · ${escHtmlServer(ticket.subject)}`,
+      bodyHtml: '<p style="margin:0">Ouvrez TRAXO pour lire la réponse et continuer l’échange.</p>',
+      ctaLabel: 'Voir ma demande', ctaUrl: base ? `${base}/app?support=${ticket.id}` : undefined,
+      footerNote: 'Pour la sécurité de vos échanges, la réponse complète est consultable uniquement dans TRAXO.',
+    }),
+    text: `${heading}\n${ticket.reference} · ${ticket.subject}\n${base ? `${base}/app?support=${ticket.id}` : ''}`,
+  }).catch((error) => console.error('support email', error.message));
+}
+const support = pool ? createSupport({ pool, notify: notifySupport }) : null;
+const supportRaw = express.raw({ type: () => true, limit: SUPPORT_MAX_FILE_BYTES + 1024 });
+function supportRoute(handler) {
+  return asyncRoute(async (req, res) => {
+    if (!support) return res.status(503).json({ error: 'Le support est momentanément indisponible.' });
+    try { return await handler(req, res); } catch (error) {
+      if (error instanceof SupportError) return res.status(error.status).json({ error: error.message, code: error.code });
+      if (error.type === 'entity.too.large') return res.status(413).json({ error: 'Ce fichier dépasse 10 Mo.' });
+      throw error;
+    }
+  });
+}
+function sendSupportFile(res, f, download) {
+  const inline = !download && ['image', 'audio'].includes(f.kind);
+  res.set({
+    'Content-Type': f.mime, 'Content-Length': String(f.size_bytes), 'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox",
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.file_name)}`,
+  });
+  return res.end(f.data);
+}
+app.get('/api/app/support/tickets', requireCompanyApi, supportRoute(async (req, res) => {
+  res.json(await support.listTickets(req.auth, { tab: String(req.query.tab || 'open'), before: req.query.before || null }));
+}));
+app.post('/api/app/support/tickets', requireCompanyApi, supportRoute(async (req, res) => {
+  const out = await support.createTicket(req.auth, req.body || {});
+  if (!out.replayed) await writeAudit(req.auth, 'support_ticket', out.ticket.id, 'support_ticket_created', { reference: out.ticket.reference });
+  res.status(out.replayed ? 200 : 201).json(out);
+}));
+app.get('/api/app/support/tickets/:id', requireCompanyApi, supportRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await support.getTicket(req.auth, req.params.id));
+}));
+app.post('/api/app/support/tickets/:id/messages', requireCompanyApi, supportRoute(async (req, res) => {
+  const out = await support.postCustomerMessage(req.auth, req.params.id, req.body || {});
+  res.status(out.replayed ? 200 : 201).json(out);
+}));
+app.post('/api/app/support/tickets/:id/read', requireCompanyApi, supportRoute(async (req, res) => {
+  res.json(await support.readTicket(req.auth, req.params.id, req.body?.messageId));
+}));
+app.post('/api/app/support/tickets/:id/reopen', requireCompanyApi, supportRoute(async (req, res) => {
+  const out = await support.reopen(req.auth, req.params.id);
+  if (out.changed) await writeAudit(req.auth, 'support_ticket', out.ticket.id, 'support_ticket_reopened', {});
+  res.json(out);
+}));
+app.post('/api/app/support/uploads', requireCompanyApi, supportRaw, supportRoute(async (req, res) => {
+  res.status(201).json(await support.stageUpload(req.auth, req.body, String(req.query.name || '')));
+}));
+app.delete('/api/app/support/uploads/:id', requireCompanyApi, supportRoute(async (req, res) => {
+  res.json(await support.discardUpload(req.auth, req.params.id));
+}));
+app.get('/api/app/support/files/:id', requireCompanyApi, supportRoute(async (req, res) => {
+  sendSupportFile(res, await support.fileFor(req.auth, req.params.id), req.query.download === '1');
+}));
+app.get('/api/app/support/summary', requireCompanyApi, supportRoute(async (req, res) => {
+  const unread = await support.unreadFor(req.auth);
+  const configured = String(process.env.SUPPORT_EMAIL || '').trim();
+  res.set('Cache-Control', 'no-store');
+  res.json({ unread: unread.length, unreadTicketIds: unread.map((u) => String(u.id)), supportEmail: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured) ? configured : 'support@gettraxo.app' });
+}));
+// Côté équipe TRAXO (administrateur plateforme)
+app.get('/api/app/platform/support/tickets', requirePlatformAdminApi, supportRoute(async (req, res) => {
+  res.json(await support.adminList({ status: String(req.query.status || 'open'), q: req.query.q }));
+}));
+app.get('/api/app/platform/support/tickets/:id', requirePlatformAdminApi, supportRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await support.adminTicket(req.params.id));
+}));
+app.post('/api/app/platform/support/tickets/:id/messages', requirePlatformAdminApi, supportRoute(async (req, res) => {
+  const out = await support.adminReply(req.auth, req.params.id, req.body || {});
+  res.status(out.replayed ? 200 : 201).json(out);
+}));
+app.post('/api/app/platform/support/tickets/:id/status', requirePlatformAdminApi, supportRoute(async (req, res) => {
+  const out = await support.adminSetStatus(req.auth, req.params.id, String(req.body?.status || ''));
+  if (out.changed) await writeAudit(req.auth, 'support_ticket', out.ticket.id, 'support_status_changed', { status: out.ticket.status });
+  res.json(out);
+}));
+app.post('/api/app/platform/support/tickets/:id/assign', requirePlatformAdminApi, supportRoute(async (req, res) => {
+  res.json(await support.adminAssign(req.params.id, req.body?.assignee));
+}));
+app.post('/api/app/platform/support/uploads', requirePlatformAdminApi, supportRaw, supportRoute(async (req, res) => {
+  res.status(201).json(await support.stageUpload(req.auth, req.body, String(req.query.name || ''), { support: true }));
+}));
+app.get('/api/app/platform/support/files/:id', requirePlatformAdminApi, supportRoute(async (req, res) => {
+  sendSupportFile(res, await support.fileFor(req.auth, req.params.id, { support: true }), req.query.download === '1');
 }));
 
 app.post('/api/app/reports/export', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -12089,6 +12259,8 @@ async function backfillOrderRuns(dbPool) {
 
 initDatabase()
   .then(() => applyCrmSchema(pool, path.join(__dirname, 'db', 'crm-schema.sql')))
+  .then(() => globalSearch && globalSearch.ensureSchema())
+  .then(() => support && support.ensureSchema())
   .then(() => synchronizeExistingOrders(pool))
   .then(() => backfillOrderRuns(pool))
   .then(async () => {

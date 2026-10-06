@@ -285,6 +285,7 @@ async function renderNewOrder() {
               <div class="no-field"><label for="f-time">Créneau souhaité <em>(facultatif)</em></label><input class="cl-input" id="f-time" name="requestedTime" maxlength="80" placeholder="Ex. 15 h – 17 h" /></div>
               <div class="no-field"><label for="f-notes">Consigne pour le livreur <em>(facultatif)</em></label><input class="cl-input" id="f-notes" name="notes" maxlength="1000" placeholder="Ex. appeler en arrivant" /></div>
             </div>
+            <label class="no-urgent"><input type="checkbox" name="priority" value="urgent" /><span><strong>Livraison urgente</strong><small>Elle passe devant les autres livraisons du livreur et ressort sur la carte.</small></span></label>
           </section>
           <section class="no-sec" style="--i:2">
             <div class="no-sec-head"><span class="no-sec-num">03</span><h2 class="no-sec-title">Le colis</h2></div>
@@ -496,6 +497,7 @@ async function renderNewOrder() {
     const missing = C.firstMissing(form);
     if (missing) { say('Merci de remplir les champs obligatoires.'); missing.focus(); return; }
     const data = C.readFields(form);
+    data.priority = form.querySelector('input[name="priority"]')?.checked ? 'urgent' : 'normal';
     data.pickupEnabled = data.pickupEnabled === 'true';
     data.pickupPhoneCountry = data.customerPhoneCountry;
     if (!data.packageType) delete data.packageType;
@@ -934,7 +936,7 @@ async function mountIncidentDossier(root, id, opts = {}) {
 async function renderOperationsMap() {
   if (window.TraxoFleetMap) {
     setHeader('Carte d’exploitation', 'Votre équipe sur le terrain.');
-    return window.TraxoFleetMap.render(page, { api, context, openOrderDrawer, openRunDrawer, openRequestDrawer });
+    return window.TraxoFleetMap.render(page, { api, context, openOrderDrawer, openRunDrawer, openRequestDrawer, uiToast });
   }
   setHeader('Carte d’exploitation', 'Vos livreurs et vos livraisons en direct');
   page.classList.add('page-map');

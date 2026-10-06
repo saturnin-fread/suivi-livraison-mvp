@@ -63,6 +63,11 @@
 .no-field + .no-field, .no-row + .no-field, .no-field + .no-row { margin-top: 18px; }
 .no-field label, .no-label { display: block; margin-bottom: 8px; font-size: 15px; font-weight: 500; color: var(--ink-2); }
 .no-field label em { color: var(--muted); font-style: normal; font-weight: 400; font-size: 14px; }
+.no-urgent { display: flex; gap: 12px; align-items: flex-start; margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); cursor: pointer; }
+.no-urgent:has(input:checked) { border-color: #f1b4ad; background: var(--red-soft); }
+.no-urgent input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--red); flex-shrink: 0; }
+.no-urgent strong { display: block; font-size: 15px; font-weight: 600; }
+.no-urgent small { display: block; color: var(--muted); font-size: 14px; }
 .no .cl-input { width: 100%; min-height: 48px; padding: 11px 15px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--surface); color: var(--ink); font: inherit; font-size: 16px; transition: border-color .15s, box-shadow .15s; }
 .no .cl-input:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(31, 84, 70, .14); }
 .no .cl-input[aria-invalid="true"] { border-color: var(--red); box-shadow: 0 0 0 3px rgba(180, 35, 24, .1); }

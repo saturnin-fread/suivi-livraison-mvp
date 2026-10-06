@@ -187,6 +187,7 @@
 .ops-amber { background: var(--o-amber-soft); color: var(--o-amber); }
 .ops-red { background: var(--o-red-soft); color: #b3141f; }
 .ops-grey { background: #eff1f3; color: #5d6570; }
+.ops-urgent { display: inline-block; margin-left: 4px; vertical-align: 1px; font-size: 10.5px; font-weight: 650; color: #b3141f; background: var(--o-red-soft); border-radius: 5px; padding: 1px 6px; }
 
 /* Suivi en quatre étapes */
 .ops-steps { display: inline-flex; gap: 6px; align-items: center; }

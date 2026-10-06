@@ -217,6 +217,24 @@
       return list.map((x) => ({ ...x, liveN: rank.has(String(x.id)) ? rank.get(String(x.id)) + 1 : null }))
         .sort((a, b) => (a.liveN ?? 1e9) - (b.liveN ?? 1e9));
     }
+    // Une couleur par tronçon de l'itinéraire en direct : le tronçon en cours
+    // garde le rouge TRAXO, les suivants se distinguent nettement.
+    const LEG_COLORS = ['#e11d2a', '#2563eb', '#7c3aed', '#0d9488', '#d97706', '#db2777', '#475569'];
+    const legColor = (i) => LEG_COLORS[i % LEG_COLORS.length];
+    function liveInfo(d, orderId, kind = 'delivery') {
+      const r = st.liveRoute;
+      if (!d || !r || String(r.driverId) !== String(d.id) || !r.targets?.length) return null;
+      const i = r.targets.findIndex((t) => t.orderId === String(orderId) && t.kind === kind);
+      if (i < 0) return null;
+      const legs = r.legs || [];
+      const upTo = legs.length > i ? legs.slice(0, i + 1) : null;
+      return {
+        index: i, color: legColor(i), target: r.targets[i],
+        meters: upTo ? upTo.reduce((a, l) => a + l.distanceMeters, 0) : null,
+        seconds: upTo ? upTo.reduce((a, l) => a + l.durationSeconds, 0) : null,
+      };
+    }
+    const minutes = (sec) => `~${Math.max(1, Math.round(sec / 60))} min`;
     const zoneOf = (d) => stopsOf(d)[0]?.neighborhood || (d.position ? 'Position reçue' : 'Aucune position');
     const progressOf = (d) => {
       const run = (d.runs || []).find((r) => r.status === 'active') || (d.runs || [])[0];
@@ -345,8 +363,8 @@
         ${route}
         ${stops.length ? `<div class="fm-route-head"><h3>${p.run ? esc(p.run.name || 'La tournée du jour') : 'Ses livraisons'}</h3>${p.total ? `<span>${p.done}/${p.total} livrée${p.done > 1 ? 's' : ''}</span>` : ''}</div>
           ${p.total ? `<div class="fm-progress" role="progressbar" aria-label="Tournée livrée" aria-valuenow="${p.done}" aria-valuemin="0" aria-valuemax="${p.total}"><span style="width:${Math.round((p.done / p.total) * 100)}%"></span></div>` : ''}
-          ${stops.map((x, i) => `<div class="fm-stop"><span class="fm-stop-n">${x.liveN ?? x.sequence ?? i + 1}</span><div><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong><p>${esc(x.neighborhood || x.landmark || x.deliveryAddress || 'Adresse à préciser')} · ${esc(x.status)}${x.destination && d.position ? ` · à ${km(dist([d.position.latitude, d.position.longitude], [x.destination.latitude, x.destination.longitude]))}` : ''}</p>
-            <div class="fm-stop-acts">${x.destination ? `<button type="button" data-stop="${esc(x.id)}">Voir sur la carte</button>` : '<span class="fm-dim">Sans position GPS</span>'}<button type="button" data-order="${esc(x.id)}">Ouvrir</button></div></div></div>`).join('')}
+          ${stops.map((x, i) => { const info = liveInfo(d, x.id); return `<div class="fm-stop ${x.priority === 'urgent' ? 'urgent' : ''}"><span class="fm-stop-n" ${info ? `style="background:${info.color}"` : ''}>${x.liveN ?? x.sequence ?? i + 1}</span><div><strong>${esc(x.customerName || `Commande ${x.id}`)}${x.priority === 'urgent' ? ' <span class="fm-urgent-tag">Urgente</span>' : ''}</strong><p>${esc(x.neighborhood || x.landmark || x.deliveryAddress || 'Adresse à préciser')} · ${esc(x.status)}${info?.seconds != null ? ` · arrivée ${minutes(info.seconds)}` : x.destination && d.position ? ` · à ${km(dist([d.position.latitude, d.position.longitude], [x.destination.latitude, x.destination.longitude]))}` : ''}</p>
+            <div class="fm-stop-acts">${x.destination ? `<button type="button" data-stop="${esc(x.id)}">Voir sur la carte</button>` : '<span class="fm-dim">Sans position GPS</span>'}<button type="button" data-order="${esc(x.id)}">Ouvrir</button></div></div></div>`; }).join('')}
           ${p.run ? `<button type="button" class="fm-btn fm-wide" data-run="${esc(p.run.id)}">Ouvrir la tournée ${ic('arrow-up-right')}</button>` : ''}`
         : '<p class="fm-quiet">Aucune livraison en cours pour ce livreur.</p>'}`;
     }
@@ -359,13 +377,14 @@
       const next = r.targets[0];
       const leg = r.legs?.[0];
       const nextKm = leg ? leg.distanceMeters : dist([r.origin.lat, r.origin.lng], [next.lat, next.lng]);
-      const what = next.kind === 'pickup' ? 'Collecte' : 'Livraison';
+      const what = `${next.kind === 'pickup' ? 'Collecte' : 'Livraison'}${next.priority === 'urgent' ? ' urgente' : ''}`;
       const others = r.targets.length - 1;
       return `<div class="fm-liveroute ${r.status === 'ok' ? '' : 'crow'}"><i></i><div>
           <small class="fm-lr-kicker">${what} · prochain point</small>
           <strong>${esc(next.label)}${next.place ? ` · ${esc(next.place)}` : ''}</strong>
           <span class="fm-lr-eta">${km(nextKm)}${leg ? ` · ~${Math.max(1, Math.round(leg.durationSeconds / 60))} min` : ' à vol d’oiseau'}</span>
-          ${others > 0 && r.status === 'ok' ? `<small>Ensuite ${plural(others, 'autre point', 'autres points')} · ${km(r.distanceMeters)} et ~${Math.round(r.durationSeconds / 60)} min au total, hors arrêts</small>` : ''}
+          ${others > 0 && r.status === 'ok' ? `<small>Puis ${plural(others, 'autre point', 'autres points')} · ${km(r.distanceMeters)} et ${minutes(r.durationSeconds)} au total, hors arrêts</small>` : ''}
+          ${r.targets.length > 1 ? `<ol class="fm-lr-steps">${r.targets.slice(0, 7).map((t, i) => { const upTo = (r.legs || []).slice(0, i + 1); const sec = upTo.length === i + 1 ? upTo.reduce((a, l) => a + l.durationSeconds, 0) : null; return `<li style="--leg:${legColor(i)}"><i aria-hidden="true"></i><span>${t.kind === 'pickup' ? 'Collecte' : 'Livraison'} · ${esc(t.label)}</span>${t.priority === 'urgent' ? '<b>Urgente</b>' : ''}<small>${sec != null ? minutes(sec) : ''}</small></li>`; }).join('')}${r.targets.length > 7 ? `<li class="more">et ${r.targets.length - 7} de plus</li>` : ''}</ol>` : ''}
           ${r.status !== 'ok' ? '<small>Calcul routier indisponible : ligne droite affichée.</small>' : ''}
           <small class="fm-lr-live">${ic('radio')}Recalculé à ${clockSec(new Date(r.computedAt).getTime())}, suit le livreur</small>
         </div></div>`;
@@ -688,10 +707,15 @@
           const mine = sel && String(d.id) === String(sel.id);
           (mine ? orderedStops(d) : stopsOf(d)).forEach((x, i) => {
             if (!x.destination) return;
-            const html = mine ? `<span class="fm-dest">${esc(x.liveN ?? x.sequence ?? i + 1)}</span>` : `<span class="fm-dest-dot tone-${job(d).tone}"></span>`;
-            L.marker([x.destination.latitude, x.destination.longitude], { icon: L.divIcon({ className: 'fm-divicon', html, iconSize: mine ? [28, 28] : [12, 12], iconAnchor: mine ? [14, 14] : [6, 6] }), title: x.customerName || `Commande ${x.id}` })
+            const urgent = x.priority === 'urgent';
+            const info = mine ? liveInfo(d, x.id) : null;
+            const open = st.popupStop === String(x.id);
+            const html = mine
+              ? `<span class="fm-dest ${urgent ? 'urgent' : ''} ${open ? 'sel' : ''}" ${info ? `style="--leg:${info.color}"` : ''}>${esc(x.liveN ?? x.sequence ?? i + 1)}${urgent ? '<i aria-hidden="true">!</i>' : ''}</span>`
+              : `<span class="fm-dest-dot tone-${job(d).tone} ${urgent ? 'urgent' : ''}"></span>`;
+            L.marker([x.destination.latitude, x.destination.longitude], { icon: L.divIcon({ className: 'fm-divicon', html, iconSize: mine ? [30, 30] : [12, 12], iconAnchor: mine ? [15, 15] : [6, 6] }), title: `${x.customerName || `Commande ${x.id}`}${urgent ? ' (urgente)' : ''}`, zIndexOffset: urgent ? 300 : 0 })
               .addTo(layers.stops)
-              .bindPopup(`<div class="fm-popup"><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong><span>${esc(x.neighborhood || x.landmark || x.deliveryAddress || '')}</span><small>${esc(d.name)} · ${esc(x.status)}</small><button type="button" data-order="${esc(x.id)}">Ouvrir la commande</button></div>`);
+              .on('click', () => openStopCard(d.id, x.id));
           });
           // Ordre des arrêts, à vol d'oiseau, pour le livreur choisi.
           // Inutile quand l'itinéraire en direct est tracé : il montre déjà l'ordre réel.
@@ -711,6 +735,68 @@
             .bindTooltip(`<div class="fm-tip-card"><strong>${esc(w.customerName || 'Demande')}</strong><small>${esc(w.neighborhood || '')} · en attente d’un livreur</small></div>`, { direction: 'top', offset: [0, -14], className: 'fm-tip', opacity: 1 })
             .on('click', () => focusWaiting(w.id));
         });
+      }
+      refreshStopCard();
+    }
+    // Bulle d'un arrêt : une seule bulle, indépendante des marqueurs (qui sont
+    // redessinés à chaque actualisation) ; son contenu suit les données.
+    const stopPopup = L.popup({ className: 'fm-pop', closeButton: false, autoPanPadding: L.point(24, 24), offset: L.point(0, -12), maxWidth: 320, minWidth: 260 });
+    const canEditOrders = () => ['owner', 'manager', 'operator'].includes(deps.context?.user?.role);
+    const STATUS_TONE = { 'Livrée': 'green', 'En livraison': 'blue', 'Arrivée': 'blue', 'En tournée': 'blue', 'Récupérée': 'blue', 'Vers la collecte': 'blue', 'Échec': 'red', 'Retour': 'red', 'Annulée': 'grey', 'Retournée': 'grey' };
+    function stopCardHtml(d, x) {
+      const info = liveInfo(d, x.id);
+      const urgent = x.priority === 'urgent';
+      const place = [x.neighborhood, x.landmark].filter(Boolean).join(' · ') || x.deliveryAddress || 'Adresse à préciser';
+      const n = orderedStops(d).find((s) => String(s.id) === String(x.id))?.liveN ?? x.sequence;
+      return `<div class="fm-pop-card ${urgent ? 'urgent' : ''}" style="--leg:${info ? info.color : '#24303c'}">
+          <header><span class="fm-pop-n">${esc(n ?? '•')}</span><div><small>${info ? `Étape ${info.index + 1} · ` : ''}Livraison${urgent ? ' urgente' : ''}</small><strong>${esc(x.customerName || `Commande ${x.id}`)}</strong></div>
+            <button type="button" class="fm-pop-x" data-act="stop-close" aria-label="Fermer">${ic('x')}</button></header>
+          <div class="fm-pop-chips"><span class="fm-badge ${STATUS_TONE[x.status] || 'grey'}">${esc(x.status)}</span>${urgent ? '<span class="fm-badge red">Urgente</span>' : ''}${x.openIncidents ? `<span class="fm-badge red">${plural(x.openIncidents, 'incident', 'incidents')}</span>` : ''}</div>
+          <dl>
+            <div><dt>Lieu</dt><dd>${esc(place)}</dd></div>
+            <div><dt>Livreur</dt><dd>${esc(d.name)}</dd></div>
+            ${info?.seconds != null ? `<div><dt>Arrivée estimée</dt><dd>${minutes(info.seconds)} · ${km(info.meters)}</dd></div>` : ''}
+            ${x.requestedTime ? `<div><dt>Créneau</dt><dd>${esc(x.requestedTime)}</dd></div>` : ''}
+          </dl>
+          <footer><button type="button" class="fm-btn primary" data-order="${esc(x.id)}">Ouvrir la commande</button>
+            ${canEditOrders() && !ORDER_DONE.includes(x.status) ? `<button type="button" class="fm-btn" data-priority="${urgent ? 'normal' : 'urgent'}" data-order-id="${esc(x.id)}">${urgent ? 'Retirer l’urgence' : 'Marquer urgente'}</button>` : ''}</footer>
+        </div>`;
+    }
+    function findStop(driverId, orderId) {
+      const d = drivers().find((v) => String(v.id) === String(driverId));
+      return { d, x: d ? stopsOf(d).find((v) => String(v.id) === String(orderId)) : null };
+    }
+    function openStopCard(driverId, orderId) {
+      const { d, x } = findStop(driverId, orderId);
+      if (!x?.destination) return;
+      st.popupStop = String(orderId); st.popupDriver = String(driverId);
+      // La bulle doit rester sous la barre du haut et à côté du panneau.
+      const stageTop = stage.getBoundingClientRect().top;
+      const topBar = $('.fm-top')?.getBoundingClientRect().bottom || stageTop;
+      const pad = viewPadding();
+      stopPopup.options.autoPanPaddingTopLeft = L.point(pad.paddingTopLeft[0], Math.round(topBar - stageTop + 14));
+      stopPopup.options.autoPanPaddingBottomRight = L.point(pad.paddingBottomRight[0], pad.paddingBottomRight[1]);
+      stopPopup.setLatLng([x.destination.latitude, x.destination.longitude]).setContent(stopCardHtml(d, x));
+      if (!map.hasLayer(stopPopup)) stopPopup.openOn(map);
+      drawCurrent();
+    }
+    function refreshStopCard() {
+      if (!st.popupStop || !map.hasLayer(stopPopup)) return;
+      const { d, x } = findStop(st.popupDriver, st.popupStop);
+      if (!x?.destination) { map.closePopup(stopPopup); return; }
+      stopPopup.setLatLng([x.destination.latitude, x.destination.longitude]).setContent(stopCardHtml(d, x));
+    }
+    map.on('popupclose', (e) => { if (e.popup === stopPopup && st.popupStop) { st.popupStop = null; drawCurrent(); } });
+    async function setPriority(orderId, priority, button) {
+      if (button) button.disabled = true;
+      try {
+        await api(`/api/app/orders/${encodeURIComponent(orderId)}/priority`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priority }) });
+        deps.uiToast?.(priority === 'urgent' ? 'Commande marquée urgente : elle passe devant dans l’itinéraire.' : 'Urgence retirée.', 'success');
+        await loadSnapshot(false);
+        refreshLiveRoute({ force: true });
+      } catch (error) {
+        deps.uiToast?.(error.message || 'Modification impossible.', 'error');
+        if (button) button.disabled = false;
       }
     }
     function focusWaiting(id) {
@@ -761,7 +847,9 @@
     // sens de la marche. Tant que la destination ne change pas, les recalculs
     // déplacent la ligne sans rejouer l'animation.
     let routeDraw = null;
-    const routeKey = (data) => { const t = data.targets?.[0]; return t ? `${data.driverId}|${t.orderId}:${t.kind}|${data.status}` : ''; };
+    // Clé du tracé : on ne rejoue l'animation que si les points visés changent
+    // (ordre, type ou priorité) ; un déplacement du livreur met juste à jour.
+    const routeKey = (data) => `${data.driverId}|${data.status}|${(data.targets || []).map((t) => `${t.orderId}:${t.kind}:${t.priority}`).join(',')}`;
     function drawIn(lines, ms, done) {
       const paths = lines.map((l) => l._path).filter(Boolean);
       let over = false;
@@ -774,42 +862,113 @@
       map.once('zoomstart', end); // un zoom pendant le dessin change la longueur : on affiche tout de suite
       paths.forEach((p) => { const len = p.getTotalLength(); p.style.transition = 'none'; p.style.strokeDasharray = `${len} ${len}`; p.style.strokeDashoffset = `${len}`; p.style.opacity = ''; });
       paths[0].getBoundingClientRect();
-      requestAnimationFrame(() => paths.forEach((p) => { p.style.transition = `stroke-dashoffset ${ms}ms cubic-bezier(.5,.05,.25,1)`; p.style.strokeDashoffset = '0'; }));
-      setTimeout(end, ms + 80);
+      requestAnimationFrame(() => paths.forEach((p) => { p.style.transition = `stroke-dashoffset ${ms}ms cubic-bezier(.45,.05,.3,1)`; p.style.strokeDashoffset = '0'; }));
+      setTimeout(end, ms + 60);
+    }
+    // Flèches qui avancent dans le sens de la marche : texte posé le long du
+    // tracé (SVG textPath), décalé en continu. Elles suivent le tracé au zoom.
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    let arrowSeq = 0;
+    function addArrows(layer, { glyph = '›', size = 15, period = 0.7, cls = '' } = {}) {
+      const path = layer._path;
+      if (!path || !path.parentNode) return;
+      if (!path.id) { arrowSeq += 1; path.id = `fm-leg-${arrowSeq}`; }
+      const text = document.createElementNS(SVGNS, 'text');
+      text.setAttribute('class', `fm-arrows ${cls}`);
+      text.setAttribute('font-size', String(size));
+      text.setAttribute('dy', String(Math.round(size * 0.36)));
+      const tp = document.createElementNS(SVGNS, 'textPath');
+      tp.setAttribute('href', `#${path.id}`);
+      text.appendChild(tp);
+      path.parentNode.appendChild(text);
+      const gap = Math.round(size * 2.6);
+      let anim = null;
+      const fit = () => {
+        const len = path.getTotalLength();
+        const n = Math.max(1, Math.floor(len / gap));
+        tp.textContent = glyph.repeat(n);
+        text.setAttribute('letter-spacing', '0');
+        const advance = n ? (tp.getComputedTextLength() / n) : gap;
+        text.setAttribute('letter-spacing', String(Math.max(0, gap - advance)));
+        if (reduced()) return;
+        if (!anim) { anim = document.createElementNS(SVGNS, 'animate'); anim.setAttribute('attributeName', 'startOffset'); anim.setAttribute('repeatCount', 'indefinite'); tp.appendChild(anim); }
+        anim.setAttribute('from', '0'); anim.setAttribute('to', String(gap)); anim.setAttribute('dur', `${period}s`);
+        try { text.ownerSVGElement?.unpauseAnimations?.(); anim.beginElement?.(); } catch {}
+      };
+      fit();
+      const onZoom = () => requestAnimationFrame(fit);
+      map.on('zoomend', onZoom);
+      layer.on('remove', () => { map.off('zoomend', onZoom); text.remove(); });
+      layer._fmArrowsFit = fit;
     }
     function drawLiveRoute(data, { fitTo = null } = {}) {
       if (!data.origin || !data.targets?.length) { layers.route.clearLayers(); routeDraw = null; return; }
-      const coords = data.status === 'ok' && data.route?.geometry?.value?.coordinates?.length >= 2
-        ? data.route.geometry.value.coordinates.map(([lng, lat]) => [lat, lng])
-        : [[data.origin.lat, data.origin.lng], ...data.targets.map((t) => [t.lat, t.lng])];
       const crow = data.status !== 'ok';
+      const toLatLng = (seg) => seg.map(([lng, lat]) => [lat, lng]);
+      const geo = data.route?.legGeometries;
+      let segments;
+      if (!crow && Array.isArray(geo) && geo.length === data.targets.length) segments = geo.map(toLatLng);
+      else if (!crow && data.route?.geometry?.value?.coordinates?.length >= 2) segments = [toLatLng(data.route.geometry.value.coordinates)];
+      else {
+        const pts = [[data.origin.lat, data.origin.lng], ...data.targets.map((t) => [t.lat, t.lng])];
+        segments = pts.slice(1).map((p, i) => [pts[i], p]);
+      }
       const key = routeKey(data);
-      if (routeDraw && routeDraw.key === key && map.hasLayer(routeDraw.line)) {
-        [routeDraw.casing, routeDraw.line, routeDraw.flow].forEach((l) => l?.setLatLngs(coords));
+      if (routeDraw && routeDraw.key === key && routeDraw.legs.length === segments.length && map.hasLayer(routeDraw.legs[0].line)) {
+        routeDraw.legs.forEach((leg, i) => { [leg.glow, leg.casing, leg.line].forEach((l) => l?.setLatLngs(segments[i])); leg.line._fmArrowsFit?.(); });
         return;
       }
       layers.route.clearLayers();
       const style = { interactive: false, lineCap: 'round', lineJoin: 'round' };
-      const casing = L.polyline(coords, { ...style, color: '#9d1320', weight: 10, opacity: 0.9, className: 'fm-route-casing' }).addTo(layers.route);
-      const line = L.polyline(coords, { ...style, color: '#e11d2a', weight: 6, opacity: 1, dashArray: crow ? '8 10' : null, className: 'fm-route-line' }).addTo(layers.route);
-      const flow = crow ? null : L.polyline(coords, { ...style, color: '#ffffff', weight: 4, opacity: 0.9, dashArray: '0.5 15.5', className: 'fm-route-flow' });
-      const next = data.targets[0];
-      const halo = L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: '<span class="fm-next-halo" aria-hidden="true"></span>', iconSize: [44, 44], iconAnchor: [22, 22] }), interactive: false, zIndexOffset: -10 });
-      data.targets.filter((t) => t.kind === 'pickup').forEach((t) => {
-        L.marker([t.lat, t.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pickup" title="Collecte">${ic('package')}</span>`, iconSize: [28, 28], iconAnchor: [14, 14] }), title: `Collecte · ${t.label}` })
-          .addTo(layers.route).bindTooltip(`<div class="fm-tip-card"><strong>Collecte · ${esc(t.label)}</strong><small>Pour ${esc(t.customerName || t.reference || '')}</small></div>`, { direction: 'top', offset: [0, -14], className: 'fm-tip', opacity: 1 });
+      const legs = segments.map((coords, i) => {
+        const t = data.targets[i] || data.targets[0];
+        const first = i === 0;
+        const urgent = t.priority === 'urgent';
+        const color = legColor(i);
+        return {
+          i, first, urgent, color, coords,
+          glow: urgent ? L.polyline(coords, { ...style, color: '#e11d2a', weight: first ? 18 : 15, opacity: 0.22, className: 'fm-route-urgent' }) : null,
+          casing: L.polyline(coords, { ...style, color: '#ffffff', weight: first ? 11 : 8, opacity: 0.95, className: 'fm-route-casing' }),
+          line: L.polyline(coords, { ...style, color, weight: first ? 7 : 5, opacity: first ? 1 : 0.92, dashArray: crow ? '9 9' : null, className: `fm-route-line${first ? ' current' : ''}` }),
+        };
       });
-      const draw = { key, casing, line, flow };
+      // Les tronçons suivants d'abord : le tronçon en cours reste au-dessus.
+      [...legs].reverse().forEach((leg) => { leg.glow?.addTo(layers.route); leg.casing.addTo(layers.route); leg.line.addTo(layers.route); });
+      const next = data.targets[0];
+      const halo = L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-next-halo ${next.priority === 'urgent' ? 'urgent' : ''}" style="--leg:${legColor(0)}" aria-hidden="true"></span>`, iconSize: [48, 48], iconAnchor: [24, 24] }), interactive: false, zIndexOffset: -10 });
+      data.targets.forEach((t, i) => {
+        if (t.kind !== 'pickup') return;
+        L.marker([t.lat, t.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pickup" style="--leg:${legColor(i)}" title="Collecte">${ic('package')}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }), title: `Collecte · ${t.label}` })
+          .addTo(layers.route).bindTooltip(`<div class="fm-tip-card"><strong>Collecte · ${esc(t.label)}</strong><small>Étape ${i + 1} · pour ${esc(t.customerName || t.reference || '')}</small></div>`, { direction: 'top', offset: [0, -14], className: 'fm-tip', opacity: 1 });
+      });
+      const draw = { key, legs };
       routeDraw = draw;
       stage.dataset.route = 'drawing';
       const finish = () => {
-        if (routeDraw !== draw || !map.hasLayer(line)) return;
-        flow?.addTo(layers.route); halo.addTo(layers.route);
+        if (routeDraw !== draw || !map.hasLayer(legs[0].line)) return;
+        // Triangles pleins (►, jamais affichés en émoji) : lisibles à petite taille.
+        if (!crow) legs.forEach((leg) => addArrows(leg.line, { glyph: '►', size: leg.first ? 11 : 9, period: leg.urgent ? 0.45 : leg.first ? 0.7 : 1.4, cls: `${leg.urgent ? 'urgent' : ''}${leg.first ? ' current' : ''}` }));
+        halo.addTo(layers.route);
         stage.dataset.route = 'ready';
       };
-      const start = () => { if (routeDraw !== draw || !map.hasLayer(line)) return; if (reduced() || crow) finish(); else drawIn([casing, line], 1200, finish); };
+      const start = () => {
+        if (routeDraw !== draw || !map.hasLayer(legs[0].line)) return;
+        if (reduced() || crow) { finish(); return; }
+        // Dessin tronçon par tronçon, durée proportionnelle à la longueur (1,6 s au total).
+        const lens = legs.map((leg) => leg.line._path?.getTotalLength() || 1);
+        const total = lens.reduce((a, b) => a + b, 0) || 1;
+        legs.forEach((leg) => [leg.glow, leg.casing, leg.line].forEach((l) => { if (l?._path) l._path.style.opacity = '0'; }));
+        const step = (k) => {
+          if (routeDraw !== draw) return;
+          if (k >= legs.length) { finish(); return; }
+          const leg = legs[k];
+          if (leg.glow?._path) leg.glow._path.style.opacity = '';
+          drawIn([leg.casing, leg.line], Math.max(220, Math.round(1600 * (lens[k] / total))), () => step(k + 1));
+        };
+        step(0);
+      };
       if (fitTo && !reduced()) {
-        [casing, line].forEach((l) => { if (l._path) l._path.style.opacity = '0'; });
+        legs.forEach((leg) => [leg.glow, leg.casing, leg.line].forEach((l) => { if (l?._path) l._path.style.opacity = '0'; }));
         flyBounds(fitTo, 16);
         setTimeout(start, 520); // après le cadrage (0,42 s) : la longueur du tracé est alors stable
       } else {
@@ -948,7 +1107,9 @@
         if (x?.destination) fly([x.destination.latitude, x.destination.longitude], 16);
         return;
       }
-      if (b.dataset.order) { e.preventDefault(); deps.openOrderDrawer?.(b.dataset.order, { onChange: () => loadSnapshot(false) }); return; }
+      if (b.dataset.priority) { setPriority(b.dataset.orderId, b.dataset.priority, b); return; }
+      if (b.dataset.act === 'stop-close') { map.closePopup(stopPopup); return; }
+      if (b.dataset.order) { e.preventDefault(); deps.openOrderDrawer?.(b.dataset.order, { onChange: () => { loadSnapshot(false).then(() => refreshLiveRoute({ force: true })); } }); return; }
       if (b.dataset.run) { deps.openRunDrawer?.(b.dataset.run, { onChange: () => loadSnapshot(false) }); return; }
       const a = b.dataset.act;
       if (a === 'collapse') { st.collapsed = !st.collapsed; store.set('traxo.fm.collapsed', st.collapsed); renderTeam(); return; }

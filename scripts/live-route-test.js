@@ -35,11 +35,11 @@ async function call(method, url, { cookie, body } = {}) {
     };
     const d1 = await mkDriver('Rachid');
     const idle = await mkDriver('Sena');
-    const mkOrder = async (name, { pickup }) => {
-      const r = await call('POST', '/api/app/orders', { cookie: staff, body: { customerName: `${name} ${marker}`, customerPhone: '01 97 31 32 35', customerPhoneCountry: 'BJ', neighborhood: 'Cadjèhoun', driverId: d1 } });
+    const mkOrder = async (name, { pickup, priority, dest = [6.3520, 2.3900] }) => {
+      const r = await call('POST', '/api/app/orders', { cookie: staff, body: { customerName: `${name} ${marker}`, customerPhone: '01 97 31 32 35', customerPhoneCountry: 'BJ', neighborhood: 'Cadjèhoun', driverId: d1, ...(priority ? { priority } : {}) } });
       assert.strictEqual(r.status, 201, JSON.stringify(r.data));
       const id = r.data.orderId;
-      await pool.query('UPDATE orders SET destination_lat = $2, destination_lng = $3 WHERE id = $1', [id, 6.3520, 2.3900]);
+      await pool.query('UPDATE orders SET destination_lat = $2, destination_lng = $3 WHERE id = $1', [id, dest[0], dest[1]]);
       if (pickup) await pool.query("UPDATE orders SET pickup_name = 'Boutique Ayi', pickup_address = 'Ganhi', pickup_lat = 6.3600, pickup_lng = 2.4300 WHERE id = $1", [id]);
       return String(id);
     };
@@ -83,6 +83,32 @@ async function call(method, url, { cookie, body } = {}) {
     r = await call('GET', `/api/app/drivers/${d1}/live-route`, { cookie: staff });
     assert.deepStrictEqual(r.data.targets.map((t) => `${t.orderId}:${t.kind}`), [`${withPickup}:delivery`, `${direct}:delivery`]);
     assert.strictEqual(r.data.targets[0].active, true);
+
+    // Priorité : une commande créée urgente passe devant les autres de même étape.
+    const express = await mkOrder('Express', { pickup: false, priority: 'urgent', dest: [6.3700, 2.4400] });
+    assert.strictEqual((await pool.query('SELECT priority FROM orders WHERE id = $1', [express])).rows[0].priority, 'urgent', 'priorité enregistrée à la création');
+    r = await call('GET', `/api/app/drivers/${d1}/live-route`, { cookie: staff });
+    assert.deepStrictEqual(r.data.targets.map((t) => t.orderId), [withPickup, express, direct], 'l’urgente passe avant la commande normale');
+    assert.strictEqual(r.data.targets[1].priority, 'urgent');
+    if (r.data.status === 'ok') {
+      assert.strictEqual(r.data.route.legGeometries.length, r.data.targets.length, 'un tronçon par point');
+      assert.ok(r.data.route.legGeometries.every((g) => g.length >= 2), 'tronçons tracés');
+    }
+    // Modification de la priorité depuis l'exploitation.
+    r = await call('PATCH', `/api/app/orders/${express}/priority`, { cookie: staff, body: { priority: 'normal' } });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+    r = await call('PATCH', `/api/app/orders/${direct}/priority`, { cookie: staff, body: { priority: 'urgent' } });
+    assert.strictEqual(r.data.priority, 'urgent');
+    r = await call('GET', `/api/app/drivers/${d1}/live-route`, { cookie: staff });
+    assert.deepStrictEqual(r.data.targets.map((t) => t.orderId), [withPickup, direct, express], 'ordre recalculé après changement');
+    r = await call('PATCH', `/api/app/orders/${direct}/priority`, { cookie: staff, body: { priority: 'tres-urgent' } });
+    assert.strictEqual(r.status, 400, 'priorité inconnue refusée');
+    r = await call('PATCH', '/api/app/orders/999999999/priority', { cookie: staff, body: { priority: 'urgent' } });
+    assert.strictEqual(r.status, 404);
+    r = await call('GET', '/api/app/operations-map', { cookie: staff });
+    const mapped = r.data.drivers.find((x) => String(x.id) === String(d1));
+    const allStops = [...(mapped?.runs || []).flatMap((run) => run.stops || []), ...(mapped?.unplannedOrders || [])];
+    assert.ok(allStops.some((o) => String(o.id) === direct && o.priority === 'urgent'), 'priorité visible sur la carte');
 
     // Rien à faire, livreur inconnu.
     r = await call('GET', `/api/app/drivers/${idle}/live-route`, { cookie: staff });

@@ -151,7 +151,7 @@
         ['done', 'Livrées', (r) => r.status === 'Livrée'],
       ],
       columns: [
-        { key: 'client', label: 'Client / Référence', required: true, cell: (r) => `<span class="ops-who">${avatar(r.customer_name)}<span><b>${esc(r.customer_name || '—')}</b><small>${esc(orderRef(r))}</small></span></span>`, text: (r) => `${r.customer_name || ''} ${orderRef(r)}`, sort: (r) => (r.customer_name || '').toLowerCase() },
+        { key: 'client', label: 'Client / Référence', required: true, cell: (r) => `<span class="ops-who">${avatar(r.customer_name)}<span><b>${esc(r.customer_name || '—')}${r.priority === 'urgent' ? ' <span class="ops-urgent">Urgente</span>' : ''}</b><small>${esc(orderRef(r))}</small></span></span>`, text: (r) => `${r.customer_name || ''} ${orderRef(r)}`, sort: (r) => (r.customer_name || '').toLowerCase() },
         { key: 'phone', label: 'Téléphone', cell: (r) => esc(r.customer_phone || '—'), text: (r) => r.customer_phone },
         { key: 'destination', label: 'Destination', cell: (r) => `<span class="ops-two"><span>${esc(r.neighborhood || r.landmark || '—')}</span>${r.requested_time ? `<small>${esc(r.requested_time)}</small>` : ''}</span>`, text: (r) => [r.neighborhood || r.landmark, r.requested_time].filter(Boolean).join(' · '), sort: (r) => (r.neighborhood || '').toLowerCase() },
         { key: 'driver', label: 'Livreur', cell: (r) => person(r.driver_name), text: (r) => r.driver_name, sort: (r) => (r.driver_name || '').toLowerCase() },
@@ -848,6 +848,7 @@
           ${field('Contact du destinataire', tel(d.customer_phone))}
           ${field('Où et quand', `${esc(where || '—')}${d.landmark || d.requested_time ? `<small>${esc([d.landmark, d.requested_time].filter(Boolean).join(' · '))}</small>` : ''}`)}
           ${field('Livreur', `${esc(d.driver_name || 'À attribuer')}${d.driver_phone ? ` · ${tel(d.driver_phone)}` : ''}${canChange ? ' <button type="button" class="ops-textact" data-act="compose" data-c="assign">Changer</button>' : ''}`)}
+          ${field('Priorité', `${d.priority === 'urgent' ? chip('Urgente', 'red') : 'Normale'}${canChange ? ` <button type="button" class="ops-textact" data-act="priority" data-to="${d.priority === 'urgent' ? 'normal' : 'urgent'}">${d.priority === 'urgent' ? 'Retirer l’urgence' : 'Marquer urgente'}</button>` : ''}`)}
           ${d.notes ? field('Consigne de livraison', esc(d.notes)) : ''}
           ${field('Suivi client', esc(TRACKING_LABEL[d.trackingLink?.state] || 'Pas de lien actif'))}
         </dl>
@@ -1221,6 +1222,14 @@
         return true;
       }
       if (act === 'copy-form') { if (f?.data?.token) copyText(deps.publicLink(`/demande/${f.data.token}`), 'Lien du formulaire copié.'); return true; }
+      if (act === 'priority') {
+        const to = t.dataset.to === 'urgent' ? 'urgent' : 'normal';
+        try {
+          await api(`/api/app/orders/${encodeURIComponent(f.id)}/priority`, json('PATCH', { priority: to }));
+          await refreshFiche(to === 'urgent' ? 'Commande marquée urgente : elle passe devant dans l’itinéraire du livreur.' : 'Urgence retirée.');
+        } catch (error) { uiToast(error.message, 'error'); }
+        return true;
+      }
       if (act === 'archive-request') {
         try {
           const out = await api('/api/app/ops/trash', json('POST', { source: 'demandes', ids: [f.id] }));

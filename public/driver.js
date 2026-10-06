@@ -265,7 +265,7 @@ async function renderList() {
     <p class="subtitle">${escapeHtml(run.completedStops)} sur ${escapeHtml(run.totalStops)} arrêt${run.totalStops > 1 ? 's' : ''} terminé${run.completedStops > 1 ? 's' : ''}. L’ordre est opérationnel et ne constitue pas encore une estimation routière.</p>
     <ol class="run-stop-list">${run.stops.map((stop) => {
       const isNext = String(stop.id) === String(run.nextStopId);
-      return `<li class="run-stop ${isNext ? 'next' : ''}" ${isNext ? 'aria-current="step"' : ''}><a href="/driver/commandes/${escapeHtml(stop.order_id)}"><span class="stop-number">${escapeHtml(stop.sequence)}</span><span class="stop-copy"><strong>${escapeHtml(stop.customer_name || 'Client')}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser')} · ${escapeHtml(stop.requested_time || 'Créneau non précisé')}</small>${isNext ? '<em>Prochain arrêt prévu</em>' : ''}</span>${badge(stop.order_status)}</a></li>`;
+      return `<li class="run-stop ${isNext ? 'next' : ''}" ${isNext ? 'aria-current="step"' : ''}><a href="/driver/commandes/${escapeHtml(stop.order_id)}"><span class="stop-number">${escapeHtml(stop.sequence)}</span><span class="stop-copy"><strong>${escapeHtml(stop.customer_name || 'Client')}${stop.order_priority === 'urgent' ? ' <span class="urgent-tag">Urgente</span>' : ''}</strong><small>${escapeHtml(stop.neighborhood || stop.landmark || stop.delivery_address || 'Destination à préciser')} · ${escapeHtml(stop.requested_time || 'Créneau non précisé')}</small>${isNext ? '<em>Prochain arrêt prévu</em>' : ''}</span>${badge(stop.order_status)}</a></li>`;
     }).join('')}</ol>
   </article>`).join('');
   if (!history) rememberOrders(orders);
@@ -274,7 +274,7 @@ async function renderList() {
     ${runMarkup ? `<section class="run-manifests" aria-label="Tournées planifiées">${runMarkup}</section>` : ''}
     ${!history && runMarkup ? '<div class="driver-subtitle"><h2>Hors tournée</h2><p class="subtitle">Commandes affectées mais pas encore placées dans une tournée visible.</p></div>' : ''}
     <section class="delivery-list">${unscheduledOrders.length ? unscheduledOrders.map((order) => `<a class="delivery-card" href="/driver/commandes/${escapeHtml(order.id)}">
-      <div class="delivery-card-head"><div><h2>${escapeHtml(order.customer_name || 'Client')}</h2><p>Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
+      <div class="delivery-card-head"><div><h2>${escapeHtml(order.customer_name || 'Client')}${order.priority === 'urgent' ? ' <span class="urgent-tag">Urgente</span>' : ''}</h2><p>Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
       <p><strong>${escapeHtml(order.neighborhood || order.delivery_address || 'Destination à préciser')}</strong>${order.landmark ? ` · ${escapeHtml(order.landmark)}` : ''}</p>
       <p>${escapeHtml(order.requested_time || 'Créneau non précisé')}${order.expected_amount_minor != null ? ` · À encaisser : ${escapeHtml(formatMoney(order.expected_amount_minor, order.payment_currency))}` : ''}</p>
     </a>`).join('') : `<div class="card empty">${history ? 'Aucune livraison terminée.' : runMarkup ? 'Toutes vos livraisons actives sont classées dans les tournées ci-dessus.' : 'Aucune livraison active ne vous est affectée.'}</div>`}</section>`;
@@ -346,7 +346,7 @@ async function renderDetail(id) {
     order.signature_proof_mode === 'required' && !evidenceByType.signature ? 'signature' : null,
   ].filter(Boolean);
   page.innerHTML = `<a class="driver-back" href="/driver">← Mes livraisons</a>
-    <div class="page-header"><div><h1>${escapeHtml(order.customer_name || 'Client')}</h1><p class="subtitle">Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
+    <div class="page-header"><div><h1>${escapeHtml(order.customer_name || 'Client')}${order.priority === 'urgent' ? ' <span class="urgent-tag">Urgente</span>' : ''}</h1><p class="subtitle">Commande n° ${escapeHtml(order.id)}</p></div>${badge(order.status)}</div>
     ${order.run ? `<section class="card run-context ${String(order.run.next_order_id) === String(order.id) ? 'next' : ''}"><span class="eyebrow">${escapeHtml(runStatusLabels[order.run.status] || order.run.status)} · ${escapeHtml(formatDateOnly(order.run.service_date))}</span><h2>${escapeHtml(order.run.name)}</h2><p>Arrêt ${escapeHtml(order.run.sequence)} sur ${escapeHtml(order.run.total_stops)}.${String(order.run.next_order_id) === String(order.id) ? ' C’est le prochain arrêt prévu.' : ' Un arrêt précédent peut encore être en attente.'}</p><p class="subtitle">L’ordre peut être adapté sur le terrain si nécessaire ; chaque commande conserve son propre statut et ses preuves.</p></section>` : ''}
     ${pickupCard(order)}
     <section class="card driver-detail-grid">

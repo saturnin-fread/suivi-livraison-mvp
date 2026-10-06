@@ -95,7 +95,7 @@
     }
     return qrLib;
   }
-  function createGpsField(root, { initial, onChange, handoff = false } = {}) {
+  function createGpsField(root, { initial, onChange, handoff = false, placesToken = requestTokenFromPath() } = {}) {
     let position = initial && Number.isFinite(Number(initial.latitude)) ? {
       latitude: Number(initial.latitude), longitude: Number(initial.longitude),
       accuracy: initial.accuracy == null ? null : Number(initial.accuracy),
@@ -108,7 +108,17 @@
     let error = '';
     let stopWatch = null;
 
-    root.innerHTML = `<div class="cl-gps" id="gpsBox" role="group" aria-labelledby="gpsTitle">
+    root.innerHTML = `${placesToken ? `<div class="cl-place" id="placeBox">
+        <label class="cl-place-label" for="placeQ">Vous serez livré ailleurs ? Cherchez le lieu</label>
+        <div class="cl-place-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="placeQ" class="cl-place-input" type="search" inputmode="search" autocomplete="off" spellcheck="false" maxlength="120"
+            placeholder="Marché, pharmacie, école, carrefour…" role="combobox" aria-expanded="false" aria-controls="placeList" aria-autocomplete="list" aria-describedby="placeState" />
+          <button type="button" class="cl-place-clear" id="placeClear" aria-label="Effacer la recherche" hidden>×</button>
+          <ul class="cl-place-list" id="placeList" role="listbox" aria-label="Lieux trouvés" hidden></ul>
+        </div>
+        <p class="cl-place-state" id="placeState" aria-live="polite"></p>
+      </div>` : ''}<div class="cl-gps" id="gpsBox" role="group" aria-labelledby="gpsTitle">
         <div class="cl-gps-text"><strong id="gpsTitle">Position GPS *</strong><span id="gpsSub" aria-live="polite"></span></div>
         <button type="button" class="cl-btn outline sm" id="gpsBtn"></button>
       </div>
@@ -163,13 +173,13 @@
       } else if (position) {
         sub.textContent = position.accuracy != null
           ? `Position partagée · précision d’environ ${Math.round(position.accuracy)} m`
-          : 'Position partagée · confirmée sur la carte';
+          : position.label ? `Repère placé : ${position.label}` : 'Position partagée · confirmée sur la carte';
       } else sub.textContent = 'Partagez votre position depuis le lieu de livraison.';
       button.textContent = busy ? (position ? 'Utiliser cette position' : 'Localisation…') : position ? 'Actualiser' : 'Partager ma position';
       button.disabled = busy && !position;
       hint.textContent = busy ? 'La précision s’améliore en général en quelques secondes.'
         : imprecise() ? 'Déplacez l’épingle sur la carte, ou confirmez-la si elle est déjà au bon endroit.'
-          : position ? 'Si l’épingle n’est pas au bon endroit, déplacez-la sur la carte.' : 'Requis pour envoyer votre demande.';
+          : position ? (position.label ? 'Ajustez l’épingle si besoin : faites-la glisser ou touchez la carte à l’endroit exact.' : 'Si l’épingle n’est pas au bon endroit, déplacez-la ou touchez la carte.') : 'Requis pour envoyer votre demande : partagez votre position ou cherchez un lieu.';
       confirmBtn.hidden = busy || !imprecise();
       mapEl.hidden = !position;
       // Proposé dès que l'ordinateur donne une position imprécise (ou aucune).
@@ -189,6 +199,15 @@
         if (window.TraxoMapBase) window.TraxoMapBase.load().then((config) => window.TraxoMapBase.layerSwitcher(created, config, { position: 'topright' }));
         marker = L.marker(latLng, { draggable: true, keyboard: true, title: 'Point de livraison' }).addTo(map);
         marker.on('dragstart', () => { if (stopWatch) stopWatch(false); });
+        // Toucher la carte place l'épingle à cet endroit.
+        map.on('click', (e) => {
+          if (stopWatch) stopWatch(false);
+          marker.setLatLng(e.latlng);
+          position = { latitude: e.latlng.lat, longitude: e.latlng.lng, accuracy: null };
+          error = '';
+          paint();
+          if (onChange) onChange(position);
+        });
         marker.on('dragend', () => {
           const point = marker.getLatLng();
           position = { latitude: point.lat, longitude: point.lng, accuracy: null };
@@ -201,6 +220,84 @@
         if (recenter) map.setView(latLng, zoom);
       }
       setTimeout(() => map.invalidateSize(), 60);
+    }
+
+    // ---- Recherche d'un lieu (repère connu) ----
+    const placeBox = root.querySelector('#placeBox');
+    if (placeBox) {
+      const input = placeBox.querySelector('#placeQ');
+      const list = placeBox.querySelector('#placeList');
+      const state = placeBox.querySelector('#placeState');
+      const clear = placeBox.querySelector('#placeClear');
+      let results = [];
+      let active = -1;
+      let timer = null;
+      let seq = 0;
+      const escapeText = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); active = -1; };
+      const draw = () => {
+        list.innerHTML = results.map((r, i) => `<li role="option" id="placeOpt${i}" aria-selected="${i === active}" data-i="${i}"><strong>${escapeText(r.label)}</strong>${r.detail ? `<small>${escapeText(r.detail)}</small>` : ''}</li>`).join('');
+        list.hidden = !results.length;
+        input.setAttribute('aria-expanded', String(Boolean(results.length)));
+        if (active >= 0) input.setAttribute('aria-activedescendant', `placeOpt${active}`); else input.removeAttribute('aria-activedescendant');
+      };
+      const choose = (r) => {
+        if (!r) return;
+        if (stopWatch) stopWatch(false);
+        position = { latitude: r.lat, longitude: r.lng, accuracy: null, label: r.label };
+        error = '';
+        input.value = r.label;
+        results = []; close();
+        state.textContent = `Épingle placée sur « ${r.label} ». Ajustez-la si besoin.`;
+        clear.hidden = false;
+        showMap();
+        if (map) map.setView([r.lat, r.lng], 17);
+        paint();
+        // Sur téléphone la carte apparaît sous le champ : on l'amène à l'écran.
+        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        setTimeout(() => mapEl.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' }), 80);
+        if (onChange) onChange(position);
+      };
+      const run = async (q) => {
+        const mine = ++seq;
+        state.textContent = 'Recherche…';
+        const near = position ? `&lat=${encodeURIComponent(position.latitude)}&lng=${encodeURIComponent(position.longitude)}` : '';
+        try {
+          const res = await fetch(`/api/public/requests/${encodeURIComponent(placesToken)}/places?q=${encodeURIComponent(q)}${near}`, { headers: { Accept: 'application/json' } });
+          const data = await res.json().catch(() => ({}));
+          if (mine !== seq) return; // une saisie plus récente a pris le relais
+          if (res.status === 429) { results = []; close(); state.textContent = 'Trop de recherches d’un coup. Patientez un instant puis réessayez.'; return; }
+          if (!res.ok) throw new Error(data.error || '');
+          results = Array.isArray(data.results) ? data.results : [];
+          active = results.length ? 0 : -1;
+          draw();
+          state.textContent = data.status === 'unavailable' || data.status === 'disabled'
+            ? 'La recherche de lieux est indisponible pour le moment. Placez l’épingle sur la carte ou partagez votre position.'
+            : results.length ? `${results.length} lieu${results.length > 1 ? 'x' : ''} trouvé${results.length > 1 ? 's' : ''}. Choisissez le bon.` : 'Aucun lieu trouvé. Essayez un nom plus court ou un repère voisin (marché, école, église…).';
+        } catch (_) {
+          if (mine !== seq) return;
+          results = []; close();
+          state.textContent = 'Recherche impossible pour le moment. Vérifiez votre connexion et réessayez.';
+        }
+      };
+      input.addEventListener('input', () => {
+        const q = input.value.trim();
+        clear.hidden = !input.value;
+        clearTimeout(timer);
+        if (q.length < 3) { seq += 1; results = []; close(); state.textContent = q ? 'Tapez au moins 3 lettres.' : ''; return; }
+        timer = setTimeout(() => run(q), 350);
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' && results.length) { e.preventDefault(); active = (active + 1) % results.length; draw(); }
+        else if (e.key === 'ArrowUp' && results.length) { e.preventDefault(); active = (active - 1 + results.length) % results.length; draw(); }
+        else if (e.key === 'Enter') { e.preventDefault(); if (results[active]) choose(results[active]); else if (input.value.trim().length >= 3) { clearTimeout(timer); run(input.value.trim()); } }
+        else if (e.key === 'Escape') { close(); }
+      });
+      list.addEventListener('mousedown', (e) => e.preventDefault()); // garder le focus dans le champ
+      list.addEventListener('click', (e) => { const li = e.target.closest('[data-i]'); if (li) choose(results[Number(li.dataset.i)]); });
+      input.addEventListener('blur', () => setTimeout(close, 150));
+      input.addEventListener('focus', () => { if (results.length) draw(); });
+      clear.addEventListener('click', () => { input.value = ''; clear.hidden = true; seq += 1; results = []; close(); state.textContent = ''; input.focus(); });
     }
 
     // Épingle confirmée à la main : même traitement qu'un déplacement.

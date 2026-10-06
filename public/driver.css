@@ -75,3 +75,4 @@
 .driver-pickup h2 { margin: 3px 0 4px; font-size: 19px; }
 .driver-pickup p { margin: 2px 0; }
 .driver-pickup .driver-actions { margin-top: 10px; }
+.urgent-tag { display: inline-block; vertical-align: 3px; margin-left: 6px; font-size: 12px; font-weight: 700; color: #b3141f; background: #fdeaea; border: 1px solid #f5c2c0; border-radius: 6px; padding: 1px 7px; letter-spacing: 0; }

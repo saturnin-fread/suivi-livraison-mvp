@@ -178,6 +178,7 @@ function buildRoutingAdapter() {
 }
 
 const routingAdapter = buildRoutingAdapter();
+const { createGeocoder } = require('./lib/geocoder');
 
 function traccarConfigured() {
   return Boolean(process.env.TRACCAR_URL && process.env.TRACCAR_USER && process.env.TRACCAR_PASSWORD);
@@ -1216,6 +1217,7 @@ async function initDatabase() {
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_address TEXT;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_lat DOUBLE PRECISION;
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_lng DOUBLE PRECISION;
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
       ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS pickup_ready TEXT;
       CREATE UNIQUE INDEX IF NOT EXISTS customer_requests_edit_token_unique
         ON customer_requests(edit_token_hash) WHERE edit_token_hash IS NOT NULL;
@@ -1245,6 +1247,10 @@ async function initDatabase() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_address TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_lat DOUBLE PRECISION;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_lng DOUBLE PRECISION;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
+      DO $$ BEGIN
+        ALTER TABLE orders ADD CONSTRAINT orders_priority_check CHECK (priority IN ('normal', 'urgent'));
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_ready TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS picked_up_lat DOUBLE PRECISION;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS picked_up_lng DOUBLE PRECISION;
@@ -3960,7 +3966,7 @@ app.get('/api/driver/runs', requireDriverApi, asyncRoute(async (req, res) => {
   if (!runIds.length) return res.json([]);
   const stopsResult = await pool.query(
     `SELECT s.id, s.run_id, s.order_id, s.sequence,
-            o.status AS order_status, o.customer_name, o.requested_time,
+            o.status AS order_status, o.priority AS order_priority, o.customer_name, o.requested_time,
             o.neighborhood, o.landmark, o.delivery_address,
             o.destination_lat, o.destination_lng
      FROM delivery_stops s
@@ -3996,7 +4002,7 @@ app.get('/api/driver/runs', requireDriverApi, asyncRoute(async (req, res) => {
 app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
   const history = req.query.scope === 'history';
   const result = await pool.query(
-    `SELECT o.id, o.status, o.customer_name, o.customer_phone, o.delivery_address,
+    `SELECT o.id, o.status, o.priority, o.customer_name, o.customer_phone, o.delivery_address,
             o.requested_time, o.neighborhood, o.landmark, o.destination_lat, o.destination_lng,
             o.created_at, o.updated_at, pa.expected_amount_minor, pa.currency AS payment_currency,
             pa.status AS payment_status,
@@ -4011,6 +4017,7 @@ app.get('/api/driver/orders', requireDriverApi, asyncRoute(async (req, res) => {
      WHERE o.company_id = $1 AND o.driver_id = $2
        AND ${history ? 'o.status = ANY($3::text[])' : 'NOT (o.status = ANY($3::text[]))'}
      ORDER BY CASE r.status WHEN 'active' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END,
+              (o.priority = 'urgent') DESC,
               r.service_date ASC NULLS LAST, s.sequence ASC NULLS LAST, o.updated_at DESC, o.id DESC LIMIT 100`,
     [req.auth.company_id, req.auth.driver_id, terminalOrderStatuses]
   );
@@ -7047,6 +7054,7 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
       await chosenCustomerId(pool, req.auth.company_id, req.body?.customerId)]
   );
   await savePickupFields(pool, 'customer_requests', result.rows[0].id, req.auth.company_id, pickup.fields);
+  if (req.body?.priority === 'urgent') await pool.query("UPDATE customer_requests SET priority = 'urgent' WHERE id = $1", [result.rows[0].id]);
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prefilled_created', { expiresAt });
   const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
   const url = `${publicBaseUrl(req)}/demande/${token}`;
@@ -7260,13 +7268,13 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
       `INSERT INTO orders (
          company_id, driver_id, customer_request_id, customer_name, customer_phone,
          delivery_address, requested_time, destination_lat, destination_lng,
-         destination_accuracy, neighborhood, landmark, notes, status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Confirmée')
+         destination_accuracy, neighborhood, landmark, notes, status, priority
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Confirmée', $14)
        RETURNING id`,
       [
         req.auth.company_id, driver.id, request.id, request.customer_name, request.customer_phone,
         deliveryAddress, request.requested_time, request.location_lat, request.location_lng,
-        request.location_accuracy, request.neighborhood, request.landmark, request.notes,
+        request.location_accuracy, request.neighborhood, request.landmark, request.notes, orderPriorityFrom(req.body.priority || request.priority),
       ]
     );
     // Colis et collecte saisis sur la demande : recopiés sur la commande, avec
@@ -7437,7 +7445,7 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
       [req.auth.company_id, terminalOrderStatuses]
     ),
     pool.query(
-      `SELECT o.id, o.driver_id, o.customer_name, o.status, o.requested_time,
+      `SELECT o.id, o.driver_id, o.customer_name, o.status, o.requested_time, o.priority,
               o.neighborhood, o.landmark, o.delivery_address,
               o.destination_lat, o.destination_lng, o.destination_accuracy,
               o.updated_at, s.sequence, r.id AS run_id, r.name AS run_name,
@@ -7488,6 +7496,7 @@ app.get('/api/app/operations-map', requireCompanyApi, asyncRoute(async (req, res
     driverId: order.driver_id,
     customerName: order.customer_name,
     status: order.status,
+    priority: order.priority || 'normal',
     requestedTime: order.requested_time,
     neighborhood: order.neighborhood,
     landmark: order.landmark,
@@ -7650,7 +7659,7 @@ app.get('/api/app/drivers/:id/live-route', requireCompanyApi, asyncRoute(async (
   const driver = (await pool.query('SELECT id FROM drivers WHERE id = $1 AND company_id = $2', [req.params.id, req.auth.company_id])).rows[0];
   if (!driver) return res.status(404).json({ error: 'Livreur introuvable.' });
   const ordersResult = await pool.query(
-    `SELECT o.id, o.reference, o.status, o.customer_name, o.neighborhood, o.landmark, o.created_at,
+    `SELECT o.id, o.reference, o.status, o.priority, o.customer_name, o.neighborhood, o.landmark, o.created_at,
             o.destination_lat, o.destination_lng, o.pickup_name, o.pickup_lat, o.pickup_lng, s.sequence
      FROM orders o
      LEFT JOIN delivery_stops s ON s.order_id = o.id AND s.company_id = o.company_id
@@ -7664,14 +7673,16 @@ app.get('/api/app/drivers/:id/live-route', requireCompanyApi, asyncRoute(async (
   const targets = [];
   for (const o of ordersResult.rows) {
     const rank = LIVE_ROUTE_RANK[o.status] ?? 4;
-    const base = { orderId: String(o.id), reference: o.reference, status: o.status, customerName: o.customer_name, place: o.neighborhood || o.landmark || null, sequence: o.sequence == null ? null : Number(o.sequence), createdAt: o.created_at };
+    const base = { orderId: String(o.id), reference: o.reference, status: o.status, priority: o.priority || 'normal', customerName: o.customer_name, place: o.neighborhood || o.landmark || null, sequence: o.sequence == null ? null : Number(o.sequence), createdAt: o.created_at };
     const pickup = point(o.pickup_lat, o.pickup_lng);
     // Collecte à faire : avant de partir (Confirmée) ou en route vers elle.
     if (pickup && (rank === 2 || rank === 4)) targets.push({ ...base, kind: 'pickup', label: o.pickup_name || 'Collecte', rank, ...pickup });
     const dest = point(o.destination_lat, o.destination_lng);
     if (dest) targets.push({ ...base, kind: 'delivery', label: o.customer_name || 'Client', rank: rank === 2 ? 3 : rank, ...dest });
   }
-  targets.sort((a, b) => a.rank - b.rank || (a.sequence ?? 1e9) - (b.sequence ?? 1e9) || new Date(a.createdAt) - new Date(b.createdAt) || (a.kind === 'pickup' ? -1 : 1));
+  // Une commande urgente passe devant les autres de même étape.
+  const urgentFirst = (a, b) => (a.priority === 'urgent' ? 0 : 1) - (b.priority === 'urgent' ? 0 : 1);
+  targets.sort((a, b) => a.rank - b.rank || urgentFirst(a, b) || (a.sequence ?? 1e9) - (b.sequence ?? 1e9) || new Date(a.createdAt) - new Date(b.createdAt) || (a.kind === 'pickup' ? -1 : 1));
   const kept = targets.slice(0, 24).map(({ rank, createdAt, ...t }) => ({ ...t, active: rank <= 3 }));
   const position = await driverCurrentPosition(driver.id, req.auth.company_id);
   const base = { driverId: String(driver.id), targets: kept, origin: position ? { lat: position.lat, lng: position.lng, at: position.at } : null, computedAt: new Date().toISOString() };
@@ -7688,9 +7699,40 @@ app.get('/api/app/drivers/:id/live-route', requireCompanyApi, asyncRoute(async (
       durationSeconds: route.durationSeconds,
       geometry: route.geometry,
       legs: route.legs.map((leg) => ({ distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds })),
+      legGeometries: splitRouteByTargets(route.geometry?.value?.coordinates || [], kept),
     },
   });
 }));
+
+// Découpe le tracé en tronçons (un par point visé) pour les colorer séparément.
+// On avance le long de la ligne : chaque point est rattaché au premier sommet
+// situé à moins de 30 m, à défaut au plus proche parmi les sommets restants.
+function splitRouteByTargets(coordinates, targets) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2 || !targets.length) return [];
+  const meters = ([lng, lat], t) => {
+    const k = Math.cos((lat * Math.PI) / 180) * 111320;
+    return Math.hypot((lng - t.lng) * k, (lat - t.lat) * 110540);
+  };
+  const legs = [];
+  let start = 0;
+  targets.forEach((t, index) => {
+    const last = coordinates.length - 1;
+    let end = last;
+    if (index < targets.length - 1) {
+      let best = start; let bestD = Infinity;
+      for (let j = start; j <= last; j += 1) {
+        const d = meters(coordinates[j], t);
+        if (d < 30) { best = j; break; }
+        if (d < bestD) { bestD = d; best = j; }
+      }
+      end = Math.max(best, start);
+    }
+    const slice = coordinates.slice(start, end + 1);
+    legs.push(slice.length >= 2 ? slice : [coordinates[start], coordinates[Math.min(start + 1, last)]]);
+    start = end;
+  });
+  return legs;
+}
 
 app.get('/api/app/runs/:id/route', requireCompanyApi, asyncRoute(async (req, res) => {
   const runResult = await pool.query(
@@ -9164,7 +9206,7 @@ app.get('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT o.id, o.reference, o.status, o.customer_name, o.customer_phone, o.requested_time,
             o.neighborhood, o.landmark, o.created_at, o.updated_at, o.customer_id,
-            o.package_type, o.package_description, o.archived_at, o.commercial, o.customer_request_id,
+            o.package_type, o.package_description, o.archived_at, o.commercial, o.customer_request_id, o.priority,
             (o.pickup_address IS NOT NULL OR o.pickup_name IS NOT NULL OR o.pickup_lat IS NOT NULL) AS has_pickup,
             pa.expected_amount_minor, pa.currency AS payment_currency,
             d.id AS driver_id, d.name AS driver_name, d.traccar_unique_id AS driver_unique_id,
@@ -9620,6 +9662,24 @@ app.patch('/api/app/orders/:id/commercial', requireCompanyApi, requireCompanyRol
   if (!result.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
   await writeAudit(req.auth, 'order', result.rows[0].id, 'commercial_updated', {});
   return res.json(result.rows[0]);
+}));
+
+// Priorité d'une commande : « urgente » passe devant dans l'itinéraire du
+// livreur et ressort sur la carte, dans les listes et dans son appli.
+const ORDER_PRIORITIES = ['normal', 'urgent'];
+const orderPriorityFrom = (value) => (value === 'urgent' ? 'urgent' : 'normal');
+app.patch('/api/app/orders/:id/priority', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  if (!numericIdPattern.test(req.params.id)) return res.status(404).json({ error: 'Commande introuvable.' });
+  const priority = String(req.body.priority || '');
+  if (!ORDER_PRIORITIES.includes(priority)) return res.status(400).json({ error: 'Priorité inconnue.' });
+  const result = await pool.query(
+    `UPDATE orders SET priority = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3
+     RETURNING id, priority`,
+    [priority, req.params.id, req.auth.company_id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Commande introuvable.' });
+  await writeAudit(req.auth, 'order', result.rows[0].id, 'priority_changed', { priority });
+  return res.json({ id: result.rows[0].id, priority: result.rows[0].priority });
 }));
 
 app.post('/api/app/orders/:id/reassign', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
@@ -10955,10 +11015,11 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     if (!driver.rows[0]) throw Object.assign(new Error('Livreur non autorisé.'), { statusCode: 400 });
     const order = await client.query(
       `INSERT INTO orders (company_id, driver_id, customer_name, customer_phone, delivery_address,
-         neighborhood, landmark, notes, requested_time, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Confirmée') RETURNING id`,
+         neighborhood, landmark, notes, requested_time, status, priority)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Confirmée', $10) RETURNING id`,
       [req.auth.company_id, driver.rows[0].id, customerName, customerPhone || null, deliveryAddress,
-        structured.neighborhood, structured.landmark, structured.notes, structured.requestedTime]
+        structured.neighborhood, structured.landmark, structured.notes, structured.requestedTime,
+        orderPriorityFrom(req.body.priority)]
     );
     await savePickupFields(client, 'orders', order.rows[0].id, req.auth.company_id, pickup.fields);
     const chosenCustomer = await chosenCustomerId(client, req.auth.company_id, req.body.customerId);
@@ -11170,6 +11231,35 @@ app.post('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async
   setRequestDeviceCookie(req, res, req.params.token, editToken);
   const redirect = `/demande/${encodeURIComponent(req.params.token)}/confirmation`;
   return res.json({ status: 'received', message: 'Merci. L’entreprise va vérifier votre demande.', redirect });
+}));
+
+// Recherche d'un lieu pour placer son repère (« Marché Dantokpa »…). Réservée
+// aux liens de demande valides : ce n'est pas un service de géocodage ouvert.
+const geocoder = createGeocoder({
+  provider: process.env.GEOCODER_PROVIDER || 'nominatim',
+  baseUrl: process.env.GEOCODER_URL || undefined,
+  countries: process.env.GEOCODER_COUNTRY || 'bj',
+  contact: process.env.GEOCODER_CONTACT || process.env.SUPPORT_EMAIL || undefined,
+});
+const placeSearchRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({ limiter: trackingLimiter('places-ip', { capacity: 40, refillTokens: 40, refillIntervalMs: 60_000, maxEntries: 10_000 }) }),
+    createTokenPolicy({ limiter: trackingLimiter('places-token', { capacity: 25, refillTokens: 25, refillIntervalMs: 60_000, maxEntries: 20_000 }), key: (req) => req.params.token }),
+  ],
+});
+app.get('/api/public/requests/:token/places', placeSearchRateLimit, asyncRoute(async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
+  const found = await pool.query(
+    `SELECT id FROM customer_requests WHERE token = $1 AND archived_at IS NULL AND (expires_at IS NULL OR expires_at > NOW()) LIMIT 1`,
+    [String(req.params.token || '').slice(0, 200)]
+  );
+  if (!found.rows[0]) return res.status(404).json({ error: 'Lien introuvable ou expiré.' });
+  const lat = Number(req.query.lat); const lng = Number(req.query.lng);
+  const near = Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : { lat: 6.3703, lng: 2.3912 };
+  const out = await geocoder.search(String(req.query.q || ''), { near, limit: 6 });
+  res.set('Cache-Control', 'no-store');
+  return res.json({ status: out.status, results: out.results });
 }));
 
 app.get('/api/public/requests/:token', publicRequestRateLimit, asyncRoute(async (req, res) => {

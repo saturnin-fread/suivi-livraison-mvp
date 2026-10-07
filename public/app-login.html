@@ -95,6 +95,7 @@
           server: 'Un problème technique nous empêche de vous connecter. Réessayez dans un instant.',
         };
         if (params.get('reset') === '1') TraxoAuth.showBanner('Mot de passe modifié. Connectez-vous avec le nouveau.', 'success');
+        else if (params.get('joined') === '1') TraxoAuth.showBanner('Le nouvel espace est ajouté à votre compte. Connectez-vous pour l’ouvrir.', 'success');
         else if (params.get('created') === '1' && error !== 'code_send') TraxoAuth.showBanner('Compte créé. Connectez-vous pour continuer.', 'success');
         else if (error && messages[error]) TraxoAuth.showBanner(messages[error], 'error');
         if (error === '1') password.setAttribute('aria-invalid', 'true');

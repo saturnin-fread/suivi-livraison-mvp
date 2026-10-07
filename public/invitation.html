@@ -30,31 +30,40 @@
         <p class="subtitle" id="inviteSummary">Vérification de l’invitation…</p>
         <div class="invite-facts" id="inviteFacts" hidden></div>
         <form id="inviteForm" hidden novalidate>
-          <div id="phoneStep" hidden>
+          <div id="emailStep" hidden>
             <div class="field" style="margin-top:18px">
               <label for="inviteEmail">Votre adresse e-mail</label>
               <input id="inviteEmail" type="email" name="email" maxlength="200" autocomplete="email" inputmode="email" />
-              <small>Elle vous servira à vous connecter. Aucune adresse professionnelle n’est exigée.</small>
+              <small>Elle vous servira à vous connecter. Si vous avez déjà un compte TRAXO, indiquez son adresse.</small>
             </div>
-            <div class="invite-code" style="margin-top:15px">
-              <div class="field">
-                <label for="inviteCode">Code reçu sur WhatsApp</label>
-                <input id="inviteCode" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 chiffres" />
-              </div>
-              <button type="button" class="secondary" id="sendCode">Recevoir le code</button>
+          </div>
+          <div class="invite-code" style="margin-top:15px">
+            <div class="field">
+              <label for="inviteCode" id="codeLabel">Code de vérification</label>
+              <input id="inviteCode" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 chiffres" />
             </div>
-            <p class="invite-hint" id="codeHint"></p>
+            <button type="button" class="secondary" id="sendCode">Recevoir le code</button>
           </div>
-          <div class="field" style="margin-top:18px">
-            <label for="invitePassword">Mot de passe</label>
-            <input id="invitePassword" type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required />
-            <small>10 caractères minimum. Une courte phrase est plus facile à retenir.</small>
+          <p class="invite-hint" id="codeHint"></p>
+          <div id="newPassword">
+            <div class="field" style="margin-top:18px">
+              <label for="invitePassword">Choisissez un mot de passe</label>
+              <input id="invitePassword" type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" />
+              <small>10 caractères minimum, ni votre adresse e-mail ni un mot de passe courant. Une courte phrase est plus facile à retenir.</small>
+            </div>
+            <div class="field" style="margin-top:15px">
+              <label for="invitePassword2">Confirmez le mot de passe</label>
+              <input id="invitePassword2" type="password" name="passwordConfirmation" minlength="10" maxlength="128" autocomplete="new-password" />
+            </div>
           </div>
-          <div class="field" style="margin-top:15px">
-            <label for="invitePassword2">Confirmer le mot de passe</label>
-            <input id="invitePassword2" type="password" name="passwordConfirmation" minlength="10" maxlength="128" autocomplete="new-password" required />
+          <div id="existingPassword" hidden>
+            <div class="field" style="margin-top:18px">
+              <label for="inviteCurrent">Mot de passe de votre compte TRAXO</label>
+              <input id="inviteCurrent" type="password" maxlength="200" autocomplete="current-password" />
+              <small>Vous gardez votre compte et votre espace : cette équipe s’ajoute simplement à vos espaces. <a href="/app/forgot" target="_blank" rel="noopener">Mot de passe oublié ?</a></small>
+            </div>
           </div>
-          <button class="primary" type="submit">Rejoindre l’équipe</button>
+          <button class="primary" type="submit" id="inviteSubmit">Rejoindre l’équipe</button>
         </form>
         <div id="inviteResult" role="alert"></div>
       </section>
@@ -70,8 +79,16 @@
       const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
       }[character]));
-      let needsCode = false;
+      let existing = false;
+      let channel = 'email';
       let timer = null;
+      const showError = (message) => { result.innerHTML = `<div class="notice error">${escapeHtml(message)}</div>`; };
+      function setExisting(on) {
+        existing = on;
+        document.getElementById('newPassword').hidden = on;
+        document.getElementById('existingPassword').hidden = !on;
+        document.getElementById('inviteSubmit').textContent = on ? 'Rejoindre avec mon compte' : 'Créer mon accès et rejoindre l’équipe';
+      }
       function countdown(seconds) {
         clearInterval(timer);
         let left = seconds;
@@ -94,11 +111,14 @@
           ${invitation.invited_by ? `<div><span>Invitation de</span><strong>${escapeHtml(invitation.invited_by)}</strong></div>` : ''}
           <div><span>Valable jusqu’au</span><strong>${escapeHtml(expires)}</strong></div>`;
         facts.hidden = false;
-        needsCode = invitation.verification === 'whatsapp';
-        if (invitation.needsEmail) {
-          document.getElementById('phoneStep').hidden = false;
-          hint.textContent = invitation.phoneMasked ? `Le code part sur le WhatsApp du ${invitation.phoneMasked}.` : '';
-        }
+        channel = invitation.verification;
+        document.getElementById('codeLabel').textContent = channel === 'whatsapp' ? 'Code reçu sur WhatsApp' : 'Code reçu par e-mail';
+        hint.textContent = channel === 'whatsapp'
+          ? `Pour confirmer que l’invitation vous est destinée, un code part sur le WhatsApp du ${invitation.phoneMasked || 'numéro invité'}.`
+          : `Pour confirmer que l’invitation vous est destinée, un code part à ${invitation.emailMasked || 'l’adresse invitée'}.`;
+        document.getElementById('emailStep').hidden = !invitation.needsEmail;
+        setExisting(Boolean(invitation.existingAccount));
+        if (invitation.existingAccount) summary.innerHTML += '<br><small>Vous avez déjà un compte TRAXO avec cette adresse : connectez-vous avec lui, sans créer de nouveau compte.</small>';
         form.hidden = false;
       }
       sendBtn.addEventListener('click', async () => {
@@ -111,35 +131,43 @@
             if (data.resendIn) countdown(data.resendIn); else sendBtn.disabled = false;
             throw new Error(data.error || 'Envoi impossible.');
           }
-          hint.textContent = `Code envoyé sur le WhatsApp du ${data.phoneMasked}. Il arrive dans quelques secondes.`;
+          hint.textContent = data.channel === 'whatsapp'
+            ? `Code envoyé sur le WhatsApp du ${data.phoneMasked}. Il arrive dans quelques secondes.`
+            : `Code envoyé à ${data.emailMasked}. Pensez à regarder dans les indésirables.`;
           countdown(data.resendIn || 60);
           document.getElementById('inviteCode').focus();
-        } catch (error) {
-          result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
-        }
+        } catch (error) { showError(error.message); }
       });
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const button = form.querySelector('button[type="submit"]');
-        const payload = Object.fromEntries(new FormData(form));
+        const button = document.getElementById('inviteSubmit');
+        const fd = Object.fromEntries(new FormData(form));
+        const payload = { code: fd.code, email: fd.email };
         result.innerHTML = '';
-        if (!document.getElementById('phoneStep').hidden) {
-          if (!/^\S+@\S+\.\S+$/.test(payload.email || '')) { result.innerHTML = '<div class="notice error">Indiquez une adresse e-mail valide.</div>'; return; }
-          if (needsCode && !/^\d{6}$/.test(payload.code || '')) { result.innerHTML = '<div class="notice error">Saisissez le code à 6 chiffres reçu sur WhatsApp.</div>'; return; }
+        if (!document.getElementById('emailStep').hidden && !/^\S+@\S+\.\S+$/.test(fd.email || '')) return showError('Indiquez une adresse e-mail valide.');
+        if (!/^\d{6}$/.test((fd.code || '').trim())) return showError('Saisissez le code à 6 chiffres reçu. Pas encore de code ? Touchez « Recevoir le code ».');
+        if (existing) {
+          payload.password = document.getElementById('inviteCurrent').value;
+          if (!payload.password) return showError('Saisissez le mot de passe de votre compte TRAXO.');
+        } else {
+          payload.password = fd.password; payload.passwordConfirmation = fd.passwordConfirmation;
+          if ((fd.password || '').length < 10) return showError('Le mot de passe doit contenir au moins 10 caractères.');
+          if (fd.password !== fd.passwordConfirmation) return showError('Les deux mots de passe ne correspondent pas.');
         }
-        if ((payload.password || '').length < 10) { result.innerHTML = '<div class="notice error">Le mot de passe doit contenir au moins 10 caractères.</div>'; return; }
-        if (payload.password !== payload.passwordConfirmation) { result.innerHTML = '<div class="notice error">Les deux mots de passe ne correspondent pas.</div>'; return; }
         button.disabled = true;
         try {
           const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}/accept`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
           });
           const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.error || 'Activation impossible.');
-          result.innerHTML = '<div class="notice success">Bienvenue dans l’équipe. Ouverture de votre espace…</div>';
+          if (!response.ok) {
+            if (data.code === 'EXISTING_ACCOUNT' && !existing) { setExisting(true); document.getElementById('inviteCurrent').focus(); }
+            throw new Error(data.error || 'Activation impossible.');
+          }
+          result.innerHTML = `<div class="notice success">${data.joinedExisting ? 'Cet espace est ajouté à votre compte.' : 'Bienvenue dans l’équipe.'} ${data.redirect.startsWith('/app/login') ? 'Connectez-vous pour l’ouvrir…' : 'Ouverture de votre espace…'}</div>`;
           location.href = data.redirect;
         } catch (error) {
-          result.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`;
+          showError(error.message);
           button.disabled = false;
         }
       });

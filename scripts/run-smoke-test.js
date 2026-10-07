@@ -1,3 +1,4 @@
+const { acceptEmailInvitation } = require('./lib/outbox-code');
 const { Pool } = require('pg');
 const crypto = require('node:crypto');
 
@@ -143,10 +144,7 @@ async function run() {
     ensure(invitation.response.status === 201 && invitation.payload.path, 'Invitation du livreur de tournée impossible.');
     driverInvitationId = invitation.payload.id;
     const invitationToken = invitation.payload.path.split('/').pop();
-    const accepted = await json(await fetch(`${baseUrl}/api/public/invitations/${encodeURIComponent(invitationToken)}/accept`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: driverPassword, passwordConfirmation: driverPassword }),
-    }));
+    const accepted = await json(await acceptEmailInvitation(baseUrl, invitationToken, driverEmail, { password: driverPassword, passwordConfirmation: driverPassword }));
     ensure(accepted.response.status === 201, 'Activation du compte livreur de tournée impossible.');
     driverCookie = accepted.response.headers.get('set-cookie')?.split(';')[0];
     const driverUser = await pool.query('SELECT id FROM users WHERE email = $1', [driverEmail]);

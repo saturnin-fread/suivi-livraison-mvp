@@ -133,6 +133,7 @@
         if (x.key === 'status') return `<span class="status ${GOOD.includes(v) ? 'good' : BAD.includes(v) ? 'bad' : 'warn'}">${esc(v)}</span>`;
         if (x.type === 'date') return esc(stampFr(v));
         if (x.type === 'day') return esc(v ? dayFr(v) : '');
+        if (x.type === 'money') return v === '' || v == null ? '—' : `${esc(new Intl.NumberFormat('fr-FR').format(Number(v)))} F`;
         return esc(v === '' || v == null ? '—' : v);
       };
       const tools = el.querySelector('.table-tools');

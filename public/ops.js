@@ -948,6 +948,9 @@
       const place = [d.neighborhood, d.landmark].filter(Boolean).join(' · ');
       const position = shared ? `Position reçue${d.location_accuracy != null ? ` · précision ± ${Math.round(d.location_accuracy)} m` : ''}` : 'Position non partagée';
       const canValidate = canAct && ['À vérifier', 'Informations à compléter', 'Validée'].includes(d.status) && !d.order_id;
+      const c = d.commercial || {};
+      const priceText = [c.deliveryFeeMinor != null ? `Livraison ${money(c.deliveryFeeMinor)}` : '', c.declaredValueMinor != null ? `Commande ${money(c.declaredValueMinor)}` : ''].filter(Boolean).join(' · ');
+      const prices = `<dl class="ops-fields ops-prices">${field('Prix indicatifs', `${priceText ? esc(priceText) : '<span class="ops-dim">Non renseignés</span>'}${canAct && !d.order_id && !d.archived_at ? ' <button type="button" class="ops-textact" data-act="compose" data-c="prices">Modifier</button>' : ''}<small>Pour vos rapports. TRAXO n’encaisse aucun paiement.</small>`)}</dl>`;
       return `${head}
         ${waiting ? field('Ce qui se passe ensuite', 'Le client remplit le formulaire et partage sa position. Vous vérifiez sa demande avant de créer la commande.') : `<dl class="ops-fields">
           ${field('Le client', `${esc(d.customer_name || '—')}${d.customer_phone ? `<small>${tel(d.customer_phone)}</small>` : ''}`)}
@@ -957,6 +960,7 @@
           ${d.photo_ids?.length ? field('Photos du lieu', `${plural(d.photo_ids.length, 'photo', 'photos')} · visibles dans « Ouvrir la demande »`) : ''}
           ${d.order_id ? field('Commande', `${esc(d.order_reference || `CMD-${d.order_id}`)} · ${esc(d.order_status || '')}`) : ''}
         </dl>`}
+        ${prices}
         <div class="ops-fiche-actions">
           ${d.order_id ? fbtn('Voir la commande', 'goto', { icon: 'arrow-up-right', cls: 'ops-primary', attrs: `data-src="commandes" data-id="${esc(d.order_id)}"` }) : ''}
           ${canValidate ? fbtn(shared ? 'Vérifier et attribuer' : 'Position requise', 'compose', { icon: 'check', cls: 'ops-primary', attrs: `data-c="approve" ${shared ? '' : 'disabled'}` }) : ''}
@@ -1091,6 +1095,15 @@
           <label class="ops-fld">Langue<input name="language" maxlength="35" value="${esc(c.preferred_language || '')}" placeholder="Ex. Français, Fon, Yoruba"></label>
           <p class="ops-help">Renseigné par votre équipe, avec l’accord du client. Facultatif.</p>`;
       }
+      if (a === 'prices') {
+        const c = d.commercial || {};
+        title = 'Prix indicatifs';
+        content = `<div class="ops-fld-2">
+            <label class="ops-fld">Prix de la livraison (FCFA)<input name="deliveryFee" type="number" min="0" step="1" value="${esc(c.deliveryFeeMinor ?? '')}" placeholder="Ex. 1500"></label>
+            <label class="ops-fld">Montant de la commande (FCFA)<input name="orderAmount" type="number" min="0" step="1" value="${esc(c.declaredValueMinor ?? '')}" placeholder="Ex. 25000"></label>
+          </div>
+          <p class="ops-help">Recopiés sur la commande à la validation, puis repris dans vos rapports (chiffre d’affaires). TRAXO n’encaisse aucun paiement.</p>`;
+      }
       if (a === 'commercial') {
         const c = d.commercial || {};
         const items = f.items || (Array.isArray(c.items) && c.items.length ? c.items : [{ name: '', qty: 1, unitMinor: '' }]);
@@ -1195,6 +1208,10 @@
           await api(`/api/app/crm/customers/${encodeURIComponent(cid)}`, json('PATCH', { preferredChannel: v('channel') || null, preferredLanguage: v('language') }));
           f.cust = undefined;
           return refreshFiche('Le contact préféré est enregistré.');
+        }
+        if (a === 'prices') {
+          await api(`/api/app/requests/${id}/prices`, json('PATCH', { deliveryFee: v('deliveryFee'), orderAmount: v('orderAmount') }));
+          return refreshFiche('Les prix sont enregistrés.');
         }
         if (a === 'commercial') {
           const items = readItems(form).filter((it) => it.name.trim()).map((it) => ({ name: it.name, qty: Number(it.qty || 1), unitMinor: it.unitMinor === '' ? 0 : Number(it.unitMinor) }));

@@ -156,7 +156,7 @@
     L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
     const layers = {
       waiting: L.layerGroup().addTo(map), runs: L.layerGroup().addTo(map), route: L.layerGroup().addTo(map), stops: L.layerGroup().addTo(map),
-      drivers: L.layerGroup().addTo(map), me: L.layerGroup().addTo(map), history: L.layerGroup().addTo(map), playhead: L.layerGroup().addTo(map),
+      drivers: L.layerGroup().addTo(map), vehicles: L.layerGroup().addTo(map), me: L.layerGroup().addTo(map), history: L.layerGroup().addTo(map), playhead: L.layerGroup().addTo(map),
     };
     const bases = {};
     let activeBase = [];
@@ -199,6 +199,101 @@
       const url = st.showPhotos ? photoUrl(d) : null;
       const ring = signal(d).key === 'stale' ? 'amber' : job(d).tone;
       return `<span class="fm-av ${size} ring-${ring} ${signal(d).key === 'none' ? 'is-none' : ''}">${url ? `<img src="${esc(url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<b>${esc(initials(d.name))}</b><i class="fm-veh">${ic(vehicleIcon(d))}</i>${heading && moving(d) ? `<i class="fm-heading" style="--deg:${Math.round(d.position.course)}deg"></i>` : ''}</span>`;
+    }
+    // ---------- Repères véhicules (kit « Véhicules sur carte »)
+    // Le véhicule indique la position et le cap ; le profil (photo, nom, statut)
+    // s'affiche à part, au survol, au focus, au toucher ou à la sélection.
+    const VEH_KIND = { Moto: 'moto-cargo', 'Vélo': 'scooter', Tricycle: 'moto-cargo', Voiture: 'citadine', Camionnette: 'utilitaire' };
+    const vehKind = (d) => VEH_KIND[d?.vehicleType] || 'moto-cargo';
+    const vehSize = (z, sel) => Math.round(Math.min(42, Math.max(24, 24 + (z - 12) * 2.6 + (sel ? 4 : 0))));
+    const vehSrc = (kind, z) => (z <= 13 ? `/img/vehicles/${kind}.svg` : `/img/vehicles/${kind}@128.webp`);
+    const norm360 = (n) => ((n % 360) + 360) % 360;
+    const shortDelta = (a, b) => ((b - a + 540) % 360 + 360) % 360 - 180;
+    // Dernier cap fiable par livreur, cumulé : 359° → 1° tourne de 2°, pas de 358°.
+    const headings = new Map();
+    function turnTo(key, target) {
+      const prev = headings.get(key);
+      const next = prev == null ? norm360(target) : prev + shortDelta(norm360(prev), norm360(target));
+      headings.set(key, next);
+      return next;
+    }
+    function vehHeading(d) {
+      const key = String(d.id);
+      const p = d.position;
+      const reliable = p && !p.stale && Number.isFinite(Number(p.course)) && p.speedKnots != null && p.speedKnots * 1.852 >= 4;
+      if (!reliable) return headings.get(key) ?? 0; // à l'arrêt : on garde le dernier cap
+      return turnTo(key, Number(p.course));
+    }
+    function vehStatus(d) {
+      if (signal(d).key === 'stale') return { key: 'stale', label: `Dernière position · il y a ${ago(d.position.timestamp)}` };
+      const j = job(d);
+      if (j.tone === 'red') return { key: 'incident', label: j.label };
+      if (moving(d)) return { key: 'online', label: `${j.label} · ${Math.round(d.position.speedKnots * 1.852)} km/h` };
+      return { key: j.key === 'available' ? 'idle' : 'online', label: j.label };
+    }
+    function vehicleHtml(d, { z, sel, chip = true, status = vehStatus(d), kind = vehKind(d) }) {
+      const url = st.showPhotos ? photoUrl(d) : null;
+      const showChip = chip && (sel || (st.showNames && z >= 17));
+      return `<span class="fm-vm st-${status.key}${sel ? ' sel' : ''}${showChip ? ' chip-on' : ''}" style="--vs:${vehSize(z, sel)}px">
+          <span class="fm-vm-rotor"><img src="${vehSrc(kind, z)}" alt="" draggable="false"></span>
+          <i class="fm-vm-dot" aria-hidden="true"></i>
+          ${chip ? `<span class="fm-vm-chip"><span class="fm-vm-ph">${url ? `<img src="${esc(url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<b>${esc(initials(d.name))}</b></span><span class="fm-vm-txt"><strong>${esc(d.name)}</strong><small>${esc(status.label)}</small></span></span>` : ''}
+        </span>`;
+    }
+    // Un repère par livreur, réutilisé d'une actualisation à l'autre : il glisse
+    // jusqu'à la nouvelle position reçue (jamais au-delà) et tourne en douceur.
+    const vehMarkers = new Map();
+    function glide(entry, to) {
+      cancelAnimationFrame(entry.raf);
+      const from = entry.marker.getLatLng();
+      const far = map.distance(from, to) > 1500;
+      if (reduced() || far || document.hidden) { entry.marker.setLatLng(to); return; }
+      const t0 = performance.now(); const dur = 900;
+      const step = (now) => {
+        const f = Math.min(1, (now - t0) / dur); const e = f * (2 - f);
+        entry.marker.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]);
+        if (f < 1) entry.raf = requestAnimationFrame(step);
+      };
+      entry.raf = requestAnimationFrame(step);
+    }
+    function placeVehicle(d, z, isSel, seen) {
+      const key = String(d.id);
+      seen.add(key);
+      const ll = [d.position.latitude, d.position.longitude];
+      const status = vehStatus(d);
+      const html = vehicleHtml(d, { z, sel: isSel, status });
+      const angle = vehHeading(d);
+      let entry = vehMarkers.get(key);
+      if (!entry) {
+        const marker = L.marker(ll, { icon: L.divIcon({ className: 'fm-divicon fm-vm-host', html, iconSize: [44, 44], iconAnchor: [22, 22] }), title: `${d.name} · ${status.label}`, riseOnHover: true, keyboard: true })
+          .addTo(layers.vehicles).on('click', () => selectDriver(d.id, { pan: false }));
+        entry = { marker, html, raf: 0 };
+        vehMarkers.set(key, entry);
+      } else {
+        if (entry.html !== html) { entry.marker.setIcon(L.divIcon({ className: 'fm-divicon fm-vm-host', html, iconSize: [44, 44], iconAnchor: [22, 22] })); entry.html = html; }
+        const el = entry.marker.getElement(); if (el) el.title = `${d.name} · ${status.label}`;
+        glide(entry, ll);
+      }
+      entry.marker.setZIndexOffset(isSel ? 900 : status.key === 'stale' ? -50 : 0);
+      const rotor = entry.marker.getElement()?.querySelector('.fm-vm-rotor');
+      if (rotor) rotor.style.transform = `rotate(${angle}deg)`;
+      if (isSel) requestAnimationFrame(() => fitChip(entry.marker.getElement()));
+    }
+    // La pastille du profil reste dans la carte : à gauche près du bord droit,
+    // dessous près du haut (barre d'outils, panneaux).
+    function fitChip(el) {
+      const veh = el?.querySelector('.fm-vm'); const chip = el?.querySelector('.fm-vm-chip');
+      if (!veh || !chip || getComputedStyle(chip).display === 'none') return;
+      veh.classList.remove('chip-left', 'chip-below');
+      const box = stage.getBoundingClientRect(); const r = chip.getBoundingClientRect();
+      if (r.right > box.right - 8) veh.classList.add('chip-left');
+      if (r.top < box.top + 120) veh.classList.add('chip-below');
+    }
+    function pruneVehicles(seen) {
+      for (const [key, entry] of vehMarkers) {
+        if (seen.has(key)) continue;
+        cancelAnimationFrame(entry.raf); layers.vehicles.removeLayer(entry.marker); vehMarkers.delete(key);
+      }
     }
     function stopsOf(d) {
       const seen = new Set(); const out = [];
@@ -379,14 +474,17 @@
       const nextKm = leg ? leg.distanceMeters : dist([r.origin.lat, r.origin.lng], [next.lat, next.lng]);
       const what = `${next.kind === 'pickup' ? 'Collecte' : 'Livraison'}${next.priority === 'urgent' ? ' urgente' : ''}`;
       const others = r.targets.length - 1;
-      return `<div class="fm-liveroute ${r.status === 'ok' ? '' : 'crow'}"><i></i><div>
-          <small class="fm-lr-kicker">${what} · prochain point</small>
+      const lost = r.signal?.stale;
+      const lastAt = r.signal?.at ? new Date(r.signal.at).getTime() : null;
+      return `<div class="fm-liveroute ${r.status === 'ok' ? '' : 'crow'}${lost ? ' stale' : ''}"><i></i><div>
+          <small class="fm-lr-kicker">${lost ? `Itinéraire estimé · ${what.toLowerCase()}` : `${what} · prochain point`}</small>
           <strong>${esc(next.label)}${next.place ? ` · ${esc(next.place)}` : ''}</strong>
-          <span class="fm-lr-eta">${km(nextKm)}${leg ? ` · ~${Math.max(1, Math.round(leg.durationSeconds / 60))} min` : ' à vol d’oiseau'}</span>
+          <span class="fm-lr-eta">${lost ? '≈ ' : ''}${km(nextKm)}${leg ? ` · ~${Math.max(1, Math.round(leg.durationSeconds / 60))} min` : ' à vol d’oiseau'}</span>
+          ${lost ? `<div class="fm-note amber fm-lr-lost"><strong>Signal perdu depuis ${ago(lastAt)}.</strong> Le livreur a peut-être avancé : l’itinéraire part de sa dernière position connue et ses temps sont incertains. Il sera recalculé dès que son téléphone retrouve du réseau.</div>` : ''}
           ${others > 0 && r.status === 'ok' ? `<small>Puis ${plural(others, 'autre point', 'autres points')} · ${km(r.distanceMeters)} et ${minutes(r.durationSeconds)} au total, hors arrêts</small>` : ''}
           ${r.targets.length > 1 ? `<ol class="fm-lr-steps">${r.targets.slice(0, 7).map((t, i) => { const upTo = (r.legs || []).slice(0, i + 1); const sec = upTo.length === i + 1 ? upTo.reduce((a, l) => a + l.durationSeconds, 0) : null; return `<li style="--leg:${legColor(i)}"><i aria-hidden="true"></i><span>${t.kind === 'pickup' ? 'Collecte' : 'Livraison'} · ${esc(t.label)}</span>${t.priority === 'urgent' ? '<b>Urgente</b>' : ''}<small>${sec != null ? minutes(sec) : ''}</small></li>`; }).join('')}${r.targets.length > 7 ? `<li class="more">et ${r.targets.length - 7} de plus</li>` : ''}</ol>` : ''}
           ${r.status !== 'ok' ? '<small>Calcul routier indisponible : ligne droite affichée.</small>' : ''}
-          <small class="fm-lr-live">${ic('radio')}Recalculé à ${clockSec(new Date(r.computedAt).getTime())}, suit le livreur</small>
+          <small class="fm-lr-live${lost ? ' stale' : ''}">${ic('radio')}${lost ? `Dernière position reçue à ${clockSec(lastAt)} · en attente du signal` : `Recalculé à ${clockSec(new Date(r.computedAt).getTime())}, suit le livreur`}</small>
         </div></div>`;
     }
 
@@ -537,8 +635,13 @@
       let lo = 0; let hi = line.length - 1;
       while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (line[mid].t <= t) lo = mid; else hi = mid; }
       const a = line[lo]; const b = line[hi];
+      // Pendant une coupure de signal, on ne relie pas deux points éloignés par
+      // un faux trajet : le véhicule reste au dernier point connu.
+      const gap = (st.track?.gaps || []).find((g) => t > g.fromT && t < g.toT);
+      const heading = map.distance(a.ll, b.ll) > 3 ? (Math.atan2((b.ll[1] - a.ll[1]) * Math.cos((a.ll[0] * Math.PI) / 180), b.ll[0] - a.ll[0]) * 180) / Math.PI : null;
+      if (gap) return { ll: a.ll, t, heading, gap: true };
       const f = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
-      return { ll: [a.ll[0] + (b.ll[0] - a.ll[0]) * f, a.ll[1] + (b.ll[1] - a.ll[1]) * f], t };
+      return { ll: [a.ll[0] + (b.ll[0] - a.ll[0]) * f, a.ll[1] + (b.ll[1] - a.ll[1]) * f], t, heading };
     }
     let traveledLine = null; let playMarker = null; let playLabel = null;
     function drawHistory(fit = false) {
@@ -581,7 +684,7 @@
           .addTo(layers.history).bindTooltip(`${esc(m.status)} · ${clock(t)}`, { direction: 'top', offset: [0, -6] }).on('click', () => seek(t));
       });
       const who = st.target?.kind === 'driver' ? selected() : drivers().find((x) => x.name === tr.drivers[0]);
-      const icon = L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pin history">${who ? avatar(who) : `<span class="fm-av">${ic('moto')}</span>`}</span>`, iconSize: [46, 46], iconAnchor: [23, 23] });
+      const icon = L.divIcon({ className: 'fm-divicon fm-vm-host', html: vehicleHtml(who || { id: 'replay', name: tr.drivers[0] || 'Livreur' }, { z: Math.max(16, map.getZoom()), sel: true, chip: false, status: { key: 'online', label: 'Relecture' }, kind: vehKind(who) }), iconSize: [44, 44], iconAnchor: [22, 22] });
       playMarker = L.marker(line[0].ll, { icon, zIndexOffset: 1000 }).addTo(layers.playhead);
       playLabel = L.tooltip({ permanent: true, direction: 'bottom', offset: [0, 22], className: 'fm-play-label' });
       playMarker.bindTooltip(playLabel).openTooltip();
@@ -599,6 +702,11 @@
       const p = positionAt(t);
       if (!p) return;
       playMarker.setLatLng(p.ll);
+      const pel = playMarker.getElement();
+      if (pel) {
+        if (p.heading != null) pel.querySelector('.fm-vm-rotor')?.style.setProperty('transform', `rotate(${turnTo('replay', p.heading)}deg)`);
+        pel.querySelector('.fm-vm')?.classList.toggle('st-stale', Boolean(p.gap));
+      }
       const done = trackLine().filter((x) => x.t <= t).map((x) => x.ll);
       done.push(p.ll);
       traveledLine?.setLatLngs(done);
@@ -663,16 +771,11 @@
     }
 
     // ---------- Suivi en direct
-    function tipHtml(d) {
-      const j = job(d); const s = signal(d); const next = stopsOf(d)[0]; const p = progressOf(d);
-      return `<div class="fm-tip-card"><strong>${esc(d.name)}</strong><span class="fm-badge ${j.tone}">${j.label}</span>
-        <small>${s.key === 'stale' ? `Signal ancien · il y a ${ago(d.position.timestamp)}` : `Signal il y a ${ago(d.position.timestamp)}`}${moving(d) ? ` · ${Math.round(d.position.speedKnots * 1.852)} km/h` : ''}</small>
-        ${p.total ? `<small>${p.done}/${p.total} livrée${p.done > 1 ? 's' : ''}${next ? ` · prochaine : ${esc(next.neighborhood || next.customerName || '')}` : ''}</small>` : ''}</div>`;
-    }
     function drawCurrent() {
       ['drivers', 'stops', 'runs', 'waiting'].forEach((k) => layers[k].clearLayers());
-      if (st.mode === 'history') { layers.route.clearLayers(); return; }
+      if (st.mode === 'history') { layers.route.clearLayers(); pruneVehicles(new Set()); return; }
       const sel = selected();
+      const seenVeh = new Set();
       const shown = (st.isolate && sel ? [sel] : matches()).filter((d) => d.position);
       const z = map.getZoom();
       const groups = [];
@@ -693,14 +796,9 @@
           continue;
         }
         const d = g.items[0];
-        const isSel = String(d.id) === String(st.selectedId);
-        const j = job(d); const s = signal(d);
-        const label = st.showNames && (isSel || z >= 14) ? `<span class="fm-pin-name"><strong>${esc(d.name.split(' ')[0])}</strong><small class="${s.key === 'stale' ? 'amber' : j.tone}">${s.key === 'stale' ? `Signal ancien · ${ago(d.position.timestamp)}` : j.label}</small></span>` : '';
-        const icon = L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pin ${isSel ? 'sel' : ''}">${avatar(d, '', { heading: true })}${label}</span>`, iconSize: [46, 46], iconAnchor: [23, 23] });
-        L.marker([d.position.latitude, d.position.longitude], { icon, title: d.name, zIndexOffset: isSel ? 900 : 0, riseOnHover: true }).addTo(layers.drivers)
-          .bindTooltip(tipHtml(d), { direction: 'top', offset: [0, -26], className: 'fm-tip', opacity: 1 })
-          .on('click', () => selectDriver(d.id, { pan: false }));
+        placeVehicle(d, z, String(d.id) === String(st.selectedId), seenVeh);
       }
+      pruneVehicles(seenVeh);
       if (st.showStops) {
         const owners = st.isolate && sel ? [sel] : (st.showAllStops ? matches() : (sel ? [sel] : []));
         owners.forEach((d) => {
@@ -835,7 +933,7 @@
       try { data = await api(`/api/app/drivers/${encodeURIComponent(d.id)}/live-route`); }
       catch { if (seq === routeSeq) { st.liveRoute = { driverId: d.id, error: true }; layers.route.clearLayers(); renderTeam(); } return; }
       if (seq !== routeSeq || String(selected()?.id) !== String(d.id) || st.mode !== 'current') return;
-      st.liveRoute = { driverId: d.id, sig: routeSig(d), status: data.status, targets: data.targets || [], origin: data.origin, computedAt: data.computedAt,
+      st.liveRoute = { driverId: d.id, sig: routeSig(d), status: data.status, targets: data.targets || [], origin: data.origin, computedAt: data.computedAt, signal: data.signal || null,
         distanceMeters: data.route?.distanceMeters, durationSeconds: data.route?.durationSeconds, legs: data.route?.legs || [] };
       const fitTo = fit && !st.follow && data.origin && data.targets?.[0]
         ? L.latLngBounds([[data.origin.lat, data.origin.lng], [data.targets[0].lat, data.targets[0].lng]]).pad(0.35) : null;
@@ -849,7 +947,7 @@
     let routeDraw = null;
     // Clé du tracé : on ne rejoue l'animation que si les points visés changent
     // (ordre, type ou priorité) ; un déplacement du livreur met juste à jour.
-    const routeKey = (data) => `${data.driverId}|${data.status}|${(data.targets || []).map((t) => `${t.orderId}:${t.kind}:${t.priority}`).join(',')}`;
+    const routeKey = (data) => `${data.driverId}|${data.status}|${data.signal?.stale ? 'stale' : 'live'}|${(data.targets || []).map((t) => `${t.orderId}:${t.kind}:${t.priority}`).join(',')}`;
     function drawIn(lines, ms, done) {
       const paths = lines.map((l) => l._path).filter(Boolean);
       let over = false;
@@ -879,6 +977,10 @@
       text.setAttribute('dy', String(Math.round(size * 0.36)));
       const tp = document.createElementNS(SVGNS, 'textPath');
       tp.setAttribute('href', `#${path.id}`);
+      // Les flèches vivent dans leur propre nœud texte : réécrire tp.textContent
+      // supprimerait aussi l'élément <animate> (l'animation s'arrêtait au zoom).
+      const glyphs = document.createTextNode('');
+      tp.appendChild(glyphs);
       text.appendChild(tp);
       path.parentNode.appendChild(text);
       const gap = Math.round(size * 2.6);
@@ -886,12 +988,12 @@
       const fit = () => {
         const len = path.getTotalLength();
         const n = Math.max(1, Math.floor(len / gap));
-        tp.textContent = glyph.repeat(n);
+        glyphs.data = glyph.repeat(n);
         text.setAttribute('letter-spacing', '0');
         const advance = n ? (tp.getComputedTextLength() / n) : gap;
         text.setAttribute('letter-spacing', String(Math.max(0, gap - advance)));
         if (reduced()) return;
-        if (!anim) { anim = document.createElementNS(SVGNS, 'animate'); anim.setAttribute('attributeName', 'startOffset'); anim.setAttribute('repeatCount', 'indefinite'); tp.appendChild(anim); }
+        if (!anim || anim.parentNode !== tp) { anim = document.createElementNS(SVGNS, 'animate'); anim.setAttribute('attributeName', 'startOffset'); anim.setAttribute('repeatCount', 'indefinite'); tp.appendChild(anim); }
         anim.setAttribute('from', '0'); anim.setAttribute('to', String(gap)); anim.setAttribute('dur', `${period}s`);
         try { text.ownerSVGElement?.unpauseAnimations?.(); anim.beginElement?.(); } catch {}
       };
@@ -904,6 +1006,7 @@
     function drawLiveRoute(data, { fitTo = null } = {}) {
       if (!data.origin || !data.targets?.length) { layers.route.clearLayers(); routeDraw = null; return; }
       const crow = data.status !== 'ok';
+      const frozen = Boolean(data.signal?.stale); // signal perdu : tracé conservé, immobile
       const toLatLng = (seg) => seg.map(([lng, lat]) => [lat, lng]);
       const geo = data.route?.legGeometries;
       let segments;
@@ -929,13 +1032,13 @@
           i, first, urgent, color, coords,
           glow: urgent ? L.polyline(coords, { ...style, color: '#e11d2a', weight: first ? 18 : 15, opacity: 0.22, className: 'fm-route-urgent' }) : null,
           casing: L.polyline(coords, { ...style, color: '#ffffff', weight: first ? 11 : 8, opacity: 0.95, className: 'fm-route-casing' }),
-          line: L.polyline(coords, { ...style, color, weight: first ? 7 : 5, opacity: first ? 1 : 0.92, dashArray: crow ? '9 9' : null, className: `fm-route-line${first ? ' current' : ''}` }),
+          line: L.polyline(coords, { ...style, color, weight: first ? 7 : 5, opacity: frozen ? 0.5 : first ? 1 : 0.92, dashArray: crow ? '9 9' : frozen ? '2 9' : null, className: `fm-route-line${first ? ' current' : ''}${frozen ? ' stale' : ''}` }),
         };
       });
       // Les tronçons suivants d'abord : le tronçon en cours reste au-dessus.
       [...legs].reverse().forEach((leg) => { leg.glow?.addTo(layers.route); leg.casing.addTo(layers.route); leg.line.addTo(layers.route); });
       const next = data.targets[0];
-      const halo = L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-next-halo ${next.priority === 'urgent' ? 'urgent' : ''}" style="--leg:${legColor(0)}" aria-hidden="true"></span>`, iconSize: [48, 48], iconAnchor: [24, 24] }), interactive: false, zIndexOffset: -10 });
+      const halo = L.marker([next.lat, next.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-next-halo ${next.priority === 'urgent' ? 'urgent' : ''}${frozen ? ' frozen' : ''}" style="--leg:${legColor(0)}" aria-hidden="true"></span>`, iconSize: [48, 48], iconAnchor: [24, 24] }), interactive: false, zIndexOffset: -10 });
       data.targets.forEach((t, i) => {
         if (t.kind !== 'pickup') return;
         L.marker([t.lat, t.lng], { icon: L.divIcon({ className: 'fm-divicon', html: `<span class="fm-pickup" style="--leg:${legColor(i)}" title="Collecte">${ic('package')}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }), title: `Collecte · ${t.label}` })
@@ -947,13 +1050,13 @@
       const finish = () => {
         if (routeDraw !== draw || !map.hasLayer(legs[0].line)) return;
         // Triangles pleins (►, jamais affichés en émoji) : lisibles à petite taille.
-        if (!crow) legs.forEach((leg) => addArrows(leg.line, { glyph: '►', size: leg.first ? 11 : 9, period: leg.urgent ? 0.45 : leg.first ? 0.7 : 1.4, cls: `${leg.urgent ? 'urgent' : ''}${leg.first ? ' current' : ''}` }));
+        if (!crow && !frozen) legs.forEach((leg) => addArrows(leg.line, { glyph: '►', size: leg.first ? 11 : 9, period: leg.urgent ? 0.45 : leg.first ? 0.7 : 1.4, cls: `${leg.urgent ? 'urgent' : ''}${leg.first ? ' current' : ''}` }));
         halo.addTo(layers.route);
         stage.dataset.route = 'ready';
       };
       const start = () => {
         if (routeDraw !== draw || !map.hasLayer(legs[0].line)) return;
-        if (reduced() || crow) { finish(); return; }
+        if (reduced() || crow || frozen) { finish(); return; }
         // Dessin tronçon par tronçon, durée proportionnelle à la longueur (1,6 s au total).
         const lens = legs.map((leg) => leg.line._path?.getTotalLength() || 1);
         const total = lens.reduce((a, b) => a + b, 0) || 1;

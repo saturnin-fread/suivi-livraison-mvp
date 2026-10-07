@@ -1,3 +1,4 @@
+const { acceptEmailInvitation } = require('./lib/outbox-code');
 const { Pool } = require('pg');
 const crypto = require('node:crypto');
 
@@ -108,11 +109,7 @@ async function run() {
 
     const publicInvitation = await json(await fetch(`${baseUrl}/api/public/invitations/${encodeURIComponent(invitationToken)}`));
     ensure(publicInvitation.response.ok && publicInvitation.payload.role === 'driver', 'Invitation publique invalide.');
-    const accepted = await json(await fetch(`${baseUrl}/api/public/invitations/${encodeURIComponent(invitationToken)}/accept`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: driverPassword, passwordConfirmation: driverPassword }),
-    }));
+    const accepted = await json(await acceptEmailInvitation(baseUrl, invitationToken, driverEmail, { password: driverPassword, passwordConfirmation: driverPassword }));
     ensure(accepted.response.status === 201 && accepted.payload.redirect === '/driver', `Activation livreur impossible : ${JSON.stringify(accepted.payload)}`);
     const acceptedCookie = accepted.response.headers.get('set-cookie')?.split(';')[0];
     ensure(acceptedCookie, 'La session livreur n’a pas été créée après activation.');

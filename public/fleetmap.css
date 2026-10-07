@@ -396,3 +396,45 @@ body.fm-focused .app-shell { grid-template-columns: minmax(0, 1fr) !important; }
   .fm-tick { width: 8px; margin-left: -4px; }
 }
 @media (prefers-reduced-motion: reduce) { .fm *, .fm *::before, .fm *::after { animation: none !important; transition: none !important; } }
+/* Signal perdu : itinéraire conservé, immobile et estompé ; pas d'effet « en direct ». */
+.fm-liveroute.stale { background: #fbf6ea; }
+.fm-liveroute.stale > i { background: #c98a1b; animation: none; }
+.fm-lr-lost { margin: 8px 0 4px; font-size: 12.5px; line-height: 1.5; }
+.fm-lr-live.stale svg { color: #c98a1b; }
+.fm-next-halo.frozen, .fm-next-halo.frozen::before, .fm-next-halo.frozen::after { animation: none !important; opacity: .35; }
+
+/* ===== Repères véhicules (kit « Véhicules sur carte ») =====
+   Le véhicule (orienté) indique la position ; le profil est une pastille à part,
+   droite, au-dessus. Cible de toucher : 44 × 44 px transparente. */
+.fm-vm-host { width: 44px !important; height: 44px !important; }
+.fm-vm { --vs: 32px; --vst: #387865; position: relative; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; cursor: pointer; }
+.fm-vm.st-stale { --vst: #b58033; } .fm-vm.st-incident { --vst: #bb5655; } .fm-vm.st-idle { --vst: #718fa2; }
+.fm-vm-rotor { display: block; width: var(--vs); height: var(--vs); transition: transform .5s ease-out; }
+.fm-vm-rotor img { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 1px #fff) drop-shadow(0 1px 1.5px #15252c66); user-select: none; pointer-events: none; }
+.fm-vm-dot { position: absolute; left: calc(50% + var(--vs) / 2 - 7px); top: calc(50% - var(--vs) / 2 + 1px); width: 8px; height: 8px; border-radius: 50%; background: var(--vst); border: 1.5px solid #fff; box-shadow: 0 0 0 .5px #15252c33; }
+.fm-vm.st-stale .fm-vm-rotor img { opacity: .62; filter: grayscale(.5) drop-shadow(0 0 1px #fff); }
+.fm-vm.sel .fm-vm-rotor img { filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #e11d2a99) drop-shadow(0 2px 3px #15252c55); }
+.fm-vm-chip { position: absolute; left: 50%; bottom: calc(50% + var(--vs) / 2 + 8px); transform: translateX(-18px); display: none; align-items: center; gap: 7px; min-height: 32px; max-width: 190px; padding: 3px 10px 3px 3px; border: 1px solid #d8e0dc; background: #fff; color: #27383d; border-radius: 20px; box-shadow: 0 3px 10px #182d3522; white-space: nowrap; pointer-events: none; animation: fm-vm-in .16s ease-out; z-index: 2; }
+.fm-vm-chip::after { content: ''; position: absolute; left: 13px; bottom: -5px; width: 8px; height: 8px; background: #fff; border-right: 1px solid #d8e0dc; border-bottom: 1px solid #d8e0dc; transform: rotate(45deg); }
+.fm-vm.chip-on .fm-vm-chip { display: flex; }
+@media (hover: hover) { .fm-vm-host:hover .fm-vm-chip { display: flex; } }
+.fm-vm-host:focus-visible { outline: none; }
+.fm-vm-host:focus-visible .fm-vm { outline: 2px solid #357baf; outline-offset: 1px; }
+.fm-vm-host:focus-visible .fm-vm-chip { display: flex; }
+.fm-vm-ph { position: relative; width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--vst); background: #e9efec; display: grid; place-items: center; overflow: hidden; flex: none; }
+.fm-vm-ph b { font-size: 10px; font-weight: 700; color: #556e63; }
+.fm-vm-ph img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.fm-vm-txt { display: grid; min-width: 0; line-height: 1.25; }
+.fm-vm-txt strong { font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
+.fm-vm-txt small { font-size: 10.5px; color: #5e6c72; overflow: hidden; text-overflow: ellipsis; }
+.fm-vm.st-stale .fm-vm-txt small { color: #87591a; }
+.fm-vm.st-incident .fm-vm-txt small { color: #a5304b; }
+@keyframes fm-vm-in { from { opacity: 0; transform: translate(-18px, 3px); } to { opacity: 1; transform: translateX(-18px); } }
+@media (prefers-reduced-motion: reduce) { .fm-vm-rotor { transition: none; } .fm-vm-chip { animation: none; } }
+.fm-vm.chip-left .fm-vm-chip { transform: translateX(calc(-100% + 18px)); }
+.fm-vm.chip-left .fm-vm-chip::after { left: auto; right: 13px; }
+.fm-vm.chip-below .fm-vm-chip { bottom: auto; top: calc(50% + var(--vs) / 2 + 8px); }
+.fm-vm.chip-below .fm-vm-chip::after { bottom: auto; top: -5px; transform: rotate(-135deg); }
+.fm-vm-chip { width: max-content; max-width: 250px; }
+.fm-note.fm-lr-lost { display: block; }
+.fm-liveroute.stale .fm-lr-kicker { color: #87591a; }

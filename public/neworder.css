@@ -201,3 +201,8 @@
 .no-pickmap { height: 230px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: #e9e9e4; }
 @media (max-width: 620px) { .no-pickup { padding: 16px; } .no-seg { display: flex; } .no-seg label { flex: 1; } .no-seg span { justify-content: center; } }
 .no-pickup .no-row + .no-row, .no-pickup .no-row + .no-field { margin-top: 18px; }
+/* Prix indicatifs (aucun encaissement) */
+.no-money { position: relative; }
+.no-money input { padding-right: 60px; }
+.no-money span { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 12.5px; color: #6b7584; pointer-events: none; }
+.no-money-hint { margin: 2px 0 16px; }

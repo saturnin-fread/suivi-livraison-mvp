@@ -133,6 +133,11 @@ async function whatsAppCodeAfter(digits, since, timeoutMs = 20000) {
     assert.strictEqual(maxAgeOf(okR, 'delivery_session'), 30 * 24 * 3600, 'rester connecté : 30 jours');
     const again = await post('/app/login', { user: email, password }, device);
     assert.strictEqual(again.headers.get('location'), '/app', 'appareil reconnu : pas de code');
+    // Déconnexion volontaire : l'appareil n'est plus reconnu, le code est redemandé.
+    const loggedOut = await post('/app/logout', {}, jar(cookieOf(again, 'delivery_session'), device));
+    assert.ok(cookies(loggedOut).some((c) => c.startsWith('traxo_device=;')), 'cookie d’appareil effacé à la déconnexion');
+    const afterLogout = await post('/app/login', { user: email, password }, device);
+    assert.strictEqual(afterLogout.headers.get('location'), '/app/login/code', 'après déconnexion volontaire : code redemandé, même avec l’ancien cookie');
 
     // 6 bis. Le canal choisi devient la préférence ; choix WhatsApp (canal simulé : WHATSAPP_FAKE=outbox)
     if (process.env.WHATSAPP_FAKE === 'outbox') {

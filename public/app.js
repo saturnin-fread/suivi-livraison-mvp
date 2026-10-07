@@ -320,6 +320,11 @@ async function renderNewOrder() {
             <div class="no-field"><span class="no-label" id="pkgTypeLabel">Type <em>(facultatif)</em></span>
               <div class="no-chips" role="radiogroup" aria-labelledby="pkgTypeLabel">${packageTypeOptions.map(([v, l]) => `<label class="no-chip"><input type="radio" name="packageType" value="${v}"><span>${escapeHtml(l)}</span></label>`).join('')}</div></div>
             <div class="no-field"><label for="f-pkg">Contenu <em>(facultatif)</em></label><input class="cl-input" id="f-pkg" name="packageDescription" maxlength="240" placeholder="Ex. 2 robes dans un sac, gâteau d’anniversaire" /></div>
+            <div class="no-row">
+              <div class="no-field"><label for="f-fee">Prix de la livraison <em>(facultatif)</em></label><div class="no-money"><input class="cl-input" id="f-fee" name="deliveryFee" inputmode="numeric" maxlength="12" placeholder="Ex. 1 500" autocomplete="off" /><span>FCFA</span></div></div>
+              <div class="no-field"><label for="f-amount">Montant de la commande <em>(facultatif)</em></label><div class="no-money"><input class="cl-input" id="f-amount" name="orderAmount" inputmode="numeric" maxlength="14" placeholder="Ex. 25 000" autocomplete="off" /><span>FCFA</span></div></div>
+            </div>
+            <p class="no-hint no-money-hint">Pour suivre votre chiffre d’affaires dans les rapports. TRAXO n’encaisse aucun paiement.</p>
             <div class="no-field"><span class="no-label" id="pickupLabel">Où le livreur récupère-t-il le colis ?</span>
               <div class="no-seg" role="radiogroup" aria-labelledby="pickupLabel">
                 <label><input type="radio" name="pickupEnabled" value="false" checked><span>Chez nous</span></label>
@@ -528,6 +533,12 @@ async function renderNewOrder() {
     data.pickupEnabled = data.pickupEnabled === 'true';
     data.pickupPhoneCountry = data.customerPhoneCountry;
     if (!data.packageType) delete data.packageType;
+    for (const k of ['deliveryFee', 'orderAmount']) {
+      const digits = String(data[k] || '').replace(/[\s.\u202f\u00a0]/g, '');
+      if (!digits) { delete data[k]; continue; }
+      if (!/^\d{1,12}$/.test(digits)) { say('Indiquez les prix en FCFA, sans centimes (ex. 1500).'); form.querySelector(`[name="${k}"]`).focus(); return; }
+      data[k] = Number(digits);
+    }
     const submit = document.getElementById('noSubmit');
     const label = document.getElementById('noSubmitLabel');
     const idle = label.textContent;
@@ -5554,6 +5565,28 @@ document.getElementById('sidebarToggle')?.addEventListener('click', () => {
   try { localStorage.setItem('traxo.sidebarCollapsed', collapsed ? '1' : '0'); } catch { /* ignore */ }
 });
 
+// Mes espaces : une personne peut appartenir à plusieurs entreprises (son
+// propre espace et ceux qui l'ont invitée). La liste n'apparaît que s'il y en a plusieurs.
+async function loadSpaces() {
+  const box = document.getElementById('umSpaces'); const list = document.getElementById('umSpacesList');
+  if (!box || box.dataset.loaded) return;
+  box.dataset.loaded = '1';
+  try {
+    const data = await api('/api/app/account/spaces');
+    if (!data.spaces || data.spaces.length < 2) return;
+    list.innerHTML = data.spaces.map((sp) => `<button type="button" class="user-pop-item um-space-item${sp.current ? ' current' : ''}" role="menuitemradio" aria-checked="${sp.current}" data-space="${escapeHtml(sp.id)}" ${sp.suspended ? 'disabled' : ''}>
+        <span class="um-space-logo" aria-hidden="true">${sp.logoUrl ? `<img src="${escapeHtml(sp.logoUrl)}" alt="">` : escapeHtml((sp.name || '?').slice(0, 1).toUpperCase())}</span>
+        <span><strong>${escapeHtml(sp.name)}</strong><small>${escapeHtml(sp.suspended ? 'Accès suspendu' : sp.roleLabel)}</small></span>${sp.current ? '<em>Actuel</em>' : ''}</button>`).join('');
+    box.hidden = false;
+    list.querySelectorAll('[data-space]').forEach((b) => b.addEventListener('click', async () => {
+      if (b.classList.contains('current')) return;
+      b.disabled = true;
+      try { const out = await api('/api/app/account/spaces/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ companyId: b.dataset.space }) }); location.href = out.redirect || '/app'; }
+      catch (error) { b.disabled = false; uiToast(error.message, 'error'); }
+    }));
+  } catch { /* liste facultative */ }
+}
+
 // Menu utilisateur (topbar).
 const userMenuBtn = document.getElementById('userMenuBtn');
 const userMenu = document.getElementById('userMenu');
@@ -5562,7 +5595,7 @@ userMenuBtn?.addEventListener('click', (event) => {
   const open = userMenu.hasAttribute('hidden');
   // Un seul panneau à la fois : ouvrir le compte ferme les notifications.
   if (open) document.dispatchEvent(new CustomEvent('traxo:close-popovers', { detail: 'account' }));
-  if (open) userMenu.removeAttribute('hidden'); else userMenu.setAttribute('hidden', '');
+  if (open) { userMenu.removeAttribute('hidden'); loadSpaces(); } else userMenu.setAttribute('hidden', '');
   userMenuBtn.setAttribute('aria-expanded', String(open));
 });
 document.addEventListener('traxo:close-popovers', (event) => {

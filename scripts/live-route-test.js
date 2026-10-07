@@ -90,6 +90,10 @@ async function call(method, url, { cookie, body } = {}) {
     r = await call('GET', `/api/app/drivers/${d1}/live-route`, { cookie: staff });
     assert.deepStrictEqual(r.data.targets.map((t) => t.orderId), [withPickup, express, direct], 'l’urgente passe avant la commande normale');
     assert.strictEqual(r.data.targets[1].priority, 'urgent');
+    if (r.data.origin) {
+      assert.ok(r.data.signal && typeof r.data.signal.stale === 'boolean' && Number.isFinite(r.data.signal.ageSeconds), 'état du signal fourni');
+      assert.strictEqual(r.data.signal.stale, r.data.signal.ageSeconds > r.data.signal.staleAfterSeconds, 'signal perdu au-delà du seuil');
+    }
     if (r.data.status === 'ok') {
       assert.strictEqual(r.data.route.legGeometries.length, r.data.targets.length, 'un tronçon par point');
       assert.ok(r.data.route.legGeometries.every((g) => g.length >= 2), 'tronçons tracés');

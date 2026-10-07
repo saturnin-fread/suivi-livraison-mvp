@@ -952,6 +952,8 @@ async function initDatabase() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_recovery_hashes JSONB NOT NULL DEFAULT '[]'::jsonb;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+      -- Dernier espace ouvert : la connexion y revient quand la personne appartient à plusieurs entreprises.
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_company_id BIGINT;
       CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users(google_sub) WHERE google_sub IS NOT NULL;
       CREATE TABLE IF NOT EXISTS mfa_challenges (
         token_hash TEXT PRIMARY KEY,
@@ -1585,6 +1587,8 @@ async function initDatabase() {
       -- Informations commerciales déclarées par l'entreprise (articles, valeur,
       -- poids, prix annoncé, règlement au vendeur). TRAXO n'encaisse rien.
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS commercial JSONB;
+      -- Prix indicatifs saisis dès la demande (livraison, montant de la commande), recopiés sur la commande.
+      ALTER TABLE customer_requests ADD COLUMN IF NOT EXISTS commercial JSONB;
       CREATE TABLE IF NOT EXISTS ops_views (
         id BIGSERIAL PRIMARY KEY,
         company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -1845,6 +1849,7 @@ async function createSession(req, res, userId, companyId, scope, { remember = fa
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [digest(token), userId, companyId || null, scope, new Date(Date.now() + durationMs), userAgent]
   );
+  if (scope === 'company' && companyId) pool.query('UPDATE users SET last_company_id = $2 WHERE id = $1', [userId, companyId]).catch(() => {});
   setSessionCookie(req, res, token, durationMs);
 }
 
@@ -2302,6 +2307,26 @@ const wantsRemember = (value) => value === true || value === 'on' || value === '
 
 // Page d'arrivée après connexion : appli livreur, configuration guidée tant
 // qu'elle n'est pas terminée (propriétaire), sinon le back-office.
+// Règle commune des mots de passe : longueur, pas de mot de passe connu de
+// tous, pas l'adresse e-mail elle-même. Une phrase simple reste acceptée.
+const COMMON_PASSWORDS = new Set(['1234567890', '12345678910', '0123456789', '1111111111', 'azertyuiop', 'qwertyuiop', 'motdepasse', 'motdepasse1', 'motdepasse123',
+  'password12', 'password123', 'password1234', 'azerty1234', 'azerty12345', 'traxo12345', 'traxo123456', 'bonjour123', 'bienvenue1', 'bienvenue123', 'jetaime123', 'soleil1234']);
+function passwordWeakness(password, email = '') {
+  const p = String(password || '');
+  if (p.length < 10 || p.trim().length < 10) return 'short';
+  if (p.length > 128) return 'long';
+  const folded = p.toLowerCase().replace(/\s+/g, '');
+  if (COMMON_PASSWORDS.has(folded) || /^(.)\1+$/.test(folded) || /^(0123456789|1234567890|9876543210)+$/.test(folded)) return 'common';
+  const local = String(email || '').toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '');
+  if (local.length >= 4 && folded.replace(/[^a-z0-9]/g, '').includes(local)) return 'email';
+  return null;
+}
+const PASSWORD_MESSAGES = {
+  short: 'Le mot de passe doit contenir au moins 10 caractères.',
+  long: 'Le mot de passe ne doit pas dépasser 128 caractères.',
+  common: 'Ce mot de passe est trop courant. Choisissez une courte phrase que vous seul connaissez.',
+  email: 'Le mot de passe ne doit pas reprendre votre adresse e-mail.',
+};
 function homeAfterLogin(role, onboardingStatus) {
   if (role === 'driver') return '/driver';
   if (role === 'owner' && onboardingStatus === 'pending') return '/app/bienvenue';
@@ -2518,7 +2543,7 @@ app.post('/app/login', loginRateLimit, asyncRoute(async (req, res) => {
     `SELECT u.id, u.email, u.phone, u.code_channel, u.password_salt, u.password_hash, u.disabled, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
      FROM users u JOIN company_memberships m ON m.user_id = u.id
      JOIN companies c ON c.id = m.company_id
-     WHERE u.email = $1 ORDER BY m.id LIMIT 1`,
+     WHERE u.email = $1 ORDER BY (m.company_id = u.last_company_id) DESC NULLS LAST, (m.suspended_at IS NULL) DESC, m.id LIMIT 1`,
     [email]
   );
   const user = result.rows[0];
@@ -2772,9 +2797,14 @@ app.post('/app/login/2fa', loginRateLimit, asyncRoute(async (req, res) => {
 }));
 
 app.post('/app/logout', asyncRoute(async (req, res) => {
-  const token = parseCookies(req).delivery_session;
+  const cookies = parseCookies(req);
+  const token = cookies.delivery_session;
   if (pool && token) await pool.query('DELETE FROM app_sessions WHERE token_hash = $1', [digest(token)]);
+  // Se déconnecter, c'est retirer sa confiance à cet appareil : la prochaine
+  // connexion redemandera le code, même si « rester connecté » avait été choisi.
+  if (pool && cookies.traxo_device) await pool.query('DELETE FROM trusted_devices WHERE token_hash = $1', [digest(String(cookies.traxo_device))]).catch(() => {});
   clearSessionCookie(req, res);
+  res.append('Set-Cookie', `traxo_device=; Path=/app; HttpOnly; SameSite=Lax; Max-Age=0${cookieFlags(req)}`);
   return res.redirect('/app/login');
 }));
 
@@ -2853,7 +2883,7 @@ app.post('/app/register', registerRateLimit, asyncRoute(async (req, res) => {
 
   let fieldError = null;
   if (!email || email.length > 200 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fieldError = 'email';
-  else if (password.length < 10 || password.length > 200) fieldError = 'password';
+  else if (passwordWeakness(password, email)) fieldError = ['common', 'email'].includes(passwordWeakness(password, email)) ? 'password_weak' : 'password';
   else if (body.passwordConfirm != null && String(body.passwordConfirm) !== password) fieldError = 'password_mismatch';
   else if (companyName && (companyName.length < 2 || companyName.length > 120)) fieldError = 'company';
   else if (phone && (phone.length < 6 || phone.length > 30)) fieldError = 'phone';
@@ -3000,7 +3030,7 @@ app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res)
     `SELECT u.id, u.disabled, u.google_sub, u.email_verified_at, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
      FROM users u LEFT JOIN company_memberships m ON m.user_id = u.id LEFT JOIN companies c ON c.id = m.company_id
      WHERE u.google_sub = $1 OR u.email = $2
-     ORDER BY (u.google_sub = $1) DESC NULLS LAST, m.id LIMIT 1`,
+     ORDER BY (u.google_sub = $1) DESC NULLS LAST, (m.company_id = u.last_company_id) DESC NULLS LAST, (m.suspended_at IS NULL) DESC, m.id LIMIT 1`,
     [sub, email]
   )).rows[0];
   if (user && user.disabled) return res.redirect(`${back}?error=disabled`);
@@ -3281,7 +3311,7 @@ app.post('/app/reset', forgotRateLimit, asyncRoute(async (req, res) => {
   const password = String(req.body.password || '');
   const back = (err) => res.redirect(`/app/reset?token=${encodeURIComponent(token)}&error=${err}`);
   if (!token) return res.redirect('/app/forgot?error=invalid');
-  if (password.length < 10 || password.length > 200) return back('password');
+  if (passwordWeakness(password)) return back(passwordWeakness(password) === 'common' ? 'password_weak' : 'password');
 
   const client = await pool.connect();
   try {
@@ -3419,23 +3449,27 @@ app.get('/api/public/invitations/:token', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const result = await pool.query(
     `SELECT i.email, i.phone, i.display_name, i.role, i.expires_at, c.name AS company_name, d.name AS driver_name,
-            u.display_name AS invited_by
+            u.display_name AS invited_by, (ex.id IS NOT NULL) AS existing_account
      FROM user_invitations i
      JOIN companies c ON c.id = i.company_id
      LEFT JOIN drivers d ON d.id = i.driver_id
      LEFT JOIN users u ON u.id = i.created_by_user_id
+     LEFT JOIN users ex ON i.email IS NOT NULL AND ex.email = i.email
      WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()`,
     [digest(req.params.token)]
   );
   const row = result.rows[0];
   if (!row) return res.status(404).json({ error: 'Cette invitation est invalide, expirée ou déjà utilisée.' });
-  // Invitation par téléphone : la personne choisit son e-mail de connexion
-  // et prouve qu'elle détient ce numéro avec un code WhatsApp.
+  // Le lien seul ne suffit jamais : un code est envoyé à l'adresse invitée (ou
+  // au WhatsApp du numéro invité). Une personne qui a déjà un compte TRAXO le
+  // garde : elle confirme avec son mot de passe et rejoint cet espace en plus.
   return res.json({
     email: row.email, display_name: row.display_name, role: row.role, role_label: TEAM_ROLE_LABELS[row.role] || row.role,
     expires_at: row.expires_at, company_name: row.company_name, driver_name: row.driver_name, invited_by: row.invited_by,
     needsEmail: !row.email, phoneMasked: row.phone ? maskPhone(row.phone) : null,
-    verification: !row.email && row.phone ? 'whatsapp' : 'none',
+    emailMasked: row.email ? maskEmail(row.email) : null,
+    verification: row.email ? 'email' : (row.phone ? 'whatsapp' : 'email'),
+    existingAccount: Boolean(row.existing_account),
   });
 }));
 
@@ -3448,43 +3482,62 @@ const teamInviteRateLimit = createRateLimitMiddleware({
 app.post('/api/public/invitations/:token/send-code', teamInviteRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const found = await pool.query(
-    `SELECT i.id, i.phone, i.email, i.verify_sent_at, i.verify_sends, c.name AS company_name
+    `SELECT i.id, i.phone, i.email, i.display_name, i.verify_sent_at, i.verify_sends, c.name AS company_name
      FROM user_invitations i JOIN companies c ON c.id = i.company_id
      WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > NOW()`,
     [digest(req.params.token)]
   );
   const inv = found.rows[0];
   if (!inv) return res.status(410).json({ error: 'Cette invitation est invalide, expirée ou déjà utilisée.' });
-  if (inv.email || !inv.phone) return res.status(400).json({ error: 'Aucun code n’est nécessaire pour cette invitation.' });
+  if (!inv.email && !inv.phone) return res.status(400).json({ error: 'Cette invitation ne comporte ni adresse ni numéro. Demandez-en une nouvelle.' });
   const delay = loginCodeResendDelayS(inv.verify_sends || 0);
   if (inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < delay * 1000) {
     const resendIn = Math.ceil(delay - (Date.now() - new Date(inv.verify_sent_at).getTime()) / 1000);
     return res.status(429).json({ error: 'Le code peut mettre un peu de temps à arriver. Vous pourrez en demander un nouveau dans quelques instants.', resendIn });
   }
-  if (!whatsappAvailableFor(inv.phone)) return res.status(503).json({ error: 'WhatsApp est momentanément indisponible. Réessayez plus tard ou demandez une invitation par e-mail.' });
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  try {
-    await whatsapp.sendText(inv.phone, `*${code}* est votre code pour rejoindre ${inv.company_name} sur TRAXO.\n\nIl expire dans 10 minutes. Ne le communiquez à personne.`, { background: true });
-  } catch (error) {
-    console.error('Invitation code failed:', error.code || error.message);
-    return res.status(502).json({ error: 'Le code n’a pas pu partir sur WhatsApp. Réessayez dans un instant.' });
+  let channel;
+  if (inv.email) {
+    channel = 'email';
+    const sent = await sendEmail({
+      to: inv.email,
+      subject: `${code} est votre code pour rejoindre ${inv.company_name} sur TRAXO`,
+      html: renderEmailShell({
+        baseUrl: publicBaseUrl(req), heading: 'Confirmez votre invitation',
+        introHtml: `Bonjour ${escHtmlServer(inv.display_name || '')}, voici votre code pour rejoindre <strong>${escHtmlServer(inv.company_name)}</strong> sur TRAXO.`,
+        bodyHtml: `<p style="margin:0;font-size:30px;font-weight:700;letter-spacing:6px">${code}</p><p style="margin:12px 0 0">Il expire dans 10 minutes. Ne le communiquez à personne, même à l’équipe qui vous invite.</p>`,
+        footerNote: 'Vous n’attendiez pas cette invitation ? Ignorez ce message : rien ne sera créé sans ce code.',
+      }),
+      text: `${code} est votre code pour rejoindre ${inv.company_name} sur TRAXO. Il expire dans 10 minutes. Ne le communiquez à personne.`,
+    });
+    if (!sent || !sent.sent) {
+      console.error('Invitation e-mail code failed:', sent && sent.reason);
+      return res.status(502).json({ error: 'Le code n’a pas pu être envoyé par e-mail. Réessayez dans un instant.' });
+    }
+  } else {
+    channel = 'whatsapp';
+    if (!whatsappAvailableFor(inv.phone)) return res.status(503).json({ error: 'WhatsApp est momentanément indisponible. Réessayez plus tard ou demandez une invitation par e-mail.' });
+    try {
+      await whatsapp.sendText(inv.phone, `*${code}* est votre code pour rejoindre ${inv.company_name} sur TRAXO.\n\nIl expire dans 10 minutes. Ne le communiquez à personne.`, { background: true });
+    } catch (error) {
+      console.error('Invitation code failed:', error.code || error.message);
+      return res.status(502).json({ error: 'Le code n’a pas pu partir sur WhatsApp. Réessayez dans un instant.' });
+    }
   }
   const sends = (inv.verify_sends || 0) + 1;
   await pool.query('UPDATE user_invitations SET verify_code_hash = $2, verify_sent_at = NOW(), verify_sends = $3 WHERE id = $1', [inv.id, digest(`invite:${inv.id}:${code}`), sends]);
-  return res.json({ sent: true, phoneMasked: maskPhone(inv.phone), resendIn: loginCodeResendDelayS(sends) });
+  return res.json({ sent: true, channel, phoneMasked: inv.phone && !inv.email ? maskPhone(inv.phone) : null, emailMasked: inv.email ? maskEmail(inv.email) : null, resendIn: loginCodeResendDelayS(sends) });
 }));
 
-app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) => {
+app.post('/api/public/invitations/:token/accept', teamInviteRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const password = String(req.body.password || '');
   const passwordConfirmation = String(req.body.passwordConfirmation || '');
-  if (password.length < 10 || password.length > 128 || password.trim().length < 10) {
-    return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 10 caractères.' });
-  }
-  if (password !== passwordConfirmation) return res.status(400).json({ error: 'Les deux mots de passe ne correspondent pas.' });
   const client = await pool.connect();
   let invitation;
   let userId;
+  let joinedExisting = false;
+  let needsLogin = false;
   try {
     await client.query('BEGIN');
     const invitationResult = await client.query(
@@ -3495,27 +3548,61 @@ app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) =>
     if (!invitation || invitation.accepted_at || invitation.revoked_at || new Date(invitation.expires_at) <= new Date()) {
       throw Object.assign(new Error('Cette invitation est invalide, expirée ou déjà utilisée.'), { statusCode: 410 });
     }
-    // Invitation par téléphone : code WhatsApp obligatoire, puis l'e-mail
-    // choisi par la personne devient son identifiant de connexion.
+    // 1. Code obligatoire : reçu à l'adresse invitée, ou sur le WhatsApp du numéro invité.
+    const code = String(req.body.code || '').replace(/\D/g, '');
+    const fresh = invitation.verify_sent_at && Date.now() - new Date(invitation.verify_sent_at).getTime() < 10 * 60 * 1000;
+    const codeOk = fresh && invitation.verify_code_hash && code.length === 6
+      && crypto.timingSafeEqual(Buffer.from(digest(`invite:${invitation.id}:${code}`)), Buffer.from(invitation.verify_code_hash));
+    if (!codeOk) {
+      const attempts = (invitation.verify_attempts || 0) + 1;
+      await client.query(`UPDATE user_invitations SET verify_attempts = $2${attempts >= 5 ? ', revoked_at = NOW()' : ''} WHERE id = $1`, [invitation.id, attempts]);
+      await client.query('COMMIT');
+      if (attempts >= 5) return res.status(423).json({ error: 'Trop d’essais : cette invitation est annulée. Demandez-en une nouvelle.' });
+      const where = invitation.email ? 'dans l’e-mail reçu' : 'dans le message WhatsApp reçu';
+      return res.status(400).json({ error: !invitation.verify_code_hash ? 'Demandez d’abord votre code.' : !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : `Ce code ne correspond pas. Vérifiez le code ${where}.`, field: 'code' });
+    }
+    // 2. Invitation par téléphone : la personne choisit son e-mail de connexion.
+    const emailProven = Boolean(invitation.email);
     if (!invitation.email) {
-      const code = String(req.body.code || '').replace(/\D/g, '');
-      const fresh = invitation.verify_sent_at && Date.now() - new Date(invitation.verify_sent_at).getTime() < 10 * 60 * 1000;
-      const ok = fresh && invitation.verify_code_hash && code.length === 6
-        && crypto.timingSafeEqual(Buffer.from(digest(`invite:${invitation.id}:${code}`)), Buffer.from(invitation.verify_code_hash));
-      if (!ok) {
+      const chosen = normalizeEmail(req.body.email);
+      if (!/^\S+@\S+\.\S+$/.test(chosen)) throw Object.assign(new Error('Indiquez une adresse e-mail valide : elle servira à vous connecter.'), { statusCode: 400, field: 'email' });
+      invitation.email = chosen;
+    }
+    const existing = (await client.query('SELECT id, password_salt, password_hash, disabled, totp_enabled_at FROM users WHERE email = $1', [invitation.email])).rows[0];
+    if (existing) {
+      // 3a. Compte TRAXO existant : il rejoint cet espace en plus du sien, après
+      // avoir prouvé qu'il en est le titulaire avec son mot de passe actuel.
+      if (existing.disabled) throw Object.assign(new Error('Ce compte est désactivé.'), { statusCode: 403 });
+      if (!password) throw Object.assign(new Error('Vous avez déjà un compte TRAXO avec cette adresse. Saisissez son mot de passe pour rejoindre l’équipe.'), { statusCode: 409, code: 'EXISTING_ACCOUNT' });
+      if (!passwordMatches(password, existing.password_salt, existing.password_hash)) {
         const attempts = (invitation.verify_attempts || 0) + 1;
         await client.query(`UPDATE user_invitations SET verify_attempts = $2${attempts >= 5 ? ', revoked_at = NOW()' : ''} WHERE id = $1`, [invitation.id, attempts]);
         await client.query('COMMIT');
         if (attempts >= 5) return res.status(423).json({ error: 'Trop d’essais : cette invitation est annulée. Demandez-en une nouvelle.' });
-        return res.status(400).json({ error: !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : 'Ce code ne correspond pas. Vérifiez le message reçu sur WhatsApp.', field: 'code' });
+        return res.status(400).json({ error: 'Mot de passe incorrect. Utilisez celui de votre compte TRAXO, ou « Mot de passe oublié ? » depuis la page de connexion.', field: 'password', code: 'EXISTING_ACCOUNT' });
       }
-      const chosen = normalizeEmail(req.body.email);
-      if (!/^\S+@\S+\.\S+$/.test(chosen)) throw Object.assign(new Error('Indiquez une adresse e-mail valide : elle servira à vous connecter.'), { statusCode: 400 });
-      invitation.email = chosen;
-    }
-    const existing = await client.query('SELECT id FROM users WHERE email = $1', [invitation.email]);
-    if (existing.rows[0]) {
-      throw Object.assign(new Error('Un compte utilise déjà cette adresse. Demandez une nouvelle invitation à l’entreprise.'), { statusCode: 409 });
+      const already = await client.query('SELECT 1 FROM company_memberships WHERE company_id = $1 AND user_id = $2', [invitation.company_id, existing.id]);
+      if (already.rows[0]) throw Object.assign(new Error('Vous faites déjà partie de cet espace. Connectez-vous pour l’ouvrir.'), { statusCode: 409, code: 'ALREADY_MEMBER' });
+      userId = existing.id;
+      joinedExisting = true;
+      // Ouverture de session seulement si l'adresse du compte vient d'être prouvée
+      // (code reçu sur cette adresse) et sans double authentification à passer.
+      // Invitation par téléphone : le code est arrivé sur le WhatsApp invité, pas
+      // sur l'adresse du compte. Connexion normale exigée (code à l'adresse du compte).
+      needsLogin = !emailProven || Boolean(existing.totp_enabled_at);
+      if (emailProven) await client.query('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = $1', [userId]);
+    } else {
+      // 3b. Nouveau compte : mot de passe solide, confirmé.
+      const weak = passwordWeakness(password, invitation.email);
+      if (weak) throw Object.assign(new Error(PASSWORD_MESSAGES[weak]), { statusCode: 400, field: 'password' });
+      if (password !== passwordConfirmation) throw Object.assign(new Error('Les deux mots de passe ne correspondent pas.'), { statusCode: 400, field: 'passwordConfirmation' });
+      const salt = crypto.randomBytes(16).toString('hex');
+      const createdUser = await client.query(
+        `INSERT INTO users (email, display_name, password_salt, password_hash, phone, code_channel, email_verified_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [invitation.email, invitation.display_name, salt, hashPassword(password, salt), invitation.phone || null, invitation.phone && !emailProven ? 'whatsapp' : null, emailProven ? new Date() : null]
+      );
+      userId = createdUser.rows[0].id;
     }
     if (invitation.role === 'driver') {
       const driver = await client.query(
@@ -3524,35 +3611,32 @@ app.post('/api/public/invitations/:token/accept', asyncRoute(async (req, res) =>
       );
       if (!driver.rows[0]) throw Object.assign(new Error('Le profil livreur associé n’est plus disponible.'), { statusCode: 409 });
     }
-    const salt = crypto.randomBytes(16).toString('hex');
-    const createdUser = await client.query(
-      `INSERT INTO users (email, display_name, password_salt, password_hash, phone, code_channel)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [invitation.email, invitation.display_name, salt, hashPassword(password, salt), invitation.phone || null, invitation.phone && !invitation.verify_code_hash ? null : (invitation.phone ? 'whatsapp' : null)]
-    );
-    userId = createdUser.rows[0].id;
     await client.query(
       `INSERT INTO company_memberships (company_id, user_id, role, driver_id)
        VALUES ($1, $2, $3, $4)`,
       [invitation.company_id, userId, invitation.role, invitation.role === 'driver' ? invitation.driver_id : null]
     );
-    await client.query('UPDATE user_invitations SET accepted_at = NOW() WHERE id = $1', [invitation.id]);
+    await client.query('UPDATE user_invitations SET accepted_at = NOW(), verify_code_hash = NULL WHERE id = $1', [invitation.id]);
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
-       VALUES ($1, $2, 'user_invitation', $3, 'accepted', jsonb_build_object('role', $4::text))`,
-      [invitation.company_id, userId, invitation.id, invitation.role]
+       VALUES ($1, $2, 'user_invitation', $3, 'accepted', jsonb_build_object('role', $4::text, 'existing_account', $5::boolean))`,
+      [invitation.company_id, userId, invitation.id, invitation.role, joinedExisting]
     );
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
-    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message, field: error.field, code: error.code });
     console.error('Invitation acceptance error:', error.message);
     return res.status(500).json({ error: 'Impossible d’activer ce compte.' });
   } finally {
     client.release();
   }
+  if (needsLogin) {
+    await pool.query('UPDATE users SET last_company_id = $2 WHERE id = $1', [userId, invitation.company_id]);
+    return res.status(201).json({ status: 'accepted', joinedExisting, redirect: '/app/login?joined=1' });
+  }
   await createSession(req, res, userId, invitation.company_id, 'company');
-  return res.status(201).json({ status: 'accepted', redirect: invitation.role === 'driver' ? '/driver' : '/app' });
+  return res.status(201).json({ status: 'accepted', joinedExisting, redirect: invitation.role === 'driver' ? '/driver' : '/app' });
 }));
 
 // --- Équipe et accès ------------------------------------------------------
@@ -3681,8 +3765,11 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
   try {
     await client.query('BEGIN');
     if (email) {
-      const existingUser = await client.query('SELECT 1 FROM users WHERE email = $1', [email]);
-      if (existingUser.rows[0]) throw Object.assign(new Error('Un compte utilise déjà cette adresse e-mail.'), { statusCode: 409 });
+      // Un compte TRAXO existant peut rejoindre cet espace en plus du sien ;
+      // seul un membre de ce même espace ne peut pas être réinvité.
+      const member = await client.query(
+        `SELECT 1 FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = $2 WHERE u.email = $1`, [email, req.auth.company_id]);
+      if (member.rows[0]) throw Object.assign(new Error('Cette personne fait déjà partie de votre espace.'), { statusCode: 409 });
     }
     // Doublon : déjà membre (même téléphone) ou invitation en cours.
     const dup = await client.query(
@@ -3946,6 +4033,34 @@ app.get('/api/app/context', requireCompanyApi, (req, res) => res.json({
   // Domaine canonique des liens partagés aux clients (APP_BASE_URL), quel que
   // soit le domaine par lequel l'entreprise consulte l'application.
   publicBaseUrl: publicBaseUrl(req),
+}));
+
+// Espaces de la personne : on peut appartenir à plusieurs entreprises (son
+// propre espace et ceux qui l'ont invitée). Basculer garde la même session
+// et vérifie l'appartenance côté serveur.
+app.get('/api/app/account/spaces', requireCompanyApi, asyncRoute(async (req, res) => {
+  const rows = (await pool.query(
+    `SELECT c.id, c.name, m.role, m.suspended_at, c.logo_updated_at
+     FROM company_memberships m JOIN companies c ON c.id = m.company_id
+     WHERE m.user_id = $1 ORDER BY (c.id = $2) DESC, c.name ASC`, [req.auth.user_id, req.auth.company_id])).rows;
+  return res.json({ current: String(req.auth.company_id), spaces: rows.map((r) => ({
+    id: String(r.id), name: r.name, role: r.role, roleLabel: TEAM_ROLE_LABELS[r.role] || r.role,
+    suspended: Boolean(r.suspended_at), current: String(r.id) === String(req.auth.company_id), logoUrl: companyLogoUrl(r.id, r.logo_updated_at),
+  })) });
+}));
+app.post('/api/app/account/spaces/switch', requireCompanyApi, asyncRoute(async (req, res) => {
+  const target = String(req.body?.companyId || '');
+  if (!/^\d{1,18}$/.test(target)) return res.status(400).json({ error: 'Espace inconnu.' });
+  const m = (await pool.query(
+    `SELECT m.role, m.suspended_at, c.onboarding_status FROM company_memberships m JOIN companies c ON c.id = m.company_id
+     WHERE m.user_id = $1 AND m.company_id = $2`, [req.auth.user_id, target])).rows[0];
+  if (!m) return res.status(404).json({ error: 'Vous ne faites pas partie de cet espace.' });
+  if (m.suspended_at) return res.status(403).json({ error: 'Votre accès à cet espace est suspendu.' });
+  const token = parseCookies(req).delivery_session;
+  await pool.query(`UPDATE app_sessions SET company_id = $2 WHERE token_hash = $1 AND scope = 'company'`, [digest(token), target]);
+  await pool.query('UPDATE users SET last_company_id = $2 WHERE id = $1', [req.auth.user_id, target]);
+  await writeAudit(req.auth, 'company', target, 'space_switched', { from: String(req.auth.company_id) });
+  return res.json({ ok: true, redirect: homeAfterLogin(m.role, m.onboarding_status) });
 }));
 
 app.get('/api/driver/context', requireDriverApi, asyncRoute(async (req, res) => {
@@ -4797,7 +4912,8 @@ app.post('/api/app/account/2fa/recovery-codes', requireCompanyApi, asyncRoute(as
 app.post('/api/app/account/password', requireCompanyApi, asyncRoute(async (req, res) => {
   const currentPassword = String(req.body.currentPassword || '');
   const newPassword = String(req.body.newPassword || '');
-  if (newPassword.length < 10 || newPassword.length > 200) return res.status(400).json({ error: 'Le nouveau mot de passe doit contenir au moins 10 caractères.' });
+  const weak = passwordWeakness(newPassword, req.auth.email);
+  if (weak) return res.status(400).json({ error: PASSWORD_MESSAGES[weak] });
   const user = await pool.query('SELECT password_salt, password_hash FROM users WHERE id = $1', [req.auth.user_id]);
   if (!user.rows[0] || !passwordMatches(currentPassword, user.rows[0].password_salt, user.rows[0].password_hash)) {
     return res.status(400).json({ error: 'Mot de passe actuel incorrect.' });
@@ -7338,6 +7454,8 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
   if (!fields.neighborhood) return res.status(400).json({ error: 'Indiquez le quartier ou la zone de livraison.', field: 'neighborhood' });
   const pickup = pickupFieldsFromBody(req.body || {});
   if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
+  const prices = priceFieldsFromBody(req.body || {});
+  if (prices.error) return res.status(400).json({ error: prices.error, field: 'prices' });
   const token = randomToken(24);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const result = await pool.query(
@@ -7350,6 +7468,7 @@ app.post('/api/app/requests/prefilled', requireCompanyApi, asyncRoute(async (req
   );
   await savePickupFields(pool, 'customer_requests', result.rows[0].id, req.auth.company_id, pickup.fields);
   if (req.body?.priority === 'urgent') await pool.query("UPDATE customer_requests SET priority = 'urgent' WHERE id = $1", [result.rows[0].id]);
+  if (prices.value) await pool.query('UPDATE customer_requests SET commercial = $2 WHERE id = $1', [result.rows[0].id, prices.value]);
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prefilled_created', { expiresAt });
   const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id])).rows[0] || {};
   const url = `${publicBaseUrl(req)}/demande/${token}`;
@@ -7414,6 +7533,8 @@ app.post('/api/app/request-links', requireCompanyApi, asyncRoute(async (req, res
     `INSERT INTO customer_requests (company_id, token, expires_at) VALUES ($1, $2, $3) RETURNING id`,
     [req.auth.company_id, token, expiresAt]
   );
+  const linkPrices = priceFieldsFromBody(req.body || {});
+  if (!linkPrices.error && linkPrices.value) await pool.query('UPDATE customer_requests SET commercial = $2 WHERE id = $1', [result.rows[0].id, linkPrices.value]);
   await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'link_created', { expiresAt });
   return res.status(201).json({ token, path: `/demande/${token}`, url: `${publicBaseUrl(req)}/demande/${token}`, expiresAt });
 }));
@@ -7424,7 +7545,7 @@ app.get('/api/app/requests', requireCompanyApi, asyncRoute(async (req, res) => {
     `SELECT id, token, status, customer_name, customer_phone, requested_time,
             location_lat, location_lng, location_accuracy, neighborhood, landmark, notes,
             created_at, submitted_at, updated_at, expires_at, archived_at, version, customer_id,
-            package_type, package_description,
+            package_type, package_description, commercial,
             (pickup_address IS NOT NULL OR pickup_name IS NOT NULL OR pickup_lat IS NOT NULL) AS has_pickup
      FROM customer_requests
      WHERE company_id = $1 AND ${archived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'}
@@ -7439,7 +7560,7 @@ app.get('/api/app/requests/:id', requireCompanyApi, asyncRoute(async (req, res) 
     `SELECT r.id, r.token, r.status, r.customer_name, r.customer_phone, r.requested_time,
             r.location_lat, r.location_lng, r.location_accuracy, r.location_at,
             r.neighborhood, r.landmark, r.notes, r.created_at, r.submitted_at, r.updated_at,
-            r.expires_at, r.archived_at, r.validated_at, r.version,
+            r.expires_at, r.archived_at, r.validated_at, r.version, r.commercial,
             o.id AS order_id, o.status AS order_status, o.reference AS order_reference, d.name AS driver_name,
             t.token_ciphertext AS tracking_token_ciphertext, t.expires_at AS tracking_expires_at,
             t.revoked_at AS tracking_revoked_at, t.created_at AS tracking_created_at,
@@ -7575,7 +7696,8 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
     // Colis et collecte saisis sur la demande : recopiés sur la commande, avec
     // la fiche client choisie par l'équipe le cas échéant.
     await client.query(
-      `UPDATE orders o SET ${PICKUP_COLUMNS.map((c) => `${c} = r.${c}`).join(', ')}, customer_id = r.customer_id
+      `UPDATE orders o SET ${PICKUP_COLUMNS.map((c) => `${c} = r.${c}`).join(', ')}, customer_id = r.customer_id,
+         commercial = COALESCE(o.commercial, r.commercial)
        FROM customer_requests r WHERE o.id = $1 AND r.id = $2 AND r.company_id = o.company_id`,
       [order.rows[0].id, request.id]
     );
@@ -7980,7 +8102,12 @@ app.get('/api/app/drivers/:id/live-route', requireCompanyApi, asyncRoute(async (
   targets.sort((a, b) => a.rank - b.rank || urgentFirst(a, b) || (a.sequence ?? 1e9) - (b.sequence ?? 1e9) || new Date(a.createdAt) - new Date(b.createdAt) || (a.kind === 'pickup' ? -1 : 1));
   const kept = targets.slice(0, 24).map(({ rank, createdAt, ...t }) => ({ ...t, active: rank <= 3 }));
   const position = await driverCurrentPosition(driver.id, req.auth.company_id);
-  const base = { driverId: String(driver.id), targets: kept, origin: position ? { lat: position.lat, lng: position.lng, at: position.at } : null, computedAt: new Date().toISOString() };
+  // Signal interrompu (téléphone hors réseau, appli fermée) : l'itinéraire part
+  // de la dernière position connue et le dit, sans faire croire qu'il roule.
+  const staleAfter = Math.max(60, Number(process.env.LIVE_ROUTE_STALE_SECONDS) || 180);
+  const ageSeconds = position?.at ? Math.max(0, Math.round((Date.now() - new Date(position.at).getTime()) / 1000)) : null;
+  const signal = position ? { at: position.at, ageSeconds, staleAfterSeconds: staleAfter, stale: ageSeconds == null || ageSeconds > staleAfter } : null;
+  const base = { driverId: String(driver.id), targets: kept, origin: position ? { lat: position.lat, lng: position.lng, at: position.at } : null, signal, computedAt: new Date().toISOString() };
   if (!kept.length) return res.json({ ...base, status: 'no_target', route: null });
   if (!position) return res.json({ ...base, status: 'no_position', route: null });
   if (routingAdapter.health().status === 'disabled') return res.json({ ...base, status: 'routing_unavailable', route: null });
@@ -9946,6 +10073,37 @@ function parseCommercial(body) {
   }
   return { value: Object.keys(out).length ? out : null };
 }
+// Prix indicatifs d'une demande ou d'une commande : prix de la livraison et
+// montant de la commande (marchandise), en FCFA entiers. Pour le suivi du
+// chiffre d'affaires seulement : TRAXO n'encaisse rien.
+function priceFieldsFromBody(body) {
+  const src = body && typeof body === 'object' ? (body.prices || body) : {};
+  const fee = src.deliveryFeeMinor ?? src.deliveryFee;
+  const amount = src.orderAmountMinor ?? src.orderAmount;
+  if ((fee === undefined || fee === null || fee === '') && (amount === undefined || amount === null || amount === '')) return { value: null };
+  const parsed = parseCommercial({ deliveryFeeMinor: fee, declaredValueMinor: amount });
+  return parsed.error ? { error: 'Prix invalide : un montant entier en FCFA.' } : parsed;
+}
+app.patch('/api/app/requests/:id/prices', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
+  if (!numericIdPattern.test(req.params.id)) return res.status(404).json({ error: 'Demande introuvable.' });
+  const parsed = priceFieldsFromBody(req.body || {});
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const keep = (await pool.query('SELECT commercial FROM customer_requests WHERE id = $1 AND company_id = $2', [req.params.id, req.auth.company_id])).rows[0];
+  if (!keep) return res.status(404).json({ error: 'Demande introuvable.' });
+  const next = { ...(keep.commercial || {}) };
+  delete next.deliveryFeeMinor; delete next.declaredValueMinor;
+  Object.assign(next, parsed.value || {});
+  const result = await pool.query(
+    `UPDATE customer_requests SET commercial = $1, updated_at = NOW() WHERE id = $2 AND company_id = $3 RETURNING id, commercial`,
+    [Object.keys(next).length ? next : null, req.params.id, req.auth.company_id]);
+  // Si la commande existe déjà et n'a pas de prix, elle reprend ceux de la demande.
+  await pool.query(
+    `UPDATE orders SET commercial = COALESCE(commercial, '{}'::jsonb) || $1::jsonb, updated_at = NOW()
+     WHERE customer_request_id = $2 AND company_id = $3 AND $1::jsonb IS NOT NULL`,
+    [parsed.value ? JSON.stringify(parsed.value) : null, req.params.id, req.auth.company_id]);
+  await writeAudit(req.auth, 'customer_request', result.rows[0].id, 'prices_updated', {});
+  return res.json(result.rows[0]);
+}));
 app.patch('/api/app/orders/:id/commercial', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'), asyncRoute(async (req, res) => {
   if (!numericIdPattern.test(req.params.id)) return res.status(404).json({ error: 'Commande introuvable.' });
   const parsed = parseCommercial(req.body);
@@ -11299,6 +11457,8 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
   }
   const pickup = pickupFieldsFromBody(req.body || {});
   if (pickup.error) return res.status(400).json({ error: pickup.error, field: pickup.field });
+  const prices = priceFieldsFromBody(req.body || {});
+  if (prices.error) return res.status(400).json({ error: prices.error, field: 'prices' });
   const client = await pool.connect();
   let committed = false;
   try {
@@ -11317,6 +11477,7 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
         orderPriorityFrom(req.body.priority)]
     );
     await savePickupFields(client, 'orders', order.rows[0].id, req.auth.company_id, pickup.fields);
+    if (prices.value) await client.query('UPDATE orders SET commercial = $1 WHERE id = $2', [prices.value, order.rows[0].id]);
     const chosenCustomer = await chosenCustomerId(client, req.auth.company_id, req.body.customerId);
     if (chosenCustomer) {
       await client.query('UPDATE orders SET customer_id = $1 WHERE id = $2 AND company_id = $3', [chosenCustomer, order.rows[0].id, req.auth.company_id]);

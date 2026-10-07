@@ -2,176 +2,152 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Rejoindre l’équipe — TRAXO</title>
+    <meta name="robots" content="noindex" />
+    <link rel="preload" href="/fonts/traxosans-700.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.png" sizes="64x64" type="image/png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/app.css" />
-    <style>
-      .invite-page{min-height:100vh;display:grid;place-items:center;padding:18px;background:#f6f7f8}
-      .invite-card{width:min(500px,100%)}
-      .invite-card h1{font-size:26px;letter-spacing:-.02em}
-      .invite-card form > button{width:100%;margin-top:18px}
-      .invite-facts{margin:16px 0 4px;display:grid;gap:8px;padding:14px 16px;border-radius:12px;background:#f6f8fa;font-size:13.5px}
-      .invite-facts div{display:flex;justify-content:space-between;gap:12px}
-      .invite-facts span{color:#66758c}
-      .invite-facts strong{text-align:right}
-      .invite-code{display:flex;gap:8px;align-items:flex-end}
-      .invite-code .field{flex:1}
-      .invite-code button{white-space:nowrap;margin-bottom:1px}
-      .invite-hint{color:#66758c;font-size:12.5px;margin-top:6px}
-    </style>
+    <link rel="stylesheet" href="/auth.css" />
+    <link rel="stylesheet" href="/loaders.css" />
   </head>
   <body>
-    <main class="invite-page">
-      <section class="card invite-card">
-        <h1>Rejoindre l’équipe</h1>
-        <p class="subtitle" id="inviteSummary">Vérification de l’invitation…</p>
-        <div class="invite-facts" id="inviteFacts" hidden></div>
-        <form id="inviteForm" hidden novalidate>
-          <div id="emailStep" hidden>
-            <div class="field" style="margin-top:18px">
-              <label for="inviteEmail">Votre adresse e-mail</label>
-              <input id="inviteEmail" type="email" name="email" maxlength="200" autocomplete="email" inputmode="email" />
-              <small>Elle vous servira à vous connecter. Si vous avez déjà un compte TRAXO, indiquez son adresse.</small>
+    <header class="ax-header">
+      <a class="ax-logo" href="/app/login"><img src="/brand/traxo-logo.png" width="160" height="34" alt="TRAXO" /></a>
+      <p class="ax-header-link"><span>Déjà dans cette équipe ?</span><a href="/app/login">Se connecter</a></p>
+    </header>
+
+    <main class="ax-main">
+      <section class="ax-form-col iv" aria-labelledby="title" aria-busy="true" id="ivRoot">
+        <!-- Chargement -->
+        <div class="iv-skeleton" id="ivLoading" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+
+        <!-- Invitation valide -->
+        <div id="ivReady" hidden>
+          <div class="iv-card">
+            <span class="iv-logo" id="ivLogo" aria-hidden="true"></span>
+            <div class="iv-card-main">
+              <small id="ivFrom"></small>
+              <strong id="ivCompany"></strong>
             </div>
+            <span class="iv-role" id="ivRole"></span>
           </div>
-          <div class="invite-code" style="margin-top:15px">
-            <div class="field">
-              <label for="inviteCode" id="codeLabel">Code de vérification</label>
-              <input id="inviteCode" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 chiffres" />
-            </div>
-            <button type="button" class="secondary" id="sendCode">Recevoir le code</button>
+
+          <h1 class="ax-title" id="title"></h1>
+          <p class="ax-sub" id="ivSub"></p>
+
+          <div class="ax-banner error" id="banner" role="alert" hidden></div>
+
+          <div class="iv-account" id="ivAccount" hidden>
+            <span class="iv-account-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span>
+            <p><strong>Vous avez déjà un compte TRAXO</strong><span id="ivAccountText"></span></p>
           </div>
-          <p class="invite-hint" id="codeHint"></p>
-          <div id="newPassword">
-            <div class="field" style="margin-top:18px">
-              <label for="invitePassword">Choisissez un mot de passe</label>
-              <input id="invitePassword" type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" />
-              <small>10 caractères minimum, ni votre adresse e-mail ni un mot de passe courant. Une courte phrase est plus facile à retenir.</small>
-            </div>
-            <div class="field" style="margin-top:15px">
-              <label for="invitePassword2">Confirmez le mot de passe</label>
-              <input id="invitePassword2" type="password" name="passwordConfirmation" minlength="10" maxlength="128" autocomplete="new-password" />
-            </div>
+
+          <div id="ivGoogleBlock" hidden>
+            <form method="post" action="/app/auth/google/invite" id="ivGoogleForm">
+              <input type="hidden" name="token" id="ivGoogleToken" />
+              <input type="hidden" name="code" id="ivGoogleCode" />
+              <button type="submit" class="ax-google" id="ivGoogleBtn">
+                <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+                <span id="ivGoogleLabel">Continuer avec Google</span>
+              </button>
+            </form>
+            <p class="ax-hint iv-google-hint" id="ivGoogleHint"></p>
+            <div class="ax-or" id="ivOr">ou</div>
           </div>
-          <div id="existingPassword" hidden>
-            <div class="field" style="margin-top:18px">
-              <label for="inviteCurrent">Mot de passe de votre compte TRAXO</label>
-              <input id="inviteCurrent" type="password" maxlength="200" autocomplete="current-password" />
-              <small>Vous gardez votre compte et votre espace : cette équipe s’ajoute simplement à vos espaces. <a href="/app/forgot" target="_blank" rel="noopener">Mot de passe oublié ?</a></small>
+
+          <form id="inviteForm" novalidate>
+            <div class="ax-field" id="emailStep" hidden>
+              <label class="ax-label" for="inviteEmail">Votre adresse e-mail</label>
+              <input class="ax-input" id="inviteEmail" type="email" name="email" maxlength="200" autocomplete="email" inputmode="email" placeholder="vous@exemple.com" />
+              <p class="ax-hint">Elle vous servira à vous connecter. Vous avez déjà un compte TRAXO ? Indiquez son adresse.</p>
             </div>
-          </div>
-          <button class="primary" type="submit" id="inviteSubmit">Rejoindre l’équipe</button>
-        </form>
-        <div id="inviteResult" role="alert"></div>
+
+            <div class="ax-field">
+              <div class="ax-label-row">
+                <span class="ax-label" id="codeLabel">Code de vérification</span>
+                <button type="button" class="iv-send" id="sendCode">Recevoir le code</button>
+              </div>
+              <input type="hidden" name="code" id="inviteCode" />
+              <div class="ax-otp iv-otp" id="otp" role="group" aria-labelledby="codeLabel">
+                <input type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="Chiffre 1" />
+                <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 2" />
+                <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 3" />
+                <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 4" />
+                <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 5" />
+                <input type="text" inputmode="numeric" maxlength="6" aria-label="Chiffre 6" />
+              </div>
+              <p class="ax-hint" id="codeHint"></p>
+            </div>
+
+            <div id="newPassword">
+              <div class="ax-field">
+                <label class="ax-label" for="invitePassword">Choisissez un mot de passe</label>
+                <div class="ax-pw">
+                  <input class="ax-input" id="invitePassword" type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" placeholder="10 caractères minimum" />
+                  <button type="button" data-toggle-pw="invitePassword" aria-pressed="false" aria-label="Afficher le mot de passe">Afficher</button>
+                </div>
+                <div class="iv-meter" id="ivMeter" aria-hidden="true"><i></i><i></i><i></i></div>
+                <p class="ax-hint" id="ivMeterText">Une courte phrase est plus simple à retenir qu’un mot compliqué.</p>
+              </div>
+              <div class="ax-field">
+                <label class="ax-label" for="invitePassword2">Confirmez le mot de passe</label>
+                <div class="ax-pw">
+                  <input class="ax-input" id="invitePassword2" type="password" name="passwordConfirmation" minlength="10" maxlength="128" autocomplete="new-password" />
+                  <button type="button" data-toggle-pw="invitePassword2" aria-pressed="false" aria-label="Afficher la confirmation">Afficher</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ax-field" id="existingPassword" hidden>
+              <div class="ax-label-row">
+                <label class="ax-label" for="inviteCurrent">Mot de passe de votre compte</label>
+                <a href="/app/forgot" target="_blank" rel="noopener">Mot de passe oublié ?</a>
+              </div>
+              <div class="ax-pw">
+                <input class="ax-input" id="inviteCurrent" type="password" maxlength="200" autocomplete="current-password" placeholder="Votre mot de passe TRAXO" />
+                <button type="button" data-toggle-pw="inviteCurrent" aria-pressed="false" aria-label="Afficher le mot de passe">Afficher</button>
+              </div>
+            </div>
+
+            <button class="ax-submit" type="submit" id="inviteSubmit" data-busy="Vérification…"><span class="ax-spin" aria-hidden="true"></span><span data-label>Rejoindre l’équipe</span></button>
+          </form>
+          <p class="ax-legal">En rejoignant l’équipe, vous acceptez les <a href="/conditions">Conditions d’utilisation</a> et la <a href="/confidentialite">Politique de confidentialité</a>.</p>
+        </div>
+
+        <!-- Invitation inutilisable -->
+        <div class="iv-state" id="ivGone" hidden>
+          <span class="ax-badge iv-badge-muted" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/><path d="M4 4l16 16"/></svg></span>
+          <h1 class="ax-title">Cette invitation n’est plus valable</h1>
+          <p class="ax-sub" id="ivGoneText">Elle a expiré, a déjà été utilisée ou a été annulée. Demandez un nouveau lien à la personne qui vous a invité.</p>
+          <a class="ax-submit iv-link-submit" href="/app/login">Se connecter</a>
+          <p class="ax-help">Un souci ? <a href="mailto:support@gettraxo.app" data-support>Écrire au support TRAXO</a></p>
+        </div>
+
+        <!-- Réussite -->
+        <div class="iv-state" id="ivDone" hidden role="status">
+          <span class="ax-badge iv-badge-ok" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <h1 class="ax-title" id="ivDoneTitle">Bienvenue dans l’équipe</h1>
+          <p class="ax-sub" id="ivDoneText">Ouverture de votre espace…</p>
+        </div>
       </section>
+
+      <aside class="ax-visual iv-visual" aria-hidden="true">
+        <h2>Une équipe,<br />un seul suivi.</h2>
+        <p>Commandes, livreurs et clients partagés en temps réel.</p>
+        <div class="ax-photo iv-photo"></div>
+        <small>Un seul compte TRAXO, même si vous travaillez pour plusieurs entreprises.</small>
+      </aside>
     </main>
-    <script>
-      const token = decodeURIComponent(location.pathname.split('/').pop());
-      const summary = document.getElementById('inviteSummary');
-      const facts = document.getElementById('inviteFacts');
-      const form = document.getElementById('inviteForm');
-      const result = document.getElementById('inviteResult');
-      const sendBtn = document.getElementById('sendCode');
-      const hint = document.getElementById('codeHint');
-      const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-      }[character]));
-      let existing = false;
-      let channel = 'email';
-      let timer = null;
-      const showError = (message) => { result.innerHTML = `<div class="notice error">${escapeHtml(message)}</div>`; };
-      function setExisting(on) {
-        existing = on;
-        document.getElementById('newPassword').hidden = on;
-        document.getElementById('existingPassword').hidden = !on;
-        document.getElementById('inviteSubmit').textContent = on ? 'Rejoindre avec mon compte' : 'Créer mon accès et rejoindre l’équipe';
-      }
-      function countdown(seconds) {
-        clearInterval(timer);
-        let left = seconds;
-        sendBtn.disabled = true;
-        const tick = () => {
-          sendBtn.textContent = left > 0 ? `Nouveau code dans ${left} s` : 'Renvoyer le code';
-          if (left <= 0) { clearInterval(timer); sendBtn.disabled = false; }
-          left -= 1;
-        };
-        tick();
-        timer = setInterval(tick, 1000);
-      }
-      async function load() {
-        const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}`);
-        const invitation = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(invitation.error || 'Invitation indisponible.');
-        summary.innerHTML = `Bonjour <strong>${escapeHtml(invitation.display_name)}</strong>, vous êtes invité·e à rejoindre <strong>${escapeHtml(invitation.company_name)}</strong> sur TRAXO.`;
-        const expires = new Date(invitation.expires_at).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
-        facts.innerHTML = `<div><span>Rôle proposé</span><strong>${escapeHtml(invitation.role_label || invitation.role)}</strong></div>
-          ${invitation.invited_by ? `<div><span>Invitation de</span><strong>${escapeHtml(invitation.invited_by)}</strong></div>` : ''}
-          <div><span>Valable jusqu’au</span><strong>${escapeHtml(expires)}</strong></div>`;
-        facts.hidden = false;
-        channel = invitation.verification;
-        document.getElementById('codeLabel').textContent = channel === 'whatsapp' ? 'Code reçu sur WhatsApp' : 'Code reçu par e-mail';
-        hint.textContent = channel === 'whatsapp'
-          ? `Pour confirmer que l’invitation vous est destinée, un code part sur le WhatsApp du ${invitation.phoneMasked || 'numéro invité'}.`
-          : `Pour confirmer que l’invitation vous est destinée, un code part à ${invitation.emailMasked || 'l’adresse invitée'}.`;
-        document.getElementById('emailStep').hidden = !invitation.needsEmail;
-        setExisting(Boolean(invitation.existingAccount));
-        if (invitation.existingAccount) summary.innerHTML += '<br><small>Vous avez déjà un compte TRAXO avec cette adresse : connectez-vous avec lui, sans créer de nouveau compte.</small>';
-        form.hidden = false;
-      }
-      sendBtn.addEventListener('click', async () => {
-        sendBtn.disabled = true;
-        result.innerHTML = '';
-        try {
-          const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}/send-code`, { method: 'POST' });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            if (data.resendIn) countdown(data.resendIn); else sendBtn.disabled = false;
-            throw new Error(data.error || 'Envoi impossible.');
-          }
-          hint.textContent = data.channel === 'whatsapp'
-            ? `Code envoyé sur le WhatsApp du ${data.phoneMasked}. Il arrive dans quelques secondes.`
-            : `Code envoyé à ${data.emailMasked}. Pensez à regarder dans les indésirables.`;
-          countdown(data.resendIn || 60);
-          document.getElementById('inviteCode').focus();
-        } catch (error) { showError(error.message); }
-      });
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const button = document.getElementById('inviteSubmit');
-        const fd = Object.fromEntries(new FormData(form));
-        const payload = { code: fd.code, email: fd.email };
-        result.innerHTML = '';
-        if (!document.getElementById('emailStep').hidden && !/^\S+@\S+\.\S+$/.test(fd.email || '')) return showError('Indiquez une adresse e-mail valide.');
-        if (!/^\d{6}$/.test((fd.code || '').trim())) return showError('Saisissez le code à 6 chiffres reçu. Pas encore de code ? Touchez « Recevoir le code ».');
-        if (existing) {
-          payload.password = document.getElementById('inviteCurrent').value;
-          if (!payload.password) return showError('Saisissez le mot de passe de votre compte TRAXO.');
-        } else {
-          payload.password = fd.password; payload.passwordConfirmation = fd.passwordConfirmation;
-          if ((fd.password || '').length < 10) return showError('Le mot de passe doit contenir au moins 10 caractères.');
-          if (fd.password !== fd.passwordConfirmation) return showError('Les deux mots de passe ne correspondent pas.');
-        }
-        button.disabled = true;
-        try {
-          const response = await fetch(`/api/public/invitations/${encodeURIComponent(token)}/accept`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-          });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            if (data.code === 'EXISTING_ACCOUNT' && !existing) { setExisting(true); document.getElementById('inviteCurrent').focus(); }
-            throw new Error(data.error || 'Activation impossible.');
-          }
-          result.innerHTML = `<div class="notice success">${data.joinedExisting ? 'Cet espace est ajouté à votre compte.' : 'Bienvenue dans l’équipe.'} ${data.redirect.startsWith('/app/login') ? 'Connectez-vous pour l’ouvrir…' : 'Ouverture de votre espace…'}</div>`;
-          location.href = data.redirect;
-        } catch (error) {
-          showError(error.message);
-          button.disabled = false;
-        }
-      });
-      load().catch((error) => { summary.textContent = error.message; result.innerHTML = '<div class="notice error">Demandez une nouvelle invitation à votre responsable.</div>'; });
-    </script>
+
+    <footer class="ax-footer">
+      <span>© TRAXO</span>
+      <nav aria-label="Liens utiles"><a href="/confidentialite">Confidentialité</a><a href="/conditions">Conditions</a><a href="mailto:support@gettraxo.app" data-support>Besoin d’aide ?</a></nav>
+    </footer>
+
+    <script src="/loaders.js"></script>
+    <script src="/auth.js"></script>
+    <script src="/invitation.js"></script>
   </body>
 </html>

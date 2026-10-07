@@ -528,7 +528,7 @@ function sendShell(res, file) {
   let html = shellCache.get(file);
   if (html == null) {
     html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8')
-      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap|reports|search|support)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
+      .replace(/(href|src)="\/(app|driver|client|map-base|auth|onboarding|loaders|settings|ui-kit|neworder|confirm|notifications|dashboard|drivers|join|ops|team|clients|fleetmap|reports|search|support|invitation)\.(css|js)"/g, `$1="/$2.$3?v=${ASSET_VERSION}"`);
     shellCache.set(file, html);
   }
   res.set('Cache-Control', 'no-cache');
@@ -2991,10 +2991,123 @@ app.get('/app/auth/google', (req, res) => {
   return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
+// Rejoindre une équipe avec Google, depuis la page d'invitation. Invitation par
+// e-mail : Google prouve l'adresse invitée (aucun code). Invitation par
+// téléphone : le code WhatsApp est vérifié ici, avant de partir chez Google.
+app.post('/app/auth/google/invite', loginRateLimit, asyncRoute(async (req, res) => {
+  const token = String(req.body.token || '').slice(0, 200);
+  const back = `/invitation/${encodeURIComponent(token)}`;
+  if (!pool || !googleAuthConfigured()) return res.redirect(303, `${back}?error=google_off`);
+  const client = await pool.connect();
+  let invitation;
+  try {
+    await client.query('BEGIN');
+    invitation = (await client.query('SELECT * FROM user_invitations WHERE token_hash = $1 FOR UPDATE', [digest(token)])).rows[0];
+    if (!invitation || invitation.accepted_at || invitation.revoked_at || new Date(invitation.expires_at) <= new Date()) {
+      await client.query('ROLLBACK');
+      return res.redirect(303, back);
+    }
+    if (!invitation.email) {
+      const check = await checkInvitationCode(client, invitation, req.body.code);
+      await client.query('COMMIT');
+      if (!check.ok) return res.redirect(303, `${back}?error=${check.locked ? 'locked' : 'code'}`);
+    } else {
+      await client.query('COMMIT');
+    }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  const state = randomToken(24);
+  const nonce = randomToken(24);
+  const verifier = randomToken(48);
+  setOauthCookie(req, res, sealOauth({ state, nonce, verifier, from: 'invite', invite: token, inviteId: String(invitation.id), phoneVerified: !invitation.email, exp: Date.now() + 10 * 60 * 1000 }), 600);
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    redirect_uri: googleRedirectUri(req),
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    nonce,
+    code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+    prompt: 'select_account',
+  });
+  if (invitation.email) params.set('login_hint', invitation.email);
+  return res.redirect(303, `https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+}));
+
+// Fin du parcours « Rejoindre avec Google » : rattache (ou crée) le compte et
+// ouvre l'espace invité. Toutes les erreurs reviennent sur la page d'invitation.
+async function finishGoogleInvitation(req, res, saved, { sub, email, displayName }) {
+  const back = `/invitation/${encodeURIComponent(saved.invite)}`;
+  const client = await pool.connect();
+  let invitation; let userId; let existing = false; let totp = false;
+  try {
+    await client.query('BEGIN');
+    invitation = (await client.query('SELECT * FROM user_invitations WHERE token_hash = $1 FOR UPDATE', [digest(saved.invite)])).rows[0];
+    const pending = invitation && String(invitation.id) === saved.inviteId && !invitation.accepted_at && !invitation.revoked_at && new Date(invitation.expires_at) > new Date();
+    if (!pending) { await client.query('ROLLBACK'); return res.redirect(back); }
+    if (invitation.email && normalizeEmail(invitation.email) !== email) { await client.query('ROLLBACK'); return res.redirect(`${back}?error=google_mismatch`); }
+    if (!invitation.email && !saved.phoneVerified) { await client.query('ROLLBACK'); return res.redirect(`${back}?error=code`); }
+    const user = (await client.query(
+      `SELECT id, disabled, google_sub, email_verified_at, totp_enabled_at FROM users
+       WHERE google_sub = $1 OR email = $2 ORDER BY (google_sub = $1) DESC NULLS LAST LIMIT 1`,
+      [sub, email]
+    )).rows[0];
+    if (user) {
+      if (user.disabled) { await client.query('ROLLBACK'); return res.redirect(`${back}?error=disabled`); }
+      if (user.google_sub && user.google_sub !== sub) { await client.query('ROLLBACK'); return res.redirect(`${back}?error=google_other`); }
+      if (!user.google_sub) {
+        // Même règle qu'à la connexion : adresse jamais confirmée → l'ancien mot
+        // de passe (peut-être choisi par un tiers) et ses sessions sont invalidés.
+        const unverified = !user.email_verified_at;
+        const salt = crypto.randomBytes(16).toString('hex');
+        await client.query(
+          `UPDATE users SET google_sub = $1, email_verified_at = COALESCE(email_verified_at, NOW()),
+             password_salt = CASE WHEN $2 THEN $3 ELSE password_salt END,
+             password_hash = CASE WHEN $2 THEN $4 ELSE password_hash END, updated_at = NOW()
+           WHERE id = $5`,
+          [sub, unverified, salt, hashPassword(randomToken(32), salt), user.id]
+        );
+        if (unverified) await client.query('DELETE FROM app_sessions WHERE user_id = $1', [user.id]);
+      }
+      userId = user.id; existing = true; totp = Boolean(user.totp_enabled_at);
+    } else {
+      const salt = crypto.randomBytes(16).toString('hex');
+      userId = (await client.query(
+        `INSERT INTO users (email, display_name, password_salt, password_hash, google_sub, email_verified_at, phone)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING id`,
+        [email, invitation.display_name || displayName, salt, hashPassword(randomToken(32), salt), sub, invitation.phone || null]
+      )).rows[0].id;
+    }
+    await joinInvitation(client, invitation, userId, { existing, method: 'google' });
+    await client.query('UPDATE users SET last_company_id = $2 WHERE id = $1', [userId, invitation.company_id]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (error.code === 'ALREADY_MEMBER') return res.redirect(`${back}?error=already_member`);
+    if (error.code === 'DRIVER_GONE') return res.redirect(`${back}?error=driver_gone`);
+    console.error('Google invitation error:', error.message);
+    return res.redirect(`${back}?error=server`);
+  } finally {
+    client.release();
+  }
+  if (totp) {
+    await startTotpChallenge(req, res, { userId, companyId: invitation.company_id, role: invitation.role, remember: false });
+    return res.redirect('/app/login/2fa');
+  }
+  await createSession(req, res, userId, invitation.company_id, 'company');
+  notifyNewLogin(req, userId, 'google').catch(() => {});
+  return res.redirect(invitation.role === 'driver' ? '/driver' : '/app');
+}
+
 app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res) => {
   const saved = openOauth(parseCookies(req).traxo_oauth);
   setOauthCookie(req, res, '', 0);
-  const back = saved && saved.from === 'register' ? '/app/register' : '/app/login';
+  const back = saved && saved.from === 'invite' ? `/invitation/${encodeURIComponent(saved.invite)}` : saved && saved.from === 'register' ? '/app/register' : '/app/login';
   if (!pool || !googleAuthConfigured()) return res.redirect(`${back}?error=google_off`);
   if (req.query.error) return res.redirect(`${back}?error=google_cancel`);
   const state = String(req.query.state || '');
@@ -3027,6 +3140,7 @@ app.get('/app/auth/google/callback', loginRateLimit, asyncRoute(async (req, res)
 
   const sub = String(claims.sub);
   const displayName = String(claims.name || claims.given_name || email.split('@')[0]).trim().slice(0, 120);
+  if (saved.from === 'invite') return finishGoogleInvitation(req, res, saved, { sub, email, displayName });
   let user = (await pool.query(
     `SELECT u.id, u.disabled, u.google_sub, u.email_verified_at, u.totp_enabled_at, m.company_id, m.role, c.onboarding_status
      FROM users u LEFT JOIN company_memberships m ON m.user_id = u.id LEFT JOIN companies c ON c.id = m.company_id
@@ -3442,15 +3556,17 @@ app.get('/invitation/:token', asyncRoute(async (req, res) => {
      WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
     [digest(req.params.token)]
   );
-  if (!result.rows[0]) return res.status(404).send('Cette invitation est invalide, expirée ou déjà utilisée.');
+  // Lien périmé : la même page, qui affiche un état clair (pas de texte brut).
+  if (!result.rows[0]) res.status(404);
   return sendShell(res, 'invitation.html');
 }));
 
 app.get('/api/public/invitations/:token', asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const result = await pool.query(
-    `SELECT i.email, i.phone, i.display_name, i.role, i.expires_at, c.name AS company_name, d.name AS driver_name,
-            u.display_name AS invited_by, (ex.id IS NOT NULL) AS existing_account
+    `SELECT i.email, i.phone, i.display_name, i.role, i.expires_at, c.id AS company_id, c.name AS company_name, c.logo_updated_at,
+            d.name AS driver_name, u.display_name AS invited_by, (ex.id IS NOT NULL) AS existing_account,
+            (ex.google_sub IS NOT NULL) AS existing_google
      FROM user_invitations i
      JOIN companies c ON c.id = i.company_id
      LEFT JOIN drivers d ON d.id = i.driver_id
@@ -3471,6 +3587,10 @@ app.get('/api/public/invitations/:token', asyncRoute(async (req, res) => {
     emailMasked: row.email ? maskEmail(row.email) : null,
     verification: row.email ? 'email' : (row.phone ? 'whatsapp' : 'email'),
     existingAccount: Boolean(row.existing_account),
+    // Compte créé avec Google : il n'a pas de mot de passe connu, Google est proposé en premier.
+    existingGoogle: Boolean(row.existing_google),
+    google: googleAuthConfigured(),
+    companyLogoUrl: companyLogoUrl(row.company_id, row.logo_updated_at),
   });
 }));
 
@@ -3530,6 +3650,44 @@ app.post('/api/public/invitations/:token/send-code', teamInviteRateLimit, asyncR
   return res.json({ sent: true, channel, phoneMasked: inv.phone && !inv.email ? maskPhone(inv.phone) : null, emailMasked: inv.email ? maskEmail(inv.email) : null, resendIn: loginCodeResendDelayS(sends) });
 }));
 
+// Vérifie le code d'une invitation (transaction ouverte, ligne verrouillée).
+// Un échec compte un essai ; au 5e, l'invitation est annulée.
+async function checkInvitationCode(client, invitation, rawCode) {
+  const code = String(rawCode || '').replace(/\D/g, '');
+  const fresh = invitation.verify_sent_at && Date.now() - new Date(invitation.verify_sent_at).getTime() < 10 * 60 * 1000;
+  const ok = fresh && invitation.verify_code_hash && code.length === 6
+    && crypto.timingSafeEqual(Buffer.from(digest(`invite:${invitation.id}:${code}`)), Buffer.from(invitation.verify_code_hash));
+  if (ok) return { ok: true };
+  const attempts = (invitation.verify_attempts || 0) + 1;
+  await client.query(`UPDATE user_invitations SET verify_attempts = $2${attempts >= 5 ? ', revoked_at = NOW()' : ''} WHERE id = $1`, [invitation.id, attempts]);
+  if (attempts >= 5) return { ok: false, locked: true, error: 'Trop d’essais : cette invitation est annulée. Demandez-en une nouvelle.' };
+  const where = invitation.email ? 'dans l’e-mail reçu' : 'dans le message WhatsApp reçu';
+  return { ok: false, error: !invitation.verify_code_hash ? 'Demandez d’abord votre code.' : !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : `Ce code ne correspond pas. Vérifiez le code ${where}.` };
+}
+// Rattache le compte à l'espace et clôt l'invitation (même transaction).
+async function joinInvitation(client, invitation, userId, { existing, method }) {
+  const already = await client.query('SELECT 1 FROM company_memberships WHERE company_id = $1 AND user_id = $2', [invitation.company_id, userId]);
+  if (already.rows[0]) throw Object.assign(new Error('Vous faites déjà partie de cet espace. Connectez-vous pour l’ouvrir.'), { statusCode: 409, code: 'ALREADY_MEMBER' });
+  if (invitation.role === 'driver') {
+    const driver = await client.query(
+      `SELECT id FROM drivers WHERE id = $1 AND company_id = $2 AND active = TRUE FOR UPDATE`,
+      [invitation.driver_id, invitation.company_id]
+    );
+    if (!driver.rows[0]) throw Object.assign(new Error('Le profil livreur associé n’est plus disponible.'), { statusCode: 409, code: 'DRIVER_GONE' });
+  }
+  await client.query(
+    `INSERT INTO company_memberships (company_id, user_id, role, driver_id)
+     VALUES ($1, $2, $3, $4)`,
+    [invitation.company_id, userId, invitation.role, invitation.role === 'driver' ? invitation.driver_id : null]
+  );
+  await client.query('UPDATE user_invitations SET accepted_at = NOW(), verify_code_hash = NULL WHERE id = $1', [invitation.id]);
+  await client.query(
+    `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+     VALUES ($1, $2, 'user_invitation', $3, 'accepted', jsonb_build_object('role', $4::text, 'existing_account', $5::boolean, 'method', $6::text))`,
+    [invitation.company_id, userId, invitation.id, invitation.role, existing, method]
+  );
+}
+
 app.post('/api/public/invitations/:token/accept', teamInviteRateLimit, asyncRoute(async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Service momentanément indisponible.' });
   const password = String(req.body.password || '');
@@ -3550,17 +3708,10 @@ app.post('/api/public/invitations/:token/accept', teamInviteRateLimit, asyncRout
       throw Object.assign(new Error('Cette invitation est invalide, expirée ou déjà utilisée.'), { statusCode: 410 });
     }
     // 1. Code obligatoire : reçu à l'adresse invitée, ou sur le WhatsApp du numéro invité.
-    const code = String(req.body.code || '').replace(/\D/g, '');
-    const fresh = invitation.verify_sent_at && Date.now() - new Date(invitation.verify_sent_at).getTime() < 10 * 60 * 1000;
-    const codeOk = fresh && invitation.verify_code_hash && code.length === 6
-      && crypto.timingSafeEqual(Buffer.from(digest(`invite:${invitation.id}:${code}`)), Buffer.from(invitation.verify_code_hash));
-    if (!codeOk) {
-      const attempts = (invitation.verify_attempts || 0) + 1;
-      await client.query(`UPDATE user_invitations SET verify_attempts = $2${attempts >= 5 ? ', revoked_at = NOW()' : ''} WHERE id = $1`, [invitation.id, attempts]);
+    const check = await checkInvitationCode(client, invitation, req.body.code);
+    if (!check.ok) {
       await client.query('COMMIT');
-      if (attempts >= 5) return res.status(423).json({ error: 'Trop d’essais : cette invitation est annulée. Demandez-en une nouvelle.' });
-      const where = invitation.email ? 'dans l’e-mail reçu' : 'dans le message WhatsApp reçu';
-      return res.status(400).json({ error: !invitation.verify_code_hash ? 'Demandez d’abord votre code.' : !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : `Ce code ne correspond pas. Vérifiez le code ${where}.`, field: 'code' });
+      return res.status(check.locked ? 423 : 400).json({ error: check.error, field: 'code' });
     }
     // 2. Invitation par téléphone : la personne choisit son e-mail de connexion.
     const emailProven = Boolean(invitation.email);
@@ -3582,8 +3733,6 @@ app.post('/api/public/invitations/:token/accept', teamInviteRateLimit, asyncRout
         if (attempts >= 5) return res.status(423).json({ error: 'Trop d’essais : cette invitation est annulée. Demandez-en une nouvelle.' });
         return res.status(400).json({ error: 'Mot de passe incorrect. Utilisez celui de votre compte TRAXO, ou « Mot de passe oublié ? » depuis la page de connexion.', field: 'password', code: 'EXISTING_ACCOUNT' });
       }
-      const already = await client.query('SELECT 1 FROM company_memberships WHERE company_id = $1 AND user_id = $2', [invitation.company_id, existing.id]);
-      if (already.rows[0]) throw Object.assign(new Error('Vous faites déjà partie de cet espace. Connectez-vous pour l’ouvrir.'), { statusCode: 409, code: 'ALREADY_MEMBER' });
       userId = existing.id;
       joinedExisting = true;
       // Ouverture de session seulement si l'adresse du compte vient d'être prouvée
@@ -3605,24 +3754,7 @@ app.post('/api/public/invitations/:token/accept', teamInviteRateLimit, asyncRout
       );
       userId = createdUser.rows[0].id;
     }
-    if (invitation.role === 'driver') {
-      const driver = await client.query(
-        `SELECT id FROM drivers WHERE id = $1 AND company_id = $2 AND active = TRUE FOR UPDATE`,
-        [invitation.driver_id, invitation.company_id]
-      );
-      if (!driver.rows[0]) throw Object.assign(new Error('Le profil livreur associé n’est plus disponible.'), { statusCode: 409 });
-    }
-    await client.query(
-      `INSERT INTO company_memberships (company_id, user_id, role, driver_id)
-       VALUES ($1, $2, $3, $4)`,
-      [invitation.company_id, userId, invitation.role, invitation.role === 'driver' ? invitation.driver_id : null]
-    );
-    await client.query('UPDATE user_invitations SET accepted_at = NOW(), verify_code_hash = NULL WHERE id = $1', [invitation.id]);
-    await client.query(
-      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
-       VALUES ($1, $2, 'user_invitation', $3, 'accepted', jsonb_build_object('role', $4::text, 'existing_account', $5::boolean))`,
-      [invitation.company_id, userId, invitation.id, invitation.role, joinedExisting]
-    );
+    await joinInvitation(client, invitation, userId, { existing: joinedExisting, method: 'password' });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');

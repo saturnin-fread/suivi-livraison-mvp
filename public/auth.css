@@ -225,3 +225,52 @@ button, input, select { font: inherit; }
   .lg-hero { background: none; border: 0; }
   .lg-sec { break-inside: avoid-page; }
 }
+
+/* Rejoindre une équipe (invitation) */
+.iv .ax-title { font-size: clamp(30px, 3vw, 42px); }
+.iv .ax-sub { font-size: 16.5px; max-width: none; margin-bottom: 24px; }
+.iv .ax-sub strong { color: var(--ink); font-weight: 500; }
+.iv-until { display: block; margin-top: 6px; font-size: 14px; color: var(--soft); }
+.iv-card { display: flex; align-items: center; gap: 14px; margin: 0 0 26px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(22, 23, 26, .04); }
+.iv-logo { flex: 0 0 auto; width: 46px; height: 46px; display: grid; place-items: center; overflow: hidden; border-radius: 12px; background: var(--ink); color: #fff; font-size: 20px; font-weight: 700; }
+.iv-logo img { width: 100%; height: 100%; object-fit: cover; background: #fff; }
+.iv-card-main { flex: 1; min-width: 0; display: grid; line-height: 1.3; }
+.iv-card-main small { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv-card-main strong { font-size: 16.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv-role { flex: 0 0 auto; padding: 5px 11px; border-radius: 999px; background: #fdecee; color: var(--red-ink); font-size: 13px; font-weight: 500; }
+.iv-account { display: flex; gap: 12px; align-items: flex-start; margin: 0 0 20px; padding: 13px 14px; border-radius: var(--radius); background: var(--panel); font-size: 14px; line-height: 1.5; color: var(--ink-2); }
+.iv-account p { margin: 0; }
+.iv-account strong { display: block; color: var(--ink); font-weight: 500; }
+.iv-account-ic { flex: 0 0 auto; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: #fff; border: 1px solid var(--line); color: var(--ink-2); }
+.iv-account-ic svg { width: 18px; height: 18px; }
+.iv-google-hint { text-align: center; }
+.ax-google[aria-disabled="true"] { opacity: .55; }
+.iv .ax-or { margin-top: 18px; }
+.iv-send { min-height: 32px; padding: 0 2px; border: 0; background: none; color: var(--ink); font-size: 14px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.iv-send[disabled] { color: var(--soft); text-decoration: none; cursor: default; font-variant-numeric: tabular-nums; }
+.iv-otp { justify-content: space-between; }
+.iv-otp input { width: clamp(42px, 13%, 58px); }
+.iv-meter { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+.iv-meter i { height: 4px; border-radius: 4px; background: var(--line); transition: background .2s; }
+.iv-meter[data-score="0"] i:first-child { background: var(--red); }
+.iv-meter[data-score="1"] i:nth-child(-n+1) { background: #d98a1c; }
+.iv-meter[data-score="2"] i:nth-child(-n+2) { background: #3f8f5f; }
+.iv-meter[data-score="3"] i { background: var(--ok); }
+.iv-state { text-align: center; padding: clamp(10px, 4vw, 40px) 0; }
+.iv-state .ax-sub { margin-left: auto; margin-right: auto; }
+.iv-badge-muted { background: var(--panel); color: var(--ink-2); }
+.iv-badge-ok { background: #ebf7ef; color: var(--ok); }
+.iv-link-submit { text-decoration: none; }
+.iv-skeleton { display: grid; gap: 16px; }
+.iv-skeleton span { display: block; height: 18px; border-radius: 8px; background: linear-gradient(90deg, #f1f1f3, #e7e7ea, #f1f1f3); background-size: 200% 100%; animation: iv-shine 1.2s linear infinite; }
+.iv-skeleton span:first-child { height: 76px; border-radius: 14px; }
+.iv-skeleton span:nth-child(2) { height: 44px; width: 80%; }
+.iv-skeleton span:nth-child(4) { height: 52px; }
+@keyframes iv-shine { to { background-position: -200% 0; } }
+.iv-photo { background-image: url(/img/ops-assign-rider.webp); background-size: contain; background-position: center 30%; background-color: #e9e9eb; }
+.iv-visual small { background: linear-gradient(to top, rgba(10, 10, 12, .5), rgba(10, 10, 12, 0)); }
+@media (max-width: 560px) {
+  .iv-card { padding: 12px; gap: 12px; }
+  .iv-logo { width: 40px; height: 40px; font-size: 17px; }
+  .iv-role { font-size: 12px; padding: 4px 9px; }
+}

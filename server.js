@@ -24,6 +24,7 @@ const {
   synchronizeExistingOrders,
   withCompanyTransaction,
 } = require('./lib/crm-repository');
+const trashPurge = require('./lib/trash-purge');
 const {
   createIpPolicy,
   createRateLimitMiddleware,
@@ -5125,6 +5126,18 @@ app.post('/api/app/ops/trash', requireCompanyApi, requireCompanyRoles('owner', '
   asyncRoute((req, res) => opsTrashAction(req, res, 'trash')));
 app.post('/api/app/ops/restore', requireCompanyApi, requireCompanyRoles('owner', 'manager', 'operator'),
   asyncRoute((req, res) => opsTrashAction(req, res, 'restore')));
+// Suppression définitive depuis la corbeille : responsables seulement. Les
+// éléments sous gel légal sont refusés ; le reste part avec ses fichiers.
+const TRASH_HELD_REASON = 'Non supprimé : l’élément n’est plus dans la corbeille, ou un gel légal le protège.';
+app.post('/api/app/ops/purge', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const source = String(req.body?.source || '');
+  if (!OPS_SOURCES.includes(source)) return res.status(400).json({ error: 'Source inconnue.' });
+  const ids = opsIdList(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: 'Sélectionnez entre 1 et 500 éléments.' });
+  const out = await withCompanyTransaction(pool, req.auth.company_id,
+    (client) => trashPurge.purgeIds(client, source, req.auth.company_id, ids, { userId: req.auth.user_id || null }));
+  return res.json({ done: out.done, skipped: out.held.map((id) => ({ id, reason: TRASH_HELD_REASON })) });
+}));
 
 // --- Opérations : vues enregistrées --------------------------------------
 // Une vue = une source + des réglages d'affichage (jamais de données). Elle
@@ -5849,6 +5862,18 @@ async function runNotificationDigests() {
     }
   }
 }
+// Corbeille : purge automatique des éléments restés 30 jours (toutes les heures).
+async function runTrashPurge() {
+  if (!pool) return;
+  const totals = await trashPurge.purgeExpired(pool, (companyId, fn) => withCompanyTransaction(pool, companyId, fn));
+  const n = Object.values(totals).filter((v) => typeof v === 'number').reduce((a, b) => a + b, 0);
+  if (n) console.log(`Corbeille : ${n} élément(s) supprimé(s) après ${trashPurge.TRASH_RETENTION_DAYS} jours`, totals);
+}
+if (process.env.NODE_ENV !== 'test' && process.env.TRASH_PURGE !== 'off') {
+  const purgeTimer = setInterval(() => { runTrashPurge().catch((error) => console.error('Purge corbeille :', error.message)); }, 60 * 60 * 1000);
+  purgeTimer.unref();
+  setTimeout(() => { runTrashPurge().catch((error) => console.error('Purge corbeille :', error.message)); }, 90 * 1000).unref();
+}
 if (process.env.NODE_ENV !== 'test') {
   const digestTimer = setInterval(() => { runNotificationDigests().catch((error) => console.error('Digest loop:', error.message)); }, 10 * 60 * 1000);
   digestTimer.unref();
@@ -5875,9 +5900,12 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
     orders: 'order_count DESC, id DESC',
   };
   const sort = sortMap[String(req.query.sort)] ? String(req.query.sort) : 'recent';
+  // removed=1 : la corbeille du carnet (fiches supprimées), réservée aux responsables.
+  const removed = req.query.removed === '1';
+  if (removed && !['owner', 'manager'].includes(req.auth.role)) return res.status(403).json({ error: 'Seuls les responsables voient la corbeille du carnet.' });
 
   const result = await withCompanyTransaction(pool, req.auth.company_id, async (client) => {
-    const values = [req.auth.company_id, query ? `%${query}%` : null, status];
+    const values = [req.auth.company_id, query ? `%${query}%` : null, removed ? null : status];
     const filters = `c.company_id = $1
       AND ($2::text IS NULL OR c.display_name ILIKE $2 OR EXISTS (
         SELECT 1 FROM customer_contacts search_contact
@@ -5887,17 +5915,17 @@ app.get('/api/app/crm/customers', requireCompanyApi, asyncRoute(async (req, res)
           AND search_contact.value_display ILIKE $2
       ))
       AND ($3::text IS NULL OR c.status = $3)
-      AND c.removed_at IS NULL
+      ${removed ? `AND c.removed_at IS NOT NULL AND c.status NOT IN ('merged', 'anonymized')` : `AND c.removed_at IS NULL
       -- Par défaut on masque les fiches archivées/fusionnées/anonymisées ;
       -- elles restent accessibles via un filtre de statut explicite.
-      AND ($3::text IS NOT NULL OR c.status NOT IN ('archived', 'merged', 'anonymized'))`;
+      AND ($3::text IS NOT NULL OR c.status NOT IN ('archived', 'merged', 'anonymized'))`}`;
     // Stade d'engagement dérivé (Nouveau / Actif / À relancer / Inactif) à partir de
     // l'ancienneté de la dernière commande, de la date de création et du nombre de
     // commandes — distinct de c.status (actif/ne pas contacter/archivé).
     const baseCte = `
       WITH base AS (
         SELECT c.id, c.customer_code, c.customer_type, c.sector, c.pipeline_stage,
-               c.display_name, c.status, c.created_at, c.updated_at, c.main_city,
+               c.display_name, c.status, c.created_at, c.updated_at, c.main_city, c.removed_at,
                primary_contact.value_display AS primary_phone,
                primary_email.value_display AS primary_email,
                tag_list.names AS tags, loc_text.search AS location_search,
@@ -6290,6 +6318,16 @@ app.post('/api/app/crm/customers/bulk', requireCompanyApi, requireCompanyRoles('
     );
   }
   return res.json({ done, skipped: ids.filter((id) => !done.includes(id)) });
+}));
+
+// Corbeille du carnet : suppression définitive des fiches supprimées. Les
+// commandes et demandes du client restent dans Opérations, sans lien vers la fiche.
+app.post('/api/app/crm/customers/purge', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).filter((v) => /^\d{1,18}$/.test(v)))];
+  if (!ids.length || ids.length > 1000) return res.status(400).json({ error: 'Sélectionnez entre 1 et 1 000 fiches.' });
+  const out = await withCompanyTransaction(pool, req.auth.company_id,
+    (client) => trashPurge.purgeIds(client, 'clients', req.auth.company_id, ids, { userId: req.auth.user_id || null }));
+  return res.json({ done: out.done, skipped: out.held.map((id) => ({ id, reason: TRASH_HELD_REASON })) });
 }));
 
 // Export CSV du carnet (résultats filtrés ou sélection explicite) : réservé

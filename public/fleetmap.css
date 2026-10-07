@@ -438,3 +438,19 @@ body.fm-focused .app-shell { grid-template-columns: minmax(0, 1fr) !important; }
 .fm-vm-chip { width: max-content; max-width: 250px; }
 .fm-note.fm-lr-lost { display: block; }
 .fm-liveroute.stale .fm-lr-kicker { color: #87591a; }
+
+/* Fonds satellite, hybride et sombre : véhicule blanc et gris détouré d'un
+   liseré sombre puis d'un halo clair, pour ne pas se fondre dans les toits. */
+.fm-stage[data-base="satellite"] .fm-vm-rotor img,
+.fm-stage[data-base="hybrid"] .fm-vm-rotor img,
+.fm-stage[data-base="night"] .fm-vm-rotor img {
+  filter: drop-shadow(0 0 .6px #0b1418) drop-shadow(0 0 .6px #0b1418) drop-shadow(0 0 1.4px #fff) drop-shadow(0 0 1.4px #fff) drop-shadow(0 2px 3px #000c);
+}
+.fm-stage[data-base="satellite"] .fm-vm.sel .fm-vm-rotor img,
+.fm-stage[data-base="hybrid"] .fm-vm.sel .fm-vm-rotor img,
+.fm-stage[data-base="night"] .fm-vm.sel .fm-vm-rotor img {
+  filter: drop-shadow(0 0 .6px #0b1418) drop-shadow(0 0 1.4px #fff) drop-shadow(0 0 1.4px #fff) drop-shadow(0 0 4px #ff3b47) drop-shadow(0 2px 3px #000c);
+}
+.fm-stage[data-base="satellite"] .fm-vm.st-stale .fm-vm-rotor img,
+.fm-stage[data-base="hybrid"] .fm-vm.st-stale .fm-vm-rotor img { opacity: .85; filter: grayscale(.4) drop-shadow(0 0 .6px #0b1418) drop-shadow(0 0 1.4px #fff) drop-shadow(0 2px 3px #000a); }
+.fm-vm-host { overflow: visible; }

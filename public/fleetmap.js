@@ -205,7 +205,10 @@
     // s'affiche à part, au survol, au focus, au toucher ou à la sélection.
     const VEH_KIND = { Moto: 'moto-cargo', 'Vélo': 'scooter', Tricycle: 'moto-cargo', Voiture: 'citadine', Camionnette: 'utilitaire' };
     const vehKind = (d) => VEH_KIND[d?.vehicleType] || 'moto-cargo';
-    const vehSize = (z, sel) => Math.round(Math.min(42, Math.max(24, 24 + (z - 12) * 2.6 + (sel ? 4 : 0))));
+    // Deux-roues : silhouette étroite vue de dessus, dessinée plus grande que
+    // les voitures pour rester lisible (retour terrain : la moto paraissait minuscule).
+    const VEH_SCALE = { 'moto-cargo': 1.3, scooter: 1.3 };
+    const vehSize = (z, sel, kind) => Math.round(Math.min(56, Math.max(30, 30 + (z - 12) * 2.8 + (sel ? 5 : 0)) * (VEH_SCALE[kind] || 1)));
     const vehSrc = (kind, z) => (z <= 13 ? `/img/vehicles/${kind}.svg` : `/img/vehicles/${kind}@128.webp`);
     const norm360 = (n) => ((n % 360) + 360) % 360;
     const shortDelta = (a, b) => ((b - a + 540) % 360 + 360) % 360 - 180;
@@ -234,7 +237,7 @@
     function vehicleHtml(d, { z, sel, chip = true, status = vehStatus(d), kind = vehKind(d) }) {
       const url = st.showPhotos ? photoUrl(d) : null;
       const showChip = chip && (sel || (st.showNames && z >= 17));
-      return `<span class="fm-vm st-${status.key}${sel ? ' sel' : ''}${showChip ? ' chip-on' : ''}" style="--vs:${vehSize(z, sel)}px">
+      return `<span class="fm-vm st-${status.key}${sel ? ' sel' : ''}${showChip ? ' chip-on' : ''}" style="--vs:${vehSize(z, sel, kind)}px">
           <span class="fm-vm-rotor"><img src="${vehSrc(kind, z)}" alt="" draggable="false"></span>
           <i class="fm-vm-dot" aria-hidden="true"></i>
           ${chip ? `<span class="fm-vm-chip"><span class="fm-vm-ph">${url ? `<img src="${esc(url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<b>${esc(initials(d.name))}</b></span><span class="fm-vm-txt"><strong>${esc(d.name)}</strong><small>${esc(status.label)}</small></span></span>` : ''}

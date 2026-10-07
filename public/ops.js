@@ -313,6 +313,17 @@
     const role = deps.context?.user?.role || '';
     const canAct = ['owner', 'manager', 'operator'].includes(role);
     const canShare = ['owner', 'manager'].includes(role);
+    // Corbeille : même règle que le serveur (lib/trash-purge.js) — 30 jours après
+    // l'arrivée, comptés au plus tôt depuis la mise en service de la purge.
+    const TRASH_DAYS = 30;
+    const TRASH_START = Date.parse('2026-10-07T00:00:00Z');
+    function purgeBadge(r) {
+      if (!r.archived_at) return '';
+      const at = Math.max(new Date(r.archived_at).getTime(), TRASH_START) + TRASH_DAYS * 86400000;
+      const left = Math.max(0, Math.ceil((at - Date.now()) / 86400000));
+      const day = new Date(at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+      return `<span class="ops-purge ${left <= 3 ? 'soon' : ''}" title="Suppression définitive le ${esc(day)}">${left ? `Encore ${left} j` : 'Aujourd’hui'}</span>`;
+    }
     const params = new URLSearchParams(location.search);
     const start = ORDER.includes(params.get('vue')) ? params.get('vue') : 'commandes';
 
@@ -443,7 +454,7 @@
         </nav>
         <div class="ops-views">
           <button type="button" class="ops-view ${!st.viewId ? 'on' : ''}" data-act="view" data-id="">${ic('table-2')}Vue générale</button>
-          ${views.map((v) => `<button type="button" class="ops-view ${v.id === st.viewId ? 'on' : ''}" data-act="view" data-id="${esc(v.id)}">${ic(v.config?.layout === 'cards' ? 'layout-grid' : 'table-2')}${esc(v.name)}${v.shared ? '<em>Équipe</em>' : ''}</button>`).join('')}
+          ${views.map((v) => `<button type="button" class="ops-view ${v.id === st.viewId ? 'on' : ''}" data-act="view" data-id="${esc(v.id)}">${ic(v.config?.layout === 'cards' ? 'layout-grid' : 'table-2')}${esc(v.name)}${v.shared ? '<em>Équipe</em>' : ''}</button>${v.id === st.viewId && editable ? `<span class="ops-view-acts"><button type="button" class="ops-icon-btn" data-act="view-edit" data-id="${esc(v.id)}" aria-label="Modifier la vue ${esc(v.name)}" title="Modifier la vue">${ic('pencil')}</button><button type="button" class="ops-icon-btn ops-view-del" data-act="view-del" data-id="${esc(v.id)}" aria-label="Supprimer la vue ${esc(v.name)}" title="Supprimer la vue">${ic('trash-2')}</button></span>` : ''}`).join('')}
           ${dirty && editable ? '<button type="button" class="ops-link ops-save-view" data-act="save-view">Enregistrer les changements</button>' : ''}
           <button type="button" class="ops-manage" data-act="manage-views">${ic('layers-2')}Gérer les vues${views.length ? ` · ${views.length}` : ''}</button>
         </div>
@@ -627,8 +638,16 @@
             ${canAct && S0.assign && !st.trash ? `<button type="button" class="ops-btn ops-sm" data-act="bulk-assign">${ic('user-round')}Attribuer</button>` : ''}
             ${canAct && S0.trashable && !st.trash ? `<button type="button" class="ops-btn ops-sm ops-danger" data-act="bulk-trash">${ic('trash-2')}Supprimer</button>` : ''}
             ${canAct && st.trash ? `<button type="button" class="ops-btn ops-sm" data-act="bulk-restore">${ic('undo-2')}Restaurer</button>` : ''}
+            ${canShare && st.trash ? `<button type="button" class="ops-btn ops-sm ops-danger" data-act="bulk-purge">${ic('trash-2')}Supprimer définitivement</button>` : ''}
             <button type="button" class="ops-icon-btn" data-act="sel-clear" aria-label="Effacer la sélection">${ic('x')}</button>
           </span></div>`;
+        if (st.confirmPurge) {
+          const n = chosen.length;
+          bulk += `<div class="ops-confirm ops-confirm-purge" role="alertdialog" aria-label="Confirmer la suppression définitive">
+            <div><b>Supprimer définitivement ${plural(n, 'élément', 'éléments')} ?</b>
+            <p>Impossible d’annuler : ${st.source === 'commandes' ? 'la commande, son suivi, ses preuves de livraison, ses photos et ses incidents' : st.source === 'incidents' ? 'l’incident, son historique et ses pièces' : 'la demande et ses photos'} seront effacés. Les éléments protégés par un gel légal sont conservés.</p></div>
+            <span><button type="button" class="ops-btn ops-danger-solid" data-act="confirm-purge">Supprimer définitivement</button><button type="button" class="ops-btn" data-act="cancel-confirm">Annuler</button></span></div>`;
+        }
         if (st.confirm) {
           const ok = chosen.filter((r) => S0.trashable(r)).length;
           const ko = chosen.length - ok;
@@ -638,7 +657,7 @@
             <span>${ok ? `<button type="button" class="ops-btn ops-primary" data-act="confirm-trash">Supprimer ${ok > 1 ? `les ${ok} éléments` : 'l’élément'}</button>` : ''}<button type="button" class="ops-btn" data-act="cancel-confirm">Annuler</button></span></div>`;
         }
       }
-      const trashNote = st.trash ? `<div class="ops-trash-note">${ic('trash-2')}<span><b>Corbeille</b> — éléments retirés des listes actives. Sélectionnez-les pour les restaurer.</span></div>` : '';
+      const trashNote = st.trash ? `<div class="ops-trash-note">${ic('trash-2')}<span><b>Corbeille</b> — chaque élément est <b>supprimé définitivement ${TRASH_DAYS} jours</b> après son arrivée ici, avec ses fichiers. Restaurez ce que vous voulez garder${canShare ? ', ou supprimez-le vous-même dès maintenant' : ''}.</span>${canShare && total ? `<button type="button" class="ops-link ops-danger-link" data-act="empty-trash">Vider la corbeille</button>` : ''}</div>` : '';
 
       let body = '';
       if (!total) {
@@ -655,7 +674,7 @@
           const status = S0.columns.find((c) => c.key === 'status');
           const suivi = cols.find((c) => c.key === 'suivi');
           return `${head}<article class="ops-cardrow ${st.sel.has(id) ? 'sel' : ''} ${st.fiche?.id === id ? 'cur' : ''}" data-row="${esc(id)}">
-            <div class="ops-cardrow-top">${selectable ? `<input type="checkbox" class="ops-cb" data-sel="${esc(id)}" ${st.sel.has(id) ? 'checked' : ''} aria-label="Sélectionner">` : ''}${status ? status.cell(r) : ''}${suivi ? suivi.cell(r) : ''}<button type="button" class="ops-open" data-act="open" data-id="${esc(id)}" aria-label="Ouvrir">${ic('arrow-up-right')}</button></div>
+            <div class="ops-cardrow-top">${selectable ? `<input type="checkbox" class="ops-cb" data-sel="${esc(id)}" ${st.sel.has(id) ? 'checked' : ''} aria-label="Sélectionner">` : ''}${status ? status.cell(r) : ''}${suivi ? suivi.cell(r) : ''}${st.trash ? purgeBadge(r) : ''}<button type="button" class="ops-open" data-act="open" data-id="${esc(id)}" aria-label="Ouvrir">${ic('arrow-up-right')}</button></div>
             <div class="ops-cardrow-who">${first.cell(r)}</div>
             ${rest.length ? `<dl>${rest.map((c) => `<div><dt>${esc(c.label)}</dt><dd>${c.cell(r)}</dd></div>`).join('')}</dl>` : ''}
           </article>`;
@@ -672,7 +691,7 @@
             const id = String(r.id);
             let head = '';
             if (group) { const g = group(r); if (g !== lastGroup) { lastGroup = g; head = `<tr class="ops-group"><td colspan="${span}">${esc(g)}</td></tr>`; } }
-            return `${head}<tr data-row="${esc(id)}" class="${st.sel.has(id) ? 'sel' : ''} ${st.fiche?.id === id ? 'cur' : ''}">${selectable ? `<td class="ops-cbcol"><input type="checkbox" class="ops-cb" data-sel="${esc(id)}" ${st.sel.has(id) ? 'checked' : ''} aria-label="Sélectionner"></td>` : ''}${cols.map((c) => `<td>${c.cell(r)}</td>`).join('')}<td class="ops-actcol"><button type="button" class="ops-open" data-act="open" data-id="${esc(id)}" aria-label="Ouvrir">${ic('arrow-up-right')}</button></td></tr>`;
+            return `${head}<tr data-row="${esc(id)}" class="${st.sel.has(id) ? 'sel' : ''} ${st.fiche?.id === id ? 'cur' : ''}">${selectable ? `<td class="ops-cbcol"><input type="checkbox" class="ops-cb" data-sel="${esc(id)}" ${st.sel.has(id) ? 'checked' : ''} aria-label="Sélectionner"></td>` : ''}${cols.map((c) => `<td>${c.cell(r)}</td>`).join('')}<td class="ops-actcol">${st.trash ? purgeBadge(r) : ''}<button type="button" class="ops-open" data-act="open" data-id="${esc(id)}" aria-label="Ouvrir">${ic('arrow-up-right')}</button></td></tr>`;
           }).join('')}</tbody></table></div>`;
       }
       const nums = pageNumbers(st.page, pages);
@@ -1298,7 +1317,7 @@
     }
 
     // ---- Actions ----------------------------------------------------------
-    function resetSelection() { st.sel.clear(); st.confirm = false; }
+    function resetSelection() { st.sel.clear(); st.confirm = false; st.confirmPurge = false; }
     async function switchSource(src, pill) {
       if (!SOURCES[src]) return;
       const changed = src !== st.source;
@@ -1356,6 +1375,18 @@
         const out = await api('/api/app/ops/trash', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: st.source, ids }) });
         resetSelection();
         flash(`${plural(out.done.length, 'élément déplacé', 'éléments déplacés')} dans la corbeille.${out.skipped.length ? ` ${out.skipped.length} non déplacé${out.skipped.length > 1 ? 's' : ''}.` : ''}`, 'ok', out.done.length ? { source: st.source, ids: out.done } : null);
+        await reload();
+      } catch (error) { uiToast(error.message, 'error'); }
+    }
+    async function purge(source, ids) {
+      try {
+        const out = { done: [], skipped: [] };
+        for (let i = 0; i < ids.length; i += 500) {
+          const part = await api('/api/app/ops/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, ids: ids.slice(i, i + 500) }) });
+          out.done.push(...part.done); out.skipped.push(...part.skipped);
+        }
+        resetSelection();
+        flash(`${plural(out.done.length, 'élément supprimé', 'éléments supprimés')} définitivement.${out.skipped.length ? ` ${out.skipped.length} conservé${out.skipped.length > 1 ? 's' : ''} : ${out.skipped[0].reason}` : ''}`);
         await reload();
       } catch (error) { uiToast(error.message, 'error'); }
     }
@@ -1514,7 +1545,10 @@
       if (act === 'bulk-export') return exportCsv();
       if (act === 'bulk-assign') return assignSelected();
       if (act === 'bulk-trash') { st.confirm = true; renderList(); root.querySelector('.ops-confirm button')?.focus(); return; }
-      if (act === 'cancel-confirm') { st.confirm = false; renderList(); return; }
+      if (act === 'cancel-confirm') { st.confirm = false; st.confirmPurge = false; renderList(); return; }
+      if (act === 'bulk-purge') { st.confirmPurge = true; renderList(); root.querySelector('.ops-confirm-purge [data-act="cancel-confirm"]')?.focus(); return; }
+      if (act === 'empty-trash') { filtered().forEach((r) => st.sel.add(String(r.id))); st.confirmPurge = true; renderList(); root.querySelector('.ops-confirm-purge [data-act="cancel-confirm"]')?.focus(); return; }
+      if (act === 'confirm-purge') { st.confirmPurge = false; return purge(st.source, selectedRows().map((r) => String(r.id))); }
       if (act === 'confirm-trash') return trashSelected();
       if (act === 'bulk-restore') return restore(st.source, selectedRows().map((r) => String(r.id)));
       if (act === 'undo') { const u = st.flash?.undo; st.flash = null; if (u) restore(u.source, u.ids); return; }
@@ -1546,7 +1580,7 @@
       const t = event.target;
       if (t.dataset.sel) {
         if (t.checked) st.sel.add(t.dataset.sel); else st.sel.delete(t.dataset.sel);
-        st.confirm = false; renderList(); return;
+        st.confirm = false; st.confirmPurge = false; renderList(); return;
       }
       if (t.dataset.actChange === 'sel-page') {
         const all = filtered();

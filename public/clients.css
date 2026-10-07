@@ -361,3 +361,14 @@ button.cl-identity:hover strong { text-decoration: underline; text-underline-off
 }
 @media (max-width: 640px) { .cl input:not([type="checkbox"]), .cl textarea, .cl select { font-size: 16px; } }
 @media (prefers-reduced-motion: reduce) { .cl *, .cl *::before, .cl *::after { animation: none !important; transition: none !important; } }
+
+/* Corbeille du carnet */
+.cl-views .cl-trash-view { display: inline-flex; align-items: center; gap: 5px; }
+.cl-views .cl-trash-view svg { width: 14px; height: 14px; }
+.cl-trash-note { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border: 1px dashed #e4c4c7; background: #fffafa; color: #8c2c34; border-radius: 11px; padding: 12px 14px; margin-bottom: 16px; font-size: 13px; }
+.cl-trash-note > svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.cl-trash-note p { margin: 0; flex: 1 1 320px; line-height: 1.45; }
+.cl-purge { display: inline-block; margin-right: 8px; padding: 2px 7px; border-radius: 6px; background: #f4f5f6; color: var(--c-muted); font-size: 11px; white-space: nowrap; vertical-align: middle; }
+.cl-purge.soon { background: #fff1f1; color: #b42332; }
+.cl-card-meta .cl-purge { margin: 0 0 0 auto; }
+.cl-row-action { white-space: nowrap; }

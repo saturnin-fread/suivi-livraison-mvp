@@ -56,6 +56,10 @@
 .ops-view:hover { color: var(--o-ink); background: #fff; }
 .ops-view.on { background: #fff; border-color: var(--o-line); color: var(--o-ink); box-shadow: 0 1px 2px #20252b08; font-weight: 550; }
 .ops-view em { font-style: normal; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--o-blue-soft); color: var(--o-blue); }
+.ops-view-acts { display: inline-flex; gap: 2px; margin-left: -4px; }
+.ops-view-acts .ops-icon-btn { width: 30px; height: 30px; }
+.ops-view-acts .ops-icon-btn:hover { background: #fff; color: var(--o-ink); border-color: var(--o-line); }
+.ops-view-acts .ops-view-del:hover { color: #c62f3d; border-color: #f1c9cd; background: #fff5f5; }
 .ops-manage { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; border: 0; background: none; color: var(--o-muted); font-size: 12px; padding: 7px 4px; }
 .ops-manage:hover { color: var(--o-ink); }
 .ops-link { border: 0; background: none; padding: 0; color: var(--o-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #c5cad1; font-size: 12px; }
@@ -505,3 +509,16 @@
   .ope-linkactions .ops-btn { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .ope *, .ope *::before, .ope *::after { animation: none !important; transition: none !important; } }
+
+/* Corbeille : échéance de suppression et suppression définitive */
+.ops-trash-note { flex-wrap: wrap; }
+.ops-trash-note > span { flex: 1 1 320px; }
+.ops-danger-link { color: #b42332; font-weight: 600; white-space: nowrap; }
+.ops-purge { display: inline-block; margin-right: 8px; padding: 2px 7px; border-radius: 6px; background: #f4f5f6; color: var(--o-muted); font-size: 11px; white-space: nowrap; vertical-align: middle; }
+.ops-purge.soon { background: #fff1f1; color: #b42332; }
+.ops-cardrow-top .ops-purge { margin: 0 0 0 auto; }
+.ops-btn.ops-danger-solid { background: #c62f3d; border-color: #c62f3d; color: #fff; }
+.ops-btn.ops-danger-solid:hover { background: #a82431; }
+.ops-confirm-purge { border-color: #f1c9cd; background: #fff8f8; }
+.ops-actcol { white-space: nowrap; }
+.ops-table td.ops-actcol { width: 1%; }

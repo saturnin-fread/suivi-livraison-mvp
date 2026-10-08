@@ -69,9 +69,9 @@ async function call(method, url, { cookie, body } = {}) {
     assert.strictEqual(r.status, 200);
     const csv = r.buf.toString('utf8');
     assert.ok(/Prix livraison \(FCFA\)/.test(csv) && /"?1000"?;"?8000"?;/.test(csv), 'CSV avec prix');
-    // Excel (essai activé pour le test)
-    await pool.query(`INSERT INTO company_export_access (company_id, excel_trial_started_at, excel_trial_ends_at) VALUES ($1, NOW(), NOW() + INTERVAL '1 day')
-      ON CONFLICT (company_id) DO UPDATE SET excel_trial_ends_at = GREATEST(company_export_access.excel_trial_ends_at, NOW() + INTERVAL '1 day')`, [cid]);
+    // Excel (mois Premium accordé pour le test)
+    await pool.query(`INSERT INTO company_export_access (company_id, premium_month_until) VALUES ($1, NOW() + INTERVAL '1 day')
+      ON CONFLICT (company_id) DO UPDATE SET premium_month_until = GREATEST(company_export_access.premium_month_until, NOW() + INTERVAL '1 day')`, [cid]);
     r = await call('POST', '/api/app/reports/export', { cookie: owner, body: { ...sel, format: 'xlsx' } });
     assert.strictEqual(r.status, 200, r.buf.toString('utf8').slice(0, 200));
     const zip = await JSZip.loadAsync(r.buf);

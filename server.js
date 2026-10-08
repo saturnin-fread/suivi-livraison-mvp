@@ -4298,7 +4298,7 @@ const { globalSearch } = registerSearch(app, {
 // --- Rapports et exports → server/modules/reports ---------------------------
 const { buildExportCsv } = registerReports(app, {
   pool, asyncRoute, requireCompanyApi, requireCompanyRoles, withCompanyTransaction, writeAudit,
-  serializeMetricRows, runQueries, crmReportingPeriod,
+  serializeMetricRows, runQueries, crmReportingPeriod, billing,
 });
 
 // Corbeille : purge automatique des éléments restés 30 jours (toutes les heures).

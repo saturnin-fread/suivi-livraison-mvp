@@ -1,7 +1,7 @@
 // Rapports et exports — espace unique (kit « TRAXO Rapports »).
 // Choix des familles, période et filtres partagés, aperçu calculé par le
 // serveur, puis fichier : CSV (ZIP si plusieurs familles), synthèse SVG ou
-// Excel enrichi (essai de 7 jours enregistré côté serveur).
+// Excel enrichi (Rapport Premium : rapports offerts, puis payés depuis le portefeuille).
 (function () {
   'use strict';
   const ICONS = {"package": "<path d=\"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z\" /> <path d=\"M12 22V12\" /> <path d=\"m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7\" /> <path d=\"m7.5 4.27 9 5.15\" />", "route": "<circle cx=\"6\" cy=\"19\" r=\"3\" /> <path d=\"M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15\" /> <circle cx=\"18\" cy=\"5\" r=\"3\" />", "circle-alert": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <line x1=\"12\" x2=\"12\" y1=\"8\" y2=\"12\" /> <line x1=\"12\" x2=\"12.01\" y1=\"16\" y2=\"16\" />", "contact": "<path d=\"M16 2v2\" /> <path d=\"M7 22v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2\" /> <path d=\"M8 2v2\" /> <circle cx=\"12\" cy=\"11\" r=\"3\" /> <rect x=\"3\" y=\"4\" width=\"18\" height=\"18\" rx=\"2\" />", "check": "<path d=\"M20 6 9 17l-5-5\" />", "columns-3": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" /> <path d=\"M9 3v18\" /> <path d=\"M15 3v18\" />", "chevron-left": "<path d=\"m15 18-6-6 6-6\" />", "chevron-right": "<path d=\"m9 18 6-6-6-6\" />", "chevron-down": "<path d=\"m6 9 6 6 6-6\" />", "download": "<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\" /> <polyline points=\"7 10 12 15 17 10\" /> <line x1=\"12\" x2=\"12\" y1=\"15\" y2=\"3\" />", "check-check": "<path d=\"M18 6 7 17l-5-5\" /> <path d=\"m22 10-7.5 7.5L13 16\" />", "calendar": "<path d=\"M8 2v4\" /> <path d=\"M16 2v4\" /> <rect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\" /> <path d=\"M3 10h18\" />", "filter": "<polygon points=\"22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3\" />", "search": "<circle cx=\"11\" cy=\"11\" r=\"8\" /> <path d=\"m21 21-4.3-4.3\" />", "x": "<path d=\"M18 6 6 18\" /> <path d=\"m6 6 12 12\" />"};
@@ -37,7 +37,7 @@
       active: null, format: 'csv', view: 'data', period: 'week', from: addDays(today(), -6), to: today(),
       zone: 'all', driver: 'all', query: '', status: {}, page: 1,
       fields: Object.fromEntries(opts.families.map((f) => [f.key, new Set(f.fields.filter((x) => !x.personal).map((x) => x.key))])),
-      data: null, loading: false, error: null, excel: opts.excel, showAccess: false, step: 'configure', snapshot: null, busy: false, notice: '',
+      data: null, loading: false, error: null, excel: opts.excel, step: 'configure', snapshot: null, busy: false, notice: '',
     };
     const datesValid = () => /^\d{4}-\d{2}-\d{2}$/.test(S.from) && /^\d{4}-\d{2}-\d{2}$/.test(S.to) && S.from <= S.to;
     const tooLong = () => datesValid() && (Date.parse(`${S.to}T00:00:00Z`) - Date.parse(`${S.from}T00:00:00Z`)) / 86400000 + 1 > opts.maxDays;
@@ -45,7 +45,9 @@
     const fam = (k) => S.data?.families.find((x) => x.key === k);
     const count = () => (S.data ? S.data.families.reduce((a, x) => a + x.count, 0) : 0);
     const valid = () => S.sources.size > 0 && datesValid() && !tooLong() && count() > 0 && !S.loading && !S.error;
-    const excelOk = () => S.excel?.state === 'trial';
+    // Excel possible : mois en cours, rapport offert, ou rapport payable par cette personne.
+    const excelOk = () => ['month', 'free'].includes(S.excel?.state) || (S.excel?.state === 'paid' && opts.canPay && S.excel.canPayReport);
+    const money = (n) => `${Number(n || 0).toLocaleString('fr-FR')} F`;
     const selectionBody = () => ({
       sources: [...S.sources], filters: { from: S.from, to: S.to, zone: S.zone, driver: S.driver, status: S.status, query: S.query },
       fields: Object.fromEntries([...S.sources].map((k) => [k, [...S.fields[k]]])),
@@ -177,31 +179,42 @@
     function renderFormats() {
       const el = $('#rpFormats'); if (!el) return;
       const ex = S.excel || {};
-      const endFr = ex.trialEndsAt ? new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Porto-Novo' }).format(new Date(ex.trialEndsAt)) : '';
+      const untilFr = ex.monthUntil ? new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', timeZone: 'Africa/Porto-Novo' }).format(new Date(ex.monthUntil)) : '';
       let offer = '';
       if (S.format === 'xlsx') {
         let state;
-        if (ex.state === 'eligible') state = opts.canStartTrial ? '<button type="button" class="trial-btn" data-action="trial">Essayer gratuitement pendant 7 jours</button><p>L’essai commence quand vous le décidez. Aucun abonnement automatique à la fin.</p>' : '<p><strong>Essai Excel disponible.</strong><br>Demandez au propriétaire ou à un responsable de l’activer.</p>';
-        else if (ex.state === 'trial') state = `<p><strong>Votre essai Excel est actif.</strong><br>Jusqu’au ${esc(endFr)} · aucun renouvellement automatique.</p>`;
-        else state = `<p><strong>Votre essai est terminé.</strong><br>Le CSV et le SVG restent gratuits.</p><button type="button" class="text-btn" data-action="access" aria-expanded="${S.showAccess}">Continuer avec Excel ${ic('chevron-down')}</button>${S.showAccess ? `<div class="access-choices"><a class="access-mail" href="mailto:${esc(opts.supportEmail || 'support@gettraxo.app')}?subject=${encodeURIComponent('Accès Excel enrichi')}">Écrire à l’équipe TRAXO<small>Formules mensuelles et à l’unité en préparation : nous vous répondons avec les conditions.</small></a></div>` : ''}`;
+        const recharge = '<a class="text-btn" href="/app/parametres?section=billing">Recharger mon portefeuille</a>';
+        if (!ex.state) state = '<p><strong>L’Excel enrichi est momentanément indisponible.</strong><br>Le CSV et le SVG restent disponibles.</p>';
+        else if (ex.state === 'month') state = `<p><strong>Rapports illimités jusqu’au ${esc(untilFr)}.</strong><br>Aucun renouvellement automatique.</p>`;
+        else if (ex.state === 'free') state = `<p><strong>${ex.freeLeft} rapport${ex.freeLeft > 1 ? 's' : ''} offert${ex.freeLeft > 1 ? 's' : ''} sur ${ex.freeTotal}.</strong><br>Décompté seulement quand le classeur est produit.</p>`;
+        else {
+          const why = ex.trialReused ? 'Les rapports offerts ont déjà été utilisés avec cette adresse, ce numéro ou cet appareil.' : `Vos ${ex.freeTotal} rapports offerts sont utilisés.`;
+          if (!opts.canPay) state = `<p><strong>${esc(why)}</strong><br>Le propriétaire ou un responsable peut payer un rapport (${money(ex.reportPrice)}) ou le mois illimité (${money(ex.monthPrice)}).</p>`;
+          else {
+            const low = !ex.canPayReport ? `<p class="error">Solde insuffisant (${money(ex.balance)}). ${recharge}</p>` : '';
+            state = `<p><strong>${esc(why)}</strong><br>Ce rapport : ${money(ex.reportPrice)}, débités de votre portefeuille (solde : ${money(ex.balance)}).</p>${low}
+              <button type="button" class="trial-btn" data-action="month" ${ex.canPayMonth ? '' : 'disabled'}>Mois illimité : ${money(ex.monthPrice)}</button><p>30 jours de rapports Excel, sans renouvellement automatique.</p>`;
+          }
+        }
         offer = `<div class="offer"><h3>Ouvrez Excel.<br>Le travail est déjà préparé.</h3><div class="benefits"><span>${ic('check')}Une synthèse prête à lire</span><span>${ic('check')}Des graphiques à personnaliser</span><span>${ic('check')}Des calculs qui suivent vos données</span></div>${state}</div>`;
       }
       const files = S.format === 'csv' ? (S.sources.size > 1 ? `1 ZIP · ${S.sources.size} CSV` : '1 fichier CSV') : S.format === 'svg' ? '1 synthèse SVG' : `1 classeur · ${S.sources.size + 1} onglets`;
       const blocker = !S.sources.size ? 'Sélectionnez des données à exporter.' : (!datesValid() || tooLong()) ? 'Vérifiez les dates de votre sélection.' : S.error ? 'L’aperçu n’a pas pu être calculé.' : (!S.loading && S.data && count() === 0) ? 'Aucune donnée ne correspond à vos filtres.' : '';
-      const badge = ex.state === 'trial' ? 'Essai actif' : ex.state === 'expired' ? 'Essai terminé' : 'Essai 7 jours';
+      const badge = ex.state === 'month' ? 'Mois actif' : ex.state === 'free' ? `${ex.freeLeft} offert${ex.freeLeft > 1 ? 's' : ''}` : ex.state === 'paid' ? money(ex.reportPrice) : 'Premium';
       el.innerHTML = `<h2>Et pour la suite ?</h2><p>Le bon fichier, selon votre besoin.</p>
         <div class="format-options">${[['csv', 'CSV', 'Données brutes', 'À trier et à réutiliser', 'Gratuit'], ['svg', 'SVG', 'Synthèse visuelle', 'À partager en un regard', 'Gratuit'], ['xlsx', 'XLSX', 'Excel enrichi', 'Graphiques et formules', badge]].map(([k, ext, title, sub, b]) => `<button type="button" class="format" data-format="${k}" aria-pressed="${S.format === k}"><span class="file-type">${ext}</span><span><strong>${title}</strong><small>${sub}</small></span><em>${b}</em></button>`).join('')}</div>
         ${offer}
         <div class="recap"><div><span>Période</span><b>${datesValid() ? esc(periodLabel()) : 'À vérifier'}</b></div><div><span>Contenu</span><b>${count()} lignes · ${S.sources.size} famille${S.sources.size > 1 ? 's' : ''}</b></div><div><span>Vous recevrez</span><b>${files}</b></div></div>
         ${blocker ? `<p class="error" role="alert">${blocker}</p>` : ''}
-        <button type="button" class="primary" data-action="generate" ${!valid() || S.busy || (S.format === 'xlsx' && !excelOk()) ? 'disabled' : ''}>${ic('download')}${S.busy ? 'Préparation…' : S.format === 'xlsx' ? 'Préparer mon classeur' : 'Préparer mon export'}</button>
+        <button type="button" class="primary" data-action="generate" ${!valid() || S.busy || (S.format === 'xlsx' && !excelOk()) ? 'disabled' : ''}>${ic('download')}${S.busy ? 'Préparation…' : S.format === 'xlsx' ? (ex.state === 'paid' ? `Payer ${money(ex.reportPrice)} et préparer` : 'Préparer mon classeur') : 'Préparer mon export'}</button>
         <p class="footnote">Toutes les lignes sélectionnées, pas seulement cette page.</p>`;
     }
     async function generate() {
       if (!valid() || (S.format === 'xlsx' && !excelOk())) return;
       S.busy = true; renderFormats();
       try {
-        const res = await fetch('/api/app/reports/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...selectionBody(), format: S.format }) });
+        const pay = S.format === 'xlsx' && S.excel?.state === 'paid' ? 'report' : undefined;
+        const res = await fetch('/api/app/reports/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...selectionBody(), format: S.format, pay }) });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
           if (payload.excel) S.excel = payload.excel;
@@ -211,6 +224,7 @@
         const name = ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'TRAXO_export';
         S.snapshot = { blob, name, format: S.format, period: periodLabel(), items: S.data.families.map((x) => ({ key: x.key, name: x.name, count: x.count })) };
         S.step = 'ready'; S.busy = false; S.notice = '';
+        if (S.format === 'xlsx') api('/api/app/reports/options').then((o) => { S.excel = o.excel; }).catch(() => {});
         full(); window.scrollTo({ top: 0 });
       } catch (error) {
         S.busy = false; S.notice = error.message || 'Le fichier n’a pas pu être créé. Réessayez, votre sélection est conservée.';
@@ -254,11 +268,13 @@
         case 'all': S.sources = allowedKeys.every((k) => S.sources.has(k)) ? new Set() : new Set(allowedKeys); S.page = 1; full(); load(); break;
         case 'reset': S.query = ''; S.zone = 'all'; S.driver = 'all'; S.status = {}; S.period = 'week'; S.to = today(); S.from = addDays(S.to, -6); full(); load(); break;
         case 'retry': load(); break;
-        case 'trial':
+        case 'month':
           b.disabled = true;
-          try { S.excel = await api('/api/app/reports/excel-trial', { method: 'POST' }); S.notice = 'Essai Excel activé pour 7 jours. Aucun abonnement automatique à la fin.'; } catch (error) { S.notice = error.message || 'Activation impossible.'; }
+          try {
+            S.excel = await api('/api/app/reports/premium/month', { method: 'POST' });
+            S.notice = `Rapports illimités pendant 30 jours. ${money(S.excel.monthPrice)} débités de votre portefeuille.`;
+          } catch (error) { S.notice = error.message || 'Achat impossible.'; }
           full(); break;
-        case 'access': S.showAccess = !S.showAccess; renderFormats(); break;
         case 'generate': generate(); break;
         case 'download': download(); break;
         case 'back': S.step = 'configure'; S.notice = ''; full(); break;

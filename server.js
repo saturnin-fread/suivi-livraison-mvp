@@ -3862,8 +3862,7 @@ app.patch('/api/app/settings/deliveries', requireCompanyApi, requireCompanyRoles
 
 // --- Facturation → server/modules/billing --------------------------------------
 const { billing } = registerBilling(app, {
-  pool, asyncRoute, requireCompanyApi, requireCompanyRoles, requirePlatformAdminApi, writeAudit, sendEmail,
-  renderEmailShell, escHtmlServer, normalizeEmail, publicBaseUrl,
+  pool, asyncRoute, requireCompanyApi, requireCompanyRoles, requirePlatformAdminApi, writeAudit,
 });
 
 // --- Paramètres > Sécurité : compte utilisateur ---

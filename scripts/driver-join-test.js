@@ -209,8 +209,6 @@ async function lastWhatsappCode(digits, since, timeoutMs = 20000) {
     assert.strictEqual(r.status, 201, JSON.stringify(r.data));
     created.push(r.data.id);
     assert.strictEqual(await seats(), seatsBefore + 2, 'même personne recréée : pas de place en plus, pas de place libérée');
-    const billing = (await call('GET', '/api/app/billing/plans', { cookie: staff })).data;
-    assert.ok(billing.seatsThisMonth >= seatsBefore + 2, 'la facturation compte les places du mois');
 
     // Trop de mauvais codes : invitation annulée.
     if (verification === 'whatsapp') {

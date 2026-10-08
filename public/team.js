@@ -45,7 +45,7 @@
   }
 
   const ROLES = {
-    owner: { name: 'Propriétaire', desc: 'Tous les droits, y compris l’abonnement et la propriété du compte.', tone: 'sand' },
+    owner: { name: 'Propriétaire', desc: 'Tous les droits, y compris la facturation et la propriété du compte.', tone: 'sand' },
     manager: { name: 'Administrateur', desc: 'Gère les livraisons, les clients, les exports, les réglages et les accès des opérateurs.', tone: 'purple' },
     operator: { name: 'Opérateur', desc: 'Crée les commandes, attribue les livreurs et suit les incidents.', tone: 'blue' },
     viewer: { name: 'Lecture seule', desc: 'Consulte l’activité sans rien modifier.', tone: 'gray' },
@@ -223,7 +223,7 @@
         ['Supprimer une fiche client', [yes, yes, no, no]],
         ['Inviter et gérer les membres', [yes, 'Sauf les administrateurs', no, no]],
         ['Modifier les paramètres de l’entreprise', [yes, yes, no, no]],
-        ['Gérer l’abonnement et la propriété', [yes, no, no, no]],
+        ['Gérer la facturation et la propriété', [yes, no, no, no]],
       ];
       const mark = (v) => (typeof v === 'string'
         ? `<span class="tm-mark partial">${esc(v)}</span>`

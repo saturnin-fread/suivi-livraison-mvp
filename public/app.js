@@ -1885,7 +1885,7 @@ function palettePages() {
     ...(manager ? [p('Équipe et accès', '/app/equipe', ['Espace de travail'], 'membres rôles invitations')] : []),
     p('Paramètres', '/app/parametres', ['Espace de travail'], 'réglages entreprise'),
     p('Sécurité du compte', '/app/parametres?section=security', ['Paramètres'], 'double authentification mot de passe'),
-    p('Facturation', '/app/parametres?section=billing', ['Paramètres'], 'abonnement factures paiement'),
+    p('Facturation', '/app/parametres?section=billing', ['Paramètres'], 'facturation portefeuille recharge solde paiement abonnement'),
     p('Notifications', '/app/notifications', ['Compte']),
   ];
 }
@@ -2070,24 +2070,21 @@ const settingsTabs = [
   { key: 'billing', label: 'Facturation' },
 ];
 const txMoney = (n) => Number(n || 0).toLocaleString('fr-FR');
-const txCycleLabels = { monthly: 'Mensuel', quarterly: 'Trimestriel', yearly: 'Annuel' };
-const txCyclePeriod = { monthly: 'mois', quarterly: 'trimestre', yearly: 'an' };
-const txCycleMonths = { monthly: 1, quarterly: 3, yearly: 12 };
 const txPlural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const txInitials = (text) => String(text || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
 
 async function renderSettings() {
   setHeader('Paramètres', 'Votre entreprise, à votre façon.');
   const canEdit = ['owner', 'manager'].includes(context.user.role);
-  const isOwner = context.user.role === 'owner';
   const tabs = [
     ...settingsTabs.filter((t) => canEdit || !t.editors),
-    ...(context.user.isPlatformAdmin ? [{ key: 'support', label: 'Support TRAXO' }, { key: 'whatsapp', label: 'WhatsApp TRAXO' }, { key: 'vigilance', label: 'Vigilance TRAXO' }] : []),
+    ...(context.user.isPlatformAdmin ? [{ key: 'support', label: 'Support TRAXO' }, { key: 'whatsapp', label: 'WhatsApp TRAXO' }, { key: 'vigilance', label: 'Vigilance TRAXO' }, { key: 'billingadmin', label: 'Tarifs TRAXO' }] : []),
   ];
   const params = new URLSearchParams(location.search);
   let section = (params.get('section') || 'overview').toLowerCase();
-  if (section === 'billing' && params.get('plans') === '1') section = 'plans';
-  if (section !== 'plans' && !tabs.some((t) => t.key === section)) section = 'overview';
+  // Ancien comparateur de formules : remplacé par le portefeuille.
+  if (section === 'plans') section = 'billing';
+  if (!tabs.some((t) => t.key === section)) section = 'overview';
   // Formulaire en cours : renvoie true s'il reste des modifications non enregistrées.
   let isDirty = () => false;
 
@@ -2108,11 +2105,10 @@ async function renderSettings() {
   });
 
   async function go(route) {
-    if (route === section && route !== 'plans') return;
+    if (route === section) return;
     if (isDirty() && !(await uiConfirm('Quitter sans enregistrer ?', { message: 'Vos modifications de cette rubrique seront perdues.', confirmLabel: 'Quitter sans enregistrer', cancelLabel: 'Rester ici' }))) return;
     section = route;
-    const query = route === 'plans' ? 'section=billing&plans=1' : `section=${route}`;
-    try { history.replaceState(null, '', `/app/parametres?${query}`); } catch { /* ignore */ }
+    try { history.replaceState(null, '', `/app/parametres?section=${route}`); } catch { /* ignore */ }
     load();
     root.scrollIntoView({ block: 'start' });
   }
@@ -2120,17 +2116,17 @@ async function renderSettings() {
   async function load() {
     isDirty = () => false;
     root.dataset.screen = section;
-    const active = section === 'plans' ? 'billing' : section;
+    const active = section;
     root.querySelectorAll('.tx-settings-tabs button').forEach((b) => {
       const yes = b.dataset.route === active;
       b.classList.toggle('tx-selected', yes);
       if (yes) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
     content.innerHTML = '<div class="loading-state" style="padding:40px">Chargement…</div>';
-    const views = { overview, general, deliveries, team, security, billing, plans: plansView, whatsapp: renderWhatsApp, vigilance: renderVigilance, support: renderSupportDesk };
+    const views = { overview, general, deliveries, team, security, billing, whatsapp: renderWhatsApp, vigilance: renderVigilance, support: renderSupportDesk, billingadmin: renderBillingAdmin };
     try {
       await views[section](content);
-      if (context.company.activationStatus === 'preview' && ['general', 'deliveries', 'team', 'billing', 'plans'].includes(section)) {
+      if (context.company.activationStatus === 'preview' && ['general', 'deliveries', 'team', 'billing'].includes(section)) {
         content.insertAdjacentHTML('afterbegin', `<div class="tx-preview-note" role="note">${txIcon('eye')}<span><strong>Votre espace est en mode aperçu.</strong> Vous pouvez tout consulter ; les réglages de l’entreprise pourront être enregistrés une fois l’espace activé. La sécurité de votre compte reste modifiable dès maintenant.</span></div>`);
       }
     } catch (error) {
@@ -2187,23 +2183,24 @@ async function renderSettings() {
 
   // ---- Vue d'ensemble ---------------------------------------------------
   async function overview(box) {
-    const [billingData, sec] = await Promise.all([api('/api/app/billing/plans'), api('/api/app/account/security').catch(() => null)]);
-    const drivers = Number(billingData.activeDrivers || 0);
-    const plan = billingData.plans.find((p) => p.code === billingData.currentPlan) || billingData.plans.find((p) => p.code === billingData.recommended);
-    const cycle = billingData.billingCycle || 'monthly';
-    const quote = await api(`/api/app/billing/quote?plan=${encodeURIComponent(plan.code)}&cycle=${cycle}&drivers=${Math.max(1, drivers)}`).catch(() => null);
+    const [wallet, sec, fleet] = await Promise.all([
+      api('/api/app/billing/wallet').catch(() => null),
+      api('/api/app/account/security').catch(() => null),
+      api('/api/app/drivers').catch(() => []),
+    ]);
+    const drivers = (Array.isArray(fleet) ? fleet : []).filter((d) => d.active).length;
     const roleLabel = traxoRoleLabels[context.user.role] || context.user.role;
     const quick = [
       canEdit && ['general', 'building-2', 'Votre entreprise', 'Logo, coordonnées et préférences de votre espace.'],
       ['deliveries', 'package-check', 'Vos livraisons', 'Choisissez comment créer et valider les commandes.'],
       canEdit && ['team', 'users', 'Votre équipe', 'Invitez vos collaborateurs et donnez les bons accès.'],
       ['security', 'shield-check', 'Votre sécurité', 'Gérez les connexions et protégez votre compte.'],
-      !canEdit && ['billing', 'credit-card', 'Votre abonnement', 'La formule de votre espace et ce qu’elle coûte.'],
+      !canEdit && ['billing', 'credit-card', 'Votre facturation', 'Le solde de votre espace et le prix par commande.'],
     ].filter(Boolean);
-    const unit = plan.kind === 'per_driver' ? `${txMoney(plan.monthly)} FCFA par livreur et par mois` : plan.kind === 'custom' ? 'Une offre sur mesure' : `Forfait ${plan.capacityLabel.toLowerCase()}`;
-    const priceHtml = quote
-      ? `<div class="tx-subscription-price"><strong>${txMoney(quote.monthlyEquivalent)}</strong><span>FCFA / mois${cycle !== 'monthly' ? ` · ${txCycleLabels[cycle].toLowerCase()}` : ''}</span></div>`
-      : '<div class="tx-subscription-price"><strong>Sur devis</strong></div>';
+    const ws = wallet ? walletSummaryHtml(wallet) : null;
+    const walletCard = wallet
+      ? `<div class="tx-subscription"><span class="tx-eyebrow">Paiement à la commande</span><h2>${wallet.balance < 0 ? '−' : ''}${txMoney(Math.abs(wallet.balance))} F</h2><p>${escapeHtml(ws.line || 'Solde de votre portefeuille.')}</p><div class="tx-subscription-price"><strong>${txMoney(wallet.month.nextUnitPrice)} F</strong><span>par commande · ${txPlural(wallet.month.orders, 'commande', 'commandes')} ce mois-ci</span></div>${txButton(`Gérer mon portefeuille ${txIcon('arrow-right')}`, 'data-route="billing"')}</div>`
+      : '';
     const waCallout = sec && sec.loginCodes && sec.whatsappChannel && !sec.twoFactorEnabled && !sec.phoneInternational && sec.codeChannel !== 'email'
       ? `<div class="tx-security-callout tx-callout-wa">${txIcon('smartphone')}<div><h3>Vos codes sur WhatsApp</h3><p>Ajoutez votre numéro : vos codes de connexion arrivent plus vite que par e-mail.</p><button type="button" class="tx-text-button" data-route="security">Ajouter mon numéro WhatsApp</button></div></div>`
       : '';
@@ -2216,15 +2213,15 @@ async function renderSettings() {
         <div class="tx-stats">
           <div class="tx-stat">${txIcon('bike')}<div><strong>${drivers}</strong><small>${drivers > 1 ? 'Livreurs actifs' : 'Livreur actif'}</small></div></div>
           <div class="tx-stat">${txIcon('crown')}<div><strong>${escapeHtml(roleLabel)}</strong><small>Votre rôle</small></div></div>
-          <div class="tx-stat">${txIcon('credit-card')}<div><strong>${escapeHtml(plan.name)}</strong><small>Votre formule</small></div></div>
+          <div class="tx-stat">${txIcon('credit-card')}<div><strong>${wallet ? `${wallet.balance < 0 ? '−' : ''}${txMoney(Math.abs(wallet.balance))} F` : '—'}</strong><small>Votre solde</small></div></div>
         </div>
       </section>
       <div class="tx-overview-grid">
         <section><div class="tx-section-label"><h2>Les essentiels</h2><span class="tx-muted"><small>À portée de main</small></span></div>
           <div class="tx-quick-grid">${quick.map(([r, i, t, d]) => `<button class="tx-quick" data-route="${r}" type="button"><span class="tx-quick-icon">${txIcon(i)}</span><strong>${t}</strong><p>${d}</p>${txIcon('arrow-up-right')}</button>`).join('')}</div>
         </section>
-        <aside class="tx-overview-aside"><div class="tx-section-label"><h2>Votre abonnement</h2></div>
-          <div class="tx-subscription"><span class="tx-eyebrow">Une formule qui vous suit</span><h2>${escapeHtml(plan.name)}</h2><p>${drivers ? `Pour vos ${txPlural(drivers, 'livreur actif', 'livreurs actifs')}.` : 'Aucun livreur actif pour le moment.'}</p>${priceHtml}<p>${escapeHtml(unit)}</p>${txButton(`Gérer mon abonnement ${txIcon('arrow-right')}`, 'data-route="billing"')}</div>
+        <aside class="tx-overview-aside"><div class="tx-section-label"><h2>Votre portefeuille</h2></div>
+          ${walletCard}
           ${waCallout}${callout}
         </aside>
       </div>`;
@@ -2512,196 +2509,284 @@ async function renderSettings() {
     isDirty = () => document.body.contains(phoneForm) && changed();
   }
 
-  // ---- Facturation --------------------------------------------------------
+  // ---- Facturation : portefeuille prépayé -----------------------------------
+  // 25 F par commande (dégressif au volume du mois), débités d'un portefeuille
+  // rechargé par Mobile Money ou carte (Kkiapay). Pas d'abonnement.
+  const walletKinds = {
+    order_charge: 'Commande', order_refund: 'Remboursement', recharge: 'Recharge', bonus: 'Bonus de recharge',
+    premium_report: 'Rapport Premium', premium_month: 'Rapport Premium (mois)', adjustment: 'Correction TRAXO',
+  };
+  const walletStates = {
+    ok: ['tx-wallet-ok', 'Solde suffisant'],
+    low: ['tx-wallet-low', 'Solde bas'],
+    overdraft: ['tx-wallet-over', 'Découvert'],
+    blocked: ['tx-wallet-over', 'Solde épuisé'],
+  };
+  const signedMoney = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${txMoney(Math.abs(n))} F`;
+  const walletEntryLabel = (e) => {
+    const base = walletKinds[e.kind] || e.kind;
+    if (['order_charge', 'order_refund'].includes(e.kind)) return `${base} ${e.orderReference || (e.orderId ? `CMD-${e.orderId}` : '')}`.trim();
+    if (['recharge', 'bonus'].includes(e.kind) && e.paymentReference) return `${base} · ${e.paymentReference}`;
+    return base;
+  };
+  const tierLabel = (tiers, i) => {
+    const from = i === 0 ? 1 : tiers[i - 1].upTo + 1;
+    return tiers[i].upTo == null ? `Au-delà de ${txMoney(from - 1)}` : `De ${txMoney(from)} à ${txMoney(tiers[i].upTo)}`;
+  };
+  const currentTierIndex = (tiers, rank) => Math.max(0, tiers.findIndex((t) => t.upTo == null || rank <= t.upTo));
+  const bonusOf = (rules, amount) => rules.reduce((acc, b) => (amount >= b.from ? { percent: b.percent, bonus: Math.floor((amount * b.percent) / 100) } : acc), { percent: 0, bonus: 0 });
+
+  function walletSummaryHtml(w) {
+    const [cls, label] = walletStates[w.state] || walletStates.ok;
+    const covered = w.month.nextUnitPrice > 0 ? Math.max(0, Math.floor(w.balance / w.month.nextUnitPrice)) : null;
+    let line = covered != null && w.balance > 0 ? `De quoi couvrir environ ${txPlural(covered, 'commande', 'commandes')} au prix actuel.` : '';
+    if (w.state === 'overdraft') line = `Vous utilisez votre découvert (jusqu’à ${txMoney(w.overdraft.amount)} F). Rechargez pour continuer sans interruption.`;
+    if (w.state === 'blocked') line = 'Découvert atteint : rechargez pour créer de nouvelles commandes.';
+    if (w.trial.active) line = `Essai gratuit en cours${w.trial.endsAt ? ` jusqu’au ${new Date(w.trial.endsAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}` : ''} : vos commandes ne sont pas débitées.`;
+    return { cls, label, line };
+  }
+
   async function billing(box) {
-    const data = await api('/api/app/billing/plans');
-    const drivers = Number(data.activeDrivers || 0);
-    const plan = data.plans.find((p) => p.code === data.currentPlan) || data.plans.find((p) => p.code === data.recommended);
-    const cycle = data.billingCycle || 'monthly';
-    const quote = await api(`/api/app/billing/quote?plan=${encodeURIComponent(plan.code)}&cycle=${cycle}&drivers=${Math.max(1, drivers)}`).catch(() => null);
-    const cap = plan.max == null ? null : plan.max;
-    const free = cap == null ? null : Math.max(0, cap - drivers);
-    const seatsHtml = cap != null && cap <= 12
-      ? `<div class="tx-seats" style="grid-template-columns:repeat(${cap},minmax(0,1fr))" role="img" aria-label="${drivers} places utilisées sur ${cap}">${Array.from({ length: cap }, (_, i) => `<span class="${i < drivers ? 'tx-seat-used' : ''}">${i < drivers ? txIcon('user-round') : ''}</span>`).join('')}</div>`
-      : `<div class="tx-capacity-meter" role="img" aria-label="${drivers} places utilisées${cap ? ` sur ${cap}` : ''}"><span style="width:${cap ? Math.min(100, Math.round((drivers / cap) * 100)) : 100}%"></span></div>`;
-    const detail = plan.kind === 'per_driver' ? `${txPlural(Math.max(1, drivers), 'livreur', 'livreurs')} × ${txMoney(plan.monthly)} FCFA` : plan.kind === 'custom' ? 'Offre sur mesure' : `Forfait ${plan.capacityLabel.toLowerCase()}`;
-    const periodNote = quote && cycle !== 'monthly' ? `<p class="tx-membership-period">Soit ${txMoney(quote.periodTotal)} FCFA par ${txCyclePeriod[cycle]} · remise de ${Math.round(quote.discount * 100)} %</p>` : '';
-    const trial = data.trial || {};
-    const trialEnds = trial.endsAt ? new Date(trial.endsAt) : null;
-    const trialHtml = trial.status === 'active' && trialEnds && trialEnds > new Date()
-      ? `<p class="tx-trial-note ok">${txIcon('shield-check')}<span>Essai gratuit en cours, jusqu’au ${escapeHtml(trialEnds.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }))} à ${escapeHtml(trialEnds.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))}.</span></p>`
-      : trial.status === 'used_elsewhere'
-        ? `<p class="tx-trial-note">${txIcon('shield-check')}<span>L’essai gratuit a déjà été utilisé avec cette adresse, ce numéro ou cet appareil. Il n’est offert qu’une fois : choisissez la formule qui vous convient.</span></p>`
-        : '';
-    box.innerHTML = `${heading('Abonnement et facturation', 'Une vue claire sur votre formule et ce qu’elle vous coûte.')}
-      ${trialHtml}
-      <section class="tx-membership">
+    const w = await api('/api/app/billing/wallet');
+    const s = walletSummaryHtml(w);
+    const tiers = w.pricing.tiers;
+    const rank = w.month.orders + 1;
+    const tierIdx = currentTierIndex(tiers, rank);
+    const canPay = canEdit;
+    const bonusText = w.pricing.rechargeBonus.length
+      ? w.pricing.rechargeBonus.map((b) => `+${b.percent} % dès ${txMoney(b.from)} F`)
+      : '';
+    box.innerHTML = `${heading('Facturation', 'Vous payez à la commande, sans abonnement ni engagement.')}
+      <section class="tx-membership tx-wallet">
         <div class="tx-membership-main">
-          <div class="tx-membership-top"><span class="tx-pass-label"><span></span> VOTRE FORMULE ACTUELLE</span><span class="tx-dark-badge">${escapeHtml(txCycleLabels[cycle] || 'Mensuel')}</span></div>
-          <h2>${escapeHtml(plan.name)}<span class="tx-red">.</span></h2>
-          <p>${escapeHtml(plan.microcopy || 'Votre rythme. Votre équipe. Votre formule.')}</p>
-          <div class="tx-membership-price"><strong>${quote ? txMoney(quote.monthlyEquivalent) : 'Sur devis'}</strong>${quote ? '<div>FCFA<span>par mois</span></div>' : ''}</div>
-          ${periodNote}
-          <div class="tx-membership-bottom"><span>${escapeHtml(detail)}</span>${txButton(`Comparer les formules ${txIcon('arrow-up-right')}`, 'data-route="plans"', 'tx-button-red')}</div>
+          <div class="tx-membership-top"><span class="tx-pass-label"><span></span> VOTRE PORTEFEUILLE</span><span class="tx-wallet-state ${s.cls}">${escapeHtml(s.label)}</span></div>
+          <div class="tx-membership-price"><strong class="${w.balance < 0 ? 'tx-wallet-negative' : ''}">${w.balance < 0 ? '−' : ''}${txMoney(Math.abs(w.balance))}</strong><div>FCFA<span>solde disponible</span></div></div>
+          <p class="tx-wallet-line">${escapeHtml(s.line)}</p>
+          <div class="tx-membership-bottom"><span>${w.pricing.pricesIncludeTax ? 'Prix TTC' : 'Prix HT'} · recharge dès ${txMoney(w.recharge.min)} F</span>${canPay ? txButton(`Recharger ${txIcon('arrow-up-right')}`, 'id="txRecharge"', 'tx-button-red') : ''}</div>
         </div>
-        <div class="tx-capacity"><span class="tx-eyebrow">De la place pour grandir</span>
-          <div class="tx-capacity-count"><strong>${drivers}</strong><span>/ ${cap == null ? '∞' : cap}</span></div>
-          <p>Livreurs actifs dans votre formule</p>
-          ${seatsHtml}
-          <div class="tx-capacity-note"><span class="tx-capacity-dot"></span> ${free == null ? 'Capacité adaptée à votre contrat' : free > 0 ? `Encore ${txPlural(free, 'place disponible', 'places disponibles')}` : 'Formule complète'}</div>
-          <p class="tx-capacity-help">${free === 0 ? 'Pour ajouter un livreur, passez à une formule plus grande.' : 'Ajoutez des livreurs quand vous en avez besoin.'}</p>
+        <div class="tx-capacity"><span class="tx-eyebrow">CE MOIS-CI</span>
+          <div class="tx-capacity-count"><strong>${txMoney(w.month.orders)}</strong><span>${w.month.orders > 1 ? 'commandes' : 'commande'}</span></div>
+          <p>Prochaine commande : <strong>${txMoney(w.month.nextUnitPrice)} F</strong></p>
+          <ol class="tx-tiers">${tiers.map((t, i) => `<li class="${i === tierIdx ? 'tx-tier-current' : ''}"><span>${escapeHtml(tierLabel(tiers, i))}</span><strong>${txMoney(t.price)} F</strong></li>`).join('')}</ol>
+          <p class="tx-capacity-help">Le prix baisse avec votre volume du mois. Une commande annulée avant le départ du livreur est remboursée.</p>
         </div>
       </section>
       <div class="tx-billing-bottom">
-        <section class="tx-payment-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Moyens de paiement</span><h2>À vous de choisir.</h2></div><span class="tx-badge">Bientôt disponible</span></div>
-          <div class="tx-payment-methods"><div>${txIcon('smartphone')}<span><strong>Mobile Money</strong><small>Depuis votre téléphone</small></span></div><div>${txIcon('credit-card')}<span><strong>Carte bancaire</strong><small>En quelques instants</small></span></div></div>
-          <p class="tx-payment-note">Le paiement en ligne arrive bientôt. Votre formule reste active ; aucun prélèvement n’est effectué pour le moment.</p></section>
-        <section class="tx-invoice-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Vos documents</span><h2>Factures</h2></div>${txIcon('file-text')}</div>
-          <div class="tx-invoice-empty"><span class="tx-invoice-line"></span><h3>Tout sera rangé ici.</h3><p>Retrouvez vos factures au même endroit dès que le paiement en ligne sera disponible.</p></div></section>
+        <section class="tx-payment-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Historique</span><h2>Vos mouvements</h2></div></div>
+          <div id="txLedger">${canEdit ? '<div class="loading-state">Chargement…</div>' : '<p class="tx-muted">L’historique est réservé au propriétaire et aux responsables.</p>'}</div></section>
+        <section class="tx-invoice-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Recharger</span><h2>Mobile Money ou carte</h2></div>${txIcon('smartphone')}</div>
+          <dl class="tx-detail-list"><div><dt>Recharge minimale</dt><dd>${txMoney(w.recharge.min)} F</dd></div><div><dt>Recharge conseillée</dt><dd>${txMoney(w.recharge.suggested)} F</dd></div>${bonusText ? `<div><dt>Bonus offert</dt><dd class="tx-bonus-list">${bonusText.map((t) => `<span>${escapeHtml(t)}</span>`).join('')}</dd></div>` : ''}<div><dt>Découvert autorisé</dt><dd>${txPlural(w.overdraft.orders, 'commande', 'commandes')}</dd></div></dl>
+          ${w.recharge.available ? '' : `<p class="tx-payment-note">Le paiement en ligne ouvre bientôt. ${w.enforcement ? '' : 'D’ici là, aucune commande n’est bloquée, même sans solde.'}</p>`}
+        </section>
       </div>
-      <div class="tx-billing-contact"><span>Une question sur votre abonnement ?</span>${txButton(`On vous aide ${txIcon('arrow-right')}`, 'id="txBillingHelp"', 'tx-button-quiet')}</div>`;
+      <div class="tx-billing-contact"><span>Une question sur votre facturation ?</span>${txButton(`On vous aide ${txIcon('arrow-right')}`, 'id="txBillingHelp"', 'tx-button-quiet')}</div>`;
+
     box.querySelector('#txBillingHelp').addEventListener('click', () => {
-      const text = quote
-        ? `Votre formule ${plan.name} (${plan.capacityLabel.toLowerCase()}) revient à ${txMoney(quote.monthlyEquivalent)} FCFA par mois avec ${txPlural(drivers, 'livreur actif', 'livreurs actifs')}. Aucun prélèvement n’est effectué pour le moment.`
-        : `Votre formule ${plan.name} fait l’objet d’un devis. Aucun prélèvement n’est effectué pour le moment.`;
-      const modal = openModal('Votre abonnement TRAXO', `<p class="tx-dialog-intro">${escapeHtml(text)}</p>${context.supportEmail ? `<div class="tx-dialog-note">Une question précise ? Écrivez-nous à <a href="mailto:${escapeHtml(context.supportEmail)}?subject=${encodeURIComponent('Abonnement TRAXO')}">${escapeHtml(context.supportEmail)}</a>.</div>` : ''}`,
-        '<button class="button secondary" type="button" data-modal-close>Fermer</button><button class="button primary" type="button" id="txHelpPlans">Comparer les formules</button>', { className: 'tx-modal' });
+      const modal = openModal('Comment fonctionne la facturation', `<p class="tx-dialog-intro">Chaque commande créée est débitée de votre portefeuille, au prix de votre palier du mois. Pendant l’essai gratuit, rien n’est débité. Une commande annulée avant le départ du livreur est remboursée automatiquement.</p>
+        <p class="tx-dialog-intro">Si votre solde tombe à zéro, un découvert de ${txPlural(w.overdraft.orders, 'commande', 'commandes')} vous laisse finir la journée ; il est repris à la recharge suivante.</p>
+        ${context.supportEmail ? `<div class="tx-dialog-note">Une question précise ? Écrivez-nous à <a href="mailto:${escapeHtml(context.supportEmail)}?subject=${encodeURIComponent('Facturation TRAXO')}">${escapeHtml(context.supportEmail)}</a>.</div>` : ''}`,
+      '<button class="button primary" type="button" data-modal-close>J’ai compris</button>', { className: 'tx-modal' });
       modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-      modal.backdrop.querySelector('#txHelpPlans').addEventListener('click', () => { modal.close(); go('plans'); });
+    });
+    box.querySelector('#txRecharge')?.addEventListener('click', () => openRecharge(w, () => billing(box)));
+
+    if (!canEdit) return;
+    const ledgerBox = box.querySelector('#txLedger');
+    let before = null;
+    const rows = [];
+    async function more() {
+      const out = await api(`/api/app/billing/ledger?limit=10${before ? `&before=${encodeURIComponent(before)}` : ''}`);
+      rows.push(...out.entries);
+      before = out.entries.length ? out.entries[out.entries.length - 1].id : before;
+      if (!rows.length) {
+        ledgerBox.innerHTML = '<div class="tx-invoice-empty"><span class="tx-invoice-line"></span><h3>Aucun mouvement pour le moment.</h3><p>Vos commandes, recharges et remboursements apparaîtront ici.</p></div>';
+        return;
+      }
+      ledgerBox.innerHTML = `<ul class="tx-ledger">${rows.map((e) => `<li><div><strong>${escapeHtml(walletEntryLabel(e))}</strong><small>${escapeHtml(new Date(e.createdAt).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${e.note && e.kind !== 'bonus' ? ` · ${escapeHtml(e.note)}` : ''}</small></div><span class="tx-ledger-amount ${e.amount > 0 ? 'tx-plus' : ''}">${signedMoney(e.amount)}</span><span class="tx-ledger-balance">${txMoney(e.balanceAfter)} F</span></li>`).join('')}</ul>
+        ${out.more ? txButton('Afficher plus', 'id="txLedgerMore"', 'tx-button-quiet') : ''}`;
+      ledgerBox.querySelector('#txLedgerMore')?.addEventListener('click', (event) => { event.currentTarget.disabled = true; more().catch((error) => uiToast(error.message, 'error')); });
+    }
+    more().catch((error) => { ledgerBox.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; });
+  }
+
+  // Widget Kkiapay : chargé seulement au moment de payer.
+  let kkiapayLoading = null;
+  function loadKkiapay() {
+    if (window.openKkiapayWidget) return Promise.resolve();
+    if (!kkiapayLoading) {
+      kkiapayLoading = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.kkiapay.me/k.js';
+        script.onload = resolve;
+        script.onerror = () => { kkiapayLoading = null; reject(new Error('Le module de paiement n’a pas pu être chargé. Vérifiez votre connexion.')); };
+        document.head.appendChild(script);
+      });
+    }
+    return kkiapayLoading;
+  }
+  function payWithKkiapay(checkout) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      window.addSuccessListener?.((response) => { if (!done) { done = true; resolve(response && response.transactionId); } });
+      window.addFailedListener?.(() => { if (!done) { done = true; reject(new Error('Le paiement n’a pas abouti. Aucun montant n’a été débité.')); } });
+      window.openKkiapayWidget({ amount: checkout.amount, key: checkout.publicKey, sandbox: checkout.sandbox, data: checkout.data, position: 'center', theme: '#eb142c' });
     });
   }
 
-  // ---- Comparateur de formules -------------------------------------------
-  async function plansView(box) {
-    const data = await api('/api/app/billing/plans');
-    const byCode = Object.fromEntries(data.plans.map((p) => [p.code, p]));
-    const priced = ['flexible', 'equipe', 'croissance', 'business'].map((c) => byCode[c]).filter(Boolean);
-    const state = { drivers: Math.max(1, Number(data.seatsThisMonth || data.activeDrivers || 0)), period: data.billingCycle || 'monthly' };
-    const periods = ['monthly', 'quarterly', 'yearly'];
-    const monthlyPrice = (p) => Math.round((p.kind === 'per_driver' ? p.monthly * state.drivers : p.monthly) * (1 - (data.discounts[state.period] || 0)));
-    const fits = (p) => p.max == null || state.drivers <= p.max;
-    const recommended = () => (priced.filter(fits).sort((a, b) => monthlyPrice(a) - monthlyPrice(b))[0] || {}).code || 'grande';
-    const pct = (c) => Math.round((data.discounts[c] || 0) * 100);
-    const badgeFor = (p) => {
-      if (recommended() === p.code) return '<span class="tx-badge tx-badge-red">Adapté à votre flotte</span>';
-      if (data.currentPlan === p.code) return '<span class="tx-badge">Votre formule actuelle</span>';
-      return `<span class="tx-badge">${escapeHtml(p.capacityLabel)}</span>`;
+  function openRecharge(w, onDone) {
+    const presets = [...new Set([w.recharge.min, w.recharge.suggested, 20000, 50000])].filter((n) => n >= w.recharge.min && n <= w.recharge.max).sort((a, b) => a - b);
+    let amount = w.recharge.suggested;
+    const modal = openModal('Recharger le portefeuille', `
+      <div class="tx-recharge-presets" role="group" aria-label="Montant">${presets.map((n) => `<button type="button" data-amount="${n}" aria-pressed="${n === amount}">${txMoney(n)} F</button>`).join('')}</div>
+      <label class="tx-field" for="txAmount">Autre montant (FCFA)<input id="txAmount" type="number" inputmode="numeric" min="${w.recharge.min}" max="${w.recharge.max}" step="100" value="${amount}"></label>
+      <dl class="tx-detail-list" id="txRechargeRecap"></dl>
+      ${w.recharge.available ? '' : '<p class="tx-dialog-note">Le paiement en ligne ouvre bientôt. Pour recharger dès maintenant, contactez le support.</p>'}
+      <p class="tx-error" id="txRechargeErr" role="alert" hidden></p>`,
+    `<button class="button secondary" type="button" data-modal-close>Annuler</button><button class="button accent" type="button" id="txPay" ${w.recharge.available ? '' : 'disabled'}></button>`, { className: 'tx-modal' });
+    const $m = (sel) => modal.backdrop.querySelector(sel);
+    const input = $m('#txAmount');
+    const pay = $m('#txPay');
+    const err = $m('#txRechargeErr');
+    const paint = () => {
+      const valid = Number.isInteger(amount) && amount >= w.recharge.min && amount <= w.recharge.max;
+      const { percent, bonus } = valid ? bonusOf(w.pricing.rechargeBonus, amount) : { percent: 0, bonus: 0 };
+      const orders = w.month.nextUnitPrice > 0 && valid ? Math.floor((amount + bonus) / w.month.nextUnitPrice) : null;
+      $m('#txRechargeRecap').innerHTML = valid
+        ? `<div><dt>Vous payez</dt><dd>${txMoney(amount)} F</dd></div>${bonus ? `<div><dt>Bonus offert (${percent} %)</dt><dd>+${txMoney(bonus)} F</dd></div>` : ''}<div><dt>Crédité sur le portefeuille</dt><dd><strong>${txMoney(amount + bonus)} F</strong></dd></div>${orders != null ? `<div><dt>Soit environ</dt><dd>${txPlural(orders, 'commande', 'commandes')}</dd></div>` : ''}`
+        : `<div><dt>Montant</dt><dd>De ${txMoney(w.recharge.min)} à ${txMoney(w.recharge.max)} F</dd></div>`;
+      pay.textContent = valid ? `Payer ${txMoney(amount)} F` : 'Payer';
+      pay.disabled = !w.recharge.available || !valid;
+      modal.backdrop.querySelectorAll('[data-amount]').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.amount) === amount)));
     };
-    const offer = (p) => {
-      const reco = recommended() === p.code;
-      const price = monthlyPrice(p);
-      return `<section class="tx-offer ${reco ? 'tx-recommended' : ''}">${badgeFor(p)}<h2>${escapeHtml(p.name)}</h2><p>${escapeHtml(p.microcopy)}</p>
-        <div class="tx-price"><span data-price-key="${p.code}" data-value="${price}">${txMoney(price)}</span><small>FCFA / mois${p.kind === 'per_driver' ? ` pour ${txPlural(state.drivers, 'livreur', 'livreurs')}` : ''}</small></div>
-        <p class="tx-offer-period">${txMoney(price * txCycleMonths[state.period])} FCFA / ${txCyclePeriod[state.period]}</p>
-        <ul>${(p.features || []).map((f) => `<li>${txIcon('check')}${escapeHtml(f)}</li>`).join('')}</ul>
-        ${txButton(fits(p) ? 'Voir le récapitulatif' : 'Capacité dépassée', `data-plan="${p.code}" ${fits(p) ? '' : 'disabled'}`, reco ? 'tx-button-red' : '')}</section>`;
+    $m('.tx-recharge-presets').addEventListener('click', (event) => {
+      const b = event.target.closest('[data-amount]'); if (!b) return;
+      amount = Number(b.dataset.amount); input.value = amount; paint();
+    });
+    input.addEventListener('input', () => { amount = Math.round(Number(input.value)); paint(); });
+    $m('[data-modal-close]').addEventListener('click', modal.close);
+    pay.addEventListener('click', async () => {
+      err.hidden = true;
+      pay.disabled = true;
+      const label = pay.textContent;
+      pay.textContent = 'Paiement en cours…';
+      try {
+        const started = await api('/api/app/billing/recharges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount }) });
+        let transactionId = null;
+        if (started.checkout.provider === 'kkiapay') {
+          await loadKkiapay();
+          transactionId = await payWithKkiapay(started.checkout);
+        }
+        const out = await api(`/api/app/billing/recharges/${started.payment.id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transactionId }) });
+        modal.close();
+        uiToast(`Portefeuille rechargé : +${txMoney(out.payment.amount + out.payment.bonus)} F. Nouveau solde : ${txMoney(out.wallet.balance)} F.`, 'success', { timeout: 6000 });
+        onDone();
+      } catch (error) {
+        err.textContent = error.message; err.hidden = false;
+        pay.textContent = label; pay.disabled = false;
+      }
+    });
+    paint();
+  }
+
+  // ---- Facturation TRAXO (administrateur plateforme) -----------------------
+  // Réglages appliqués à toutes les entreprises, sans redéploiement, et
+  // corrections ponctuelles d'un portefeuille.
+  async function renderBillingAdmin(box) {
+    const { settings } = await api('/api/app/platform/billing/settings');
+    const num = (name, value, label, help = '', attrs = '') => `<label class="tx-field" for="txb-${name}">${escapeHtml(label)}<input id="txb-${name}" name="${name}" type="number" inputmode="numeric" value="${value}" ${attrs}>${help ? `<small>${escapeHtml(help)}</small>` : ''}</label>`;
+    box.innerHTML = `${heading('Tarifs TRAXO', 'Prix, découvert, bonus et Rapport Premium, pour toutes les entreprises.', '', 'Équipe TRAXO')}
+      <form class="tx-panel tx-form" id="txBillingForm">
+        ${toggleRow('enforcement', 'Bloquer au-delà du découvert', 'Refuse la création de commandes quand le solde dépasse le découvert. À activer une fois le paiement en ligne ouvert.', settings.enforcement)}
+        ${toggleRow('freeDuringTrial', 'Commandes gratuites pendant l’essai', 'Aucun débit pendant les 3 jours d’essai.', settings.freeDuringTrial)}
+        ${toggleRow('pricesIncludeTax', 'Prix affichés TTC', 'Désactivé : les prix sont affichés hors taxes.', settings.pricesIncludeTax)}
+        <h2 class="tx-form-title">Prix par commande, selon le rang dans le mois</h2>
+        <div id="txTiers"></div>
+        <button type="button" class="tx-text-button" id="txAddTier">Ajouter un palier</button>
+        <h2 class="tx-form-title">Bonus de recharge</h2>
+        <div id="txBonus"></div>
+        <button type="button" class="tx-text-button" id="txAddBonus">Ajouter un palier de bonus</button>
+        <h2 class="tx-form-title">Portefeuille</h2>
+        <div class="tx-fields">
+          ${num('overdraftOrders', settings.overdraftOrders, 'Découvert (en commandes)', 'Ex. 10 : le solde peut descendre de 10 commandes sous zéro.', 'min="0" max="1000"')}
+          ${num('lowBalanceOrders', settings.lowBalanceOrders, 'Alerte de solde bas (en commandes)', '', 'min="0" max="1000"')}
+          ${num('minRecharge', settings.minRecharge, 'Recharge minimale (F)', '', 'min="100"')}
+          ${num('suggestedRecharge', settings.suggestedRecharge, 'Recharge conseillée (F)', '', 'min="100"')}
+          ${num('maxRecharge', settings.maxRecharge, 'Recharge maximale (F)', '', 'min="100"')}
+        </div>
+        <h2 class="tx-form-title">Rapport Premium</h2>
+        <div class="tx-fields">
+          ${num('premium.freeReports', settings.premium.freeReports, 'Rapports offerts', 'Au total, par entreprise.', 'min="0"')}
+          ${num('premium.reportPrice', settings.premium.reportPrice, 'Prix d’un rapport (F)', '', 'min="0"')}
+          ${num('premium.monthPrice', settings.premium.monthPrice, 'Prix du mois illimité (F)', '', 'min="0"')}
+        </div>
+        <p class="tx-error" id="txBillingErr" role="alert" hidden></p>
+        <div class="tx-inline-actions"><button type="submit" class="tx-button tx-button-primary">Enregistrer les réglages</button></div>
+      </form>
+      <form class="tx-panel tx-form" id="txAdjustForm">
+        <h2 class="tx-form-title">Corriger un portefeuille</h2>
+        <p class="tx-muted">Geste commercial ou correction. Montant positif pour créditer, négatif pour débiter. Le motif est conservé dans l’historique de l’entreprise.</p>
+        <div class="tx-fields">
+          ${num('companyId', '', 'Numéro de l’espace', 'Visible dans le support et la vigilance (#…).', 'min="1" required')}
+          ${num('amount', '', 'Montant (F)', '', 'required')}
+          <label class="tx-field tx-field-full" for="txb-note">Motif<input id="txb-note" name="note" type="text" maxlength="300" required></label>
+        </div>
+        <p class="tx-error" id="txAdjustErr" role="alert" hidden></p>
+        <div class="tx-inline-actions"><button type="submit" class="tx-button tx-button-primary">Enregistrer la correction</button></div>
+      </form>`;
+    const form = box.querySelector('#txBillingForm');
+    const state = { tiers: settings.tiers.map((t) => ({ ...t })), bonus: settings.rechargeBonus.map((b) => ({ ...b })) };
+    const paintTiers = () => {
+      box.querySelector('#txTiers').innerHTML = state.tiers.map((t, i) => {
+        const last = i === state.tiers.length - 1;
+        return `<div class="tx-rule-row" data-tier="${i}"><label class="tx-field">Jusqu’à la commande n°<input type="number" min="1" data-k="upTo" value="${last ? '' : t.upTo}" ${last ? 'disabled placeholder="sans limite"' : ''}></label><label class="tx-field">Prix (F)<input type="number" min="0" data-k="price" value="${t.price}"></label>${state.tiers.length > 1 ? `<button type="button" class="tx-text-button" data-remove-tier="${i}">Retirer</button>` : ''}</div>`;
+      }).join('');
     };
-    const offersHtml = () => {
-      const business = byCode.business;
-      return `<div class="tx-plans-grid">${priced.filter((p) => p.code !== 'business').map(offer).join('')}</div>
-        <div class="tx-other-plans">
-          ${business ? `<section class="tx-mini-offer"><div><h3>Business</h3><p>${escapeHtml(business.capacityLabel)} · <span data-price-key="business" data-value="${monthlyPrice(business)}">${txMoney(monthlyPrice(business))}</span> FCFA / mois</p>${recommended() === 'business' ? '<span class="tx-badge tx-badge-red">Adapté à votre flotte</span>' : ''}</div>${txButton(`Voir l’offre ${txIcon('arrow-up-right')}`, `data-plan="business" ${fits(business) ? '' : 'disabled'}`)}</section>` : ''}
-          <section class="tx-mini-offer"><div><h3>Grande flotte</h3><p>51 livreurs et plus · une offre sur mesure</p>${recommended() === 'grande' ? '<span class="tx-badge tx-badge-red">Adapté à votre flotte</span>' : ''}</div>${txButton(`Parlons-en ${txIcon('arrow-up-right')}`, 'id="txQuote"')}</section>
-        </div>`;
+    const paintBonus = () => {
+      box.querySelector('#txBonus').innerHTML = state.bonus.length ? state.bonus.map((b, i) => `<div class="tx-rule-row" data-bonus="${i}"><label class="tx-field">Dès (F)<input type="number" min="1" data-k="from" value="${b.from}"></label><label class="tx-field">Bonus (%)<input type="number" min="0" max="100" data-k="percent" value="${b.percent}"></label><button type="button" class="tx-text-button" data-remove-bonus="${i}">Retirer</button></div>`).join('') : '<p class="tx-muted">Aucun bonus.</p>';
     };
-    box.innerHTML = `<button class="tx-back" type="button" data-route="billing">${txIcon('arrow-left')} Votre abonnement</button>
-      ${heading('Faites de la place à vos ambitions.', 'Ajustez votre flotte. Trouvez la formule qui vous correspond.', '', 'Les formules TRAXO')}
-      <div class="tx-estimate-bar">
-        <div class="tx-fleet-control"><label class="tx-counter" for="txDrivers">Votre flotte <input id="txDrivers" type="number" value="${state.drivers}" min="1" max="500" step="1" inputmode="numeric"> <span>livreurs</span></label>
-          <input class="tx-fleet-range" id="txRange" type="range" min="1" max="50" value="${Math.min(50, state.drivers)}" aria-label="Ajuster la flotte de 1 à 50 livreurs"></div>
-        <div class="tx-segmented" role="group" aria-label="Période de facturation">${periods.map((id) => `<button type="button" data-period="${id}" aria-pressed="${state.period === id}">${txCycleLabels[id]}${pct(id) ? `<small>−${pct(id)} %</small>` : ''}</button>`).join('')}</div>
-      </div>
-      <div id="txOffers">${offersHtml()}</div>
-      ${infoStrip(`Vous avez aujourd’hui ${txPlural(Number(data.activeDrivers || 0), 'livreur actif', 'livreurs actifs')}${Number(data.seatsThisMonth || 0) > Number(data.activeDrivers || 0) ? `, et ${txPlural(Number(data.seatsThisMonth), 'personne a', 'personnes ont')} livré pour vous ce mois-ci : c’est ce nombre qui compte pour le mois en cours` : ''}. L’essai de 3 jours est réservé à la première connexion. Les remises s’appliquent au paiement de la période entière.`)}`;
-    const range = box.querySelector('#txRange');
-    const input = box.querySelector('#txDrivers');
-    const seg = box.querySelector('.tx-segmented');
-    const paintControls = () => {
-      range.value = Math.min(50, state.drivers);
-      range.style.setProperty('--tx-fill', `${((Math.min(50, state.drivers) - 1) / 49) * 100}%`);
-      seg.style.setProperty('--tx-period', periods.indexOf(state.period));
-      seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.period === state.period)));
-    };
-    const refreshOffers = () => {
-      const previous = Object.fromEntries([...box.querySelectorAll('[data-price-key]')].map((el) => [el.dataset.priceKey, Number(el.dataset.value)]));
-      box.querySelector('#txOffers').innerHTML = offersHtml();
-      bindOffers();
-      paintControls();
-      if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-      const items = [...box.querySelectorAll('[data-price-key]')];
-      const start = performance.now();
-      const tick = (now) => {
-        const progress = Math.min(1, (now - start) / 360);
-        const ease = 1 - (1 - progress) ** 3;
-        items.forEach((el) => {
-          if (!el.isConnected) return;
-          const value = Number(el.dataset.value);
-          const from = previous[el.dataset.priceKey] ?? value;
-          el.textContent = txMoney(Math.round(from + (value - from) * ease));
-        });
-        if (progress < 1) requestAnimationFrame(tick);
+    paintTiers(); paintBonus();
+    box.querySelector('#txTiers').addEventListener('input', (event) => { const row = event.target.closest('[data-tier]'); if (row) state.tiers[row.dataset.tier][event.target.dataset.k] = Number(event.target.value); });
+    box.querySelector('#txBonus').addEventListener('input', (event) => { const row = event.target.closest('[data-bonus]'); if (row) state.bonus[row.dataset.bonus][event.target.dataset.k] = Number(event.target.value); });
+    box.querySelector('#txTiers').addEventListener('click', (event) => { const b = event.target.closest('[data-remove-tier]'); if (!b) return; state.tiers.splice(Number(b.dataset.removeTier), 1); state.tiers[state.tiers.length - 1].upTo = null; paintTiers(); });
+    box.querySelector('#txBonus').addEventListener('click', (event) => { const b = event.target.closest('[data-remove-bonus]'); if (!b) return; state.bonus.splice(Number(b.dataset.removeBonus), 1); paintBonus(); });
+    box.querySelector('#txAddTier').addEventListener('click', () => {
+      const last = state.tiers[state.tiers.length - 1];
+      const prev = state.tiers.length > 1 ? state.tiers[state.tiers.length - 2].upTo : 0;
+      last.upTo = (prev || 0) + 500;
+      state.tiers.push({ upTo: null, price: last.price });
+      paintTiers();
+    });
+    box.querySelector('#txAddBonus').addEventListener('click', () => { const last = state.bonus[state.bonus.length - 1]; state.bonus.push({ from: last ? last.from * 2 : 5000, percent: last ? last.percent + 5 : 5 }); paintBonus(); });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const errBox = box.querySelector('#txBillingErr'); errBox.hidden = true;
+      const v = (name) => Number(form.elements[name].value);
+      const payload = {
+        enforcement: form.elements.enforcement.checked, freeDuringTrial: form.elements.freeDuringTrial.checked, pricesIncludeTax: form.elements.pricesIncludeTax.checked,
+        tiers: state.tiers.map((t, i) => ({ upTo: i === state.tiers.length - 1 ? null : t.upTo, price: t.price })),
+        rechargeBonus: state.bonus,
+        overdraftOrders: v('overdraftOrders'), lowBalanceOrders: v('lowBalanceOrders'), minRecharge: v('minRecharge'), suggestedRecharge: v('suggestedRecharge'), maxRecharge: v('maxRecharge'),
+        premium: { freeReports: v('premium.freeReports'), reportPrice: v('premium.reportPrice'), monthPrice: v('premium.monthPrice') },
       };
-      requestAnimationFrame(tick);
-    };
-    range.addEventListener('input', () => { state.drivers = Number(range.value); input.value = state.drivers; refreshOffers(); });
-    input.addEventListener('input', () => { const n = Number(input.value); if (Number.isInteger(n) && n >= 1 && n <= 500) { state.drivers = n; refreshOffers(); } });
-    input.addEventListener('change', () => { const n = Math.round(Number(input.value)); state.drivers = Number.isFinite(n) ? Math.max(1, Math.min(500, n)) : 1; input.value = state.drivers; refreshOffers(); });
-    seg.addEventListener('click', (event) => { const b = event.target.closest('[data-period]'); if (!b) return; state.period = b.dataset.period; refreshOffers(); });
-    function bindOffers() {
-      box.querySelectorAll('[data-plan]').forEach((b) => b.addEventListener('click', () => openPlanRecap(b.dataset.plan)));
-      box.querySelector('#txQuote')?.addEventListener('click', openQuoteDialog);
-    }
-    bindOffers();
-    paintControls();
-
-    async function openPlanRecap(code) {
-      let quote;
-      try { quote = await api(`/api/app/billing/quote?plan=${encodeURIComponent(code)}&cycle=${state.period}&drivers=${state.drivers}`); } catch (error) { uiToast(error.message, 'error'); return; }
-      const current = data.currentPlan === code && data.billingCycle === state.period;
-      const activeFits = quote.capacity == null || Number(data.activeDrivers || 0) <= quote.capacity;
-      let note = 'Le paiement en ligne est en préparation : retenir cette formule ne déclenche aucun prélèvement.';
-      if (!isOwner) note = 'Seul le propriétaire de l’espace peut changer de formule.';
-      else if (!activeFits) note = `Cette formule accepte ${quote.capacity} livreurs : vous en avez ${data.activeDrivers} actifs aujourd’hui. Archivez des livreurs ou choisissez une formule plus grande.`;
-      const modal = openModal('Votre formule en détail', `<span class="tx-eyebrow">${escapeHtml(quote.planName)} · ${escapeHtml(txCycleLabels[quote.cycle])}</span>
-        <div class="tx-price tx-recap-price">${txMoney(quote.periodTotal)} <small>FCFA / ${txCyclePeriod[quote.cycle]}</small></div>
-        <dl class="tx-detail-list"><div><dt>Flotte simulée</dt><dd>${txPlural(quote.drivers, 'livreur', 'livreurs')}</dd></div><div><dt>Capacité de la formule</dt><dd>${quote.capacity == null ? 'Sans limite' : `Jusqu’à ${quote.capacity} livreurs`}</dd></div><div><dt>Équivalent mensuel</dt><dd>${txMoney(quote.monthlyEquivalent)} FCFA</dd></div><div><dt>Période</dt><dd>${txPlural(quote.periodMonths, 'mois', 'mois')}${quote.discount ? ` · remise de ${Math.round(quote.discount * 100)} %` : ''}</dd></div></dl>
-        <p class="tx-dialog-note">${escapeHtml(note)}</p>`,
-      `<button class="button secondary" type="button" data-modal-close>Continuer à comparer</button><button class="button accent" type="button" id="txRetain" ${isOwner && activeFits && !current ? '' : 'disabled'}>${current ? 'Formule actuelle' : 'Retenir cette formule'}</button>`, { className: 'tx-modal' });
-      modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-      modal.backdrop.querySelector('#txRetain').addEventListener('click', async (event) => {
-        event.currentTarget.disabled = true;
-        try {
-          await api('/api/app/billing/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planCode: code, billingCycle: state.period }) });
-          data.currentPlan = code; data.billingCycle = state.period;
-          modal.close();
-          uiToast(`Formule ${quote.planName} retenue. Aucun prélèvement tant que le paiement en ligne n’est pas activé.`, 'success');
-          refreshOffers();
-        } catch (error) { uiToast(error.message, 'error'); event.currentTarget.disabled = false; }
-      });
-    }
-
-    function openQuoteDialog() {
-      const modal = openModal('Parlons de votre flotte', `<p class="tx-dialog-intro">Une grande équipe mérite une formule adaptée. Dites-nous en un peu plus : l’équipe TRAXO vous répond par e-mail.</p>
-        <form id="txQuoteForm">
-          <label class="tx-field" for="txQuoteEmail">E-mail de contact<input id="txQuoteEmail" name="email" type="email" required value="${escapeHtml(context.user.email || '')}"></label>
-          <label class="tx-field" for="txQuoteDrivers">Nombre de livreurs<input id="txQuoteDrivers" name="drivers" type="number" min="1" max="100000" required value="${Math.max(51, state.drivers)}"></label>
-          <label class="tx-field" for="txQuoteMsg">Votre besoin (facultatif)<textarea id="txQuoteMsg" name="message" rows="3" maxlength="1000" placeholder="Villes couvertes, volume de livraisons, date de démarrage…"></textarea></label>
-          <p class="tx-error" id="txQuoteErr" role="alert" hidden></p>
-        </form>`, '<button class="button secondary" type="button" data-modal-close>Annuler</button><button class="button primary" type="submit" form="txQuoteForm">Envoyer la demande</button>', { className: 'tx-modal' });
-      const $m = (s) => modal.backdrop.querySelector(s);
-      $m('[data-modal-close]').addEventListener('click', modal.close);
-      $m('#txQuoteForm').addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const f = event.currentTarget;
-        const submit = modal.backdrop.querySelector('button.primary');
-        submit.disabled = true;
-        try {
-          await api('/api/app/billing/quote-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: f.email.value.trim(), drivers: Number(f.drivers.value), message: f.message.value.trim() }) });
-          modal.close();
-          uiToast('Demande envoyée. L’équipe TRAXO vous répond par e-mail.', 'success');
-        } catch (error) { $m('#txQuoteErr').textContent = error.message; $m('#txQuoteErr').hidden = false; submit.disabled = false; }
-      });
-    }
+      if (payload.enforcement && !settings.enforcement && !(await uiConfirm('Activer le blocage ?', { message: 'Les entreprises au-delà de leur découvert ne pourront plus créer de commandes tant qu’elles n’auront pas rechargé.', confirmLabel: 'Activer le blocage', tone: 'danger' }))) return;
+      try {
+        const out = await api('/api/app/platform/billing/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: payload }) });
+        Object.assign(settings, out.settings);
+        uiToast('Réglages de facturation enregistrés. Ils s’appliquent à toutes les entreprises.', 'success');
+      } catch (error) { errBox.textContent = error.message; errBox.hidden = false; }
+    });
+    box.querySelector('#txAdjustForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const f = event.currentTarget;
+      const errBox = box.querySelector('#txAdjustErr'); errBox.hidden = true;
+      const amount = Math.round(Number(f.elements.amount.value));
+      if (!(await uiConfirm(`${amount > 0 ? 'Créditer' : 'Débiter'} ${txMoney(Math.abs(amount))} F ?`, { message: `Espace #${f.elements.companyId.value} · ${f.elements.note.value}`, confirmLabel: 'Enregistrer' }))) return;
+      try {
+        const out = await api('/api/app/platform/billing/adjustments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ companyId: f.elements.companyId.value.trim(), amount, note: f.elements.note.value.trim() }) });
+        uiToast(`Correction enregistrée. Nouveau solde de l’espace : ${txMoney(out.wallet.balance)} F.`, 'success');
+        f.reset();
+      } catch (error) { errBox.textContent = error.message; errBox.hidden = false; }
+    });
   }
 
   // ---- WhatsApp TRAXO (administrateur plateforme) ------------------------

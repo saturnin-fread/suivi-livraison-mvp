@@ -14,6 +14,7 @@ const FEATURES = [
   ['Limites partagées (Redis)', (e) => has(e, 'REDIS_URL')],
   ['Carte satellite', (e) => has(e, 'MAP_SATELLITE_TILE_URL')],
   ['Tuiles vectorielles', (e) => has(e, 'TILES_INTERNAL_URL')],
+  ['Paiement en ligne (Kkiapay)', (e) => has(e, 'KKIAPAY_PUBLIC_KEY', 'KKIAPAY_PRIVATE_KEY', 'KKIAPAY_SECRET_KEY')],
 ];
 
 // Secrets sans lesquels la production n'est pas sûre (liens, codes, double
@@ -21,7 +22,7 @@ const FEATURES = [
 // OTP_PEPPER, et les sessions sont des jetons aléatoires stockés hachés en base.
 const PRODUCTION_SECRETS = ['DATABASE_URL', 'TRACKING_TOKEN_SECRET', 'OTP_PEPPER', 'MFA_SECRET', 'APP_BASE_URL'];
 // Réglages réservés aux tests : jamais en production.
-const TEST_ONLY = ['WHATSAPP_FAKE', 'EMAIL_OUTBOX_DIR', 'TRASH_PURGE_START'];
+const TEST_ONLY = ['WHATSAPP_FAKE', 'EMAIL_OUTBOX_DIR', 'TRASH_PURGE_START', 'BILLING_TEST_PAYMENTS'];
 
 function isProduction(env) {
   return env.NODE_ENV === 'production' || env.RAILWAY_ENVIRONMENT_NAME === 'production';

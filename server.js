@@ -74,6 +74,8 @@ const publicEditableSql = `(status = ANY($EDIT::text[]) OR (status = 'Validée' 
 const REQUEST_PHOTO_MAX = 3;
 const REQUEST_PHOTO_MAX_BYTES = 700 * 1024;
 const terminalOrderStatuses = ['Livrée', 'Retournée', 'Annulée'];
+// Statuts « avant le départ du livreur » : une annulation y est remboursée.
+const ORDER_REFUNDABLE_STATUSES = ['En préparation', 'Confirmée'];
 const publicTrackingPositionStatuses = ['En tournée', 'En livraison', 'Arrivée'];
 const orderTransitions = {
   'En préparation': ['Confirmée', 'Annulée'],
@@ -3859,8 +3861,8 @@ app.patch('/api/app/settings/deliveries', requireCompanyApi, requireCompanyRoles
 }));
 
 // --- Facturation → server/modules/billing --------------------------------------
-registerBilling(app, {
-  pool, asyncRoute, requireCompanyApi, requireCompanyRoles, writeAudit, sendEmail,
+const { billing } = registerBilling(app, {
+  pool, asyncRoute, requireCompanyApi, requireCompanyRoles, requirePlatformAdminApi, writeAudit, sendEmail,
   renderEmailShell, escHtmlServer, normalizeEmail, publicBaseUrl,
 });
 
@@ -4801,7 +4803,9 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
        FROM customer_requests r WHERE o.id = $1 AND r.id = $2 AND r.company_id = o.company_id`,
       [order.rows[0].id, request.id]
     );
-    await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
+    const orderReference = await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
+    // Paiement à la commande : débit du portefeuille dans la même transaction.
+    if (billing) await billing.chargeOrder(client, { companyId: req.auth.company_id, orderId: order.rows[0].id, orderReference, userId: req.auth.user_id });
     const trackingToken = randomToken(24);
     const trackingStorage = trackingTokenStorage(trackingToken);
     const trackingExpiration = createTrackingLinkExpiration();
@@ -4859,7 +4863,7 @@ app.post('/api/app/requests/:id/convert', requireCompanyApi, asyncRoute(async (r
     });
   } catch (error) {
     await client.query('ROLLBACK');
-    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
     console.error('Request conversion error:', error.message);
     return res.status(500).json({ error: 'Impossible de convertir la demande en commande.' });
   } finally {
@@ -7392,6 +7396,10 @@ app.post('/api/app/orders/:id/transition', requireCompanyApi, asyncRoute(async (
       [req.auth.company_id, req.auth.user_id, order.id, order.status, toStatus, event.rows[0].id]
     );
     if (ORDER_MOVING_STATUSES.includes(toStatus)) await autoStartRunForOrder(client, req.auth, order.id);
+    // Annulée avant le départ du livreur : la commande est remboursée.
+    if (billing && toStatus === 'Annulée' && ORDER_REFUNDABLE_STATUSES.includes(order.status)) {
+      await billing.refundOrder(client, { companyId: req.auth.company_id, orderId: order.id, userId: req.auth.user_id, reason });
+    }
     await client.query('COMMIT');
     if (['En livraison', 'Arrivée'].includes(toStatus)) recordEtaSample(order.id, req.auth.company_id, toStatus, order.driver_id);
     return res.json({ orderId: order.id, status: toStatus, eventId: event.rows[0].id, version: Number(order.version) + 1 });
@@ -8594,7 +8602,9 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     if (chosenCustomer) {
       await client.query('UPDATE orders SET customer_id = $1 WHERE id = $2 AND company_id = $3', [chosenCustomer, order.rows[0].id, req.auth.company_id]);
     }
-    await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
+    const orderReference = await assignOrderReference(client, req.auth.company_id, order.rows[0].id);
+    // Paiement à la commande : débit du portefeuille dans la même transaction.
+    if (billing) await billing.chargeOrder(client, { companyId: req.auth.company_id, orderId: order.rows[0].id, orderReference, userId: req.auth.user_id });
     const token = randomToken(24);
     const tokenStorage = trackingTokenStorage(token);
     const trackingExpiration = createTrackingLinkExpiration();
@@ -8646,7 +8656,9 @@ app.post('/api/app/orders', requireCompanyApi, asyncRoute(async (req, res) => {
     });
   } catch (error) {
     if (!committed) await client.query('ROLLBACK');
-    if (error.statusCode === 400) return res.status(400).json({ error: error.message });
+    if (error.statusCode === 400 || error.code === 'wallet_insufficient') {
+      return res.status(error.statusCode).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
+    }
     console.error('Order creation error:', error.message);
     return res.status(500).json({ error: 'Impossible de créer la commande.' });
   } finally {

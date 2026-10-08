@@ -3,7 +3,7 @@
 // contact), liens vers la fiche exacte, et cloisonnement entre entreprises.
 const assert = require('assert');
 const { Pool } = require('pg');
-const { parseQuery, phoneMatches } = require('../lib/global-search');
+const { parseQuery, phoneMatches } = require('../server/modules/search/service');
 
 const base = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const cookieOf = (res, name) => (res.headers.getSetCookie?.() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith(`${name}=`));

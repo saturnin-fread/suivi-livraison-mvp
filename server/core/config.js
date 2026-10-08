@@ -16,8 +16,10 @@ const FEATURES = [
   ['Tuiles vectorielles', (e) => has(e, 'TILES_INTERNAL_URL')],
 ];
 
-// Secrets sans lesquels la production n'est pas sûre (sessions, liens, codes).
-const PRODUCTION_SECRETS = ['DATABASE_URL', 'SESSION_SECRET', 'TRACKING_TOKEN_SECRET', 'OTP_PEPPER', 'MFA_SECRET', 'APP_BASE_URL'];
+// Secrets sans lesquels la production n'est pas sûre (liens, codes, double
+// authentification). SESSION_SECRET n'est pas exigé : il ne sert que de repli à
+// OTP_PEPPER, et les sessions sont des jetons aléatoires stockés hachés en base.
+const PRODUCTION_SECRETS = ['DATABASE_URL', 'TRACKING_TOKEN_SECRET', 'OTP_PEPPER', 'MFA_SECRET', 'APP_BASE_URL'];
 // Réglages réservés aux tests : jamais en production.
 const TEST_ONLY = ['WHATSAPP_FAKE', 'EMAIL_OUTBOX_DIR', 'TRASH_PURGE_START'];
 

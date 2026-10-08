@@ -25,11 +25,13 @@ const {
 const trashPurge = require('./lib/trash-purge');
 const { runMigrations } = require('./server/core/migrate');
 const { logConfig } = require('./server/core/config');
+const staging = require('./server/core/staging');
 const {
   createIpPolicy,
   createRateLimitMiddleware,
   createTokenBucket,
   createTokenPolicy,
+  setRateLimitBypass,
 } = require('./lib/rate-limit');
 const { createRedisTokenBucket } = require('./lib/redis-rate-limit');
 const registerBilling = require('./server/modules/billing/routes');
@@ -50,6 +52,8 @@ const {
 } = require('./lib/tracking-link-policy');
 
 const app = express();
+// Recette (staging) uniquement : pas d'indexation, limites assouplies sur demande.
+if (staging.installStagingGuards(app)) setRateLimitBypass(() => staging.rateLimitsRelaxed());
 const port = Number(process.env.PORT || 3000);
 const demoTrackingEnabled = process.env.DEMO_TRACKING_ENABLED === 'true';
 if (demoTrackingEnabled && (!process.env.DEMO_TRACKING_TOKEN || process.env.RAILWAY_ENVIRONMENT_NAME === 'production')) {
@@ -9544,6 +9548,7 @@ async function backfillOrderRuns(dbPool) {
 Promise.resolve(logConfig())
   .then(() => runMigrations(pool))
   .then(() => initDatabase())
+  .then(() => staging.seedStaging({ pool, hashPassword, withCompanyTransaction }))
   .then(() => globalSearch && globalSearch.ensureSchema())
   .then(() => support && support.ensureSchema())
   .then(() => synchronizeExistingOrders(pool))

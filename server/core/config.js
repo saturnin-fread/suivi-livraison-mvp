@@ -47,7 +47,8 @@ function checkConfig(env = process.env) {
 
 function logConfig(env = process.env, log = console) {
   const { production, enabled, disabled, problems } = checkConfig(env);
-  log.log(`Configuration (${production ? 'production' : 'développement'}) · actif : ${enabled.join(', ') || 'aucun'}${disabled.length ? ` · inactif : ${disabled.join(', ')}` : ''}`);
+  const label = env.RAILWAY_ENVIRONMENT_NAME === 'staging' ? 'staging (recette)' : production ? 'production' : 'développement';
+  log.log(`Configuration (${label}) · actif : ${enabled.join(', ') || 'aucun'}${disabled.length ? ` · inactif : ${disabled.join(', ')}` : ''}`);
   for (const p of problems) log.warn(`Configuration : ${p}`);
   return { production, enabled, disabled, problems };
 }

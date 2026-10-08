@@ -15,6 +15,7 @@ Cette documentation est la source de reprise du projet. Elle décrit le fonction
 - [Cycle d'exécution des commandes](ORDER_STATE_MACHINE.md)
 - [Encaissement et rapprochement](PAYMENT_RECONCILIATION.md)
 - [Portefeuille prépayé (paiement à la commande)](BILLING_WALLET.md)
+- [Environnement de recette (staging)](STAGING.md)
 - [Espace livreur et contrôle d'accès](DRIVER_PORTAL_ACCESS.md)
 - [Tournées multi-colis](DELIVERY_RUNS.md)
 - [Carte d'exploitation](OPERATIONS_MAP.md)

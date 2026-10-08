@@ -69,6 +69,11 @@ const SUITES = [
   srv('live-route', { ...TRACCAR, ROUTING_PROVIDER: 'osrm', ROUTING_OSRM_URL: `http://127.0.0.1:${FAKES.osrm}`, EXPECT_ROUTING: '1' }),
   ...['places', 'reports', 'search', 'support', 'prices', 'trash'].map((n) => srv(n, { GEOCODER_URL: `http://127.0.0.1:${FAKES.geocoder}` })),
   srv('billing', { BILLING_TEST_PAYMENTS: 'on' }),
+  // Toujours en dernier : le seed de recette ajoute des comptes et des données.
+  srv('staging', {
+    RAILWAY_ENVIRONMENT_NAME: 'staging', STAGING_SEED: 'on', STAGING_RATE_LIMITS: 'off',
+    ...Object.fromEntries(['MANAGER_A', 'OPERATOR_A', 'VIEWER_A', 'OWNER_B', 'OPERATOR_B'].map((k) => [`STAGING_PASSWORD_${k}`, `Recette-${k.toLowerCase()}-7Kq!x2`])),
+  }),
 ];
 
 const args = process.argv.slice(2);

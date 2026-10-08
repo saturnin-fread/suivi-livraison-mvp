@@ -19,7 +19,7 @@ Test : `scripts/billing-test.js`.
 | Recharge | de 1 000 F à 2 000 000 F, 5 000 F conseillés | `minRecharge`, `maxRecharge`, `suggestedRecharge` |
 | Bonus de recharge (plus haut palier atteint) | +5 % dès 5 000 F · +10 % dès 20 000 F · +15 % dès 50 000 F | `rechargeBonus` |
 | Prix affichés | TTC | `pricesIncludeTax` |
-| Rapport Premium | 2 offerts, puis 1 500 F le rapport ou 2 500 F le mois | `premium` |
+| Rapport Premium | 2 offerts au total, puis 1 500 F le rapport ou 2 500 F les 30 jours | `premium` |
 
 Le rang dans le mois compte les commandes débitées (une commande remboursée
 compte quand même). Le mois suit le fuseau de Porto-Novo.
@@ -78,6 +78,30 @@ production.
   `state`) ;
 - l'ajout du webhook Kkiapay (notification serveur à serveur), utile si le
   navigateur se ferme juste après le paiement.
+
+## Rapport Premium (Excel enrichi)
+
+Le CSV et le SVG restent gratuits. L'Excel enrichi suit ces règles :
+
+- **2 rapports offerts au total** par entreprise (`premium.freeReports`). Un
+  rapport n'est décompté qu'une fois le classeur réellement produit : une
+  sélection vide ou une erreur ne consomme rien.
+- **Aucun rapport offert** si l'essai gratuit a déjà servi ailleurs
+  (`trial_status = 'used_elsewhere'`). Les mêmes clés anti-abus s'appliquent :
+  adresse, numéro et appareil.
+- **Ensuite, deux options**, payées depuis le portefeuille par le propriétaire
+  ou un responsable :
+  - **1 500 F le rapport**, avec un accord explicite (`pay: 'report'`, bouton
+    « Payer 1 500 F et préparer ») ;
+  - **2 500 F pour 30 jours illimités** (`POST /api/app/reports/premium/month`),
+    prolongés de 30 jours si le mois est déjà en cours, sans renouvellement
+    automatique.
+- **Pas de découvert** pour un achat Premium : il faut le solde. Le découvert
+  sert à finir une journée de livraisons, pas à payer une option.
+
+Données : `company_export_access.premium_free_used` et `premium_month_until`
+(migration `0004`). Les paiements apparaissent dans le journal sous les types
+`premium_report` et `premium_month`.
 
 ## Correction par l'équipe TRAXO
 

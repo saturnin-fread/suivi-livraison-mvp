@@ -336,6 +336,96 @@ function createBilling({ pool, provider = null }) {
     }
   }
 
+  // ---- Rapport Premium (Excel enrichi) ---------------------------------
+  // N rapports offerts au total (aucun si l'essai gratuit a déjà servi
+  // ailleurs), puis 1 rapport payé ou un mois illimité, débités du
+  // portefeuille. Un achat Premium ne peut pas entamer le découvert : le
+  // découvert sert à finir une journée de livraisons, pas aux options.
+  async function premiumStatus(q, companyId) {
+    const s = await settings(q);
+    const row = (await q.query(
+      `SELECT c.trial_status, COALESCE(a.premium_free_used, 0) AS used, a.premium_month_until AS until,
+              COALESCE(w.balance, 0) AS balance
+       FROM companies c
+       LEFT JOIN company_export_access a ON a.company_id = c.id
+       LEFT JOIN wallets w ON w.company_id = c.id
+       WHERE c.id = $1`,
+      [companyId]
+    )).rows[0] || {};
+    const trialReused = row.trial_status === 'used_elsewhere';
+    const freeTotal = trialReused ? 0 : s.premium.freeReports;
+    const used = Number(row.used || 0);
+    const monthActive = Boolean(row.until && new Date(row.until).getTime() > Date.now());
+    const freeLeft = Math.max(0, freeTotal - used);
+    const balance = Number(row.balance || 0);
+    return {
+      state: monthActive ? 'month' : freeLeft > 0 ? 'free' : 'paid',
+      freeTotal, freeUsed: Math.min(used, freeTotal), freeLeft, trialReused,
+      monthUntil: monthActive ? row.until : null,
+      reportPrice: s.premium.reportPrice, monthPrice: s.premium.monthPrice,
+      balance, canPayReport: balance >= s.premium.reportPrice, canPayMonth: balance >= s.premium.monthPrice,
+      paymentsAvailable: Boolean(provider),
+    };
+  }
+
+  async function lockPremium(client, companyId) {
+    await client.query('INSERT INTO company_export_access (company_id) VALUES ($1) ON CONFLICT (company_id) DO NOTHING', [companyId]);
+    await client.query('SELECT company_id FROM company_export_access WHERE company_id = $1 FOR UPDATE', [companyId]);
+  }
+
+  async function payPremium(client, companyId, kind, price, { userId, note }) {
+    const wallet = await lockWallet(client, companyId);
+    if (Number(wallet.balance) < price) {
+      throw new BillingError(`Solde insuffisant : il faut ${price.toLocaleString('fr-FR')} F sur votre portefeuille.`, {
+        status: 402, code: 'wallet_insufficient', details: { balance: Number(wallet.balance), price },
+      });
+    }
+    return post(client, wallet, { kind, amount: -price, unitPrice: price, userId, note });
+  }
+
+  // Décompte d'un rapport réellement produit (dans la transaction de l'export).
+  // pay === 'report' : accord explicite pour payer ce rapport s'il n'est plus
+  // couvert par le mois ou les rapports offerts.
+  async function consumePremiumReport(client, companyId, { pay = null, userId, note } = {}) {
+    await lockPremium(client, companyId);
+    const st = await premiumStatus(client, companyId);
+    if (st.state === 'month') return { via: 'month', status: st };
+    if (st.state === 'free') {
+      await client.query('UPDATE company_export_access SET premium_free_used = premium_free_used + 1, updated_at = NOW() WHERE company_id = $1', [companyId]);
+      return { via: 'free', status: { ...st, freeUsed: st.freeUsed + 1, freeLeft: st.freeLeft - 1 } };
+    }
+    if (pay !== 'report') {
+      throw new BillingError(st.trialReused
+        ? 'Les rapports offerts ont déjà été utilisés avec cette adresse, ce numéro ou cet appareil.'
+        : 'Vos rapports offerts sont utilisés. Ce rapport est payant.', { status: 402, code: 'premium_required', details: st });
+    }
+    const entry = await payPremium(client, companyId, 'premium_report', st.reportPrice, { userId, note });
+    return { via: 'paid', entry, status: st };
+  }
+
+  // Mois illimité : 30 jours à partir de l'achat, ou prolongé de 30 jours s'il est en cours.
+  async function buyPremiumMonth(companyId, userId) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await lockPremium(client, companyId);
+      const st = await premiumStatus(client, companyId);
+      const entry = await payPremium(client, companyId, 'premium_month', st.monthPrice, { userId, note: 'Rapport Premium : 30 jours' });
+      const row = (await client.query(
+        `UPDATE company_export_access SET premium_month_until = GREATEST(COALESCE(premium_month_until, NOW()), NOW()) + INTERVAL '30 days', updated_at = NOW()
+         WHERE company_id = $1 RETURNING premium_month_until`,
+        [companyId]
+      )).rows[0];
+      await client.query('COMMIT');
+      return { entry, monthUntil: row.premium_month_until };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   // Contrôle d'intégrité : le solde en cache doit valoir la somme du journal.
   async function audit(companyId) {
     const row = (await pool.query(
@@ -349,6 +439,7 @@ function createBilling({ pool, provider = null }) {
   return {
     settings, saveSettings, chargeOrder, refundOrder, summary, ledger,
     createRecharge, confirmRecharge, payment, adjust, audit,
+    premiumStatus: (companyId) => premiumStatus(pool, companyId), consumePremiumReport, buyPremiumMonth,
     get providerName() { return provider ? provider.name : null; },
   };
 }

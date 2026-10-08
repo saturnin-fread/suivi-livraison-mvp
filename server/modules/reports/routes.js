@@ -30,6 +30,7 @@ const {
 } = require('../../../lib/crm-dataset-exports');
 const { buildPremiumWorkbook } = require('../../../lib/crm-premium-xlsx');
 const reportBundle = require('../../../lib/report-bundle');
+const { BillingError } = require('../billing/service');
 
 const EXPORT_DATASET_TITLES = { operations: 'Commandes', customers: 'Clients', incidents: 'Incidents', routes: 'Tournées' };
 // Logo chargé une fois pour la couverture des exports premium (repli sans logo).
@@ -46,7 +47,7 @@ const EXPORT_QUERY_BUILDERS = {
 module.exports = function registerReports(app, deps) {
   const {
     pool, asyncRoute, requireCompanyApi, requireCompanyRoles, withCompanyTransaction,
-    writeAudit, serializeMetricRows, runQueries, crmReportingPeriod,
+    writeAudit, serializeMetricRows, runQueries, crmReportingPeriod, billing,
   } = deps;
 
   // Read-only. The export contract (lib/crm-export-contract.js) validates the
@@ -104,13 +105,10 @@ module.exports = function registerReports(app, deps) {
   }
 
   // ---- Rapports unifiés (Commandes, Tournées, Incidents, Clients) ----------
-  const EXCEL_TRIAL_HOURS = 168;
-  async function excelAccess(companyId) {
-    const row = (await pool.query('SELECT excel_trial_started_at, excel_trial_ends_at FROM company_export_access WHERE company_id = $1', [companyId])).rows[0];
-    if (!row || !row.excel_trial_started_at) return { state: 'eligible', trialHours: EXCEL_TRIAL_HOURS };
-    const ends = new Date(row.excel_trial_ends_at);
-    return { state: ends.getTime() > Date.now() ? 'trial' : 'expired', trialStartedAt: row.excel_trial_started_at, trialEndsAt: row.excel_trial_ends_at, trialHours: EXCEL_TRIAL_HOURS };
-  }
+  // Rapport Premium (Excel enrichi) : rapports offerts, puis payés depuis le
+  // portefeuille (voir billing/service.js). Le CSV et le SVG restent gratuits.
+  const excelAccess = (companyId) => (billing ? billing.premiumStatus(companyId) : Promise.resolve(null));
+  const canPayPremium = (auth) => ['owner', 'manager'].includes(String(auth.role || ''));
   function reportErrorResponse(res, error) {
     if (error instanceof reportBundle.ReportError) return res.status(error.status).json({ error: error.message, code: error.code });
     throw error;
@@ -133,7 +131,7 @@ module.exports = function registerReports(app, deps) {
       zones: zones.rows.map((r) => r.zone).sort((a, b) => a.localeCompare(b, 'fr')),
       drivers: drivers.rows.map((d) => ({ id: String(d.id), name: d.name })),
       excel: access,
-      canStartTrial: ['owner', 'manager'].includes(role),
+      canPay: ['owner', 'manager'].includes(role),
       supportEmail: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(process.env.SUPPORT_EMAIL || '')) ? process.env.SUPPORT_EMAIL : 'support@gettraxo.app',
     });
   }));
@@ -157,21 +155,17 @@ module.exports = function registerReports(app, deps) {
     } catch (error) { return reportErrorResponse(res, error); }
   }));
 
-  app.post('/api/app/reports/excel-trial', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
-    // Activation volontaire et idempotente : un seul essai par entreprise.
-    await pool.query(
-      `INSERT INTO company_export_access (company_id, excel_trial_started_at, excel_trial_ends_at, excel_trial_started_by)
-       VALUES ($1, NOW(), NOW() + make_interval(hours => $2), $3)
-       ON CONFLICT (company_id) DO UPDATE SET
-         excel_trial_started_at = COALESCE(company_export_access.excel_trial_started_at, EXCLUDED.excel_trial_started_at),
-         excel_trial_ends_at = COALESCE(company_export_access.excel_trial_ends_at, EXCLUDED.excel_trial_ends_at),
-         excel_trial_started_by = COALESCE(company_export_access.excel_trial_started_by, EXCLUDED.excel_trial_started_by),
-         updated_at = NOW()`,
-      [req.auth.company_id, EXCEL_TRIAL_HOURS, req.auth.user_id]
-    );
-    const access = await excelAccess(req.auth.company_id);
-    await writeAudit(req.auth, 'company', req.auth.company_id, 'excel_trial_started', { endsAt: access.trialEndsAt });
-    return res.json(access);
+  // Mois illimité du Rapport Premium, payé depuis le portefeuille.
+  app.post('/api/app/reports/premium/month', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+    if (!billing) return res.status(503).json({ error: 'La facturation est momentanément indisponible.' });
+    try {
+      const out = await billing.buyPremiumMonth(req.auth.company_id, req.auth.user_id);
+      await writeAudit(req.auth, 'company', req.auth.company_id, 'premium_month_bought', { until: out.monthUntil, amount: -out.entry.amount });
+      return res.json(await excelAccess(req.auth.company_id));
+    } catch (error) {
+      if (error instanceof BillingError) return res.status(error.status).json({ error: error.message, code: error.code, excel: await excelAccess(req.auth.company_id) });
+      throw error;
+    }
   }));
 
   app.post('/api/app/reports/export', requireCompanyApi, asyncRoute(async (req, res) => {
@@ -180,10 +174,14 @@ module.exports = function registerReports(app, deps) {
     if (!format) return res.status(400).json({ error: 'Choisissez un format.', code: 'BAD_FORMAT' });
     let sel;
     try { sel = reportBundle.normalizeSelection(req.body, String(auth.role || '')); } catch (error) { return reportErrorResponse(res, error); }
+    const payReport = req.body?.pay === 'report';
     if (format === 'xlsx') {
       const access = await excelAccess(auth.company_id);
-      if (access.state !== 'trial') {
-        return res.status(402).json({ error: access.state === 'expired' ? 'Votre essai Excel est terminé. Le CSV et le SVG restent gratuits.' : 'Activez l’essai Excel pour préparer ce classeur.', code: 'EXCEL_ACCESS_REQUIRED', excel: access });
+      if (!access) return res.status(503).json({ error: 'L’Excel enrichi est momentanément indisponible. Le CSV et le SVG restent disponibles.' });
+      if (access.state === 'paid') {
+        if (!payReport) return res.status(402).json({ error: 'Vos rapports offerts sont utilisés. Ce rapport est payant.', code: 'premium_required', excel: access });
+        if (!canPayPremium(auth)) return res.status(403).json({ error: 'Seuls le propriétaire et les responsables peuvent payer un rapport.', code: 'premium_forbidden', excel: access });
+        if (!access.canPayReport) return res.status(402).json({ error: `Solde insuffisant : il faut ${access.reportPrice.toLocaleString('fr-FR')} F sur votre portefeuille.`, code: 'wallet_insufficient', excel: access });
       }
     }
     const logContract = { dataset: `rapport:${sel.sources.join('+')}`, role: auth.role, purpose: 'reporting', period: { from: sel.from, to: sel.to }, columns: sel.fields, filters: { zone: sel.zone, driver: sel.driver, status: sel.status, query: sel.query ? 'oui' : null, format } };
@@ -208,6 +206,26 @@ module.exports = function registerReports(app, deps) {
     else if (format === 'csv') { buffer = await reportBundle.toZip(families); type = 'application/zip'; name = `TRAXO_Export_${stamp}.zip`; }
     else if (format === 'svg') { buffer = Buffer.from(reportBundle.toSvg(families, sel, meta), 'utf8'); type = 'image/svg+xml'; name = `TRAXO_Synthese_${stamp}.svg`; }
     else { buffer = await reportBundle.toXlsx(families, sel, meta); type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; name = `TRAXO_Bilan_activite_${stamp}.xlsx`; }
+    // Rapport Premium : décompté seulement une fois le classeur produit.
+    let premiumVia = null;
+    if (format === 'xlsx') {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const used = await billing.consumePremiumReport(client, auth.company_id, { pay: payReport && canPayPremium(auth) ? 'report' : null, userId: auth.user_id, note: `Rapport ${stamp}` });
+        await client.query('COMMIT');
+        premiumVia = used.via;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        if (error instanceof BillingError) {
+          await recordExportLog(auth, logContract, 'failed', { failureCode: error.code });
+          return res.status(error.status).json({ error: error.message, code: error.code, excel: await excelAccess(auth.company_id) });
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
     await recordExportLog(auth, logContract, 'completed', {
       rowCount: total, worksheetCount: format === 'xlsx' ? families.length + 1 : families.length,
       artifactBytes: buffer.length, artifactSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
@@ -216,6 +234,7 @@ module.exports = function registerReports(app, deps) {
     res.set('Content-Disposition', `attachment; filename="${name}"`);
     res.set('Cache-Control', 'no-store');
     res.set('X-Export-Rows', String(total));
+    if (premiumVia) res.set('X-Premium-Via', premiumVia);
     return res.send(buffer);
   }));
 

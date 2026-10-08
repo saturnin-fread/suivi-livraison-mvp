@@ -1,3 +1,5 @@
+-- 0002 — Schéma CRM (ex-db/crm-schema.sql, appliqué à chaque démarrage jusqu'ici).
+-- Idempotent. Ne plus modifier : nouvelle migration pour toute évolution.
 -- Fondation CRM additive pour suivi-livraison-mvp.
 -- Prérequis : les tables companies, users, customer_requests, orders,
 -- delivery_incidents et order_payment_accounts existent déjà.

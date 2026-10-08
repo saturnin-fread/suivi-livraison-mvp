@@ -81,25 +81,15 @@ function client(cookie) {
   assert.deepStrictEqual([r.data.photo_proof_mode, r.data.signature_proof_mode], ['required', 'optional']);
   assert.strictEqual((await api('PATCH', '/api/app/settings/proofs', { photoMode: 'toujours' })).status, 400);
 
-  // --- Formules : calcul officiel
-  r = await api('GET', '/api/app/billing/quote?plan=flexible&cycle=monthly&drivers=4');
-  assert.deepStrictEqual([r.data.monthlyEquivalent, r.data.periodTotal, r.data.fits], [4000, 4000, true]);
-  r = await api('GET', '/api/app/billing/quote?plan=croissance&cycle=yearly&drivers=14');
-  assert.deepStrictEqual([r.data.monthlyEquivalent, r.data.periodTotal, r.data.periodMonths], [16200, 194400, 12]);
-  r = await api('GET', '/api/app/billing/quote?plan=equipe&cycle=monthly&drivers=20');
-  assert.strictEqual(r.data.fits, false, 'capacité dépassée signalée');
-  assert.strictEqual((await api('GET', '/api/app/billing/quote?plan=grande&cycle=monthly&drivers=80')).status, 400, 'Grande flotte : sur devis');
-  assert.strictEqual((await api('GET', '/api/app/billing/quote?plan=flexible&cycle=weekly&drivers=2')).status, 400);
-  r = await api('POST', '/api/app/billing/plan', { planCode: 'equipe', billingCycle: 'quarterly' });
+  // --- Facturation : portefeuille (paiement à la commande)
+  r = await api('GET', '/api/app/billing/wallet');
   assert.strictEqual(r.status, 200);
-  r = await api('GET', '/api/app/billing/plans');
-  assert.deepStrictEqual([r.data.currentPlan, r.data.billingCycle], ['equipe', 'quarterly']);
-
-  // --- Demande de devis
-  r = await api('POST', '/api/app/billing/quote-request', { email: 'pas-un-email', drivers: 80 });
-  assert.strictEqual(r.status, 400);
-  r = await api('POST', '/api/app/billing/quote-request', { email: owner.email, drivers: 80, message: 'Cotonou et Porto-Novo' });
-  assert.ok([201, 503].includes(r.status), `devis : envoyé ou non configuré (${r.status} ${r.data.error || ''})`);
+  assert.strictEqual(r.data.currency, 'XOF');
+  assert.ok(Number.isInteger(r.data.balance) && r.data.month.nextUnitPrice > 0, 'solde et prix par commande');
+  assert.ok(Array.isArray(r.data.pricing.tiers) && r.data.pricing.tiers.length >= 1, 'paliers de prix');
+  for (const old of ['/api/app/billing/plans', '/api/app/billing/quote?plan=flexible&cycle=monthly&drivers=4']) {
+    assert.strictEqual((await api('GET', old)).status, 404, `ancienne formule retirée (${old})`);
+  }
 
   // --- Numéro WhatsApp
   assert.strictEqual((await api('PATCH', '/api/app/account/phone', { phone: '12' })).status, 400, 'numéro incorrect refusé');

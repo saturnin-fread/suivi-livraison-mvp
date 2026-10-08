@@ -408,3 +408,34 @@
 #traxo-settings .sd-file-line:empty{display:none}
 #traxo-settings .sd-file-line{font-size:12.5px;color:#5d6570}
 @media(max-width:760px){#traxo-settings .sd-row{grid-template-columns:minmax(0,1fr) auto}#traxo-settings .sd-ref{grid-column:1/-1}#traxo-settings .sd-when{display:none}#traxo-settings .sd-msg{max-width:92%}#traxo-settings .sd-q{flex:1 1 100%;min-width:0}}
+/* Portefeuille prépayé (Paramètres › Facturation). */
+:is(#traxo-settings,.tx-modal) .tx-wallet-state{padding:4px 9px;border-radius:5px;font-size:10px;letter-spacing:.3px;border:1px solid #46484e;color:#d1d3d9}
+:is(#traxo-settings,.tx-modal) .tx-wallet-state.tx-wallet-ok{border-color:#2f6b4a;color:#9fe0b9}
+:is(#traxo-settings,.tx-modal) .tx-wallet-state.tx-wallet-low{border-color:#7a5b1f;color:#f3cf84}
+:is(#traxo-settings,.tx-modal) .tx-wallet-state.tx-wallet-over{border-color:#8a2431;color:#ff9aa6}
+:is(#traxo-settings,.tx-modal) .tx-wallet .tx-membership-price{margin:26px 0 12px}
+:is(#traxo-settings,.tx-modal) .tx-wallet-negative{color:#ff9aa6}
+:is(#traxo-settings,.tx-modal) .tx-wallet-line{font-size:12px;color:#c9cbd1;margin-bottom:22px;max-width:440px;min-height:18px}
+:is(#traxo-settings,.tx-modal) .tx-capacity>p strong{color:#fff}
+:is(#traxo-settings,.tx-modal) .tx-tiers{list-style:none;margin:16px 0 4px;padding:0;display:grid;gap:6px}
+:is(#traxo-settings,.tx-modal) .tx-tiers li{display:flex;justify-content:space-between;gap:12px;padding:7px 10px;border:1px solid #393c43;border-radius:7px;font-size:12px;color:#aeb2bc}
+:is(#traxo-settings,.tx-modal) .tx-tiers li strong{color:#e8e9ec;font-variant-numeric:tabular-nums}
+:is(#traxo-settings,.tx-modal) .tx-tiers li.tx-tier-current{border-color:var(--tx-red);color:#fff;background:#2b1d20}
+:is(#traxo-settings,.tx-modal) .tx-ledger{list-style:none;margin:6px 0 14px;padding:0}
+:is(#traxo-settings,.tx-modal) .tx-ledger li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;padding:11px 0;border-bottom:1px solid var(--tx-border);font-size:12px}
+:is(#traxo-settings,.tx-modal) .tx-ledger li>div{min-width:0;display:flex;flex-direction:column}
+:is(#traxo-settings,.tx-modal) .tx-ledger li strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:is(#traxo-settings,.tx-modal) .tx-ledger small{color:var(--tx-muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:is(#traxo-settings,.tx-modal) .tx-ledger-amount{font-variant-numeric:tabular-nums;font-weight:500;white-space:nowrap}
+:is(#traxo-settings,.tx-modal) .tx-ledger-amount.tx-plus{color:#1d7a46}
+:is(#traxo-settings,.tx-modal) .tx-ledger-balance{color:var(--tx-muted);font-variant-numeric:tabular-nums;white-space:nowrap;min-width:72px;text-align:right}
+:is(#traxo-settings,.tx-modal) .tx-recharge-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:4px 0 16px}
+@media(max-width:560px){.tx-modal .tx-recharge-presets{grid-template-columns:repeat(2,minmax(0,1fr))}}
+:is(#traxo-settings,.tx-modal) .tx-bonus-list{display:flex;flex-direction:column;align-items:flex-end;gap:2px;text-align:right}
+:is(#traxo-settings,.tx-modal) .tx-recharge-presets button{padding:12px 8px;border:1px solid var(--tx-border);border-radius:8px;background:#fff;color:var(--tx-ink);font-size:14px;font-weight:500;font-variant-numeric:tabular-nums;cursor:pointer}
+:is(#traxo-settings,.tx-modal) .tx-recharge-presets button[aria-pressed="true"]{border-color:var(--tx-red);background:var(--tx-soft);color:#b0101f}
+.tx-modal #txRechargeRecap{margin-top:16px}
+:is(#traxo-settings,.tx-modal) .tx-form{padding:22px 24px;display:grid;gap:16px;margin-bottom:20px}
+:is(#traxo-settings,.tx-modal) .tx-form-title{font-size:15px;margin-top:8px}
+:is(#traxo-settings,.tx-modal) .tx-rule-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:14px;align-items:end;margin-bottom:10px}
+@container txs (max-width:640px){:is(#traxo-settings,.tx-modal) .tx-ledger li{grid-template-columns:minmax(0,1fr) auto}:is(#traxo-settings,.tx-modal) .tx-ledger-balance{display:none}:is(#traxo-settings,.tx-modal) .tx-rule-row{grid-template-columns:1fr 1fr}:is(#traxo-settings,.tx-modal) .tx-rule-row .tx-text-button{grid-column:1/-1;justify-self:start}}

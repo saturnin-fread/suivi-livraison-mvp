@@ -9,7 +9,10 @@
     base: { type: 'raster', url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' },
   };
   const ASSETS = '/vendor/basemaps-assets';
-  const MAPLIBRE_SCRIPTS = ['/vendor/maplibre-gl/maplibre-gl.js', '/vendor/maplibre-gl-leaflet/leaflet-maplibre-gl.js', '/vendor/protomaps-basemaps/basemaps.js'];
+  // MapLibre 6 n'existe plus qu'en module ES : chargé par import(), puis exposé
+  // en global pour le greffon Leaflet qui lit window.maplibregl.
+  const MAPLIBRE_MODULE = '/vendor/maplibre-gl/maplibre-gl.mjs';
+  const MAPLIBRE_SCRIPTS = ['/vendor/maplibre-gl-leaflet/leaflet-maplibre-gl.js', '/vendor/protomaps-basemaps/basemaps.js'];
   const CANVAS_SCRIPTS = ['/vendor/protomaps-leaflet/protomaps-leaflet.js'];
   let pending = null;
   const loaded = {};
@@ -41,6 +44,17 @@
   }
 
   const loadScripts = (list) => list.reduce((chain, src) => chain.then(() => loadScript(src)), Promise.resolve());
+
+  let maplibrePending = null;
+  function loadMaplibre() {
+    if (!maplibrePending) {
+      maplibrePending = window.maplibregl
+        ? Promise.resolve()
+        : import(MAPLIBRE_MODULE).then((module) => { window.maplibregl = module; });
+      maplibrePending.catch(() => { maplibrePending = null; });
+    }
+    return maplibrePending;
+  }
 
   function webglAvailable() {
     try {
@@ -220,6 +234,7 @@
     if (webglAvailable()) {
       try {
         loadStyle('/vendor/maplibre-gl/maplibre-gl.css');
+        await loadMaplibre();
         await loadScripts(MAPLIBRE_SCRIPTS);
         return maplibreLayer(base);
       } catch (error) {

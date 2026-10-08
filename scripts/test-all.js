@@ -57,6 +57,7 @@ const SUITES = [
   ...['routing', 'rate-limit', 'tracking-links', 'dispatch', 'crm-metrics', 'crm-export', 'crm-xlsx', 'crm-operations-export', 'totp', 'whatsapp', 'eta'].map((n) => unit(n)),
   unit('dashboard-insights', ['node', 'scripts/dashboard-insights-test.js']),
   unit('migrate'),
+  unit('config'),
   ...['smoke', 'customer-flow', 'mfa', 'driver', 'runs', 'payments', 'map', 'crm', 'settings', 'prefilled', 'notifications', 'pickup', 'drivers', 'vigilance', 'ops', 'clients'].map((n) => srv(n, MAIN)),
   srv('dashboard-api', MAIN, ['node', 'scripts/dashboard-api-test.js']),
   srv('auth', { ...MSG, LOGIN_EMAIL_CODE: 'on' }),

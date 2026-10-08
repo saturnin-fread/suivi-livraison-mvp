@@ -55,17 +55,24 @@ Le lanceur démarre lui-même les faux services (GPS, itinéraires, lieux) et un
 
 | Dossier | Contenu |
 |---|---|
-| `server.js` | API Express (en cours de découpage par module) |
+| `server.js` | démarrage, socle HTTP (sessions, rôles, e-mail) et domaines pas encore extraits |
+| `server/modules/<domaine>/` | un domaine métier : `routes.js` (API) et `service.js` (logique, base) |
 | `server/core/` | socle partagé : migrations, configuration |
 | `server/migrations/` | schéma de la base, fichiers numérotés |
-| `lib/` | briques métier réutilisables (routage, CRM, rapports, support…) |
+| `lib/` | briques réutilisables par plusieurs domaines (routage, CRM, exports…) |
 | `public/` | interface web (une page = un module JS + CSS) |
 | `scripts/` | tests, faux services, lanceur de régression |
 | `docs/` | documentation technique et runbooks |
 
+Modules extraits : `support`, `search`, `reports`. Chacun exporte une fonction
+`register…(app, deps)` appelée par `server.js` à l’endroit où vivaient ses routes
+(l’ordre des routes Express est donc inchangé). Ses dépendances sont **explicites** :
+tout ce qu’il utilise du socle lui est passé dans `deps`, rien n’est global.
+Pour ajouter un domaine (facturation, communauté…), créer un dossier sur ce modèle.
+
 ## Architecture et documentation
 
-Le code métier tient dans `server.js` (API Express), le schéma dans `server/migrations/`, le front dans `public/` (`app.js`, `app.css`), et les briques réutilisables dans `lib/`. Le dossier `docs/` documente le modèle de données, la machine à états des commandes, les tournées, le routage, la facturation et les runbooks d’exploitation — commencer par `docs/ARCHITECTURE.md`.
+Le schéma vit dans `server/migrations/`, l’API dans `server.js` et `server/modules/`, le front dans `public/` (`app.js`, `app.css`), et les briques réutilisables dans `lib/`. Le dossier `docs/` documente le modèle de données, la machine à états des commandes, les tournées, le routage, la facturation et les runbooks d’exploitation — commencer par `docs/ARCHITECTURE.md`.
 
 Le lien de démonstration n’existe que si `DEMO_TRACKING_ENABLED=true` et si un jeton local explicite est fourni. Ce mode est refusé en production Railway.
 

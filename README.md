@@ -64,7 +64,8 @@ Le lanceur démarre lui-même les faux services (GPS, itinéraires, lieux) et un
 | `scripts/` | tests, faux services, lanceur de régression |
 | `docs/` | documentation technique et runbooks |
 
-Modules extraits : `support`, `search`, `reports`. Chacun exporte une fonction
+Modules extraits : `billing`, `clients`, `notifications`, `reports`, `search`, `support`,
+`vigilance`, `workspace` (corbeille, vues). Chacun exporte une fonction
 `register…(app, deps)` appelée par `server.js` à l’endroit où vivaient ses routes
 (l’ordre des routes Express est donc inchangé). Ses dépendances sont **explicites** :
 tout ce qu’il utilise du socle lui est passé dans `deps`, rien n’est global.

@@ -140,6 +140,27 @@ async function run() {
          VALUES ($1, $2, $3, 1)`,
         [foreignCompanyId, foreignRun.rows[0].id, foreignOrder.rows[0].id]
       );
+      // Compte chargé : plus de 500 commandes en cours et plus de 100 tournées
+      // jamais clôturées, toutes anciennes. La carte doit garder celles du jour.
+      const filler = await client.query(
+        `INSERT INTO drivers (company_id, name, traccar_unique_id) VALUES ($1, $2, $3) RETURNING id`,
+        [companyId, `Livreur ancien ${marker}`, `old-map-${marker}`]
+      );
+      ids.drivers.push(filler.rows[0].id);
+      const oldOrders = await client.query(
+        `INSERT INTO orders (company_id, driver_id, customer_name, delivery_address, status, created_at, updated_at)
+         SELECT $1, $2, 'Ancienne ' || g, 'Ancienne adresse', 'Confirmée', NOW() - INTERVAL '30 days', NOW() - INTERVAL '30 days'
+         FROM generate_series(1, 505) g RETURNING id`,
+        [companyId, filler.rows[0].id]
+      );
+      ids.orders.push(...oldOrders.rows.map((row) => row.id));
+      const oldRuns = await client.query(
+        `INSERT INTO delivery_runs (company_id, driver_id, name, service_date, status, create_idempotency_key, create_fingerprint)
+         SELECT $1, $2, 'Ancienne tournée ' || g, CURRENT_DATE - 60 - g, 'active', $3 || g, $4
+         FROM generate_series(1, 105) g RETURNING id`,
+        [companyId, filler.rows[0].id, `old-map-run:${marker}:`, marker]
+      );
+      ids.runs.push(...oldRuns.rows.map((row) => row.id));
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');

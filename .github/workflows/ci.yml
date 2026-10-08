@@ -1,0 +1,52 @@
+# Vérification automatique : à chaque pull request et à chaque push sur main,
+# toute la régression tourne sur une base PostgreSQL vierge. Une PR rouge ne
+# doit pas être fusionnée (Railway déploie automatiquement main).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: traxo
+          POSTGRES_PASSWORD: traxo
+          POSTGRES_DB: traxo_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U traxo -d traxo_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      # Valeurs de test uniquement, sans rapport avec la production.
+      DATABASE_URL: postgres://traxo:traxo@127.0.0.1:5432/traxo_test
+      SESSION_SECRET: ci-session-secret-0123456789abcdef0123456789
+      TRACKING_TOKEN_SECRET: ci-tracking-secret-0123456789abcdef012345
+      OTP_PEPPER: ci-otp-pepper-0123456789abcdef
+      MFA_SECRET: ci-mfa-secret-0123456789abcdef
+      ADMIN_USER: owner@ci.test
+      ADMIN_PASSWORD: ci-owner-password-42
+      PLATFORM_ADMIN_USER: platform@ci.test
+      PLATFORM_ADMIN_PASSWORD: ci-platform-password-42
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Régression complète
+        run: node scripts/test-all.js
+      - name: Journaux en cas d'échec
+        if: failure()
+        run: for f in /tmp/traxo-tests-*/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done

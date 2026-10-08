@@ -2,6 +2,12 @@
 
 Cette documentation est la source de reprise du projet. Elle décrit le fonctionnement métier, l’architecture, les décisions, les risques et les procédures de déploiement.
 
+## Développer sans casser
+
+- **Tests** : `node scripts/test-all.js` (voir le README racine). La même régression tourne sur chaque pull request ; une PR rouge ne se fusionne pas.
+- **Base de données** : toute évolution du schéma passe par un nouveau fichier `server/migrations/NNNN_description.sql`, jamais par une modification d'un fichier déjà appliqué.
+- **Configuration** : `.env.example` liste toutes les variables ; le serveur signale au démarrage ce qui manque.
+
 ## Documents
 
 - [Plan d'action priorisé](ROADMAP.md)

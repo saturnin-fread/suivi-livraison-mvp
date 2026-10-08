@@ -50,7 +50,8 @@
     "test:prices": "node scripts/prices-test.js",
     "test:trash": "node scripts/trash-test.js",
     "test:invite-google": "node scripts/invite-google-test.js",
-    "test:config": "node scripts/config-test.js"
+    "test:config": "node scripts/config-test.js",
+    "test:billing": "node scripts/billing-test.js"
   },
   "engines": {
     "node": ">=20"

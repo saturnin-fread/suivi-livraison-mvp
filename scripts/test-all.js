@@ -68,6 +68,7 @@ const SUITES = [
   srv('map-with-gps', TRACCAR, npm('test:map')),
   srv('live-route', { ...TRACCAR, ROUTING_PROVIDER: 'osrm', ROUTING_OSRM_URL: `http://127.0.0.1:${FAKES.osrm}`, EXPECT_ROUTING: '1' }),
   ...['places', 'reports', 'search', 'support', 'prices', 'trash'].map((n) => srv(n, { GEOCODER_URL: `http://127.0.0.1:${FAKES.geocoder}` })),
+  srv('billing', { BILLING_TEST_PAYMENTS: 'on' }),
 ];
 
 const args = process.argv.slice(2);

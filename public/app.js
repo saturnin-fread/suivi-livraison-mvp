@@ -2109,6 +2109,7 @@ async function renderSettings() {
     if (isDirty() && !(await uiConfirm('Quitter sans enregistrer ?', { message: 'Vos modifications de cette rubrique seront perdues.', confirmLabel: 'Quitter sans enregistrer', cancelLabel: 'Rester ici' }))) return;
     section = route;
     try { history.replaceState(null, '', `/app/parametres?section=${route}`); } catch { /* ignore */ }
+    activateNavigation(); // Facturation a sa propre entrée de menu
     load();
     root.scrollIntoView({ block: 'start' });
   }
@@ -2530,7 +2531,7 @@ async function renderSettings() {
 
   async function billing(box) {
     if (!window.TraxoBilling) throw new Error('La facturation n’a pas pu être chargée. Rechargez la page.');
-    await window.TraxoBilling.render(box, { api, context, uiToast, setHeader });
+    await window.TraxoBilling.render(box, { api, context, uiToast, setHeader, activateNavigation });
   }
 
   // ---- Facturation TRAXO (administrateur plateforme) -----------------------

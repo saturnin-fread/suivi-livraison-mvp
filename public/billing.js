@@ -205,6 +205,7 @@
     const v = VIEW_PARAM[S.view] ?? null;
     if (v) params.set('vue', v); else params.delete('vue');
     try { history.replaceState(null, '', `/app/parametres?${params}`); } catch { /* ignore */ }
+    S.deps.activateNavigation?.();
   }
 
   async function render(box, deps) {

@@ -15,7 +15,14 @@
 #traxoBilling button, .bl-drawer button { border: 0; background: none; color: inherit; cursor: pointer; transition: background .17s, color .17s, box-shadow .17s, transform .17s; }
 #traxoBilling button:disabled, .bl-drawer button:disabled { opacity: .42; cursor: not-allowed; }
 #traxoBilling button:active:not(:disabled) { transform: translateY(1px); }
-#traxoBilling :is(button, a, input, select, summary):focus-visible, .bl-drawer :is(button, a, input, summary):focus-visible { outline: 3px solid #e7798a; outline-offset: 3px; border-radius: 6px; }
+/* Focus : contour visible au clavier pour les boutons et liens. Les champs
+   (texte, liste, curseur) ont leur propre indication, plus discrète, car le
+   navigateur affiche aussi leur focus au clic. */
+#traxoBilling :is(button, a, summary):focus-visible, .bl-drawer :is(button, a, summary):focus-visible { outline: 2px solid #eb142c73; outline-offset: 2px; border-radius: 6px; }
+#traxoBilling :is(input, select):focus, .bl-drawer :is(input, select):focus { outline: none; }
+#traxoBilling .bl-searchfield input:focus, #traxoBilling .bl-select:focus { border-color: #eeb0ba; box-shadow: 0 0 0 3px #eb142c12; }
+#traxoBilling .bl-range input:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 6px #eb142c26; }
+#traxoBilling .bl-range input:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 6px #eb142c26; }
 .bl-ico, #traxoBilling .bl-ico { width: 18px; height: 18px; stroke-width: 1.7; flex: none; vertical-align: middle; }
 .bl-sr, #traxoBilling .bl-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
@@ -329,7 +336,7 @@ html.bl-drawer-open { overflow: hidden; }
 .bl-formfield, #traxoBilling .bl-formfield { margin-top: 20px; }
 .bl-inputbox, #traxoBilling .bl-inputbox { display: flex; align-items: center; border: 1px solid #dee4dc; border-radius: 9px; background: #fff; overflow: hidden; }
 .bl-inputbox input, #traxoBilling .bl-inputbox input { border: 0; background: transparent; width: 100%; padding: 12px 15px; color: #2f363b; min-width: 0; font-size: 18px; outline: none; }
-.bl-inputbox:focus-within, #traxoBilling .bl-inputbox:focus-within { outline: 2px solid #e7798a; outline-offset: 2px; }
+.bl-inputbox:focus-within, #traxoBilling .bl-inputbox:focus-within { border-color: #eeb0ba; box-shadow: 0 0 0 3px #eb142c12; }
 .bl-inputbox > span, #traxoBilling .bl-inputbox > span { font-size: 12px; padding-right: 16px; color: #8b959b; }
 .bl-help, #traxoBilling .bl-help { font-size: 12px; color: #7e878d; margin-top: 8px; }
 .bl-detail-top, #traxoBilling .bl-detail-top { text-align: center; padding: 6px 0 22px; }
@@ -353,7 +360,7 @@ html.bl-drawer-open { overflow: hidden; }
 .bl-gauge { padding: 0 2px 6px; }
 .bl-gauge-card { font: inherit; text-align: left; display: block; width: 100%; border: 1px solid #e7e7e5; background: #fff; border-radius: 12px; padding: 12px 13px; color: #373a40; cursor: pointer; transition: background .18s, box-shadow .18s; }
 .bl-gauge-card:hover { background: #fafaf8; box-shadow: 0 3px 12px #29272708; }
-.bl-gauge-card:focus-visible, .bl-gauge-pill:focus-visible { outline: 3px solid #e7798a; outline-offset: 2px; }
+.bl-gauge-card:focus-visible, .bl-gauge-pill:focus-visible { outline: 2px solid #eb142c73; outline-offset: 2px; }
 .bl-gauge-top { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: #6f757c; }
 .bl-gauge-top b { font-size: 12px; font-weight: 600; color: #3f464b; }
 .bl-gauge-line { display: block; height: 4px; border-radius: 6px; background: #eceeea; margin: 10px 0 8px; overflow: hidden; }

@@ -534,5 +534,22 @@
     summaryTimer = setInterval(() => { if (document.visibilityState === 'visible') refreshSummary(); }, 60000);
   }
 
-  window.TraxoSupport = { init, open: (id) => open(id), close, isOpen: () => S.open };
+  // Nouvelle demande préremplie (ex. : demande de recharge depuis la
+  // facturation). Rien n'est envoyé : la personne relit puis crée la demande.
+  function compose({ subject = '', category = null, text = '' } = {}) {
+    if (!D) return false;
+    mount();
+    const d = draftOf('new');
+    d.subject = String(subject).slice(0, 120);
+    d.text = String(text).slice(0, 5000);
+    if (category && CATEGORIES.some(([k]) => k === category)) d.category = category;
+    d.key = null;
+    saveDrafts();
+    stopRecording(true); stopPolling();
+    S.view = 'new'; S.sendError = ''; S.notice = '';
+    open();
+    return true;
+  }
+
+  window.TraxoSupport = { init, open: (id) => open(id), compose, close, isOpen: () => S.open };
 })();

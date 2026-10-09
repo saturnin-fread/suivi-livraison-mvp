@@ -77,7 +77,10 @@ production.
 - les champs exacts de la réponse de vérification (`status`, `amount`,
   `state`) ;
 - l'ajout du webhook Kkiapay (notification serveur à serveur), utile si le
-  navigateur se ferme juste après le paiement.
+  navigateur se ferme juste après le paiement ;
+- la fermeture du widget sans payer : la page s'appuie sur
+  `addKkiapayCloseListener` s'il existe, pour rendre le bouton « Payer »
+  de nouveau utilisable.
 
 ## Rapport Premium (Excel enrichi)
 
@@ -102,6 +105,60 @@ Le CSV et le SVG restent gratuits. L'Excel enrichi suit ces règles :
 Données : `company_export_access.premium_free_used` et `premium_month_until`
 (migration `0004`). Les paiements apparaissent dans le journal sous les types
 `premium_report` et `premium_month`.
+
+## Page Facturation (Paramètres › Facturation)
+
+Front : `public/billing.js` et `public/billing.css`, d'après le kit
+« Facturation TRAXO » V2.2. Toutes les valeurs viennent de l'API. Un solde
+ou un volume inconnu s'affiche « — », jamais 0.
+
+- **Portefeuille** : le solde, le bouton Recharger, l'activité du mois et
+  les trois derniers mouvements. L'activité compte les commandes débitées
+  par jour depuis le 1er (`month.daily` dans `GET /api/app/billing/wallet`).
+  Les commandes de l'essai gratuit n'y figurent pas.
+- **Mouvements** : `GET /api/app/billing/movements` accepte `category`,
+  `q`, `month` (`AAAA-MM`), `page` et `pageSize`. Sans recherche, les débits
+  de commandes sont regroupés par jour. Le détail d'un jour est servi par
+  `GET /api/app/billing/movements/day/AAAA-MM-JJ`. L'export
+  `GET /api/app/billing/movements.csv` contient toutes les lignes filtrées,
+  sans regroupement. Le séparateur est `;` et une cellule qui commence par
+  `=`, `+`, `-` ou `@` est neutralisée. Ces trois routes sont réservées au
+  propriétaire et aux responsables.
+- **Tarifs & bonus** : les paliers, la progression vers le palier suivant et
+  les bonus de recharge.
+- **Recharge en deux étapes** : on choisit le montant, puis on le confirme.
+  - Paiement ouvert : le widget Kkiapay s'ouvre ; le solde ne change
+    qu'après vérification par le serveur.
+  - Paiement fermé (cas actuel) : « Préparer ma demande » ouvre une demande
+    au support déjà remplie (`TraxoSupport.compose`). Rien n'est envoyé avant
+    que la personne relise et valide.
+- **Jauge d'utilisation** : elle est dans la navigation, pour le propriétaire
+  et les responsables. Elle mesure la progression entre deux paliers de prix
+  du mois ; ce n'est ni un crédit restant ni un quota.
+
+**« Commandes offertes » (présentation seulement).** Le portefeuille reste
+en FCFA et aucun quota n'est créé. Le calcul :
+
+    achetées = ⌊montant ÷ P⌋
+    total    = ⌊(montant + bonus) ÷ P⌋
+    offertes = total − achetées
+
+P est le prix le plus élevé de la grille (25 F aujourd'hui). La page
+l'affiche comme une estimation, avec astérisque. Une commande facturée à un
+palier inférieur coûte moins cher : le crédit couvre alors davantage de
+commandes. L'économie équivalente vaut bonus ÷ (montant + bonus). Ce n'est
+pas le taux du bonus.
+
+**Alerte de solde bas** : `PUT /api/app/billing/preferences` prend
+`{ alertEnabled, threshold }`. Le seuil est en francs ; `null` revient au
+seuil par défaut, soit `lowBalanceOrders` commandes au prix de la prochaine.
+Ce seuil sert aussi à l'état « Solde bas » de la page. Sous le seuil, une
+notification « À traiter » apparaît dans la cloche du propriétaire et des
+responsables, à condition que l'espace ait déjà été crédité (recharge ou
+correction TRAXO). Elle réapparaît après chaque recharge si le solde redescend.
+Aucune recharge automatique n'est déclenchée. Données :
+`wallets.low_balance_alert` et `wallets.low_balance_threshold`
+(migration `0005`).
 
 ## Correction par l'équipe TRAXO
 

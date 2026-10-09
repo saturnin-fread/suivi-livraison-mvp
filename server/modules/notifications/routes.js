@@ -4,7 +4,7 @@ module.exports = function registerNotifications(app, deps) {
   const {
     pool, asyncRoute, requireCompanyApi, writeAudit, support, companySignals, describeDevice,
     parseCookies, digest, emailConfigured, sendEmail, renderEmailShell, escHtmlServer,
-    publicBaseUrl, companyTimezones, terminalOrderStatuses, DASHBOARD_TZ,
+    publicBaseUrl, companyTimezones, terminalOrderStatuses, DASHBOARD_TZ, billing,
   } = deps;
 
   // Les notifications sont calculées à partir de l'état métier (demandes, incidents,
@@ -199,6 +199,20 @@ module.exports = function registerNotifications(app, deps) {
           id: `vigil-${sig.id}`, category: 'security', type: 'vigilance', priority: 'security',
           title: sig.title, summary: sig.summary, meta: 'Vigilance', detail: sig.detail,
           ref: sig.summary, at: sig.at, href: sig.href || '/app/livreurs', cta: sig.cta || 'Voir',
+        });
+      }
+    }
+    // Facturation : solde sous le seuil d'alerte choisi (propriétaire et responsables).
+    if (billing && ['owner', 'manager'].includes(role)) {
+      const low = await billing.lowBalanceNotice(cid).catch(() => null);
+      if (low) {
+        const money = (n) => `${n < 0 ? '−' : ''}${Math.abs(n).toLocaleString('fr-FR')} F`;
+        items.push({
+          id: `wallet-${low.key}`, category: 'billing', type: 'billing', priority: 'action',
+          title: low.balance < 0 ? 'Votre portefeuille est à découvert' : 'Votre solde est bas',
+          summary: `Solde : ${money(low.balance)} · alerte sous ${money(low.threshold)}`, meta: 'Facturation',
+          detail: 'Rechargez votre portefeuille pour continuer à créer vos commandes sans interruption. Vous pouvez changer ce seuil dans Facturation › Préférences.',
+          ref: 'Portefeuille', at: low.at, href: '/app/parametres?section=billing', cta: 'Recharger',
         });
       }
     }

@@ -216,6 +216,8 @@ function unitChecks() {
     const notif = async (cookie) => (await call('GET', '/api/app/notifications', { cookie })).data.items.filter((i) => i.type === 'billing');
     assert.strictEqual((await notif(owner)).length, 1, 'alerte de solde bas');
     assert.strictEqual((await notif(operator)).length, 0, 'pas d’alerte pour un opérateur');
+    assert.strictEqual((await prefs({ alertEnabled: true, threshold: 10000 }, other)).status, 200);
+    assert.strictEqual((await notif(other)).length, 0, 'espace jamais crédité : pas d’alerte');
     await prefs({ alertEnabled: false, threshold: 10000 });
     assert.strictEqual((await notif(owner)).length, 0, 'alerte désactivée');
     r = await prefs({ alertEnabled: true, threshold: null });

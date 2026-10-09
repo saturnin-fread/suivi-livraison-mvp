@@ -383,13 +383,16 @@ function createBilling({ pool, provider = null }) {
 
   // Alerte de solde bas à afficher dans les notifications, ou null. La clé
   // change à chaque recharge : une alerte lue réapparaît après la recharge
-  // suivante si le solde redescend.
+  // suivante si le solde redescend. Un espace jamais crédité (ni recharge ni
+  // correction TRAXO) n'est pas alerté : tant que le paiement en ligne n'est
+  // pas ouvert, ce serait une alerte permanente que personne ne peut traiter.
   async function lowBalanceNotice(companyId) {
+    const last = (await pool.query(
+      `SELECT MAX(id) AS id FROM wallet_entries WHERE company_id = $1 AND kind IN ('recharge', 'adjustment') AND amount > 0`, [companyId]
+    )).rows[0];
+    if (!last.id) return null;
     const w = await summary(companyId);
     if (!w.alert.enabled || w.trial.active || w.balance >= w.alert.threshold) return null;
-    const last = (await pool.query(
-      `SELECT MAX(id) AS id FROM wallet_entries WHERE company_id = $1 AND kind IN ('recharge', 'adjustment')`, [companyId]
-    )).rows[0];
     const since = (await pool.query(
       `SELECT MIN(created_at) AS at FROM wallet_entries WHERE company_id = $1 AND balance_after < $2 AND id > COALESCE($3, 0)`,
       [companyId, w.alert.threshold, last.id]

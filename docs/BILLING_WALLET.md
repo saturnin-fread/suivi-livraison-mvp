@@ -154,7 +154,8 @@ pas le taux du bonus.
 seuil par défaut, soit `lowBalanceOrders` commandes au prix de la prochaine.
 Ce seuil sert aussi à l'état « Solde bas » de la page. Sous le seuil, une
 notification « À traiter » apparaît dans la cloche du propriétaire et des
-responsables. Elle réapparaît après chaque recharge si le solde redescend.
+responsables, à condition que l'espace ait déjà été crédité (recharge ou
+correction TRAXO). Elle réapparaît après chaque recharge si le solde redescend.
 Aucune recharge automatique n'est déclenchée. Données :
 `wallets.low_balance_alert` et `wallets.low_balance_threshold`
 (migration `0005`).

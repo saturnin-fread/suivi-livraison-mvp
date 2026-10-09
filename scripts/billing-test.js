@@ -158,6 +158,69 @@ function unitChecks() {
     await assert.rejects(() => pool.query('DELETE FROM wallet_entries WHERE company_id = $1', [cid]), /journal/);
     led = (await call('GET', '/api/app/billing/ledger?limit=2', { cookie: owner })).data;
     assert.strictEqual(led.entries.length, 2); assert.strictEqual(led.more, true, 'historique paginé');
+
+    // Activité du mois : commandes débitées par jour, jours vides compris.
+    w = await wallet();
+    assert.strictEqual(w.month.daily.reduce((n, d) => n + d.orders, 0), 4, 'activité : 4 commandes débitées ce mois-ci');
+    assert.strictEqual(w.month.daily[w.month.daily.length - 1].orders, 4, 'activité : aujourd’hui en dernier');
+    assert.strictEqual(w.month.daily.length, new Date(w.month.daily[w.month.daily.length - 1].day).getUTCDate(), 'un point par jour depuis le 1er');
+    assert.deepStrictEqual([w.alert.enabled, w.alert.custom, w.alert.threshold], [true, false, 20 * w.month.nextUnitPrice], 'seuil d’alerte par défaut');
+
+    // Mouvements : regroupés par jour, filtrés, paginés, isolés par rôle.
+    const mv = async (qs = '', cookie = owner) => call('GET', `/api/app/billing/movements${qs}`, { cookie });
+    assert.strictEqual((await mv('', viewer)).status, 403, 'lecture seule : pas les mouvements');
+    r = await mv();
+    assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+    assert.strictEqual(r.data.total, 5, `4 débits regroupés + remboursement, recharge, bonus, correction (${r.data.total})`);
+    const dayRow = r.data.items.find((i) => i.type === 'day');
+    assert.deepStrictEqual([dayRow.count, dayRow.amount, dayRow.unitPrice, dayRow.unitPriceRange], [4, -70, null, [10, 25]], 'ligne du jour');
+    assert.ok(r.data.months.length >= 1, 'mois disponibles');
+    r = await mv('?category=orders');
+    assert.deepStrictEqual([r.data.total, r.data.items[0].count], [1, 4], 'filtre commandes');
+    assert.strictEqual((await mv('?category=refunds')).data.items[0].kind, 'order_refund', 'filtre remboursements');
+    assert.strictEqual((await mv('?category=inconnu')).data.total, 5, 'catégorie inconnue ignorée');
+    const ref1 = led.entries.length && (await pool.query(`SELECT order_reference FROM wallet_entries WHERE order_id = $1 AND kind = 'order_charge'`, [o1])).rows[0].order_reference;
+    r = await mv(`?q=${encodeURIComponent(ref1)}`);
+    assert.strictEqual(r.data.grouped, false, 'recherche : pas de regroupement');
+    assert.ok(r.data.items.every((i) => i.orderReference === ref1) && r.data.total === 1, 'recherche par référence');
+    assert.strictEqual((await mv('?q=%25')).data.total, 0, 'joker échappé');
+    r = await mv('?pageSize=2&page=3');
+    assert.deepStrictEqual([r.data.items.length, r.data.total, r.data.page], [1, 5, 3], 'pagination');
+    assert.strictEqual((await mv('?month=2000-01')).data.total, 0, 'filtre période');
+    assert.strictEqual((await mv(`?month=${w.month.daily[0].day.slice(0, 7)}`)).data.total, 5, 'mois en cours');
+    r = await call('GET', `/api/app/billing/movements/day/${dayRow.day}`, { cookie: owner });
+    assert.strictEqual(r.data.orders.length, 4, 'détail du jour');
+    assert.strictEqual(r.data.orders.filter((o) => o.refunded).length, 1, 'commande remboursée signalée');
+    assert.strictEqual((await call('GET', '/api/app/billing/movements/day/demain', { cookie: owner })).status, 400);
+    assert.strictEqual((await call('GET', `/api/app/billing/movements/day/${dayRow.day}`, { cookie: other })).data.orders.length, 0, 'jour isolé par entreprise');
+
+    // Export CSV : toutes les lignes filtrées, sans formule de tableur.
+    await call('POST', '/api/app/platform/billing/adjustments', { cookie: agent, body: { companyId: cid, amount: 1, note: '=1+1 essai' } });
+    const csvRes = await fetch(`${base}/api/app/billing/movements.csv`, { headers: { Cookie: owner } });
+    const csv = await csvRes.text();
+    assert.strictEqual(csvRes.status, 200); assert.ok(/text\/csv/.test(csvRes.headers.get('content-type')));
+    assert.strictEqual(csv.trim().split('\r\n').length, 1 + 9, 'en-tête + 9 mouvements');
+    assert.ok(csv.includes("'=1+1 essai") && !/;=1\+1/.test(csv), 'formule neutralisée');
+    const csvOrders = await (await fetch(`${base}/api/app/billing/movements.csv?category=orders`, { headers: { Cookie: owner } })).text();
+    assert.strictEqual(csvOrders.trim().split('\r\n').length, 1 + 4, 'export filtré : une ligne par commande');
+    assert.strictEqual((await fetch(`${base}/api/app/billing/movements.csv`, { headers: { Cookie: viewer } })).status, 403);
+
+    // Préférences : seuil d'alerte, notification au propriétaire seulement.
+    const prefs = (body, cookie = owner) => call('PUT', '/api/app/billing/preferences', { cookie, body });
+    assert.strictEqual((await prefs({ alertEnabled: true, threshold: 1000 }, operator)).status, 403);
+    assert.strictEqual((await prefs({ alertEnabled: true, threshold: -5 })).status, 400);
+    assert.strictEqual((await prefs({ threshold: 1000 })).status, 400, 'activation requise');
+    r = await prefs({ alertEnabled: true, threshold: 10000 });
+    assert.deepStrictEqual([r.status, r.data.alert.threshold, r.data.alert.custom], [200, 10000, true]);
+    assert.strictEqual((await wallet()).state, 'low', 'sous le seuil choisi');
+    const notif = async (cookie) => (await call('GET', '/api/app/notifications', { cookie })).data.items.filter((i) => i.type === 'billing');
+    assert.strictEqual((await notif(owner)).length, 1, 'alerte de solde bas');
+    assert.strictEqual((await notif(operator)).length, 0, 'pas d’alerte pour un opérateur');
+    await prefs({ alertEnabled: false, threshold: 10000 });
+    assert.strictEqual((await notif(owner)).length, 0, 'alerte désactivée');
+    r = await prefs({ alertEnabled: true, threshold: null });
+    assert.deepStrictEqual([r.data.alert.custom, r.data.alert.enabled], [false, true], 'retour au seuil par défaut');
+    assert.strictEqual((await notif(owner)).length, 0, 'solde au-dessus du seuil par défaut');
     console.log('billing-test: OK');
   } finally {
     await pool.query(`UPDATE billing_settings SET overrides = $1 WHERE id = TRUE`, [JSON.stringify(savedOverrides)]).catch(() => {});

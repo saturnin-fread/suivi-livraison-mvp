@@ -2,6 +2,19 @@
 
 Ce document est la feuille de route de référence. L'ordre des phases suit les dépendances métier et techniques. Une phase n'est considérée terminée que lorsque ses critères d'acceptation sont vérifiés.
 
+## En attente (à reprendre)
+
+- **Paiement Kkiapay** (attend les clés du propriétaire) : mettre
+  `KKIAPAY_PUBLIC_KEY`, `KKIAPAY_PRIVATE_KEY`, `KKIAPAY_SECRET_KEY` et
+  `KKIAPAY_SANDBOX=true` dans Railway (delivery-app, jamais dans le dépôt), puis :
+  1. valider un vrai paiement en bac à sable (champs exacts de la réponse de
+     vérification, fermeture du widget sans payer) ;
+  2. brancher le webhook Kkiapay ;
+  3. activer « Bloquer au-delà du découvert » dans Paramètres › Tarifs TRAXO.
+  Détails : [BILLING_WALLET.md](BILLING_WALLET.md).
+- **Décisions** : prix TTC ou HT ; factures normalisées (e-MECeF) avec un
+  comptable ; relecture juridique des conditions d'utilisation (section 5).
+
 ## État de départ
 
 Le prototype permet actuellement de :

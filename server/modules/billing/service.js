@@ -102,6 +102,25 @@ function bonusFor(settings, amount) {
   return { percent, bonus: Math.floor((amount * percent) / 100) };
 }
 
+// Catégories de la vue « Mouvements » (filtre) : type(s) du journal.
+const MOVEMENT_CATEGORIES = Object.freeze({
+  orders: ['order_charge'],
+  refunds: ['order_refund'],
+  recharges: ['recharge'],
+  bonus: ['bonus'],
+  premium: ['premium_report', 'premium_month'],
+  adjustments: ['adjustment'],
+});
+
+// Filtres de mouvements reçus de la requête : valeurs inconnues ignorées.
+function movementFilters({ category, q, month } = {}) {
+  const kinds = MOVEMENT_CATEGORIES[String(category || '')] || null;
+  const text = String(q || '').trim().slice(0, 60);
+  const like = text ? `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.test(String(month || '')) ? String(month) : null;
+  return { kinds, like, month: m };
+}
+
 function newReference(prefix) {
   const year = new Date().getFullYear();
   return `${prefix}-${year}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
@@ -207,26 +226,59 @@ function createBilling({ pool, provider = null }) {
     });
   }
 
+  // Commandes débitées par jour depuis le début du mois (fuseau de Porto-Novo),
+  // jours sans commande compris, jusqu'à aujourd'hui.
+  async function monthDaily(q, companyId) {
+    return (await q.query(
+      `WITH bounds AS (SELECT date_trunc('month', NOW() AT TIME ZONE '${TZ}')::date AS first, (NOW() AT TIME ZONE '${TZ}')::date AS today)
+       SELECT to_char(d, 'YYYY-MM-DD') AS day, COALESCE(c.n, 0)::int AS orders
+       FROM bounds, generate_series(bounds.first, bounds.today, INTERVAL '1 day') AS d
+       LEFT JOIN (
+         SELECT (created_at AT TIME ZONE '${TZ}')::date AS day, COUNT(*) AS n FROM wallet_entries
+         WHERE company_id = $1 AND kind = 'order_charge'
+           AND created_at >= (date_trunc('month', NOW() AT TIME ZONE '${TZ}') AT TIME ZONE '${TZ}')
+         GROUP BY 1
+       ) c ON c.day = d::date
+       ORDER BY d`,
+      [companyId]
+    )).rows;
+  }
+
+  // Seuil d'alerte effectif : celui choisi par l'entreprise, sinon N commandes
+  // au prix de la prochaine commande.
+  function alertOf(s, wallet, nextPrice) {
+    const defaultThreshold = s.lowBalanceOrders * nextPrice;
+    const custom = wallet.low_balance_threshold != null;
+    return {
+      enabled: wallet.low_balance_alert !== false,
+      threshold: custom ? Number(wallet.low_balance_threshold) : defaultThreshold,
+      custom, defaultThreshold,
+    };
+  }
+
   async function summary(companyId) {
     const s = await settings();
     await pool.query('INSERT INTO wallets (company_id) VALUES ($1) ON CONFLICT (company_id) DO NOTHING', [companyId]);
-    const [wallet, count, trial] = await Promise.all([
-      pool.query('SELECT balance FROM wallets WHERE company_id = $1', [companyId]).then((r) => r.rows[0]),
+    const [wallet, count, trial, daily] = await Promise.all([
+      pool.query('SELECT balance, low_balance_alert, low_balance_threshold FROM wallets WHERE company_id = $1', [companyId]).then((r) => r.rows[0]),
       monthCharges(pool, companyId),
       trialActive(pool, companyId),
+      monthDaily(pool, companyId),
     ]);
     const balance = Number(wallet.balance);
     const nextPrice = unitPriceFor(s, count + 1);
     const floor = -(s.overdraftOrders * nextPrice);
     const ordersLeft = nextPrice > 0 ? Math.max(0, Math.floor((balance - floor) / nextPrice)) : null;
+    const alert = alertOf(s, wallet, nextPrice);
     let state = 'ok';
     if (balance < 0) state = 'overdraft';
-    else if (nextPrice > 0 && balance < s.lowBalanceOrders * nextPrice) state = 'low';
+    else if (balance < alert.threshold) state = 'low';
     if (s.enforcement && ordersLeft === 0) state = 'blocked';
     return {
       currency: 'XOF', balance, state, ordersLeft, enforcement: s.enforcement,
       overdraft: { orders: s.overdraftOrders, amount: -floor },
-      month: { orders: count, nextUnitPrice: nextPrice },
+      month: { orders: count, nextUnitPrice: nextPrice, daily },
+      alert,
       trial: { active: trial.active && s.freeDuringTrial, endsAt: trial.endsAt },
       pricing: { tiers: s.tiers, rechargeBonus: s.rechargeBonus, pricesIncludeTax: s.pricesIncludeTax, premium: s.premium },
       recharge: {
@@ -247,6 +299,102 @@ function createBilling({ pool, provider = null }) {
       [companyId, before, lim + 1]
     )).rows;
     return { entries: rows.slice(0, lim), more: rows.length > lim };
+  }
+
+  // Requête commune aux mouvements filtrés ($1 entreprise, $2 types, $3 recherche, $4 mois).
+  const MOVEMENT_BASE = `
+    SELECT e.id, e.kind, e.amount, e.balance_after, e.order_id, e.order_reference, e.unit_price, e.note, e.created_at,
+           p.reference AS payment_reference, (e.created_at AT TIME ZONE '${TZ}')::date AS day
+    FROM wallet_entries e LEFT JOIN wallet_payments p ON p.id = e.payment_id
+    WHERE e.company_id = $1
+      AND ($2::text[] IS NULL OR e.kind = ANY($2))
+      AND ($3::text IS NULL OR e.order_reference ILIKE $3 OR p.reference ILIKE $3 OR e.note ILIKE $3)
+      AND ($4::text IS NULL OR (
+        e.created_at >= (to_date($4, 'YYYY-MM')::timestamp AT TIME ZONE '${TZ}')
+        AND e.created_at < ((to_date($4, 'YYYY-MM') + INTERVAL '1 month')::timestamp AT TIME ZONE '${TZ}')))`;
+
+  // Mouvements de la vue « Mouvements » : filtrés, paginés. Sans recherche,
+  // les débits de commandes sont regroupés par jour (une ligne « 36 commandes »),
+  // le détail d'un jour restant consultable (dayOrders).
+  async function movements(companyId, { category, q, month, page = 1, pageSize = 20, group = true } = {}) {
+    const f = movementFilters({ category, q, month });
+    const size = Math.max(1, Math.min(100, Number(pageSize) || 20));
+    const current = Math.max(1, Math.min(10000, Number(page) || 1));
+    const grouped = Boolean(group) && !f.like;
+    const rows = (await pool.query(
+      `WITH base AS (${MOVEMENT_BASE}), items AS (
+         SELECT 'entry' AS type, id, kind, amount, balance_after, order_id, order_reference, unit_price, note, created_at,
+                payment_reference, 1 AS count, NULL::text AS day, NULL::int AS min_price, NULL::int AS max_price
+         FROM base WHERE NOT ($5 AND kind = 'order_charge')
+         UNION ALL
+         SELECT 'day', MAX(id), 'order_charge', SUM(amount)::int, NULL, NULL, NULL, NULL, NULL, MAX(created_at),
+                NULL, COUNT(*)::int, to_char(day, 'YYYY-MM-DD'), MIN(unit_price), MAX(unit_price)
+         FROM base WHERE $5 AND kind = 'order_charge' GROUP BY day
+       )
+       SELECT *, COUNT(*) OVER ()::int AS total FROM items ORDER BY created_at DESC, id DESC LIMIT $6 OFFSET $7`,
+      [companyId, f.kinds, f.like, f.month, grouped, size, (current - 1) * size]
+    )).rows;
+    return { items: rows, total: rows.length ? rows[0].total : 0, page: current, pageSize: size, grouped };
+  }
+
+  // Commandes débitées un jour donné (détail d'une ligne regroupée).
+  async function dayOrders(companyId, day) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) throw new BillingError('Jour invalide.', { code: 'invalid_day' });
+    return (await pool.query(
+      `SELECT e.id, e.order_id, e.order_reference, e.amount, e.unit_price, e.created_at,
+              EXISTS (SELECT 1 FROM wallet_entries r WHERE r.order_id = e.order_id AND r.kind = 'order_refund') AS refunded
+       FROM wallet_entries e
+       WHERE e.company_id = $1 AND e.kind = 'order_charge' AND (e.created_at AT TIME ZONE '${TZ}')::date = $2::date
+       ORDER BY e.id DESC LIMIT 1000`,
+      [companyId, day]
+    )).rows;
+  }
+
+  // Mouvements filtrés, un par ligne, pour l'export (toutes les pages).
+  async function exportMovements(companyId, { category, q, month } = {}) {
+    const f = movementFilters({ category, q, month });
+    return (await pool.query(`${MOVEMENT_BASE} ORDER BY e.id DESC LIMIT 50000`, [companyId, f.kinds, f.like, f.month])).rows;
+  }
+
+  // Mois ayant au moins un mouvement (filtre « Période »), du plus récent au plus ancien.
+  async function movementMonths(companyId) {
+    return (await pool.query(
+      `SELECT DISTINCT to_char(created_at AT TIME ZONE '${TZ}', 'YYYY-MM') AS month FROM wallet_entries
+       WHERE company_id = $1 ORDER BY 1 DESC LIMIT 36`,
+      [companyId]
+    )).rows.map((r) => r.month);
+  }
+
+  // Préférences de l'entreprise : alerte de solde bas et son seuil (null = seuil par défaut).
+  async function savePreferences(companyId, { alertEnabled, threshold } = {}) {
+    if (typeof alertEnabled !== 'boolean') throw new BillingError('Indiquez si l’alerte est activée.', { code: 'invalid_preferences' });
+    let value = null;
+    if (threshold !== null && threshold !== undefined && threshold !== '') {
+      value = int(threshold, { min: 0, max: 10000000 });
+      if (value === null) throw new BillingError('Indiquez un seuil entre 0 et 10 000 000 F.', { code: 'invalid_threshold' });
+    }
+    await pool.query('INSERT INTO wallets (company_id) VALUES ($1) ON CONFLICT (company_id) DO NOTHING', [companyId]);
+    await pool.query(
+      `UPDATE wallets SET low_balance_alert = $2, low_balance_threshold = $3, low_balance_notified_at = NULL, updated_at = NOW() WHERE company_id = $1`,
+      [companyId, alertEnabled, value]
+    );
+    return (await summary(companyId)).alert;
+  }
+
+  // Alerte de solde bas à afficher dans les notifications, ou null. La clé
+  // change à chaque recharge : une alerte lue réapparaît après la recharge
+  // suivante si le solde redescend.
+  async function lowBalanceNotice(companyId) {
+    const w = await summary(companyId);
+    if (!w.alert.enabled || w.trial.active || w.balance >= w.alert.threshold) return null;
+    const last = (await pool.query(
+      `SELECT MAX(id) AS id FROM wallet_entries WHERE company_id = $1 AND kind IN ('recharge', 'adjustment')`, [companyId]
+    )).rows[0];
+    const since = (await pool.query(
+      `SELECT MIN(created_at) AS at FROM wallet_entries WHERE company_id = $1 AND balance_after < $2 AND id > COALESCE($3, 0)`,
+      [companyId, w.alert.threshold, last.id]
+    )).rows[0];
+    return { key: String(last.id || 0), balance: w.balance, threshold: w.alert.threshold, state: w.state, at: since.at || new Date() };
   }
 
   async function createRecharge(companyId, amount, userId) {
@@ -438,10 +586,11 @@ function createBilling({ pool, provider = null }) {
 
   return {
     settings, saveSettings, chargeOrder, refundOrder, summary, ledger,
+    movements, dayOrders, exportMovements, movementMonths, savePreferences, lowBalanceNotice,
     createRecharge, confirmRecharge, payment, adjust, audit,
     premiumStatus: (companyId) => premiumStatus(pool, companyId), consumePremiumReport, buyPremiumMonth,
     get providerName() { return provider ? provider.name : null; },
   };
 }
 
-module.exports = { createBilling, normalizeSettings, unitPriceFor, bonusFor, BillingError, DEFAULTS };
+module.exports = { createBilling, normalizeSettings, unitPriceFor, bonusFor, BillingError, DEFAULTS, MOVEMENT_CATEGORIES };

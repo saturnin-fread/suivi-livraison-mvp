@@ -39,6 +39,61 @@ module.exports = function registerBilling(app, deps) {
     res.set('Cache-Control', 'no-store');
     res.json({ entries: out.entries.map(entryView), more: out.more });
   }));
+  // --- Mouvements (vue « Mouvements ») ---------------------------------------
+  const movementView = (m) => ({
+    ...entryView(m), type: m.type, count: m.count, day: m.day,
+    unitPrice: m.type === 'day' ? (m.min_price === m.max_price ? m.min_price : null) : m.unit_price,
+    unitPriceRange: m.type === 'day' && m.min_price !== m.max_price ? [m.min_price, m.max_price] : null,
+  });
+  const filtersOf = (query) => ({ category: query.category, q: query.q, month: query.month });
+  app.get('/api/app/billing/movements', requireCompanyApi, requireCompanyRoles('owner', 'manager'), billingRoute(async (req, res) => {
+    const [out, months] = await Promise.all([
+      billing.movements(req.auth.company_id, { ...filtersOf(req.query), page: req.query.page, pageSize: req.query.pageSize, group: req.query.group !== '0' }),
+      billing.movementMonths(req.auth.company_id),
+    ]);
+    res.set('Cache-Control', 'no-store');
+    res.json({ items: out.items.map(movementView), total: out.total, page: out.page, pageSize: out.pageSize, grouped: out.grouped, months });
+  }));
+  app.get('/api/app/billing/movements/day/:day', requireCompanyApi, requireCompanyRoles('owner', 'manager'), billingRoute(async (req, res) => {
+    const orders = await billing.dayOrders(req.auth.company_id, req.params.day);
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      day: req.params.day,
+      orders: orders.map((o) => ({ id: String(o.id), orderId: o.order_id ? String(o.order_id) : null, orderReference: o.order_reference, amount: o.amount, unitPrice: o.unit_price, refunded: o.refunded, createdAt: o.created_at })),
+    });
+  }));
+  // Export CSV des mouvements filtrés (toutes les pages), une ligne par mouvement.
+  const KIND_LABELS = {
+    order_charge: 'Commande', order_refund: 'Remboursement', recharge: 'Recharge', bonus: 'Bonus de recharge',
+    premium_report: 'Rapport Premium', premium_month: 'Rapport Premium (30 jours)', adjustment: 'Correction TRAXO',
+  };
+  const csvDate = new Intl.DateTimeFormat('fr-FR', { timeZone: 'Africa/Porto-Novo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const csvText = (value) => {
+    let s = value == null ? '' : String(value);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // pas de formule dans un tableur
+    return /[",;\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  app.get('/api/app/billing/movements.csv', requireCompanyApi, requireCompanyRoles('owner', 'manager'), billingRoute(async (req, res) => {
+    const rows = await billing.exportMovements(req.auth.company_id, filtersOf(req.query));
+    const header = ['Date', 'Type', 'Référence', 'Montant (F)', 'Solde après (F)', 'Prix unitaire (F)', 'Détail'];
+    const lines = rows.map((r) => [
+      csvText(csvDate.format(new Date(r.created_at))), csvText(KIND_LABELS[r.kind] || r.kind),
+      csvText(r.order_reference || r.payment_reference || ''), String(Number(r.amount)), String(Number(r.balance_after)),
+      r.unit_price == null ? '' : String(Number(r.unit_price)), csvText(r.note || ''),
+    ].join(';'));
+    await writeAudit(req.auth, 'wallet', req.auth.company_id, 'wallet_movements_exported', { rows: rows.length, ...filtersOf(req.query) });
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.set('Cache-Control', 'no-store');
+    res.type('text/csv; charset=utf-8').attachment(`traxo-mouvements-${stamp}.csv`).send(`﻿${header.join(';')}\r\n${lines.join('\r\n')}`);
+  }));
+
+  // --- Préférences (alerte de solde bas) -------------------------------------
+  app.put('/api/app/billing/preferences', requireCompanyApi, requireCompanyRoles('owner', 'manager'), billingRoute(async (req, res) => {
+    const alert = await billing.savePreferences(req.auth.company_id, { alertEnabled: req.body?.alertEnabled, threshold: req.body?.threshold });
+    await writeAudit(req.auth, 'wallet', req.auth.company_id, 'wallet_preferences_changed', { alertEnabled: alert.enabled, threshold: alert.custom ? alert.threshold : null });
+    res.json({ alert });
+  }));
+
   app.post('/api/app/billing/recharges', requireCompanyApi, requireCompanyRoles('owner', 'manager'), billingRoute(async (req, res) => {
     const out = await billing.createRecharge(req.auth.company_id, req.body?.amount, req.auth.user_id);
     await writeAudit(req.auth, 'wallet_payment', out.payment.id, 'recharge_started', { amount: out.payment.amount, provider: out.payment.provider });

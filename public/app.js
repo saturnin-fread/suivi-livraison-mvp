@@ -2510,32 +2510,14 @@ async function renderSettings() {
   }
 
   // ---- Facturation : portefeuille prépayé -----------------------------------
-  // 25 F par commande (dégressif au volume du mois), débités d'un portefeuille
-  // rechargé par Mobile Money ou carte (Kkiapay). Pas d'abonnement.
-  const walletKinds = {
-    order_charge: 'Commande', order_refund: 'Remboursement', recharge: 'Recharge', bonus: 'Bonus de recharge',
-    premium_report: 'Rapport Premium', premium_month: 'Rapport Premium (mois)', adjustment: 'Correction TRAXO',
-  };
+  // Page complète dans public/billing.js (kit « Facturation TRAXO » V2.2).
+  // Ici, seulement le résumé affiché dans la vue d'ensemble.
   const walletStates = {
     ok: ['tx-wallet-ok', 'Solde suffisant'],
     low: ['tx-wallet-low', 'Solde bas'],
     overdraft: ['tx-wallet-over', 'Découvert'],
     blocked: ['tx-wallet-over', 'Solde épuisé'],
   };
-  const signedMoney = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${txMoney(Math.abs(n))} F`;
-  const walletEntryLabel = (e) => {
-    const base = walletKinds[e.kind] || e.kind;
-    if (['order_charge', 'order_refund'].includes(e.kind)) return `${base} ${e.orderReference || (e.orderId ? `CMD-${e.orderId}` : '')}`.trim();
-    if (['recharge', 'bonus'].includes(e.kind) && e.paymentReference) return `${base} · ${e.paymentReference}`;
-    return base;
-  };
-  const tierLabel = (tiers, i) => {
-    const from = i === 0 ? 1 : tiers[i - 1].upTo + 1;
-    return tiers[i].upTo == null ? `Au-delà de ${txMoney(from - 1)}` : `De ${txMoney(from)} à ${txMoney(tiers[i].upTo)}`;
-  };
-  const currentTierIndex = (tiers, rank) => Math.max(0, tiers.findIndex((t) => t.upTo == null || rank <= t.upTo));
-  const bonusOf = (rules, amount) => rules.reduce((acc, b) => (amount >= b.from ? { percent: b.percent, bonus: Math.floor((amount * b.percent) / 100) } : acc), { percent: 0, bonus: 0 });
-
   function walletSummaryHtml(w) {
     const [cls, label] = walletStates[w.state] || walletStates.ok;
     const covered = w.month.nextUnitPrice > 0 ? Math.max(0, Math.floor(w.balance / w.month.nextUnitPrice)) : null;
@@ -2547,145 +2529,8 @@ async function renderSettings() {
   }
 
   async function billing(box) {
-    const w = await api('/api/app/billing/wallet');
-    const s = walletSummaryHtml(w);
-    const tiers = w.pricing.tiers;
-    const rank = w.month.orders + 1;
-    const tierIdx = currentTierIndex(tiers, rank);
-    const canPay = canEdit;
-    const bonusText = w.pricing.rechargeBonus.length
-      ? w.pricing.rechargeBonus.map((b) => `+${b.percent} % dès ${txMoney(b.from)} F`)
-      : '';
-    box.innerHTML = `${heading('Facturation', 'Vous payez à la commande, sans abonnement ni engagement.')}
-      <section class="tx-membership tx-wallet">
-        <div class="tx-membership-main">
-          <div class="tx-membership-top"><span class="tx-pass-label"><span></span> VOTRE PORTEFEUILLE</span><span class="tx-wallet-state ${s.cls}">${escapeHtml(s.label)}</span></div>
-          <div class="tx-membership-price"><strong class="${w.balance < 0 ? 'tx-wallet-negative' : ''}">${w.balance < 0 ? '−' : ''}${txMoney(Math.abs(w.balance))}</strong><div>FCFA<span>solde disponible</span></div></div>
-          <p class="tx-wallet-line">${escapeHtml(s.line)}</p>
-          <div class="tx-membership-bottom"><span>${w.pricing.pricesIncludeTax ? 'Prix TTC' : 'Prix HT'} · recharge dès ${txMoney(w.recharge.min)} F</span>${canPay ? txButton(`Recharger ${txIcon('arrow-up-right')}`, 'id="txRecharge"', 'tx-button-red') : ''}</div>
-        </div>
-        <div class="tx-capacity"><span class="tx-eyebrow">CE MOIS-CI</span>
-          <div class="tx-capacity-count"><strong>${txMoney(w.month.orders)}</strong><span>${w.month.orders > 1 ? 'commandes' : 'commande'}</span></div>
-          <p>Prochaine commande : <strong>${txMoney(w.month.nextUnitPrice)} F</strong></p>
-          <ol class="tx-tiers">${tiers.map((t, i) => `<li class="${i === tierIdx ? 'tx-tier-current' : ''}"><span>${escapeHtml(tierLabel(tiers, i))}</span><strong>${txMoney(t.price)} F</strong></li>`).join('')}</ol>
-          <p class="tx-capacity-help">Le prix baisse avec votre volume du mois. Une commande annulée avant le départ du livreur est remboursée.</p>
-        </div>
-      </section>
-      <div class="tx-billing-bottom">
-        <section class="tx-payment-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Historique</span><h2>Vos mouvements</h2></div></div>
-          <div id="txLedger">${canEdit ? '<div class="loading-state">Chargement…</div>' : '<p class="tx-muted">L’historique est réservé au propriétaire et aux responsables.</p>'}</div></section>
-        <section class="tx-invoice-block"><div class="tx-billing-section-head"><div><span class="tx-eyebrow">Recharger</span><h2>Mobile Money ou carte</h2></div>${txIcon('smartphone')}</div>
-          <dl class="tx-detail-list"><div><dt>Recharge minimale</dt><dd>${txMoney(w.recharge.min)} F</dd></div><div><dt>Recharge conseillée</dt><dd>${txMoney(w.recharge.suggested)} F</dd></div>${bonusText ? `<div><dt>Bonus offert</dt><dd class="tx-bonus-list">${bonusText.map((t) => `<span>${escapeHtml(t)}</span>`).join('')}</dd></div>` : ''}<div><dt>Découvert autorisé</dt><dd>${txPlural(w.overdraft.orders, 'commande', 'commandes')}</dd></div></dl>
-          ${w.recharge.available ? '' : `<p class="tx-payment-note">Le paiement en ligne ouvre bientôt. ${w.enforcement ? '' : 'D’ici là, aucune commande n’est bloquée, même sans solde.'}</p>`}
-        </section>
-      </div>
-      <div class="tx-billing-contact"><span>Une question sur votre facturation ?</span>${txButton(`On vous aide ${txIcon('arrow-right')}`, 'id="txBillingHelp"', 'tx-button-quiet')}</div>`;
-
-    box.querySelector('#txBillingHelp').addEventListener('click', () => {
-      const modal = openModal('Comment fonctionne la facturation', `<p class="tx-dialog-intro">Chaque commande créée est débitée de votre portefeuille, au prix de votre palier du mois. Pendant l’essai gratuit, rien n’est débité. Une commande annulée avant le départ du livreur est remboursée automatiquement.</p>
-        <p class="tx-dialog-intro">Si votre solde tombe à zéro, un découvert de ${txPlural(w.overdraft.orders, 'commande', 'commandes')} vous laisse finir la journée ; il est repris à la recharge suivante.</p>
-        ${context.supportEmail ? `<div class="tx-dialog-note">Une question précise ? Écrivez-nous à <a href="mailto:${escapeHtml(context.supportEmail)}?subject=${encodeURIComponent('Facturation TRAXO')}">${escapeHtml(context.supportEmail)}</a>.</div>` : ''}`,
-      '<button class="button primary" type="button" data-modal-close>J’ai compris</button>', { className: 'tx-modal' });
-      modal.backdrop.querySelector('[data-modal-close]').addEventListener('click', modal.close);
-    });
-    box.querySelector('#txRecharge')?.addEventListener('click', () => openRecharge(w, () => billing(box)));
-
-    if (!canEdit) return;
-    const ledgerBox = box.querySelector('#txLedger');
-    let before = null;
-    const rows = [];
-    async function more() {
-      const out = await api(`/api/app/billing/ledger?limit=10${before ? `&before=${encodeURIComponent(before)}` : ''}`);
-      rows.push(...out.entries);
-      before = out.entries.length ? out.entries[out.entries.length - 1].id : before;
-      if (!rows.length) {
-        ledgerBox.innerHTML = '<div class="tx-invoice-empty"><span class="tx-invoice-line"></span><h3>Aucun mouvement pour le moment.</h3><p>Vos commandes, recharges et remboursements apparaîtront ici.</p></div>';
-        return;
-      }
-      ledgerBox.innerHTML = `<ul class="tx-ledger">${rows.map((e) => `<li><div><strong>${escapeHtml(walletEntryLabel(e))}</strong><small>${escapeHtml(new Date(e.createdAt).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}${e.note && e.kind !== 'bonus' ? ` · ${escapeHtml(e.note)}` : ''}</small></div><span class="tx-ledger-amount ${e.amount > 0 ? 'tx-plus' : ''}">${signedMoney(e.amount)}</span><span class="tx-ledger-balance">${txMoney(e.balanceAfter)} F</span></li>`).join('')}</ul>
-        ${out.more ? txButton('Afficher plus', 'id="txLedgerMore"', 'tx-button-quiet') : ''}`;
-      ledgerBox.querySelector('#txLedgerMore')?.addEventListener('click', (event) => { event.currentTarget.disabled = true; more().catch((error) => uiToast(error.message, 'error')); });
-    }
-    more().catch((error) => { ledgerBox.innerHTML = `<div class="notice error">${escapeHtml(error.message)}</div>`; });
-  }
-
-  // Widget Kkiapay : chargé seulement au moment de payer.
-  let kkiapayLoading = null;
-  function loadKkiapay() {
-    if (window.openKkiapayWidget) return Promise.resolve();
-    if (!kkiapayLoading) {
-      kkiapayLoading = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.kkiapay.me/k.js';
-        script.onload = resolve;
-        script.onerror = () => { kkiapayLoading = null; reject(new Error('Le module de paiement n’a pas pu être chargé. Vérifiez votre connexion.')); };
-        document.head.appendChild(script);
-      });
-    }
-    return kkiapayLoading;
-  }
-  function payWithKkiapay(checkout) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      window.addSuccessListener?.((response) => { if (!done) { done = true; resolve(response && response.transactionId); } });
-      window.addFailedListener?.(() => { if (!done) { done = true; reject(new Error('Le paiement n’a pas abouti. Aucun montant n’a été débité.')); } });
-      window.openKkiapayWidget({ amount: checkout.amount, key: checkout.publicKey, sandbox: checkout.sandbox, data: checkout.data, position: 'center', theme: '#eb142c' });
-    });
-  }
-
-  function openRecharge(w, onDone) {
-    const presets = [...new Set([w.recharge.min, w.recharge.suggested, 20000, 50000])].filter((n) => n >= w.recharge.min && n <= w.recharge.max).sort((a, b) => a - b);
-    let amount = w.recharge.suggested;
-    const modal = openModal('Recharger le portefeuille', `
-      <div class="tx-recharge-presets" role="group" aria-label="Montant">${presets.map((n) => `<button type="button" data-amount="${n}" aria-pressed="${n === amount}">${txMoney(n)} F</button>`).join('')}</div>
-      <label class="tx-field" for="txAmount">Autre montant (FCFA)<input id="txAmount" type="number" inputmode="numeric" min="${w.recharge.min}" max="${w.recharge.max}" step="100" value="${amount}"></label>
-      <dl class="tx-detail-list" id="txRechargeRecap"></dl>
-      ${w.recharge.available ? '' : '<p class="tx-dialog-note">Le paiement en ligne ouvre bientôt. Pour recharger dès maintenant, contactez le support.</p>'}
-      <p class="tx-error" id="txRechargeErr" role="alert" hidden></p>`,
-    `<button class="button secondary" type="button" data-modal-close>Annuler</button><button class="button accent" type="button" id="txPay" ${w.recharge.available ? '' : 'disabled'}></button>`, { className: 'tx-modal' });
-    const $m = (sel) => modal.backdrop.querySelector(sel);
-    const input = $m('#txAmount');
-    const pay = $m('#txPay');
-    const err = $m('#txRechargeErr');
-    const paint = () => {
-      const valid = Number.isInteger(amount) && amount >= w.recharge.min && amount <= w.recharge.max;
-      const { percent, bonus } = valid ? bonusOf(w.pricing.rechargeBonus, amount) : { percent: 0, bonus: 0 };
-      const orders = w.month.nextUnitPrice > 0 && valid ? Math.floor((amount + bonus) / w.month.nextUnitPrice) : null;
-      $m('#txRechargeRecap').innerHTML = valid
-        ? `<div><dt>Vous payez</dt><dd>${txMoney(amount)} F</dd></div>${bonus ? `<div><dt>Bonus offert (${percent} %)</dt><dd>+${txMoney(bonus)} F</dd></div>` : ''}<div><dt>Crédité sur le portefeuille</dt><dd><strong>${txMoney(amount + bonus)} F</strong></dd></div>${orders != null ? `<div><dt>Soit environ</dt><dd>${txPlural(orders, 'commande', 'commandes')}</dd></div>` : ''}`
-        : `<div><dt>Montant</dt><dd>De ${txMoney(w.recharge.min)} à ${txMoney(w.recharge.max)} F</dd></div>`;
-      pay.textContent = valid ? `Payer ${txMoney(amount)} F` : 'Payer';
-      pay.disabled = !w.recharge.available || !valid;
-      modal.backdrop.querySelectorAll('[data-amount]').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.amount) === amount)));
-    };
-    $m('.tx-recharge-presets').addEventListener('click', (event) => {
-      const b = event.target.closest('[data-amount]'); if (!b) return;
-      amount = Number(b.dataset.amount); input.value = amount; paint();
-    });
-    input.addEventListener('input', () => { amount = Math.round(Number(input.value)); paint(); });
-    $m('[data-modal-close]').addEventListener('click', modal.close);
-    pay.addEventListener('click', async () => {
-      err.hidden = true;
-      pay.disabled = true;
-      const label = pay.textContent;
-      pay.textContent = 'Paiement en cours…';
-      try {
-        const started = await api('/api/app/billing/recharges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount }) });
-        let transactionId = null;
-        if (started.checkout.provider === 'kkiapay') {
-          await loadKkiapay();
-          transactionId = await payWithKkiapay(started.checkout);
-        }
-        const out = await api(`/api/app/billing/recharges/${started.payment.id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transactionId }) });
-        modal.close();
-        uiToast(`Portefeuille rechargé : +${txMoney(out.payment.amount + out.payment.bonus)} F. Nouveau solde : ${txMoney(out.wallet.balance)} F.`, 'success', { timeout: 6000 });
-        onDone();
-      } catch (error) {
-        err.textContent = error.message; err.hidden = false;
-        pay.textContent = label; pay.disabled = false;
-      }
-    });
-    paint();
+    if (!window.TraxoBilling) throw new Error('La facturation n’a pas pu être chargée. Rechargez la page.');
+    await window.TraxoBilling.render(box, { api, context, uiToast, setHeader });
   }
 
   // ---- Facturation TRAXO (administrateur plateforme) -----------------------
@@ -5597,6 +5442,7 @@ async function start() {
     }
     activateNavigation();
     try { window.TraxoSupport?.init({ api, context, toast: uiToast }); } catch (error) { console.error('support', error); }
+    try { window.TraxoBilling?.mountGauge({ api, context }); } catch (error) { console.error('facturation', error); }
     const path = location.pathname;
     const detail = path.match(/^\/app\/demandes\/(\d+)$/);
     if (detail) { location.replace(`/app/operations?vue=demandes&demande=${encodeURIComponent(detail[1])}`); return; }
@@ -5709,6 +5555,7 @@ const tnIcons = {
   security: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
   support: '<path d="M3 11h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5Zm0 0a9 9 0 1 1 18 0m0 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z"/><path d="M21 16v2a4 4 0 0 1-4 4h-5"/>',
   vigilance: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  billing: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
   sliders: '<path d="M21 5H3"/><path d="M15 12H3"/><path d="M17 19H3"/><circle cx="19" cy="12" r="2"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
@@ -5722,8 +5569,8 @@ const tnIcons = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
 };
 const tnIcon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tnIcons[name] || ''}</svg>`;
-const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red', vigilance: 'tn-sand', support: 'tn-blue' };
-const tnCategoryLabels = { incidents: 'Incident de livraison', requests: 'Demandes clients', deliveries: 'Livraisons', runs: 'Tournées', clients: 'Clients', security: 'Sécurité' };
+const tnTone = { incident: 'tn-red', requests: 'tn-blue', assign: 'tn-sand', run: 'tn-purple', delivered: 'tn-green', client: 'tn-neutral', security: 'tn-red', vigilance: 'tn-sand', support: 'tn-blue', billing: 'tn-sand' };
+const tnCategoryLabels = { incidents: 'Incident de livraison', requests: 'Demandes clients', deliveries: 'Livraisons', runs: 'Tournées', clients: 'Clients', security: 'Sécurité', billing: 'Facturation' };
 const tnTime = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''; };
 function tnDayGroup(iso) {
   const d = new Date(iso);

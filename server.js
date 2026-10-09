@@ -4287,7 +4287,7 @@ const { support } = registerSupport(app, {
 const { runNotificationDigests } = registerNotifications(app, {
   pool, asyncRoute, requireCompanyApi, writeAudit, support, companySignals, describeDevice,
   parseCookies, digest, emailConfigured, sendEmail, renderEmailShell, escHtmlServer,
-  publicBaseUrl, companyTimezones, terminalOrderStatuses, DASHBOARD_TZ,
+  publicBaseUrl, companyTimezones, terminalOrderStatuses, DASHBOARD_TZ, billing,
 });
 // --- Recherche globale (Ctrl/⌘ K) → server/modules/search -------------------
 const { globalSearch } = registerSearch(app, {

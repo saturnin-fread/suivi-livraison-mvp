@@ -72,6 +72,12 @@
       .jn-otp input.filled { border-color: var(--ink); }
       .jn-otp.err input { border-color: var(--red); animation: jn-shake .35s; }
       @keyframes jn-shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+      .jn-pair { display: flex; justify-content: center; gap: 10px; margin: 26px 0 8px; }
+      .jn-pair span { width: 58px; height: 72px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 12px; background: var(--soft); font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .jn-wait { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 18px; color: var(--muted); font-size: 14.5px; }
+      .jn-wait i { width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--ink); border-radius: 50%; animation: jn-spin 1s linear infinite; }
+      @keyframes jn-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .jn-wait i { animation: none; } }
       .jn-link { padding: 0; border: 0; background: none; color: var(--ink); font-size: 14.5px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
       .jn-link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
       .jn-ok { width: 64px; height: 64px; display: grid; place-items: center; margin-bottom: 22px; border-radius: 50%; background: var(--green-soft); color: var(--green); }
@@ -192,7 +198,7 @@
           const used = state === 'used';
           render(`<div class="jn-in" style="display:flex;flex-direction:column;flex:1">
             <div class="jn-ok ${used ? 'neutral' : 'bad'}">${icon(used ? 'phone' : 'alert')}</div>
-            <h1>${used ? 'Invitation déjà utilisée' : state === 'expired' ? 'Invitation expirée' : state === 'invalid' ? 'Code introuvable' : 'Invitation indisponible'}</h1>
+            <h1>${used ? 'Invitation déjà utilisée' : state === 'expired' ? 'Invitation expirée' : state === 'invalid' ? 'Code introuvable' : state === 'refused' ? 'Téléphone non confirmé' : 'Invitation indisponible'}</h1>
             <p class="jn-lead">${esc(message)}</p>
             <div class="jn-actions">
               ${used ? '<a class="jn-btn" href="/driver">Ouvrir mes livraisons</a>' : ''}
@@ -236,8 +242,7 @@
               button.textContent = 'Envoi du code…';
               const sent = await call('/send-code', { method: 'POST', body: '{}' });
               if (sent.ok && sent.data.sent) { renderVerify(sent.data.phoneMasked || invite.phoneMasked, sent.data.resendIn); return; }
-              if (sent.ok && sent.data.verification === 'in_person') { invite.verification = 'in_person'; }
-              else if (sent.status === 410) { showState(sent.data.state, sent.data.error); return; }
+              if (sent.status === 410) { showState(sent.data.state, sent.data.error); return; }
               else if (sent.status === 429) { renderVerify(invite.phoneMasked, sent.data.resendIn); return; }
               else { button.disabled = false; button.textContent = 'Rejoindre cette entreprise'; err.textContent = sent.data.error || 'Le code n’a pas pu partir. Réessayez.'; err.hidden = false; return; }
             }
@@ -345,10 +350,43 @@
 
         async function accept(code, reset, fail) {
           const result = await call('/accept', { method: 'POST', body: JSON.stringify({ code }) });
+          if (result.status === 202 && result.data.pending) { renderPairing(result.data.pairingCode, result.data.pairingToken); return; }
           if (result.ok) { renderSuccess(result.data); return; }
           if (result.status === 410 || result.status === 423) { showState(result.data.state || 'revoked', result.data.error); return; }
           reset();
           fail(result.data.error || 'L’association n’a pas abouti. Réessayez.', result.data.attemptsLeft);
+        }
+
+        // ---- En personne : le responsable confirme ce téléphone ---------------
+        // Le QR seul ne suffit pas (il a pu être photographié ou partagé) : ce
+        // téléphone affiche un numéro que le responsable retrouve sur son écran.
+        let pairTimer = null;
+        function renderPairing(code, token) {
+          clearTimeout(pairTimer);
+          render(`<div class="jn-in" style="display:flex;flex-direction:column;flex:1">
+            <h1>Montrez cet écran à votre responsable.</h1>
+            <p class="jn-lead">Il vérifie que ce numéro apparaît aussi sur son écran, puis confirme que c’est bien vous.</p>
+            <div class="jn-pair" aria-label="Numéro de confirmation ${esc(String(code).split('').join(' '))}">${String(code).split('').map((d) => `<span aria-hidden="true">${esc(d)}</span>`).join('')}</div>
+            <p class="jn-wait" role="status"><i aria-hidden="true"></i>En attente de sa confirmation…</p>
+            <p class="jn-err" id="err" role="alert" hidden></p>
+            <div class="jn-actions"><button class="jn-btn ghost" type="button" id="cancel">Ce n’est pas mon entreprise</button></div>
+          </div>`);
+          view.querySelector('#cancel').addEventListener('click', () => { clearTimeout(pairTimer); renderDecline(); });
+          let failures = 0;
+          const poll = async () => {
+            if (!document.body.contains(view.querySelector('.jn-pair'))) return;
+            const r = await call('/pairing', { method: 'POST', body: JSON.stringify({ pairingToken: token }) });
+            if (r.status === 201) { renderSuccess(r.data); return; }
+            if (r.status === 202) { failures = 0; pairTimer = setTimeout(poll, 2500); return; }
+            if (r.status === 409) { stopTimer(); render(`<div class="jn-in"><div class="jn-ok bad">${icon('alert')}</div><h1>Le QR a été scanné ailleurs</h1><p class="jn-lead">${esc(r.data.error)}</p><div class="jn-actions"><button class="jn-btn" type="button" id="again">Recommencer</button></div></div>`); view.querySelector('#again').addEventListener('click', load); return; }
+            if (r.status === 410) { showState(r.data.state === 'refused' ? 'refused' : r.data.state, r.data.error); return; }
+            // Réseau ou serveur momentanément indisponible : on réessaie sans perdre le numéro.
+            failures += 1;
+            const err = view.querySelector('#err');
+            if (err && failures >= 2) { err.textContent = r.data.error || 'Connexion difficile. On continue d’attendre la confirmation…'; err.hidden = false; }
+            pairTimer = setTimeout(poll, Math.min(10000, 2500 * failures));
+          };
+          pairTimer = setTimeout(poll, 2000);
         }
 
         // ---- C'est fait -------------------------------------------------------

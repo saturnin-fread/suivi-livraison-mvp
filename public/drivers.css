@@ -265,6 +265,15 @@ textarea.dr-input { min-height: 88px; resize: vertical; line-height: 1.45; }
 .dr-steps-side h2 { margin-top: 6px; font-size: 21px; }
 .dr-steps-side .dr-shield { margin-top: 24px; }
 .dr-endbar { margin-top: 20px; }
+/* Invitation en personne : confirmation du téléphone qui a scanné. */
+.dr-pair { width: 100%; max-width: 360px; margin: 4px auto 16px; padding: 16px 18px; border: 1px solid #f0d9a8; border-radius: 14px; background: #fff8ea; text-align: center; animation: dr-qr .3s cubic-bezier(.2, .8, .2, 1) both; }
+.dr-pair > strong { display: flex; justify-content: center; align-items: center; gap: 6px; font-size: 15px; color: var(--dr-ink); }
+.dr-pair > p { margin: 6px 0 0; color: var(--dr-text); font-size: 13.5px; }
+.dr-pair-code { display: flex; justify-content: center; gap: 8px; margin: 14px 0; }
+.dr-pair-code span { width: 46px; height: 56px; display: grid; place-items: center; border: 1px solid #e8d3a4; border-radius: 10px; background: #fff; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--dr-ink); }
+.dr-pair-actions { display: grid; gap: 8px; }
+.dr-pair .dr-hint { margin-top: 10px; }
+.dr-qrbox.dr-dim { opacity: .25; filter: grayscale(1); transition: opacity .2s; }
 .dr-joined { display: grid; justify-items: center; gap: 12px; padding: 30px 0; }
 .dr-joined h2 { max-width: 320px; font-size: 21px; line-height: 1.25; }
 .dr-joined p { max-width: 320px; color: var(--dr-muted); }

@@ -746,6 +746,11 @@
     return qrLib;
   }
 
+  // Vérification côté livreur : code WhatsApp, ou numéro confirmé ici par le responsable.
+  const verifyText = (inv) => (inv && inv.verification === 'whatsapp'
+    ? 'Un code arrive sur son WhatsApp, au numéro de son profil.'
+    : 'Son téléphone affiche un numéro à 4 chiffres : vous confirmez ici que c’est bien lui.');
+
   function viewInvite(d) {
     D.setHeader('Livreurs', `Invitation de ${d.name}`);
     const replacement = Boolean(S.replacement) || d.accessState === 'active';
@@ -764,7 +769,7 @@
           <h2>Trois gestes. Il est prêt.</h2>
           <ol class="dr-gestures">
             <li><span>1</span><div><strong>Scanner le QR code</strong><small>Avec l’appareil photo de son téléphone, sans rien installer.</small></div></li>
-            <li><span>2</span><div><strong>Vérifier que c’est bien lui</strong><small id="drVerifyText">${inv && inv.verification === 'whatsapp' ? 'Un code arrive sur son WhatsApp, au numéro de son profil.' : 'Vous êtes à côté de lui : le QR montré en personne suffit.'}</small></div></li>
+            <li><span>2</span><div><strong>Vérifier que c’est bien lui</strong><small id="drVerifyText">${verifyText(inv)}</small></div></li>
             <li><span>3</span><div><strong>Confirmer son entreprise</strong><small>Il retrouve son nom et accepte de rejoindre ${esc(company)}.</small></div></li>
           </ol>
           <p class="dr-shield">${ic('shield')}Cette invitation est réservée à ${esc(d.name)}. Elle ne fonctionne qu’une fois${replacement ? ' et déconnectera son ancien téléphone' : ''}.</p>
@@ -806,7 +811,7 @@
       const state = S.page.querySelector('#drInvState');
       if (state) state.innerHTML = badge({ tone: 'blue', icon: 'clock', label: 'Invitation prête' });
       const verify = S.page.querySelector('#drVerifyText');
-      if (verify) verify.textContent = inv.verification === 'whatsapp' ? 'Un code arrive sur son WhatsApp, au numéro de son profil.' : 'Vous êtes à côté de lui : le QR montré en personne suffit.';
+      if (verify) verify.textContent = verifyText(inv);
       paintQr(d, inv);
     } catch (error) {
       if (btn) btn.disabled = false;
@@ -867,7 +872,7 @@
             <button class="dr-btn small" type="button" data-act="copyLink">${ic('copy')} Copier le lien</button>
             ${wa ? `<a class="dr-btn small" href="https://wa.me/${wa}?text=${waText}" target="_blank" rel="noopener">${ic('send')} L’envoyer sur son WhatsApp</a>` : ''}
           </div>
-          <p class="dr-hint">À n’envoyer qu’à son numéro : toute personne qui ouvre ce lien dans les 15 minutes peut rejoindre votre équipe à sa place.</p>
+          <p class="dr-hint">${inv.verification === 'whatsapp' ? 'À n’envoyer qu’à son numéro : le code de vérification partira sur son WhatsApp.' : 'À distance, il vous lit le numéro affiché sur son téléphone et vous le confirmez ici. Ne confirmez jamais un numéro que vous n’avez pas vu ou entendu de sa part.'}</p>
         </div>
       </details>`;
     loadQr().then((qrcode) => {
@@ -891,6 +896,20 @@
     };
     tick();
     every(1000, tick);
+    // En personne : un téléphone a-t-il scanné ? Le responsable confirme le numéro affiché.
+    if (inv.verification !== 'whatsapp') {
+      let shown = null;
+      every(2500, async () => {
+        let st;
+        try { st = await D.api(`/api/app/drivers/${encodeURIComponent(d.id)}/invitation`); } catch { return; }
+        if (!S.page.querySelector('#drQrSide')) return;
+        if (st.state === 'refused' || st.state === 'revoked' || st.state === 'expired') { if (st.state !== 'expired') cancelled(d); return; }
+        const code = st.pairing ? st.pairing.code : null;
+        if (code === shown) return;
+        shown = code;
+        paintPairing(d, code);
+      });
+    }
     // Le livreur a-t-il rejoint ? On vérifie toutes les 5 s tant que le QR est affiché.
     every(5000, async () => {
       try {
@@ -906,6 +925,52 @@
         }
       } catch { /* réseau : on réessaie au prochain tour */ }
     });
+  }
+
+  function paintPairing(d, code) {
+    const side = S.page.querySelector('#drQrSide');
+    if (!side) return;
+    side.querySelector('#drPair')?.remove();
+    side.querySelector('#drQr')?.classList.toggle('dr-dim', Boolean(code));
+    if (!code) return;
+    const name = firstName(d.name);
+    side.querySelector('.dr-qrhead').insertAdjacentHTML('afterend', `<div class="dr-pair" id="drPair" role="alert">
+      <strong>Un téléphone vient de scanner le QR.</strong>
+      <p>Vérifiez que le téléphone de ${esc(name)} affiche bien ce numéro :</p>
+      <div class="dr-pair-code" aria-label="Numéro ${esc(code.split('').join(' '))}">${code.split('').map((x) => `<span aria-hidden="true">${esc(x)}</span>`).join('')}</div>
+      <div class="dr-pair-actions">
+        <button class="dr-btn primary" type="button" data-pair="approve" data-code="${esc(code)}">${ic('check')} Oui, c’est ${esc(name)}</button>
+        <button class="dr-btn ghost" type="button" data-pair="refuse" data-code="${esc(code)}">Ce n’est pas lui</button>
+      </div>
+      <p class="dr-hint">Pas sûr ? Refusez : l’invitation sera annulée et vous en afficherez une nouvelle.</p>
+    </div>`);
+    side.querySelectorAll('[data-pair]').forEach((b) => b.addEventListener('click', () => decidePairing(d, b.dataset.pair, b.dataset.code, b)));
+  }
+
+  async function decidePairing(d, decision, code, button) {
+    const box = S.page.querySelector('#drPair');
+    box?.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    if (button) button.textContent = decision === 'approve' ? 'Confirmation…' : 'Annulation…';
+    try {
+      await call(`/api/app/drivers/${encodeURIComponent(d.id)}/invitation/pairing`, 'POST', { decision, code });
+      if (decision === 'refuse') { cancelled(d); return; }
+      if (box) box.innerHTML = `<strong>${ic('check')} C’est confirmé.</strong><p>Le téléphone de ${esc(firstName(d.name))} s’ouvre sur ses livraisons.</p>`;
+    } catch (error) {
+      D.uiToast(error.message, 'error');
+      paintPairing(d, null);
+    }
+  }
+
+  function cancelled(d) {
+    stopTimers();
+    delete S.invites[d.id];
+    const side = S.page.querySelector('#drQrSide');
+    if (!side) return;
+    const state = S.page.querySelector('#drInvState');
+    if (state) state.innerHTML = badge({ tone: 'mute', icon: 'clock', label: 'Invitation annulée' });
+    side.innerHTML = `<div class="dr-qrhead"><h2>Invitation annulée.</h2><p>Par précaution, ce QR ne fonctionne plus. Affichez-en un nouveau quand ${esc(firstName(d.name))} est à côté de vous.</p></div>
+      <div class="dr-qrbox empty">${ic('shield')}</div>
+      <button class="dr-btn primary" type="button" data-act="newqr">${ic('refresh')} Afficher un nouveau QR</button>`;
   }
 
   function expired(d) {

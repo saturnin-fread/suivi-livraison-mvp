@@ -5742,15 +5742,18 @@ app.post('/api/app/drivers/:id/invitation', requireCompanyApi, requireCompanyRol
   const code = newInviteCode();
   const expiresAt = new Date(Date.now() + DRIVER_INVITE_MS);
   const replacement = req.body?.replacement === true;
+  // Le mode de vérification est figé ici : si WhatsApp tombe ensuite,
+  // l'invitation ne passe pas pour autant sans vérification.
+  const verification = whatsappAvailableFor(driver.phone) ? 'whatsapp' : 'in_person';
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     // Une seule invitation valable à la fois : la nouvelle remplace QR, code et lien précédents.
     await revokeDriverAccess(client, req.auth.company_id, driver.id, { sessions: false, invitations: true });
     await client.query(
-      `INSERT INTO driver_invitations (company_id, driver_id, token_hash, code_hash, replacement, expires_at, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [req.auth.company_id, driver.id, digest(token), digest(code), replacement, expiresAt, req.auth.user_id]
+      `INSERT INTO driver_invitations (company_id, driver_id, token_hash, code_hash, replacement, expires_at, created_by_user_id, verification)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [req.auth.company_id, driver.id, digest(token), digest(code), replacement, expiresAt, req.auth.user_id, verification]
     );
     await client.query('COMMIT');
   } catch (error) {
@@ -5766,8 +5769,64 @@ app.post('/api/app/drivers/:id/invitation', requireCompanyApi, requireCompanyRol
     code,
     expiresAt,
     replacement,
-    verification: whatsappAvailableFor(driver.phone) ? 'whatsapp' : 'in_person',
+    verification,
   });
+}));
+// État de l'invitation en cours, interrogé par l'écran du QR : scan à
+// confirmer (mode en personne), invitation utilisée, expirée ou annulée.
+app.get('/api/app/drivers/:id/invitation', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const inv = (await pool.query(
+    `SELECT i.*, d.suspended_at, d.archived_at FROM driver_invitations i JOIN drivers d ON d.id = i.driver_id AND d.company_id = i.company_id
+     WHERE i.company_id = $1 AND i.driver_id = $2 ORDER BY i.id DESC LIMIT 1`,
+    [req.auth.company_id, req.params.id]
+  )).rows[0];
+  res.set('Cache-Control', 'no-store');
+  if (!inv) return res.json({ state: 'none' });
+  const state = inv.pairing_refused_at ? 'refused' : driverInvitationState(inv);
+  const pending = state === 'ready' && inv.pairing_code && !inv.pairing_approved_at;
+  return res.json({
+    state, verification: inv.verification, expiresAt: inv.expires_at,
+    pairing: pending ? { code: inv.pairing_code, at: inv.pairing_at } : null,
+    approved: Boolean(inv.pairing_approved_at),
+  });
+}));
+// Le responsable confirme (ou refuse) le téléphone qui vient de scanner le QR.
+// Il compare le numéro affiché sur ce téléphone avec celui de son écran ; le
+// numéro est renvoyé pour ne jamais confirmer un autre scan arrivé entre-temps.
+app.post('/api/app/drivers/:id/invitation/pairing', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
+  const decision = String(req.body?.decision || '');
+  const code = String(req.body?.code || '').replace(/\D/g, '');
+  if (!['approve', 'refuse'].includes(decision) || !/^\d{4}$/.test(code)) return res.status(400).json({ error: 'Demande invalide.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const inv = (await client.query(
+      `SELECT i.*, d.suspended_at, d.archived_at FROM driver_invitations i JOIN drivers d ON d.id = i.driver_id AND d.company_id = i.company_id
+       WHERE i.company_id = $1 AND i.driver_id = $2 ORDER BY i.id DESC LIMIT 1 FOR UPDATE OF i`,
+      [req.auth.company_id, req.params.id]
+    )).rows[0];
+    if (!inv || driverInvitationState(inv) !== 'ready' || inv.verification !== 'in_person') {
+      await client.query('ROLLBACK');
+      return res.status(410).json({ error: 'Cette invitation n’est plus valable. Affichez un nouveau QR code.' });
+    }
+    if (!inv.pairing_code || inv.pairing_approved_at || inv.pairing_code !== code) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Un autre téléphone vient de scanner ce QR. Vérifiez le numéro affiché, puis confirmez de nouveau.' });
+    }
+    if (decision === 'approve') {
+      await client.query('UPDATE driver_invitations SET pairing_approved_at = NOW(), pairing_approved_by = $2 WHERE id = $1', [inv.id, req.auth.user_id]);
+    } else {
+      await client.query('UPDATE driver_invitations SET pairing_refused_at = NOW(), revoked_at = NOW() WHERE id = $1', [inv.id]);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  await writeAudit(req.auth, 'driver', req.params.id, decision === 'approve' ? 'invitation_pairing_approved' : 'invitation_pairing_refused', {});
+  return res.json({ approved: decision === 'approve' });
 }));
 app.delete('/api/app/drivers/:id/invitation', requireCompanyApi, requireCompanyRoles('owner', 'manager'), asyncRoute(async (req, res) => {
   await revokeDriverAccess(pool, req.auth.company_id, req.params.id, { sessions: false, invitations: true });
@@ -5826,7 +5885,7 @@ app.get('/api/public/driver-invitations/:ref', driverJoinRateLimit, asyncRoute(a
     driver: { firstName: String(inv.driver_name || '').split(/\s+/)[0], name: inv.driver_name, team: inv.team, zone: inv.zone },
     replacement: inv.replacement,
     phoneMasked: maskPhone(inv.driver_phone),
-    verification: whatsappAvailableFor(inv.driver_phone) ? 'whatsapp' : 'in_person',
+    verification: inv.verification,
     expiresAt: inv.expires_at,
   });
 }));
@@ -5835,7 +5894,9 @@ app.post('/api/public/driver-invitations/:ref/send-code', driverJoinRateLimit, a
   const inv = await findDriverInvitation(req.params.ref);
   const state = driverInvitationState(inv);
   if (state !== 'ready') return res.status(410).json({ state, error: joinMessages[state] });
-  if (!whatsappAvailableFor(inv.driver_phone)) return res.json({ sent: false, verification: 'in_person' });
+  if (inv.verification !== 'whatsapp') return res.json({ sent: false, verification: inv.verification });
+  // Invitation prévue avec un code WhatsApp : jamais de repli sans vérification.
+  if (!whatsappAvailableFor(inv.driver_phone)) return res.status(503).json({ error: 'Le code ne peut pas partir sur WhatsApp pour le moment. Demandez à votre responsable d’afficher un nouveau QR code.' });
   // Renvoi : 1 min après le premier code, puis 2 min (même règle que la connexion).
   const delay = loginCodeResendDelayS(inv.verify_sends || 0);
   if (inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < delay * 1000) {
@@ -5854,6 +5915,42 @@ app.post('/api/public/driver-invitations/:ref/send-code', driverJoinRateLimit, a
   return res.json({ sent: true, phoneMasked: maskPhone(inv.driver_phone), resendIn: loginCodeResendDelayS(sends) });
 }));
 
+// Associe le téléphone au livreur (transaction en cours) : compte livreur au
+// besoin, ancien téléphone déconnecté, invitation consommée.
+async function completeDriverJoin(client, inv) {
+  let userId = (await client.query(
+    `SELECT user_id FROM company_memberships WHERE company_id = $1 AND driver_id = $2 AND role = 'driver' ORDER BY id LIMIT 1`,
+    [inv.company_id, inv.driver_id]
+  )).rows[0]?.user_id;
+  if (!userId) {
+    // Compte sans e-mail réel : le livreur se connecte avec son téléphone associé, pas par mot de passe.
+    const salt = crypto.randomBytes(16).toString('hex');
+    const email = `livreur-${inv.company_id}-${inv.driver_id}-${crypto.randomBytes(4).toString('hex')}@livreurs.traxo.invalid`;
+    userId = (await client.query(
+      `INSERT INTO users (email, display_name, password_salt, password_hash) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [email, inv.driver_name, salt, hashPassword(crypto.randomBytes(32).toString('hex'), salt)]
+    )).rows[0].id;
+    await client.query(
+      `INSERT INTO company_memberships (company_id, user_id, role, driver_id) VALUES ($1, $2, 'driver', $3)`,
+      [inv.company_id, userId, inv.driver_id]
+    );
+  }
+  // Un seul téléphone actif par livreur : l'ancien est déconnecté maintenant.
+  await revokeDriverAccess(client, inv.company_id, inv.driver_id, { sessions: true, invitations: false });
+  await client.query('UPDATE driver_invitations SET used_at = NOW() WHERE id = $1', [inv.id]);
+  await client.query(
+    `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
+     VALUES ($1, $2, 'driver', $3, 'app_joined', jsonb_build_object('replacement', $4::boolean, 'verification', $5::text))`,
+    [inv.company_id, userId, inv.driver_id, inv.replacement, inv.verification]
+  );
+  return { userId, companyId: inv.company_id, driverId: inv.driver_id, companyName: inv.company_name, firstName: String(inv.driver_name || '').split(/\s+/)[0] };
+}
+async function openDriverSession(req, res, result) {
+  await createSession(req, res, result.userId, result.companyId, 'company', { durationMs: DRIVER_SESSION_MS });
+  await markDriverSeat(result.companyId, result.driverId);
+  return res.status(201).json({ joined: true, redirect: '/driver', companyName: result.companyName, firstName: result.firstName });
+}
+
 app.post('/api/public/driver-invitations/:ref/accept', driverJoinRateLimit, asyncRoute(async (req, res) => {
   const client = await pool.connect();
   let result;
@@ -5862,9 +5959,21 @@ app.post('/api/public/driver-invitations/:ref/accept', driverJoinRateLimit, asyn
     const inv = await findDriverInvitation(req.params.ref, client, { lock: true });
     const state = driverInvitationState(inv);
     if (state !== 'ready') { await client.query('ROLLBACK'); return res.status(410).json({ state, error: joinMessages[state] }); }
-    // Vérification du numéro quand le canal WhatsApp est relié ; sinon, le QR
-    // montré en personne par le responsable fait foi (usage unique, 15 min).
-    if (whatsappAvailableFor(inv.driver_phone)) {
+    // En personne : le QR seul ne suffit pas. Ce téléphone reçoit un numéro à
+    // 4 chiffres que le responsable doit retrouver et confirmer sur son écran.
+    // Un nouveau scan remplace la demande précédente.
+    if (inv.verification !== 'whatsapp') {
+      const pairingCode = String(crypto.randomInt(0, 10000)).padStart(4, '0');
+      const pairingToken = randomToken(32);
+      await client.query(
+        `UPDATE driver_invitations SET pairing_code = $2, pairing_token_hash = $3, pairing_at = NOW(), pairing_approved_at = NULL, pairing_approved_by = NULL WHERE id = $1`,
+        [inv.id, pairingCode, digest(pairingToken)]
+      );
+      await client.query('COMMIT');
+      return res.status(202).json({ pending: true, pairingCode, pairingToken, expiresAt: inv.expires_at });
+    }
+    // Code WhatsApp exigé, que le canal soit encore relié ou non.
+    {
       const code = String(req.body?.code || '').replace(/\D/g, '');
       const fresh = inv.verify_sent_at && Date.now() - new Date(inv.verify_sent_at).getTime() < 10 * 60 * 1000;
       const ok = fresh && inv.verify_code_hash && code.length === 6 && crypto.timingSafeEqual(Buffer.from(digest(`join:${inv.id}:${code}`)), Buffer.from(inv.verify_code_hash));
@@ -5876,33 +5985,8 @@ app.post('/api/public/driver-invitations/:ref/accept', driverJoinRateLimit, asyn
         return res.status(400).json({ error: !fresh ? 'Ce code a expiré. Demandez-en un nouveau.' : 'Ce code ne correspond pas. Vérifiez le message reçu sur WhatsApp.', attemptsLeft: 5 - attempts });
       }
     }
-    let userId = (await client.query(
-      `SELECT user_id FROM company_memberships WHERE company_id = $1 AND driver_id = $2 AND role = 'driver' ORDER BY id LIMIT 1`,
-      [inv.company_id, inv.driver_id]
-    )).rows[0]?.user_id;
-    if (!userId) {
-      // Compte sans e-mail réel : le livreur se connecte avec son téléphone associé, pas par mot de passe.
-      const salt = crypto.randomBytes(16).toString('hex');
-      const email = `livreur-${inv.company_id}-${inv.driver_id}-${crypto.randomBytes(4).toString('hex')}@livreurs.traxo.invalid`;
-      userId = (await client.query(
-        `INSERT INTO users (email, display_name, password_salt, password_hash) VALUES ($1, $2, $3, $4) RETURNING id`,
-        [email, inv.driver_name, salt, hashPassword(crypto.randomBytes(32).toString('hex'), salt)]
-      )).rows[0].id;
-      await client.query(
-        `INSERT INTO company_memberships (company_id, user_id, role, driver_id) VALUES ($1, $2, 'driver', $3)`,
-        [inv.company_id, userId, inv.driver_id]
-      );
-    }
-    // Un seul téléphone actif par livreur : l'ancien est déconnecté maintenant.
-    await revokeDriverAccess(client, inv.company_id, inv.driver_id, { sessions: true, invitations: false });
-    await client.query('UPDATE driver_invitations SET used_at = NOW() WHERE id = $1', [inv.id]);
-    await client.query(
-      `INSERT INTO audit_logs (company_id, user_id, entity_type, entity_id, action, details)
-       VALUES ($1, $2, 'driver', $3, 'app_joined', jsonb_build_object('replacement', $4::boolean))`,
-      [inv.company_id, userId, inv.driver_id, inv.replacement]
-    );
+    result = await completeDriverJoin(client, inv);
     await client.query('COMMIT');
-    result = { userId, companyId: inv.company_id, driverId: inv.driver_id, companyName: inv.company_name, firstName: String(inv.driver_name || '').split(/\s+/)[0] };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Driver join error:', error.message);
@@ -5910,9 +5994,48 @@ app.post('/api/public/driver-invitations/:ref/accept', driverJoinRateLimit, asyn
   } finally {
     client.release();
   }
-  await createSession(req, res, result.userId, result.companyId, 'company', { durationMs: DRIVER_SESSION_MS });
-  await markDriverSeat(result.companyId, result.driverId);
-  return res.status(201).json({ joined: true, redirect: '/driver', companyName: result.companyName, firstName: result.firstName });
+  return openDriverSession(req, res, result);
+}));
+
+// Le téléphone qui a scanné attend la confirmation du responsable (interrogé
+// toutes les quelques secondes). La session ne s'ouvre que pour ce téléphone
+// (pairingToken) et seulement une fois la confirmation donnée.
+const driverPairingRateLimit = createRateLimitMiddleware({
+  keySecret: process.env.RATE_LIMIT_KEY_SECRET || trackingTokenSecret() || undefined,
+  policies: [
+    createIpPolicy({ limiter: trackingLimiter('driver_pairing_ip', { capacity: 400, refillTokens: 400, refillIntervalMs: 600_000, maxEntries: 10_000 }) }),
+  ],
+});
+app.post('/api/public/driver-invitations/:ref/pairing', driverPairingRateLimit, asyncRoute(async (req, res) => {
+  const pairingToken = String(req.body?.pairingToken || '');
+  if (!/^[A-Za-z0-9_-]{20,100}$/.test(pairingToken)) return res.status(400).json({ error: 'Demande invalide.' });
+  const client = await pool.connect();
+  let result;
+  try {
+    await client.query('BEGIN');
+    const inv = await findDriverInvitation(req.params.ref, client, { lock: true });
+    const mine = inv && inv.pairing_token_hash && crypto.timingSafeEqual(Buffer.from(digest(pairingToken)), Buffer.from(inv.pairing_token_hash));
+    if (inv && mine && inv.pairing_refused_at) {
+      await client.query('ROLLBACK');
+      return res.status(410).json({ state: 'refused', error: 'Votre responsable n’a pas confirmé ce téléphone. Demandez-lui d’afficher un nouveau QR code.' });
+    }
+    const state = driverInvitationState(inv);
+    if (state !== 'ready') { await client.query('ROLLBACK'); return res.status(410).json({ state, error: joinMessages[state] }); }
+    if (!mine) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ state: 'replaced', error: 'Un autre téléphone a scanné ce QR code entre-temps. Scannez-le de nouveau.' });
+    }
+    if (!inv.pairing_approved_at) { await client.query('ROLLBACK'); return res.status(202).json({ pending: true }); }
+    result = await completeDriverJoin(client, inv);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Driver pairing error:', error.message);
+    return res.status(500).json({ error: 'Impossible de terminer l’association. Réessayez.' });
+  } finally {
+    client.release();
+  }
+  return openDriverSession(req, res, result);
 }));
 
 // Suppression d'un livreur (owner/manager) : archive douce pour préserver

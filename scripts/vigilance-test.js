@@ -46,7 +46,13 @@ const wait = (ms) => new Promise((r) => { setTimeout(r, ms); });
     assert.strictEqual(r.status, 201, JSON.stringify(r.data));
     const driverId = r.data.id;
     const inv = (await call('POST', `/api/app/drivers/${driverId}/invitation`, { cookie: staff, body: {} })).data;
-    const joined = await call('POST', `/api/public/driver-invitations/${inv.path.split('/').pop()}/accept`, { body: {} });
+    // Invitation en personne : le responsable confirme le numéro du téléphone.
+    const ref = inv.path.split('/').pop();
+    let joined = await call('POST', `/api/public/driver-invitations/${ref}/accept`, { body: {} });
+    if (joined.status === 202) {
+      await call('POST', `/api/app/drivers/${driverId}/invitation/pairing`, { cookie: staff, body: { decision: 'approve', code: joined.data.pairingCode } });
+      joined = await call('POST', `/api/public/driver-invitations/${ref}/pairing`, { body: { pairingToken: joined.data.pairingToken } });
+    }
     assert.strictEqual(joined.status, 201, JSON.stringify(joined.data));
     const phoneA = cookieOf(joined.res, 'delivery_session');
 

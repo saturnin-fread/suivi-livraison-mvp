@@ -115,7 +115,27 @@ async function lastWhatsappCode(digits, since, timeoutMs = 20000) {
         assert.ok(Number.isInteger(s.data.attemptsLeft) && s.data.attemptsLeft < 5, 'essais restants décomptés');
         return call('POST', `/api/public/driver-invitations/${token}/accept`, { body: { code } });
       }
-      return call('POST', `/api/public/driver-invitations/${token}/accept`, { body: {} });
+      return pairInPerson(token);
+    }
+    // En personne : le QR seul ne suffit plus (Shannon AUTHZ-01). Le téléphone
+    // reçoit un numéro, que le responsable doit confirmer avant toute session.
+    async function pairInPerson(token) {
+      const a = await call('POST', `/api/public/driver-invitations/${token}/accept`, { body: {} });
+      assert.strictEqual(a.status, 202, `QR seul : pas de session (${a.status} ${JSON.stringify(a.data)})`);
+      assert.ok(!cookieOf(a.res, 'delivery_session'), 'aucune session avant confirmation');
+      assert.match(a.data.pairingCode, /^\d{4}$/);
+      let p = await call('POST', `/api/public/driver-invitations/${token}/pairing`, { body: { pairingToken: a.data.pairingToken } });
+      assert.strictEqual(p.status, 202, 'en attente du responsable');
+      assert.ok(!cookieOf(p.res, 'delivery_session'));
+      const st = (await call('GET', `/api/app/drivers/${driverId}/invitation`, { cookie: staff })).data;
+      assert.strictEqual(st.pairing && st.pairing.code, a.data.pairingCode, 'le responsable voit le même numéro');
+      const wrong = a.data.pairingCode === '0000' ? '1111' : '0000';
+      assert.strictEqual((await call('POST', `/api/app/drivers/${driverId}/invitation/pairing`, { cookie: staff, body: { decision: 'approve', code: wrong } })).status, 409, 'mauvais numéro : rien n’est confirmé');
+      p = await call('POST', `/api/public/driver-invitations/${token}/pairing`, { body: { pairingToken: 'x'.repeat(43) } });
+      assert.strictEqual(p.status, 409, 'un autre téléphone ne peut pas récupérer la session');
+      const ok = await call('POST', `/api/app/drivers/${driverId}/invitation/pairing`, { cookie: staff, body: { decision: 'approve', code: a.data.pairingCode } });
+      assert.strictEqual(ok.status, 200, JSON.stringify(ok.data));
+      return call('POST', `/api/public/driver-invitations/${token}/pairing`, { body: { pairingToken: a.data.pairingToken } });
     }
     r = await join(token2, phone);
     assert.strictEqual(r.status, 201, JSON.stringify(r.data));
@@ -147,13 +167,13 @@ async function lastWhatsappCode(digits, since, timeoutMs = 20000) {
     const inv4 = (await call('POST', `/api/app/drivers/${driverId}/invitation`, { cookie: staff, body: { replacement: true } })).data;
     const pub = (await call('GET', `/api/public/driver-invitations/${inv4.path.split('/').pop()}`)).data;
     assert.strictEqual(pub.replacement, true, 'le livreur est prévenu du changement de téléphone');
-    r = await call('POST', `/api/public/driver-invitations/${inv4.path.split('/').pop()}/accept`, { body: verification === 'whatsapp' ? { code: '' } : {} });
     if (verification === 'whatsapp') {
+      r = await call('POST', `/api/public/driver-invitations/${inv4.path.split('/').pop()}/accept`, { body: { code: '' } });
       assert.strictEqual(r.status, 400, 'code requis');
       // Le renvoi est limité : on remet l'horloge de l'envoi pour ce test.
       await pool.query('UPDATE driver_invitations SET verify_sent_at = NULL WHERE driver_id = $1 AND used_at IS NULL AND revoked_at IS NULL', [driverId]);
-      r = await join(inv4.path.split('/').pop(), phone);
     }
+    r = await join(inv4.path.split('/').pop(), phone);
     assert.strictEqual(r.status, 201, JSON.stringify(r.data));
     const phoneB = cookieOf(r.res, 'delivery_session');
     r = await call('GET', '/api/driver/context', { cookie: phoneA });
@@ -161,6 +181,32 @@ async function lastWhatsappCode(digits, since, timeoutMs = 20000) {
     r = await call('GET', '/api/driver/context', { cookie: phoneB });
     assert.strictEqual(r.status, 200, 'nouveau téléphone connecté');
     assert.strictEqual(await seats(), seatsBefore + 1, 'même personne : toujours une seule place');
+
+    // --- Vérification en personne : refus, scan remplacé, pas de repli -------------
+    if (verification === 'in_person') {
+      let t = (await call('POST', `/api/app/drivers/${driverId}/invitation`, { cookie: staff, body: { replacement: true } })).data.path.split('/').pop();
+      const first = (await call('POST', `/api/public/driver-invitations/${t}/accept`, { body: {} })).data;
+      const second = (await call('POST', `/api/public/driver-invitations/${t}/accept`, { body: {} })).data;
+      r = await call('POST', `/api/public/driver-invitations/${t}/pairing`, { body: { pairingToken: first.pairingToken } });
+      assert.strictEqual(r.status, 409, 'un nouveau scan remplace le précédent');
+      assert.strictEqual((await call('POST', `/api/app/drivers/${driverId}/invitation/pairing`, { cookie: staff, body: { decision: 'refuse', code: second.pairingCode } })).status, 200);
+      r = await call('POST', `/api/public/driver-invitations/${t}/pairing`, { body: { pairingToken: second.pairingToken } });
+      assert.deepStrictEqual([r.status, r.data.state], [410, 'refused'], 'refusé : le téléphone en est informé');
+      assert.strictEqual((await call('GET', `/api/public/driver-invitations/${t}`)).status, 410, 'refus = invitation annulée');
+      assert.strictEqual((await call('GET', `/api/app/drivers/${driverId}/invitation`, { cookie: staff })).data.state, 'refused');
+      r = await call('GET', '/api/driver/context', { cookie: phoneB });
+      assert.strictEqual(r.status, 200, 'le téléphone déjà associé n’est pas touché');
+      // Invitation prévue avec un code WhatsApp : jamais de repli, même si WhatsApp n'est plus relié.
+      t = (await call('POST', `/api/app/drivers/${driverId}/invitation`, { cookie: staff, body: { replacement: true } })).data.path.split('/').pop();
+      await pool.query(`UPDATE driver_invitations SET verification = 'whatsapp' WHERE token_hash IS NOT NULL AND driver_id = $1 AND used_at IS NULL AND revoked_at IS NULL`, [driverId]);
+      assert.strictEqual((await call('POST', `/api/public/driver-invitations/${t}/send-code`, { body: {} })).status, 503, 'WhatsApp indisponible : pas de code, pas de repli');
+      r = await call('POST', `/api/public/driver-invitations/${t}/accept`, { body: {} });
+      assert.strictEqual(r.status, 400, 'code toujours exigé');
+      assert.ok(!cookieOf(r.res, 'delivery_session'));
+      assert.strictEqual((await call('GET', `/api/app/drivers/${driverId}/invitation`)).status, 401, 'état réservé à l’équipe');
+      assert.ok([401, 403].includes((await call('POST', `/api/app/drivers/${driverId}/invitation/pairing`, { cookie: phoneB, body: { decision: 'approve', code: '1234' } })).status), 'un livreur ne confirme pas d’appairage');
+      await call('DELETE', `/api/app/drivers/${driverId}/invitation`, { cookie: staff });
+    }
 
     // --- Permissions ------------------------------------------------------------
     r = await call('POST', '/api/app/orders', { cookie: staff, body: { customerName: `Awa ${marker}`, customerPhone: '01 97 44 55 66', customerPhoneCountry: 'BJ', neighborhood: 'Cadjèhoun', driverId } });

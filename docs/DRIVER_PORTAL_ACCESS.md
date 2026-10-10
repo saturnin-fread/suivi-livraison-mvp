@@ -4,15 +4,40 @@
 
 Donner au livreur un espace mobile minimal sans lui ouvrir l'interface d'exploitation de l'entreprise ni les commandes d'un autre livreur.
 
-## Activation du compte
+## Activation du compte (invitation par QR)
 
-1. Un propriétaire ou manager choisit un profil livreur encore sans compte.
-2. Le serveur génère un token aléatoire et ne conserve que son empreinte.
-3. Le lien expire après 48 heures et ne peut être utilisé qu'une fois.
-4. Le livreur choisit un mot de passe de 12 à 128 caractères.
-5. Le compte est lié à une appartenance entreprise et à un seul `driver_id`.
+1. Un propriétaire ou un responsable affiche le QR code du livreur (Livreurs ›
+   profil › Inviter). Le livreur doit avoir un téléphone sur son profil.
+2. Le serveur crée une invitation : un jeton aléatoire (lien `/rejoindre/…`)
+   et un code de secours `TX-XXXXXXXX`, dont seules les empreintes sont
+   conservées. Validité : 15 minutes, usage unique. Une nouvelle invitation
+   remplace la précédente.
+3. **Le mode de vérification est figé à la création** :
+   - `whatsapp` : si le canal WhatsApp est relié, le livreur reçoit un code
+     à 6 chiffres sur le numéro de son profil (5 essais, 10 minutes). Si
+     WhatsApp tombe ensuite, le code reste exigé : l'invitation ne passe
+     jamais sans vérification. Le responsable affiche alors un nouveau QR.
+   - `in_person` : sans WhatsApp, le QR seul ne suffit pas. Après le scan,
+     le téléphone du livreur affiche un numéro à 4 chiffres. Le même numéro
+     apparaît sur l'écran du responsable avec « Oui, c'est … / Ce n'est pas
+     lui ». La session ne s'ouvre que pour le téléphone qui a scanné, et
+     seulement après la confirmation. Un nouveau scan remplace la demande
+     précédente. Un refus annule l'invitation (le QR a pu fuiter).
+4. Le compte livreur (sans mot de passe ni e-mail réel) est lié à une
+   appartenance entreprise et à un seul `driver_id`. L'ancien téléphone est
+   déconnecté ; la session dure 90 jours.
 
-Une adresse déjà utilisée ne reçoit pas une seconde invitation dans cette première version. Le support multi-entreprises d'un même utilisateur nécessitera un sélecteur d'organisation et sera traité séparément.
+Routes : `POST /api/app/drivers/:id/invitation` (création),
+`GET /api/app/drivers/:id/invitation` (état vu par le responsable),
+`POST /api/app/drivers/:id/invitation/pairing` (confirmer ou refuser, avec le
+numéro affiché), `POST /api/public/driver-invitations/:ref/accept` (code
+WhatsApp, ou demande de confirmation), `POST
+/api/public/driver-invitations/:ref/pairing` (le téléphone attend la
+confirmation). Test : `scripts/driver-join-test.js`.
+
+Historique : le test d'intrusion du staging (Shannon, 9 octobre 2026,
+AUTHZ-01) a montré que, sans WhatsApp, le QR seul ouvrait une session.
+Corrigé par la confirmation du responsable (migration `0006`).
 
 ## Autorisations
 

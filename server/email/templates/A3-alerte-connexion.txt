@@ -1,0 +1,24 @@
+TRAXO — Nouvelle connexion à votre compte
+
+Une nouvelle connexion
+à votre compte.
+Voici les informations de l’appareil qui vient de se connecter à TRAXO.
+
+Date : {{date_heure}}
+
+Appareil : {{appareil}}
+
+Connexion par : {{methode}}
+
+Si c’était vous, vous n’avez rien à faire.
+
+Vous ne reconnaissez pas cette connexion ? Changez votre mot de passe et fermez les autres sessions.
+
+Vérifier mes connexions ({{url_securite}})
+
+Vous avez choisi de recevoir les alertes de connexion.
+
+L’équipe TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions
+Choisir les e-mails que je reçois : {{url_preferences}}

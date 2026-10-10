@@ -1,0 +1,15 @@
+TRAXO — Réinitialisation de votre mot de passe
+
+Un nouveau mot de passe,
+et vous repartez.
+Vous nous avez demandé un lien pour changer votre mot de passe.
+
+Choisir mon mot de passe ({{url_reinitialisation}})
+
+Ce lien est valable une heure et ne fonctionne qu’une fois.
+
+Vous n’avez rien demandé ? Ignorez cet e-mail : votre mot de passe reste inchangé.
+
+L’équipe TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions

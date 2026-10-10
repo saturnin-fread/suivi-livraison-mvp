@@ -8,7 +8,7 @@ const { createSupport, SupportError, MAX_FILE_BYTES: SUPPORT_MAX_FILE_BYTES } = 
 module.exports = function registerSupport(app, deps) {
   const {
     pool, asyncRoute, requireCompanyApi, requirePlatformAdminApi, writeAudit,
-    sendEmail, renderEmailShell, escHtmlServer, normalizeEmail, publicBaseUrl,
+    sendTemplatedEmail, emailBaseUrl, renderEmailShell, escHtmlServer, normalizeEmail, publicBaseUrl,
   } = deps;
 
   function supportRecipient() {
@@ -16,18 +16,29 @@ module.exports = function registerSupport(app, deps) {
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured)) return configured;
     return String(process.env.PLATFORM_ADMIN_EMAILS || '').split(',').map(normalizeEmail).find(Boolean) || null;
   }
+  // E-mails A8–A10 (équipe support) et A11–A13 (personne qui a ouvert la demande).
+  // La réponse du support n'est jamais recopiée dans l'e-mail : on la lit dans TRAXO.
+  const SUPPORT_TEAM_TEMPLATES = {
+    ticket_created: ['A8-support-equipe-nouvelle-demande', 'Nouvelle demande'],
+    customer_message: ['A9-support-equipe-nouveau-message', 'Nouveau message'],
+    ticket_reopened: ['A10-support-equipe-demande-rouverte', 'Demande rouverte'],
+  };
   async function notifySupport(kind, { ticket, message = '', auth = null } = {}) {
     if (!pool || !ticket) return;
     const base = publicBaseUrl(null);
     const company = (await pool.query('SELECT name FROM companies WHERE id = $1', [ticket.company_id])).rows[0] || {};
     const excerpt = String(message || '').slice(0, 1200);
-    if (['ticket_created', 'customer_message', 'ticket_reopened'].includes(kind)) {
+    if (SUPPORT_TEAM_TEMPLATES[kind]) {
       const to = supportRecipient();
       if (!to) return;
-      const title = { ticket_created: 'Nouvelle demande', customer_message: 'Nouveau message', ticket_reopened: 'Demande rouverte' }[kind];
+      const [templateId, title] = SUPPORT_TEAM_TEMPLATES[kind];
       const lines = [`${ticket.reference} · ${ticket.subject}`, `Entreprise : ${company.name || '—'} (espace #${ticket.company_id})`, `De : ${auth?.display_name || auth?.email || '—'}`];
-      await sendEmail({
-        to,
+      await sendTemplatedEmail(to, templateId, {
+        reference: ticket.reference, sujet: ticket.subject, entreprise: company.name || '—', id_espace: String(ticket.company_id),
+        auteur: auth?.display_name || auth?.email || '—', message: excerpt,
+        ...(kind === 'ticket_reopened' ? { sans_message: false } : {}),
+        url_demande: `${emailBaseUrl(null)}/app/parametres?section=support&demande=${ticket.id}`,
+      }, () => ({
         subject: `[${ticket.reference}] ${title} — ${ticket.subject}`,
         html: renderEmailShell({
           baseUrl: base, heading: `${title} au support`,
@@ -37,16 +48,17 @@ module.exports = function registerSupport(app, deps) {
           footerNote: 'Répondez depuis TRAXO : la réponse par e-mail n’est pas encore rattachée à la demande.',
         }),
         text: [...lines, '', excerpt].join('\n'),
-      }).catch((error) => console.error('support email', error.message));
+      })).catch((error) => console.error('support email', error.message));
       return;
     }
     // Réponse du support ou changement d'état : prévenir la personne qui a ouvert la demande.
     const owner = ticket.created_by_user_id ? (await pool.query('SELECT email, display_name FROM users WHERE id = $1', [ticket.created_by_user_id])).rows[0] : null;
     if (!owner?.email) return;
-    const heading = kind === 'support_reply' ? 'Nouvelle réponse de l’équipe TRAXO'
-      : ticket.status === 'resolved' ? 'Votre demande est résolue' : 'Nous attendons votre réponse';
-    await sendEmail({
-      to: owner.email,
+    const [templateId, heading] = kind === 'support_reply' ? ['A11-support-client-nouvelle-reponse', 'Nouvelle réponse de l’équipe TRAXO']
+      : ticket.status === 'resolved' ? ['A12-support-client-resolue', 'Votre demande est résolue'] : ['A13-support-client-attente-reponse', 'Nous attendons votre réponse'];
+    await sendTemplatedEmail(owner.email, templateId, {
+      reference: ticket.reference, sujet: ticket.subject, url_demande: `${emailBaseUrl(null)}/app?support=${ticket.id}`,
+    }, () => ({
       subject: `[${ticket.reference}] ${heading}`,
       html: renderEmailShell({
         baseUrl: base, heading,
@@ -56,7 +68,7 @@ module.exports = function registerSupport(app, deps) {
         footerNote: 'Pour la sécurité de vos échanges, la réponse complète est consultable uniquement dans TRAXO.',
       }),
       text: `${heading}\n${ticket.reference} · ${ticket.subject}\n${base ? `${base}/app?support=${ticket.id}` : ''}`,
-    }).catch((error) => console.error('support email', error.message));
+    })).catch((error) => console.error('support email', error.message));
   }
   const support = pool ? createSupport({ pool, notify: notifySupport }) : null;
   const supportRaw = express.raw({ type: () => true, limit: SUPPORT_MAX_FILE_BYTES + 1024 });

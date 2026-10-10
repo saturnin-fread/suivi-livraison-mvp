@@ -1,0 +1,17 @@
+[{{reference}}] Nous attendons votre réponse
+
+Un détail nous manque
+pour avancer.
+Quelques précisions nous aideraient à poursuivre. Retrouvez notre question dans votre demande.
+
+{{reference}}
+
+{{sujet}}
+
+Répondre à l’équipe ({{url_demande}})
+
+Pour garder vos échanges privés, les réponses sont consultables uniquement dans TRAXO.
+
+L’équipe support TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions

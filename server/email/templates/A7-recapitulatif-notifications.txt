@@ -1,0 +1,25 @@
+TRAXO — {{nombre}} {{libelle_notifications}} à traiter
+
+Ce qui vous attend
+dans TRAXO.
+Vous avez {{nombre}} {{libelle_notifications}} à consulter pour {{periode}}.
+{{#chaque elements}}
+
+{{type_libelle}}
+
+{{titre}}
+
+{{resume}}
+
+{{lien_libelle}} ({{lien_url}})
+
+{{/chaque}}
+
+Voir toutes les notifications ({{url_notifications}})
+
+Ce récapitulatif suit les préférences que vous avez choisies.
+
+L’équipe TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions
+Choisir les e-mails que je reçois : {{url_preferences}}

@@ -1,0 +1,24 @@
+Invitation à rejoindre {{entreprise}} sur TRAXO
+
+Vous êtes invité
+chez {{entreprise}}.
+Bonjour {{prenom_nom}},
+{{invitant}} vous propose de rejoindre son équipe sur TRAXO.
+
+Votre accès
+
+{{role}}
+
+Dans l’espace de {{entreprise}}.
+
+Créez votre accès pour retrouver les commandes et les livraisons de votre équipe.
+
+Rejoindre mon équipe ({{url_invitation}})
+
+Cette invitation est valable 48 heures et ne peut être utilisée qu’une fois.
+
+Cette invitation ne vous était pas destinée ? Vous pouvez l’ignorer.
+
+L’équipe TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions

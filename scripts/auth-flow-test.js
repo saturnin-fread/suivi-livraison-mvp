@@ -32,7 +32,12 @@ function lastCode(to) {
   const files = fs.readdirSync(outbox).filter((f) => f.endsWith('.json')).sort();
   for (let i = files.length - 1; i >= 0; i -= 1) {
     const mail = JSON.parse(fs.readFileSync(path.join(outbox, files[i]), 'utf8'));
-    if (mail.to === to) return /(\d{6}) — votre code TRAXO/.exec(mail.subject)[1];
+    if (mail.to === to) {
+      // Modèle A1/A2 du kit e-mails : HTML et texte, code sans lien ni bouton.
+      const code = /(\d{6}) — votre code TRAXO/.exec(mail.subject)[1];
+      if (!mail.html.includes('/brand/email-premium/v2/') || !mail.text.includes(code) || /\{\{|<a\b[^>]*>[^<]*\d{6}/.test(mail.html)) throw new Error('E-mail de code hors modèle du kit');
+      return code;
+    }
   }
   throw new Error('Aucun e-mail reçu pour ' + to);
 }

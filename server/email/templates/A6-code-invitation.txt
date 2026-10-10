@@ -1,0 +1,18 @@
+{{code}} est votre code pour rejoindre {{entreprise}} sur TRAXO
+
+Votre place dans l’équipe
+vous attend.
+Bonjour {{prenom_nom}},
+Saisissez ce code pour confirmer votre accès à {{entreprise}}.
+
+À saisir dans TRAXO
+
+{{code}}
+
+Ce code est valable 10 minutes.
+
+Ne partagez pas ce code, même avec la personne qui vous a invité.
+
+Vous n’attendiez pas cette invitation ? Ignorez ce message. Ce code est nécessaire pour créer votre accès.
+
+L’équipe TRAXO

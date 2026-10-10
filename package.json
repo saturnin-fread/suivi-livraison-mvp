@@ -9,6 +9,7 @@
     "test": "node scripts/test-all.js",
     "test:migrate": "node scripts/migrate-test.js",
     "test:syntax": "node scripts/check-syntax.js",
+    "test:emails": "node scripts/email-templates-test.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:customer-flow": "node scripts/customer-request-flow-test.js",
     "test:totp": "node scripts/totp-test.js",

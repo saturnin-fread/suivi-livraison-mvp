@@ -54,7 +54,7 @@ const srv = (name, env, cmd = npm(`test:${name}`)) => ({ name, cmd, server: true
 
 const SUITES = [
   unit('syntax'),
-  ...['routing', 'rate-limit', 'tracking-links', 'dispatch', 'crm-metrics', 'crm-export', 'crm-xlsx', 'crm-operations-export', 'totp', 'whatsapp', 'eta'].map((n) => unit(n)),
+  ...['routing', 'rate-limit', 'tracking-links', 'dispatch', 'crm-metrics', 'crm-export', 'crm-xlsx', 'crm-operations-export', 'totp', 'whatsapp', 'eta', 'emails'].map((n) => unit(n)),
   unit('dashboard-insights', ['node', 'scripts/dashboard-insights-test.js']),
   unit('migrate'),
   unit('config'),

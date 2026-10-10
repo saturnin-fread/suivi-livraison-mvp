@@ -1,0 +1,27 @@
+[{{reference}}] Nouvelle demande — {{sujet}}
+
+Une nouvelle demande
+vient d’arriver.
+{{auteur}} a contacté le support pour {{entreprise}}.
+
+Demande : {{reference}}
+
+Objet : {{sujet}}
+
+Espace : {{entreprise}} · #{{id_espace}}
+
+{{#si message_present}}
+
+{{message}}
+
+{{/si}}{{#si sans_message}}
+Ce message contient uniquement une pièce jointe.
+{{/si}}
+
+Retrouver la discussion ({{url_demande}})
+
+Répondez dans TRAXO pour garder tous les échanges au même endroit. Les réponses à cet e-mail ne sont pas rattachées à la demande.
+
+L’équipe TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions

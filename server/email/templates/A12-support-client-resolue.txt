@@ -1,0 +1,16 @@
+[{{reference}}] Votre demande est résolue
+
+Votre demande est résolue.
+Retrouvez notre dernière réponse dans la discussion.
+
+{{reference}}
+
+{{sujet}}
+
+Retrouver ma discussion ({{url_demande}})
+
+Pour garder vos échanges privés, les réponses sont consultables uniquement dans TRAXO.
+
+L’équipe support TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions

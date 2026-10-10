@@ -1,0 +1,16 @@
+[{{reference}}] Nouvelle réponse de l’équipe TRAXO
+
+Nous vous avons répondu.
+Vous pouvez lire notre message et poursuivre la discussion depuis votre demande.
+
+{{reference}}
+
+{{sujet}}
+
+Lire la réponse ({{url_demande}})
+
+Pour garder vos échanges privés, les réponses sont consultables uniquement dans TRAXO.
+
+L’équipe support TRAXO
+Confidentialité : https://app.gettraxo.app/confidentialite
+Conditions : https://app.gettraxo.app/conditions

@@ -3,7 +3,7 @@
 module.exports = function registerNotifications(app, deps) {
   const {
     pool, asyncRoute, requireCompanyApi, writeAudit, support, companySignals, describeDevice,
-    parseCookies, digest, emailConfigured, sendEmail, renderEmailShell, escHtmlServer,
+    parseCookies, digest, emailConfigured, sendTemplatedEmail, emailBaseUrl, renderEmailShell, escHtmlServer,
     publicBaseUrl, companyTimezones, terminalOrderStatuses, DASHBOARD_TZ, billing,
   } = deps;
 
@@ -336,35 +336,62 @@ module.exports = function registerNotifications(app, deps) {
     return res.json({ categories, digest: digestMode, digestHour: hour, digestDay: day, timezone });
   }));
 
-  // Récapitulatif e-mail d'un utilisateur : éléments autorisés, non lus, non archivés.
-  async function buildUserDigest(auth, appBaseUrl = '') {
+  // Récapitulatif e-mail d'un utilisateur (modèle A7) : éléments autorisés, non
+  // lus, non archivés. 15 au plus dans l'e-mail ; le nombre annoncé est le total
+  // et le lien général mène au reste. Rien à signaler : pas d'e-mail.
+  const DIGEST_TYPE_LABELS = {
+    incidents: 'Incident', requests: 'Demande client', deliveries: 'Livraison', runs: 'Tournée', clients: 'Client',
+    security: 'Sécurité', billing: 'Facturation', support: 'Support',
+  };
+  async function buildUserDigest(auth, appBaseUrl = '', mode = null) {
     const { items } = await userNotifications(auth, null);
     const pending = items.filter((it) => !it.read && !it.archived && !it.later && it.priority !== 'info');
     if (!pending.length) return null;
     const baseUrl = String(appBaseUrl || '').replace(/\/+$/, '');
-    const rows = pending.slice(0, 15).map((it) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;border:1px solid #eef1f5;border-radius:12px"><tr><td style="padding:12px 14px">
+    const emailBase = baseUrl || emailBaseUrl(null);
+    const itemPath = (href) => (String(href || '').startsWith('/') ? href : '/app/notifications');
+    const shown = pending.slice(0, 15);
+    const label = `notification${pending.length > 1 ? 's' : ''}`;
+    const digestMode = mode || (await pool.query('SELECT digest FROM notification_prefs WHERE user_id = $1 AND company_id = $2', [auth.user_id, auth.company_id])).rows[0]?.digest;
+    const vars = {
+      nombre: String(pending.length), libelle_notifications: label,
+      periode: digestMode === 'weekly' ? 'cette semaine' : 'aujourd’hui',
+      elements: shown.map((it) => ({
+        type_libelle: DIGEST_TYPE_LABELS[it.category] || 'Activité',
+        titre: String(it.title || '').slice(0, 500), resume: String(it.summary || '').slice(0, 500),
+        lien_libelle: it.cta || 'Ouvrir', lien_url: `${emailBase}${itemPath(it.href)}`,
+      })),
+      url_notifications: `${emailBase}/app/notifications`,
+      url_preferences: `${emailBase}/app/notifications?vue=preferences`,
+    };
+    const legacy = () => {
+      const rows = shown.map((it) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;border:1px solid #eef1f5;border-radius:12px"><tr><td style="padding:12px 14px">
       <div style="font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#111827">${escHtmlServer(it.title)}</div>
       <div style="font-family:Arial,sans-serif;font-size:13px;color:#667085;margin-top:2px">${escHtmlServer(it.summary)}</div>
       ${baseUrl ? `<a href="${escHtmlServer(baseUrl + it.href)}" style="font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#e11d2a;text-decoration:none">${escHtmlServer(it.cta || 'Ouvrir')} →</a>` : ''}
     </td></tr></table>`).join('');
-    const label = `${pending.length} notification${pending.length > 1 ? 's' : ''} à traiter`;
-    const html = renderEmailShell({
-      baseUrl,
-      heading: `Vous avez ${label}`,
-      introHtml: 'Voici ce qui attend votre attention dans votre espace TRAXO.',
-      bodyHtml: rows,
-      ctaLabel: baseUrl ? 'Ouvrir le centre de notifications' : undefined,
-      ctaUrl: baseUrl ? `${baseUrl}/app/notifications` : undefined,
-      footerNote: 'Vous recevez ce récapitulatif parce que vous l’avez activé dans vos préférences de notifications.',
-    });
-    const text = pending.map((it) => `- ${it.title} : ${it.summary}`).join('\n');
-    return { count: pending.length, subject: `TRAXO — ${label}`, html, text };
+      const heading = `${pending.length} ${label} à traiter`;
+      return {
+        subject: `TRAXO — ${heading}`,
+        html: renderEmailShell({
+          baseUrl,
+          heading: `Vous avez ${heading}`,
+          introHtml: 'Voici ce qui attend votre attention dans votre espace TRAXO.',
+          bodyHtml: rows,
+          ctaLabel: baseUrl ? 'Ouvrir le centre de notifications' : undefined,
+          ctaUrl: baseUrl ? `${baseUrl}/app/notifications` : undefined,
+          footerNote: 'Vous recevez ce récapitulatif parce que vous l’avez activé dans vos préférences de notifications.',
+        }),
+        text: pending.map((it) => `- ${it.title} : ${it.summary}`).join('\n'),
+      };
+    };
+    return { count: pending.length, vars, legacy };
   }
 
   app.post('/api/app/notifications/digest', requireCompanyApi, asyncRoute(async (req, res) => {
     const digestMail = await buildUserDigest(req.auth, publicBaseUrl(req));
     if (!digestMail) return res.json({ sent: false, reason: 'nothing_to_send', count: 0, configured: emailConfigured() });
-    const result = await sendEmail({ to: req.auth.email, subject: digestMail.subject, html: digestMail.html, text: digestMail.text });
+    const result = await sendTemplatedEmail(req.auth.email, 'A7-recapitulatif-notifications', digestMail.vars, digestMail.legacy);
     return res.json({ ...result, count: digestMail.count, configured: emailConfigured(), recipient: req.auth.email });
   }));
 
@@ -397,8 +424,8 @@ module.exports = function registerNotifications(app, deps) {
         if (row.digest === 'weekly' && row.last_digest_at && Date.now() - new Date(row.last_digest_at).getTime() < 6 * 24 * 3600 * 1000) continue;
         // Marqué avant l'envoi : un échec ne provoque pas de rafale d'e-mails.
         await pool.query('UPDATE notification_prefs SET last_digest_at = NOW() WHERE user_id = $1 AND company_id = $2', [row.user_id, row.company_id]);
-        const mail = await buildUserDigest({ user_id: row.user_id, company_id: row.company_id, role: row.role, email: row.email }, base);
-        if (mail) await sendEmail({ to: row.email, subject: mail.subject, html: mail.html, text: mail.text });
+        const mail = await buildUserDigest({ user_id: row.user_id, company_id: row.company_id, role: row.role, email: row.email }, base, row.digest);
+        if (mail) await sendTemplatedEmail(row.email, 'A7-recapitulatif-notifications', mail.vars, mail.legacy);
       } catch (error) {
         console.error('Notification digest failed:', error.message);
       }

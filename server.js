@@ -40,6 +40,7 @@ const registerSearch = require('./server/modules/search/routes');
 const registerVigilance = require('./server/modules/vigilance/routes');
 const registerWorkspace = require('./server/modules/workspace/routes');
 const registerSupport = require('./server/modules/support/routes');
+const { renderEmail, legacyTemplates } = require('./server/email');
 const {
   TrackingLinkPolicyError,
   createTrackingLinkExpiration,
@@ -1510,6 +1511,13 @@ async function notifyNewLogin(req, userId, method) {
   const how = { code: 'mot de passe + code de vérification', totp: 'mot de passe + application d’authentification', google: 'compte Google' }[method] || method;
   const device = describeDevice(req.headers['user-agent']);
   const base = publicBaseUrl(req);
+  await sendTemplatedEmail(row.email, 'A3-alerte-connexion', {
+    date_heure: when, appareil: device, methode: how,
+    url_securite: `${emailBaseUrl(req)}/app/parametres?section=security`,
+    url_preferences: `${emailBaseUrl(req)}/app/parametres?section=security`,
+  }, () => legacyLoginAlert(base, row, when, device, how));
+}
+function legacyLoginAlert(base, row, when, device, how) {
   const html = renderEmailShell({
     baseUrl: base,
     heading: 'Nouvelle connexion à votre compte',
@@ -1519,13 +1527,16 @@ async function notifyNewLogin(req, userId, method) {
     ctaUrl: `${base}/app/parametres?section=security`,
     footerNote: 'C’est bien vous ? Aucune action n’est nécessaire. Sinon, changez votre mot de passe et fermez les autres sessions depuis Paramètres › Sécurité.',
   });
-  await sendEmail({ to: row.email, subject: 'TRAXO — Nouvelle connexion à votre compte', html, text: `Nouvelle connexion à votre compte TRAXO\nQuand : ${when}\nAppareil : ${device}\nMéthode : ${how}\n\nCe n’est pas vous ? Changez votre mot de passe.` });
+  return { subject: 'TRAXO — Nouvelle connexion à votre compte', html, text: `Nouvelle connexion à votre compte TRAXO\nQuand : ${when}\nAppareil : ${device}\nMéthode : ${how}\n\nCe n’est pas vous ? Changez votre mot de passe.` };
 }
 function newLoginCode() {
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
 }
-async function sendLoginCodeEmail(req, email, code, purpose) {
-  const base = publicBaseUrl(req);
+function sendLoginCodeEmail(req, email, code, purpose) {
+  return sendTemplatedEmail(email, purpose === 'signup' ? 'A1-code-inscription' : 'A2-code-connexion', { code },
+    () => legacyLoginCode(publicBaseUrl(req), code, purpose));
+}
+function legacyLoginCode(base, code, purpose) {
   const intro = purpose === 'signup'
     ? 'Voici votre code pour confirmer votre adresse e-mail et terminer la création de votre compte TRAXO.'
     : 'Voici votre code pour vous connecter à TRAXO depuis un nouvel appareil.';
@@ -1540,7 +1551,7 @@ async function sendLoginCodeEmail(req, email, code, purpose) {
       : 'Ce n’est pas vous ? Quelqu’un connaît votre mot de passe : changez-le dès maintenant depuis « Mot de passe oublié ».',
   });
   const text = `${intro}\n\nCode : ${code}\n\nValable 10 minutes. Ne le communiquez à personne.`;
-  return sendEmail({ to: email, subject: `${code} — votre code TRAXO`, html, text });
+  return { subject: `${code} — votre code TRAXO`, html, text };
 }
 // Canal WhatsApp (numéro TRAXO relié depuis Paramètres › WhatsApp).
 const whatsapp = new WhatsAppChannel({
@@ -2488,17 +2499,21 @@ app.post('/app/forgot', forgotRateLimit, asyncRoute(async (req, res) => {
       );
       const base = publicBaseUrl(req);
       const resetUrl = `${base}/app/reset?token=${encodeURIComponent(token)}`;
-      const html = renderEmailShell({
-        baseUrl: base,
-        heading: 'Réinitialisation de votre mot de passe',
-        introHtml: 'Vous avez demandé à réinitialiser le mot de passe de votre compte TRAXO. Cliquez sur le bouton ci-dessous pour en choisir un nouveau. Ce lien expire dans 1 heure et ne peut être utilisé qu’une seule fois.',
-        bodyHtml: `<p style="font-family:Arial,sans-serif;font-size:12.5px;color:#98a2b3;margin:16px 0 0;word-break:break-all">Le bouton ne fonctionne pas ? Copiez ce lien dans votre navigateur :<br>${escHtmlServer(resetUrl)}</p>`,
-        ctaLabel: 'Réinitialiser mon mot de passe',
-        ctaUrl: resetUrl,
-        footerNote: 'Vous n’êtes pas à l’origine de cette demande ? Ignorez cet e-mail : votre mot de passe reste inchangé.',
+      await sendTemplatedEmail(email, 'A4-reinitialisation-mot-de-passe', {
+        url_reinitialisation: `${emailBaseUrl(req)}/app/reset?token=${encodeURIComponent(token)}`,
+      }, () => {
+        const html = renderEmailShell({
+          baseUrl: base,
+          heading: 'Réinitialisation de votre mot de passe',
+          introHtml: 'Vous avez demandé à réinitialiser le mot de passe de votre compte TRAXO. Cliquez sur le bouton ci-dessous pour en choisir un nouveau. Ce lien expire dans 1 heure et ne peut être utilisé qu’une seule fois.',
+          bodyHtml: `<p style="font-family:Arial,sans-serif;font-size:12.5px;color:#98a2b3;margin:16px 0 0;word-break:break-all">Le bouton ne fonctionne pas ? Copiez ce lien dans votre navigateur :<br>${escHtmlServer(resetUrl)}</p>`,
+          ctaLabel: 'Réinitialiser mon mot de passe',
+          ctaUrl: resetUrl,
+          footerNote: 'Vous n’êtes pas à l’origine de cette demande ? Ignorez cet e-mail : votre mot de passe reste inchangé.',
+        });
+        const text = `Réinitialisez votre mot de passe TRAXO (lien valable 1 h) :\n${resetUrl}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`;
+        return { subject: 'TRAXO — Réinitialisation de votre mot de passe', html, text };
       });
-      const text = `Réinitialisez votre mot de passe TRAXO (lien valable 1 h) :\n${resetUrl}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`;
-      await sendEmail({ to: email, subject: 'TRAXO — Réinitialisation de votre mot de passe', html, text });
     }
   } catch (error) {
     console.error('Forgot password error:', error.message);
@@ -2706,8 +2721,9 @@ app.post('/api/public/invitations/:token/send-code', teamInviteRateLimit, asyncR
   let channel;
   if (inv.email) {
     channel = 'email';
-    const sent = await sendEmail({
-      to: inv.email,
+    const sent = await sendTemplatedEmail(inv.email, 'A6-code-invitation', {
+      code, entreprise: inv.company_name, prenom_nom: inv.display_name || inv.email,
+    }, () => ({
       subject: `${code} est votre code pour rejoindre ${inv.company_name} sur TRAXO`,
       html: renderEmailShell({
         baseUrl: publicBaseUrl(req), heading: 'Confirmez votre invitation',
@@ -2716,7 +2732,7 @@ app.post('/api/public/invitations/:token/send-code', teamInviteRateLimit, asyncR
         footerNote: 'Vous n’attendiez pas cette invitation ? Ignorez ce message : rien ne sera créé sans ce code.',
       }),
       text: `${code} est votre code pour rejoindre ${inv.company_name} sur TRAXO. Il expire dans 10 minutes. Ne le communiquez à personne.`,
-    });
+    }));
     if (!sent || !sent.sent) {
       console.error('Invitation e-mail code failed:', sent && sent.reason);
       return res.status(502).json({ error: 'Le code n’a pas pu être envoyé par e-mail. Réessayez dans un instant.' });
@@ -3051,21 +3067,22 @@ app.post('/api/app/invitations', requireCompanyApi, requireCompanyRoles('owner',
       try {
         const companyRow = await pool.query('SELECT name FROM companies WHERE id = $1', [req.auth.company_id]);
         const companyName = companyRow.rows[0]?.name || 'votre équipe';
-        const html = renderEmailShell({
-          baseUrl,
-          heading: `Vous êtes invité·e à rejoindre ${companyName} sur TRAXO`,
-          introHtml: `Bonjour ${escHtmlServer(displayName)}, vous avez été invité·e comme <strong>${escHtmlServer(TEAM_ROLE_LABELS[role] || role)}</strong>.`,
-          bodyHtml: '<p style="margin:0;font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#475467">Cliquez sur le bouton ci-dessous pour créer votre accès. Le lien est valable 48 heures et à usage unique.</p>',
-          ctaLabel: 'Créer mon accès',
-          ctaUrl: inviteUrl,
-          footerNote: 'Si vous n’attendiez pas cette invitation, ignorez cet e-mail.',
-        });
-        const result = await sendEmail({
-          to: email,
+        const result = await sendTemplatedEmail(email, 'A5-invitation-equipe', {
+          entreprise: companyName, prenom_nom: displayName, role: TEAM_ROLE_LABELS[role] || role,
+          invitant: req.auth.display_name || req.auth.email || `L’équipe ${companyName}`, url_invitation: inviteUrl,
+        }, () => ({
           subject: `Invitation à rejoindre ${companyName} sur TRAXO`,
-          html,
+          html: renderEmailShell({
+            baseUrl,
+            heading: `Vous êtes invité·e à rejoindre ${companyName} sur TRAXO`,
+            introHtml: `Bonjour ${escHtmlServer(displayName)}, vous avez été invité·e comme <strong>${escHtmlServer(TEAM_ROLE_LABELS[role] || role)}</strong>.`,
+            bodyHtml: '<p style="margin:0;font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#475467">Cliquez sur le bouton ci-dessous pour créer votre accès. Le lien est valable 48 heures et à usage unique.</p>',
+            ctaLabel: 'Créer mon accès',
+            ctaUrl: inviteUrl,
+            footerNote: 'Si vous n’attendiez pas cette invitation, ignorez cet e-mail.',
+          }),
           text: `Bonjour ${displayName}, créez votre accès TRAXO : ${inviteUrl} (valable 48 h).`,
-        });
+        }));
         emailed = Boolean(result && result.sent);
       } catch (mailError) {
         console.error('Invite email failed:', mailError.message);
@@ -4237,6 +4254,27 @@ async function sendEmail({ to, subject, html, text }) {
   }
   return { sent: false, reason: 'email_not_configured' };
 }
+// Envoi d'un modèle du kit e-mails (server/email). `legacy` rend l'ancien
+// gabarit, utilisé seulement si EMAIL_TEMPLATES=legacy (retour arrière).
+// Les logs portent l'identifiant du modèle, jamais le contenu ni un code.
+async function sendTemplatedEmail(to, templateId, vars, legacy) {
+  let mail;
+  if (legacyTemplates()) mail = { template: `${templateId}:legacy`, ...legacy() };
+  else {
+    try { mail = renderEmail(templateId, vars); } catch (error) {
+      console.error(`Email ${templateId} not rendered: ${error.message}`);
+      return { sent: false, reason: 'template_error' };
+    }
+  }
+  const result = await sendEmail({ to, subject: mail.subject, html: mail.html, text: mail.text });
+  if (!result.sent && result.reason !== 'email_not_configured') console.error(`Email ${mail.template} not sent: ${result.reason}`);
+  return result;
+}
+// Base des liens d'e-mail : sans requête (tâches planifiées) ni APP_BASE_URL,
+// on vise l'adresse publique de production.
+function emailBaseUrl(req) {
+  return publicBaseUrl(req) || 'https://app.gettraxo.app';
+}
 // URL publique de l'app (variable APP_BASE_URL, sinon dérivée de la requête).
 function publicBaseUrl(req) {
   const fromEnv = String(process.env.APP_BASE_URL || '').trim();
@@ -4280,13 +4318,13 @@ const { companySignals } = registerVigilance(app, {
 // --- Support TRAXO : demandes (tickets) → server/modules/support ------------
 const { support } = registerSupport(app, {
   pool, asyncRoute, requireCompanyApi, requirePlatformAdminApi, writeAudit,
-  sendEmail, renderEmailShell, escHtmlServer, normalizeEmail, publicBaseUrl,
+  sendTemplatedEmail, emailBaseUrl, renderEmailShell, escHtmlServer, normalizeEmail, publicBaseUrl,
 });
 
 // --- Notifications → server/modules/notifications --------------------------------
 const { runNotificationDigests } = registerNotifications(app, {
   pool, asyncRoute, requireCompanyApi, writeAudit, support, companySignals, describeDevice,
-  parseCookies, digest, emailConfigured, sendEmail, renderEmailShell, escHtmlServer,
+  parseCookies, digest, emailConfigured, sendTemplatedEmail, emailBaseUrl, renderEmailShell, escHtmlServer,
   publicBaseUrl, companyTimezones, terminalOrderStatuses, DASHBOARD_TZ, billing,
 });
 // --- Recherche globale (Ctrl/⌘ K) → server/modules/search -------------------

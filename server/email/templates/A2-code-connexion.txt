@@ -1,0 +1,17 @@
+{{code}} — votre code TRAXO
+
+C’est bien vous ?
+Une connexion depuis un nouvel appareil nécessite votre confirmation. Saisissez ce code pour continuer.
+
+À saisir dans TRAXO
+
+{{code}}
+
+Ce code est valable 10 minutes.
+
+Gardez ce code pour vous. Personne chez TRAXO ne vous le demandera.
+
+Vous n’avez pas essayé de vous connecter ? Votre mot de passe peut être compromis.
+Changez-le depuis « Mot de passe oublié » dans TRAXO.
+
+L’équipe TRAXO

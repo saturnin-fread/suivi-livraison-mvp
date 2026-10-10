@@ -11,7 +11,9 @@ async function call(method, url, { cookie, body, raw } = {}) {
   if (raw) return { status: res.status, headers: res.headers, buffer: Buffer.from(await res.arrayBuffer()) };
   return { status: res.status, data: await res.json().catch(() => ({})) };
 }
-const day = (offset) => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
+// Jour calendaire à Porto-Novo, comme le serveur (et non en UTC : entre 23 h et
+// minuit UTC, la date UTC est encore celle de la veille).
+const day = (offset) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Porto-Novo' }).format(new Date(Date.now() + offset * 86400000));
 let savedTrial = null; let companyId = null;
 // Crédit de test écrit comme une correction (journal et solde ensemble).
 async function credit(pool, cid, amount) {
